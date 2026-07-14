@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "services": {
+    "openai": {
+      "category": "GEO_LOCKED",
+      "domains": [
+        "chatgpt.com",
+        "openai.com",
+        "auth.openai.com",
+        "api.openai.com",
+        "oaistatic.com",
+        "oaiusercontent.com"
+      ],
+      "probe_urls": [
+        "https://chatgpt.com/",
+        "https://api.openai.com/v1/models"
+      ],
+      "allowed_paths": ["smart_dns", "vless", "drop"],
+      "forbidden_paths": ["direct", "zapret"],
+      "require_non_ru_egress": true
+    },
+    "youtube": {
+      "category": "TSPU_RESTRICTED",
+      "domains": [
+        "youtube.com",
+        "youtu.be",
+        "googlevideo.com",
+        "ytimg.com",
+        "youtubei.googleapis.com",
+        "youtube.googleapis.com"
+      ],
+      "probe_urls": [
+        "https://www.youtube.com/generate_204",
+        "https://youtubei.googleapis.com/generate_204"
+      ],
+      "allowed_paths": ["zapret", "smart_dns", "vless", "drop"],
+      "forbidden_paths": [],
+      "require_non_ru_egress": false
+    },
+    "telegram": {
+      "category": "TELEGRAM",
+      "domains": [
+        "telegram.org",
+        "t.me",
+        "api.telegram.org",
+        "web.telegram.org"
+      ],
+      "probe_urls": [
+        "https://api.telegram.org/"
+      ],
+      "allowed_paths": ["tg_ws_proxy", "vless", "drop"],
+      "forbidden_paths": ["direct"],
+      "require_non_ru_egress": false
+    },
+    "gosuslugi": {
+      "category": "DIRECT_ONLY",
+      "domains": [
+        "gosuslugi.ru",
+        "esia.gosuslugi.ru"
+      ],
+      "probe_urls": [
+        "https://www.gosuslugi.ru/"
+      ],
+      "allowed_paths": ["direct"],
+      "forbidden_paths": ["vless", "smart_dns", "zapret"],
+      "require_non_ru_egress": false
+    },
+    "github": {
+      "category": "DIRECT_PREFERRED",
+      "domains": [
+        "github.com",
+        "githubusercontent.com",
+        "githubassets.com"
+      ],
+      "probe_urls": [
+        "https://github.com/"
+      ],
+      "allowed_paths": ["direct", "zapret", "smart_dns", "vless"],
+      "forbidden_paths": [],
+      "require_non_ru_egress": false
+    }
+  }
+}
+

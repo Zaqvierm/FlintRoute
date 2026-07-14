@@ -1,0 +1,114 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"router-policy/internal/config"
+	"router-policy/internal/state"
+	"router-policy/internal/tspu"
+)
+
+func TestSafeListenAddress(t *testing.T) {
+	ok := []string{"127.0.0.1:8787", "localhost:8787", "[::1]:8787"}
+	for _, addr := range ok {
+		if !safeListenAddress(addr) {
+			t.Fatalf("expected %s to be safe", addr)
+		}
+	}
+	bad := []string{"0.0.0.0:8787", ":8787", "192.168.8.1:8787", "bad"}
+	for _, addr := range bad {
+		if safeListenAddress(addr) {
+			t.Fatalf("expected %s to be unsafe", addr)
+		}
+	}
+}
+
+func TestServeRefusesUnsafeBind(t *testing.T) {
+	t.Setenv("ROUTER_POLICY_ALLOW_UNSAFE_LAN_BIND", "")
+	err := run([]string{"serve", "--listen", "0.0.0.0:8787"})
+	if err == nil || !strings.Contains(err.Error(), "refusing non-loopback") {
+		t.Fatalf("expected unsafe bind refusal, got %v", err)
+	}
+}
+
+func TestLoadCLIActiveConfigUsesCommittedBboltState(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("..", "..", "config", "default.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	cfg.Storage.StateDir = dir
+	cfg.Storage.Database = filepath.Join(dir, "state.bbolt")
+	cfg.Storage.RuntimeDir = filepath.Join(dir, "runtime")
+	store, err := state.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	active := *cfg
+	active.Routes = append([]config.Route(nil), cfg.Routes...)
+	active.Routes[0].Priority = 77
+	if err := store.SaveBatch(
+		state.Entry{Bucket: "meta", Key: "active_config", Value: &active},
+		state.Entry{Bucket: "meta", Key: "active_revision", Value: "rev-committed"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	loaded, revision, err := loadCLIActiveConfig(store, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revision != "rev-committed" || loaded.Routes[0].Priority != 77 {
+		t.Fatalf("CLI ignored committed state: revision=%q config=%+v", revision, loaded.Routes[0])
+	}
+}
+
+func TestTSPUMatchForDomainReportsUnavailableMatchAndStaleMatch(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{Storage: config.Storage{StateDir: dir}}
+	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+
+	unavailable, err := tspuMatchForDomain(cfg, "example.com", false, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unavailable.Status != "UNAVAILABLE" {
+		t.Fatalf("missing cache was reported as a clean miss: %+v", unavailable)
+	}
+
+	report := tspu.SourceReport{Name: "source-one", Type: "domains", Accepted: true, Fresh: true, Confidence: 0.9}
+	cache := tspu.BuildCache(now, time.Hour, []tspu.SourceReport{report}, map[string][]string{"source-one": {"*.example.com"}})
+	if err := tspu.Save(filepath.Join(dir, "tspu-cache.json"), cache); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := tspuMatchForDomain(cfg, "api.example.com", false, now.Add(30*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Status != "MATCH" || fresh.Matched != "*.example.com" {
+		t.Fatalf("fresh match not returned: %+v", fresh)
+	}
+	stale, err := tspuMatchForDomain(cfg, "api.example.com", false, now.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale.Status != "STALE_MATCH" {
+		t.Fatalf("expired match was treated as fresh: %+v", stale)
+	}
+}
+
+func TestTSPUMatchForDomainRejectsCorruptCache(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{Storage: config.Storage{StateDir: dir}}
+	if err := os.WriteFile(filepath.Join(dir, "tspu-cache.json"), []byte("not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tspuMatchForDomain(cfg, "example.com", false, time.Now()); err == nil {
+		t.Fatal("corrupt TSPU cache must not silently become NO_MATCH")
+	}
+}

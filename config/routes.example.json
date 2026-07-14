@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "routes": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "zapret",
+      "tag": "zapret"
+    },
+    {
+      "type": "smart_dns",
+      "tag": "xbox-dns",
+      "dns_server": "DNS_SERVER_PLACEHOLDER"
+    },
+    {
+      "type": "tg_ws_proxy",
+      "tag": "tg-ws-proxy",
+      "socks5": "127.0.0.1:1180"
+    },
+    {
+      "type": "vless",
+      "tag": "vpnsub-frankfurt-3",
+      "socks5": "127.0.0.1:12003",
+      "dns_mode": "socks_remote",
+      "external_ip_probe": true
+    },
+    {
+      "type": "vless",
+      "tag": "vpnsub-netherlands-1",
+      "socks5": "127.0.0.1:12004",
+      "dns_mode": "socks_remote",
+      "external_ip_probe": true
+    }
+  ]
+}
+

@@ -1,0 +1,38 @@
+# Local workspace
+.local/
+.private/
+.cache/
+.tmp/
+worktree-local/
+
+# Local configuration
+*.local
+*.local.*
+config/local/
+config/private/
+
+# Credentials and private material
+.env
+.env.*
+*.secret
+*.credentials
+*.subscription.json
+secrets/
+
+# Build and test output
+dist/
+!internal/web/dist/
+coverage.out
+*.log
+*.tmp
+*.bak
+
+# Dependencies and local tooling
+node_modules/
+.tools/
+.vite/
+
+# Local binaries
+/router-policy
+router-policy.exe
+*.exe~

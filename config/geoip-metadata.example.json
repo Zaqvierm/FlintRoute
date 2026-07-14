@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "source_url": "https://example.invalid/user-country.mmdb",
+  "source_version": "example-only",
+  "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "bytes": 1,
+  "database_type": "country",
+  "build_epoch": 0,
+  "updated_at": "2026-07-12T00:00:00Z"
+}

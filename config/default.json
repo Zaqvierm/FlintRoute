@@ -1,0 +1,400 @@
+{
+  "version": 2,
+  "platform": {
+    "target": "glinet-flint2",
+    "require_confirmed_diagnostics": true,
+    "unsupported_apply_policy": "refuse"
+  },
+  "storage": {
+    "state_dir": "/var/lib/router-policy",
+    "runtime_dir": "/tmp/router-policy",
+    "database": "/var/lib/router-policy/router-policy.bbolt",
+    "event_retention_days": 30,
+    "changeset_retention_days": 90,
+    "transaction_retention_days": 30,
+    "max_probe_results": 5000,
+    "backup_interval_hours": 24,
+    "compact_interval_days": 7,
+    "max_state_backups": 7,
+    "max_database_bytes": 67108864,
+    "max_auto_domains": 20000,
+    "snapshot_interval_seconds": 1800
+  },
+  "policy": {
+    "unknown_domain_first_path": "direct",
+    "unknown_domain_background_check": true,
+    "route_hold_seconds": 600,
+    "fail_after_consecutive_errors": 3,
+    "recover_after_consecutive_successes": 5,
+    "health_check_interval_seconds": 300,
+    "domain_decision_ttl_seconds": 86400,
+    "subscription_update_interval_seconds": 21600,
+    "tspu_list_update_interval_seconds": 21600,
+    "tspu_stale_policy": "zapret_first",
+    "max_subscription_bytes": 2097152,
+    "max_tspu_list_bytes": 10485760,
+    "max_probe_seconds": 15,
+    "parallel_server_checks": 4,
+    "geo_locked_unknown_country_is_safe": false,
+    "geo_locked_allow_direct": false,
+    "geo_locked_allow_zapret": false,
+    "direct_only_allow_foreign_proxy": false
+  },
+  "xray": {
+    "binary": "/usr/bin/xray",
+    "init_script": "/etc/init.d/router-policy-xray",
+    "activation_mode": "candidate_only",
+    "config_dir": "/etc/router-policy/xray",
+    "active_config": "/etc/router-policy/xray/active.json",
+    "last_good_config": "/var/lib/router-policy/last-good/xray.json",
+    "generated_dir": "/tmp/router-policy/generated/xray",
+    "probe_socks_base_port": 12000,
+    "probe_dns_resolver": "1.1.1.1:53",
+    "dns_proxy_base_port": 14000,
+    "transparent_port": 12345,
+    "subscription_secret_file": "/etc/router-policy/secrets/vpnsub-subscription-url"
+  },
+  "zapret": {
+    "binary": "/usr/bin/nfqws",
+    "init_script": "/etc/init.d/router-policy-zapret",
+    "active_config": "/etc/router-policy/zapret/nfqws.conf",
+    "activation_mode": "managed",
+    "strategy": "tls-fake-ttl3-v1",
+    "queue_num": 200
+  },
+  "geoip": {
+    "mode": "mmdb",
+    "database": "/var/lib/router-policy/geoip/user-country.mmdb",
+    "source_url": "https://github.com/sapics/ip-location-db/releases/download/latest/user-country.mmdb",
+    "max_database_bytes": 16777216,
+    "max_age_hours": 336,
+    "fail_country": "UNKNOWN",
+    "endpoints": [
+      {
+        "name": "country-is",
+        "provider": "country_is",
+        "url": "https://api.country.is/"
+      },
+      {
+        "name": "ipwho-is",
+        "provider": "ipwho_is",
+        "url": "https://ipwho.is/"
+      }
+    ]
+  },
+  "openwrt": {
+    "adapter": "/usr/lib/router-policy/openwrt/adapter.sh",
+    "nft_table": "router_policy",
+    "nft_family": "inet",
+    "firewall_include": "/etc/router-policy/firewall/router-policy.nft",
+    "dnsmasq_include": "/etc/dnsmasq.d/router-policy.conf",
+    "wan_route_table": 100,
+    "zapret_route_table": 101,
+    "xray_route_table": 102,
+    "direct_mark": "0x41",
+    "zapret_mark": "0x42",
+    "xray_mark": "0x43",
+    "xray_tproxy_mark": "0x100",
+    "xray_bypass_mark": "0x200",
+    "drop_mark": "0x7f",
+    "flow_offloading_policy": "preserve",
+    "probe_timeout_seconds": 20,
+    "rollback_timeout_seconds": 120
+  },
+  "routes": [
+    {
+      "type": "direct",
+      "tag": "direct",
+      "priority": 10,
+      "requires_adapter": true,
+      "adapter_mode": "direct",
+      "mark": "0x41",
+      "forbid_proxy": true
+    },
+    {
+      "type": "zapret",
+      "tag": "zapret",
+      "priority": 20,
+      "disabled": true,
+      "status": "NOT_CONFIGURED",
+      "requires_adapter": true,
+      "adapter_mode": "zapret",
+      "mark": "0x42",
+      "forbid_proxy": true
+    },
+    {
+      "type": "smart_dns",
+      "tag": "xbox-dns-primary",
+      "priority": 30,
+      "disabled": true,
+      "status": "NOT_CONFIGURED",
+      "dns_server": "DNS_SERVER_PLACEHOLDER",
+      "connect_to_resolved_ip": true
+    },
+    {
+      "type": "smart_dns",
+      "tag": "xbox-dns-secondary",
+      "priority": 31,
+      "disabled": true,
+      "status": "NOT_CONFIGURED",
+      "dns_server": "DNS_SERVER_PLACEHOLDER_2",
+      "connect_to_resolved_ip": true
+    },
+    {
+      "type": "tg_ws_proxy",
+      "tag": "tg-ws-proxy",
+      "priority": 40,
+      "disabled": true,
+      "status": "NOT_CONFIGURED",
+      "socks5": "127.0.0.1:1180",
+      "dns_mode": "socks_remote"
+    },
+    {
+      "type": "drop",
+      "tag": "drop",
+      "priority": 1000,
+      "requires_adapter": true,
+      "adapter_mode": "drop",
+      "mark": "0x7f",
+      "forbid_proxy": true
+    }
+  ],
+  "services": {
+    "openai": {
+      "category": "GEO_LOCKED",
+      "domains": [
+        "chatgpt.com",
+        "openai.com",
+        "auth.openai.com",
+        "api.openai.com",
+        "oaistatic.com",
+        "oaiusercontent.com"
+      ],
+      "allowed_paths": ["smart_dns", "vless", "drop"],
+      "forbidden_paths": ["direct", "zapret"],
+      "require_non_ru_egress": true,
+      "probe_urls": [
+        {
+          "name": "web",
+          "url": "https://chatgpt.com/",
+          "required": true,
+          "expected_codes": [200],
+          "body_mode": "required",
+          "success_markers": [],
+          "regional_block_markers": [
+            "not available in your country",
+            "not available in your region",
+            "unsupported country"
+          ],
+          "block_markers": []
+        },
+        {
+          "name": "api-auth-shape",
+          "url": "https://api.openai.com/v1/models",
+          "required": true,
+          "expected_codes": [401],
+          "body_mode": "required",
+          "success_markers": [],
+          "regional_block_markers": [
+            "unsupported country",
+            "not available in your country"
+          ],
+          "block_markers": []
+        }
+      ]
+    },
+    "claude": {
+      "category": "GEO_LOCKED",
+      "domains": [
+        "claude.ai",
+        "anthropic.com",
+        "api.anthropic.com"
+      ],
+      "allowed_paths": ["smart_dns", "vless", "drop"],
+      "forbidden_paths": ["direct", "zapret"],
+      "require_non_ru_egress": true,
+      "probe_urls": [
+        {
+          "name": "web",
+          "url": "https://claude.ai/",
+          "required": true,
+          "expected_codes": [200, 403],
+          "body_mode": "optional",
+          "success_markers": [],
+          "regional_block_markers": ["not available in your region", "unsupported country"],
+          "block_markers": []
+        }
+      ]
+    },
+    "gemini": {
+      "category": "GEO_LOCKED",
+      "domains": [
+        "gemini.google.com",
+        "aistudio.google.com",
+        "generativelanguage.googleapis.com"
+      ],
+      "allowed_paths": ["smart_dns", "vless", "drop"],
+      "forbidden_paths": ["direct", "zapret"],
+      "require_non_ru_egress": true,
+      "probe_urls": [
+        {
+          "name": "web",
+          "url": "https://gemini.google.com/",
+          "required": true,
+          "expected_codes": [200, 302, 403],
+          "body_mode": "optional",
+          "success_markers": [],
+          "regional_block_markers": ["not available in your country", "not available in your region"],
+          "block_markers": []
+        }
+      ]
+    },
+    "youtube": {
+      "category": "TSPU_RESTRICTED",
+      "domains": [
+        "youtube.com",
+        "youtu.be",
+        "googlevideo.com",
+        "ytimg.com",
+        "youtubei.googleapis.com",
+        "youtube.googleapis.com"
+      ],
+      "allowed_paths": ["zapret", "smart_dns", "vless", "drop"],
+      "forbidden_paths": [],
+      "require_non_ru_egress": false,
+      "probe_urls": [
+        {
+          "name": "web",
+          "url": "https://www.youtube.com/",
+          "required": true,
+          "expected_codes": [200],
+          "body_mode": "required",
+          "success_markers": ["YouTube"],
+          "regional_block_markers": [],
+          "block_markers": ["access to the requested resource is restricted", "blocked by"]
+        },
+        {
+          "name": "generate-204",
+          "url": "https://www.youtube.com/generate_204",
+          "required": true,
+          "expected_codes": [204],
+          "body_mode": "empty",
+          "success_markers": [],
+          "regional_block_markers": [],
+          "block_markers": []
+        },
+        {
+          "name": "api",
+          "url": "https://youtubei.googleapis.com/generate_204",
+          "required": true,
+          "expected_codes": [204],
+          "body_mode": "empty",
+          "success_markers": [],
+          "regional_block_markers": [],
+          "block_markers": []
+        }
+      ]
+    },
+    "telegram": {
+      "category": "TELEGRAM",
+      "domains": [
+        "telegram.org",
+        "t.me",
+        "api.telegram.org",
+        "web.telegram.org"
+      ],
+      "allowed_paths": ["tg_ws_proxy", "vless", "drop"],
+      "forbidden_paths": ["direct"],
+      "require_non_ru_egress": false,
+      "probe_urls": [
+        {
+          "name": "bot-api",
+          "url": "https://api.telegram.org/",
+          "required": true,
+          "expected_codes": [200, 401, 404],
+          "body_mode": "optional",
+          "success_markers": [],
+          "regional_block_markers": [],
+          "block_markers": ["blocked by", "access to the requested resource is restricted"]
+        },
+        {
+          "name": "web",
+          "url": "https://web.telegram.org/",
+          "required": false,
+          "expected_codes": [200],
+          "body_mode": "required",
+          "success_markers": [],
+          "regional_block_markers": [],
+          "block_markers": []
+        }
+      ]
+    },
+    "gosuslugi": {
+      "category": "DIRECT_ONLY",
+      "domains": [
+        "gosuslugi.ru",
+        "esia.gosuslugi.ru"
+      ],
+      "allowed_paths": ["direct"],
+      "forbidden_paths": ["vless", "smart_dns", "zapret", "tg_ws_proxy"],
+      "require_non_ru_egress": false,
+      "probe_urls": [
+        {
+          "name": "web",
+          "url": "https://www.gosuslugi.ru/",
+          "required": true,
+          "expected_codes": [200, 302, 403],
+          "body_mode": "optional",
+          "success_markers": [],
+          "regional_block_markers": [],
+          "block_markers": []
+        }
+      ]
+    },
+    "github": {
+      "category": "DIRECT_PREFERRED",
+      "domains": [
+        "github.com",
+        "githubusercontent.com",
+        "githubassets.com"
+      ],
+      "allowed_paths": ["direct", "zapret", "smart_dns", "vless"],
+      "forbidden_paths": [],
+      "require_non_ru_egress": false,
+      "probe_urls": [
+        {
+          "name": "web",
+          "url": "https://github.com/",
+          "required": true,
+          "expected_codes": [200],
+          "body_mode": "required",
+          "success_markers": ["GitHub"],
+          "regional_block_markers": [],
+          "block_markers": []
+        }
+      ]
+    }
+  },
+  "tspu_sources": [
+    {
+      "name": "refilter-domains",
+      "type": "domains",
+      "url": "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/domains_all.lst",
+      "min_entries": 100,
+      "max_drop_ratio": 0.8
+    },
+    {
+      "name": "allow-domains-raw",
+      "type": "domains",
+      "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-raw.lst",
+      "min_entries": 100,
+      "max_drop_ratio": 0.8
+    }
+  ],
+  "overrides": [],
+  "notifications": {
+    "telegram_secret_file": "/etc/router-policy/secrets/telegram.env",
+    "https_webhook_secret_file": "/etc/router-policy/secrets/webhook.env",
+    "dedupe_seconds": 3600
+  }
+}

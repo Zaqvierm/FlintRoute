@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "defaults": {
+    "unknown_domain_first_path": "direct",
+    "unknown_domain_background_check": true,
+    "route_hold_seconds": 600,
+    "fail_after_consecutive_errors": 3,
+    "recover_after_consecutive_successes": 5,
+    "health_check_interval_seconds": 300,
+    "subscription_update_interval_seconds": 21600,
+    "tspu_list_update_interval_seconds": 21600,
+    "max_subscription_bytes": 2097152,
+    "max_probe_seconds": 15
+  },
+  "paths": {
+    "direct": {
+      "type": "wan",
+      "enabled": true
+    },
+    "zapret": {
+      "type": "anti_dpi",
+      "enabled": true
+    },
+    "smart_dns": {
+      "type": "resolver",
+      "enabled": true,
+      "name": "Xbox DNS"
+    },
+    "tg_ws_proxy": {
+      "type": "local_proxy",
+      "enabled": true
+    },
+    "vless": {
+      "type": "xray",
+      "enabled": true
+    },
+    "drop": {
+      "type": "firewall_drop",
+      "enabled": true
+    }
+  },
+  "manual_overrides": {
+    "blocked_domains": [
+      "blocked-placeholder.example"
+    ],
+    "direct_only_domains": [
+      "bank-placeholder.example"
+    ],
+    "geo_locked_domains": [
+      "ai-placeholder.example"
+    ]
+  }
+}
+

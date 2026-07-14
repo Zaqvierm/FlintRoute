@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "router-policy configuration",
+  "type": "object",
+  "required": ["version", "policy", "routes", "services"],
+  "properties": {
+    "version": { "type": "integer", "minimum": 2 },
+    "storage": {
+      "type": "object",
+      "properties": {
+        "max_auto_domains": { "type": "integer", "minimum": 0, "maximum": 100000 }
+      }
+    },
+    "xray": {
+      "type": "object",
+      "properties": {
+        "init_script": { "type": "string" },
+        "activation_mode": { "type": "string", "enum": ["candidate_only", "managed"] },
+        "probe_dns_resolver": { "type": "string", "pattern": "^[^\\s]+:53$" },
+        "dns_proxy_base_port": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+        "transparent_port": { "type": "integer", "minimum": 1024, "maximum": 65535 }
+      }
+    },
+    "zapret": {
+      "type": "object",
+      "properties": {
+        "binary": { "type": "string" },
+        "init_script": { "type": "string" },
+        "active_config": { "type": "string" },
+        "activation_mode": { "type": "string", "enum": ["managed"] },
+        "strategy": { "type": "string", "enum": ["tls-fake-ttl3-v1"] },
+        "queue_num": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "openwrt": {
+      "type": "object",
+      "properties": {
+        "xray_tproxy_mark": { "type": "string", "pattern": "^0x[0-9a-fA-F]{1,8}$" },
+        "xray_bypass_mark": { "type": "string", "pattern": "^0x[0-9a-fA-F]{1,8}$" },
+        "flow_offloading_policy": { "type": "string", "enum": ["preserve", "disable"] }
+      }
+    },
+    "overrides": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "scope"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$" },
+          "scope": { "type": "string", "enum": ["exact_domain", "device_domain", "device_service", "service", "category"] },
+          "device_mac": { "type": "string" },
+          "domain": { "type": "string" },
+          "service": { "type": "string" },
+          "category": { "type": "string" },
+          "route_type": { "type": "string", "enum": ["direct", "zapret", "smart_dns", "tg_ws_proxy", "vless", "drop"] },
+          "route_tag": { "type": "string" }
+        }
+      }
+    },
+    "routes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["type", "tag"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["direct", "zapret", "smart_dns", "tg_ws_proxy", "vless", "drop"]
+          },
+          "tag": { "type": "string", "minLength": 1 },
+          "priority": { "type": "integer" },
+          "disabled": { "type": "boolean" },
+          "status": { "type": "string", "enum": ["NOT_CONFIGURED", "CONFIGURED", "ACTIVE", "DEGRADED", "SELECTED", "STANDBY", "QUARANTINED", "UNSUPPORTED"] },
+          "dns_server": { "type": "string" },
+          "connect_to_resolved_ip": { "type": "boolean" },
+          "socks5": { "type": "string" },
+          "http_proxy": { "type": "string" },
+          "dns_mode": { "type": "string" },
+          "requires_adapter": { "type": "boolean" },
+          "adapter_mode": { "type": "string" },
+          "external_ip_probe": { "type": "boolean" },
+          "mark": { "type": "string" }
+        }
+      }
+    },
+    "services": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["category", "domains", "allowed_paths", "probe_urls"],
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": ["GEO_LOCKED", "TSPU_RESTRICTED", "TELEGRAM", "DIRECT_ONLY", "DIRECT_PREFERRED", "BLOCKED"]
+          },
+          "domains": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string" }
+          },
+          "allowed_paths": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string" }
+          },
+          "forbidden_paths": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "probe_urls": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["name", "url", "required", "expected_codes", "body_mode"],
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "url": { "type": "string", "pattern": "^https?://" },
+                "required": { "type": "boolean" },
+                "expected_codes": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": { "type": "integer", "minimum": 100, "maximum": 599 }
+                },
+                "body_mode": {
+                  "type": "string",
+                  "enum": ["required", "optional", "empty", "ignored"]
+                },
+                "success_markers": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "regional_block_markers": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "block_markers": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
