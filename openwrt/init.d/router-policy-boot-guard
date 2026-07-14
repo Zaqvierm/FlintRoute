@@ -1,0 +1,13 @@
+#!/bin/sh /etc/rc.common
+# shellcheck disable=SC2034
+
+START=18
+STOP=8
+
+start() {
+  /usr/lib/router-policy/openwrt/adapter.sh boot-guard /etc/router-policy/config/default.json
+}
+
+stop() {
+  :
+}

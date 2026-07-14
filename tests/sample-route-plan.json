@@ -1,0 +1,12 @@
+{
+  "domain": "chatgpt.com",
+  "service": "openai",
+  "selected": {
+    "route": "vpnsub-frankfurt-3",
+    "route_type": "vless",
+    "status": "OK",
+    "reason": "https_probe_ok"
+  },
+  "dry_run": true
+}
+

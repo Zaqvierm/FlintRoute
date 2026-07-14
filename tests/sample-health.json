@@ -1,0 +1,107 @@
+{
+  "updated_at": "2026-07-11T00:00:00Z",
+  "services": {
+    "openai": {
+      "paths": {
+        "direct": {
+          "state": "FORBIDDEN",
+          "reason": "geo_locked_no_ru_wan"
+        },
+        "smart_dns": {
+          "state": "FAIL",
+          "reason": "regional_restriction",
+          "latency_ms": 430,
+          "egress_country": "RU"
+        },
+        "vless": {
+          "state": "OK",
+          "reason": "https_probe_ok",
+          "latency_ms": 720,
+          "egress_country": "DE",
+          "server_tag": "vpnsub-frankfurt-1"
+        }
+      }
+    },
+    "youtube": {
+      "paths": {
+        "direct": {
+          "state": "FAIL",
+          "reason": "tspu_reset",
+          "latency_ms": null,
+          "egress_country": "RU"
+        },
+        "zapret": {
+          "state": "DEGRADED",
+          "reason": "main_ok_cdn_partial",
+          "latency_ms": 180,
+          "egress_country": "RU"
+        },
+        "smart_dns": {
+          "state": "FAIL",
+          "reason": "cdn_probe_failed",
+          "latency_ms": 210,
+          "egress_country": "RU"
+        },
+        "vless": {
+          "state": "OK",
+          "reason": "cdn_and_api_ok",
+          "latency_ms": 260,
+          "egress_country": "NL",
+          "server_tag": "vpnsub-netherlands-1"
+        }
+      }
+    },
+    "telegram": {
+      "paths": {
+        "tg_ws_proxy": {
+          "state": "FAIL",
+          "reason": "media_probe_failed",
+          "latency_ms": null
+        },
+        "vless": {
+          "state": "OK",
+          "reason": "bot_api_and_media_ok",
+          "latency_ms": 310,
+          "egress_country": "NL",
+          "server_tag": "vpnsub-netherlands-1"
+        }
+      }
+    },
+    "gosuslugi": {
+      "paths": {
+        "direct": {
+          "state": "OK",
+          "reason": "direct_https_ok",
+          "latency_ms": 90,
+          "egress_country": "RU"
+        },
+        "vless": {
+          "state": "FORBIDDEN",
+          "reason": "direct_only"
+        }
+      }
+    },
+    "github": {
+      "paths": {
+        "direct": {
+          "state": "OK",
+          "reason": "direct_https_ok",
+          "latency_ms": 150,
+          "egress_country": "RU"
+        },
+        "zapret": {
+          "state": "UNKNOWN",
+          "reason": "not_needed"
+        },
+        "vless": {
+          "state": "OK",
+          "reason": "fallback_ok",
+          "latency_ms": 420,
+          "egress_country": "DE",
+          "server_tag": "vpnsub-frankfurt-1"
+        }
+      }
+    }
+  }
+}
+

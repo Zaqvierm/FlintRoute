@@ -1,0 +1,4 @@
+#!/bin/sh
+[ "$ACTION" = "ifup" ] || [ "$ACTION" = "ifupdate" ] || exit 0
+[ "$INTERFACE" = "wan" ] || [ "$INTERFACE" = "wan6" ] || exit 0
+/usr/lib/router-policy/openwrt/adapter.sh reconcile /etc/router-policy/config/default.json >/tmp/router-policy/hotplug-iface.log 2>&1 || true

@@ -1,0 +1,3 @@
+#!/bin/sh
+[ "$ACTION" = "reload" ] || [ "$ACTION" = "restart" ] || exit 0
+/usr/lib/router-policy/openwrt/adapter.sh reconcile /etc/router-policy/config/default.json >/tmp/router-policy/hotplug-firewall.log 2>&1 || true
