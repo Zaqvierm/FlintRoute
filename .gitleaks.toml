@@ -1,0 +1,9 @@
+[allowlist]
+description = "Test fixtures with known placeholder values (not real secrets)"
+paths = [
+  "tests/adapter-rollback.sh",
+  "internal/api/server_test.go"
+]
+# Only allowlist the generic-api-key rule for these test paths.
+# The placeholder token 00112233... and test password "AnythingLongEnough123"
+# are obvious fixtures, not real credentials.
