@@ -1,7 +1,7 @@
 # Контракт транзакции адаптера
 
-> Соответствует `internal/adapter/adapter.go`, `internal/api/recovery.go`,
-> `internal/adapter/openwrt.go` на commit `4634515`.
+> Основные реализации: `internal/adapter/adapter.go`,
+> `internal/api/recovery.go`, `internal/adapter/openwrt.go`.
 
 Go control plane владеет durable state machine. Продакшн-изменения сети — только
 через инжектируемый `adapter.Interface`.
@@ -151,7 +151,7 @@ Rollback timer — transaction-bound и revision-bound, PID + process start time
 `meta/recovery_status`. Ни одна частичная ревизия не активируется. Boot guard:
 `openwrt/init.d/router-policy-boot-guard`.
 
-## Честное ограничение
+## Неподтверждённая аппаратная часть
 
 P0/P0.5 flow локально integration-tested с fake production adapter и shell
 fixtures. На Flint 2 доказаны и committed: P1 (Direct + Drop) и P3 (Zapret

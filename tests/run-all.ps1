@@ -115,24 +115,24 @@ if (($candidates.candidates | Where-Object { $_.type -eq "direct" -or $_.type -e
   throw "GEO_LOCKED candidates contain direct/zapret"
 }
 
-Write-Host "== vpnsub fixtures =="
-.\dist\router-policy.exe vpnsub-normalize tests\sample-subscription-array.json | ConvertFrom-Json | Out-Null
+Write-Host "== VPN subscription fixtures =="
+.\dist\router-policy.exe subscription-normalize tests\sample-subscription-array.json | ConvertFrom-Json | Out-Null
 if ($LASTEXITCODE -ne 0) {
-  throw "vpnsub-normalize fixture failed"
+  throw "subscription-normalize fixture failed"
 }
-.\dist\router-policy.exe vpnsub-routes tests\sample-subscription-array.json | ConvertFrom-Json | Out-Null
+.\dist\router-policy.exe subscription-routes tests\sample-subscription-array.json | ConvertFrom-Json | Out-Null
 if ($LASTEXITCODE -ne 0) {
-  throw "vpnsub-routes fixture failed"
+  throw "subscription-routes fixture failed"
 }
 $xrayOut = Join-Path $env:TEMP "router-policy-xray-test.json"
-$xraySummary = .\dist\router-policy.exe vpnsub-xray --out $xrayOut tests\sample-subscription-array.json | ConvertFrom-Json
+$xraySummary = .\dist\router-policy.exe subscription-xray --out $xrayOut tests\sample-subscription-array.json | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) {
-  throw "vpnsub-xray fixture failed"
+  throw "subscription-xray fixture failed"
 }
 if (!$xraySummary.secrets_printed -and (Test-Path $xrayOut)) {
   Remove-Item $xrayOut -Force
 } else {
-  throw "vpnsub-xray did not create a safe summary/output"
+  throw "subscription-xray did not create a safe summary/output"
 }
 
 Write-Host "== tspu fixture =="
@@ -163,7 +163,7 @@ $scanFiles = foreach ($scanRoot in $scanRoots) {
 }
 $secretHits = $scanFiles |
   Where-Object { $_.FullName -notmatch '\\node_modules\\|\\.tools\\|\\.git\\|\\dist\\|tests\\run-all\.(ps1|sh)$' } |
-  Select-String -Pattern 'vless://|VLESS_URI_MARKER|TELEGRAM_BOT_TOKEN=[A-Za-z0-9]|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' |
+  Select-String -Pattern 'vless://|TELEGRAM_BOT_TOKEN=[A-Za-z0-9]|-----BEGIN (OPENSSH |RSA |EC )?PRIVATE KEY-----|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' |
   Where-Object { $_.Line -notmatch 'UUID_PLACEHOLDER|11111111-1111-4111-8111-111111111111|22222222-2222-4222-8222-222222222222|33333333-3333-4333-8333-333333333333' }
 if ($secretHits) {
   $secretHits | Format-Table -AutoSize | Out-String | Write-Host

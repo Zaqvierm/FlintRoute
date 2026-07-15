@@ -23,9 +23,9 @@ else
 fi
 ./dist/router-policy validate-config >/tmp/router-policy-validate.json
 ./dist/router-policy candidates chatgpt.com openai >/tmp/router-policy-candidates.json
-./dist/router-policy vpnsub-normalize tests/sample-subscription-array.json >/tmp/router-policy-vpnsub-summary.json
-./dist/router-policy vpnsub-routes tests/sample-subscription-array.json >/tmp/router-policy-vpnsub-routes.json
-./dist/router-policy vpnsub-xray --out /tmp/router-policy-xray-test.json tests/sample-subscription-array.json >/tmp/router-policy-xray-summary.json
+./dist/router-policy subscription-normalize tests/sample-subscription-array.json >/tmp/router-policy-subscription-summary.json
+./dist/router-policy subscription-routes tests/sample-subscription-array.json >/tmp/router-policy-subscription-routes.json
+./dist/router-policy subscription-xray --out /tmp/router-policy-xray-test.json tests/sample-subscription-array.json >/tmp/router-policy-xray-summary.json
 rm -f /tmp/router-policy-xray-test.json
 cat > /tmp/router-policy-tspu-cache.json <<'JSON'
 {
@@ -47,7 +47,7 @@ JSON
 rm -f /tmp/router-policy-tspu-cache.json
 
 if find README.md docs config scripts internal cmd openwrt tests ui package.json package-lock.json vite.config.ts tsconfig.json -type f ! -path 'tests/run-all.sh' ! -path 'tests/run-all.ps1' ! -path './tests/run-all.sh' ! -path './tests/run-all.ps1' ! -path './node_modules/*' -print0 |
-  xargs -0 grep -E 'vless://|VLESS_URI_MARKER|TELEGRAM_BOT_TOKEN=[A-Za-z0-9]|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' |
+  xargs -0 grep -E 'vless://|TELEGRAM_BOT_TOKEN=[A-Za-z0-9]|-----BEGIN (OPENSSH |RSA |EC )?PRIVATE KEY-----|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' |
   grep -Ev 'UUID_PLACEHOLDER|11111111-1111-4111-8111-111111111111|22222222-2222-4222-8222-222222222222|33333333-3333-4333-8333-333333333333'; then
   echo "secret-like values found" >&2
   exit 1

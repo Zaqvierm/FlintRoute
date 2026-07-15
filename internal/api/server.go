@@ -21,11 +21,11 @@ import (
 	"router-policy/internal/auth"
 	"router-policy/internal/config"
 	"router-policy/internal/health"
-	"router-policy/internal/vpnsub"
 	"router-policy/internal/platform"
 	"router-policy/internal/probe"
 	"router-policy/internal/security"
 	"router-policy/internal/state"
+	"router-policy/internal/vpnsub"
 	"router-policy/internal/web"
 )
 
@@ -482,7 +482,7 @@ func (s *Server) handleRouteHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 func (s *Server) handleProxies(w http.ResponseWriter, r *http.Request) {
-	writeData(w, r, map[string]any{"xray": "configured", "vpnsub": "secret-masked", "vless_routes": countRoutes(s.currentConfig(), "vless")})
+	writeData(w, r, map[string]any{"xray": "configured", "subscription": "secret-masked", "vless_routes": countRoutes(s.currentConfig(), "vless")})
 }
 func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 	writeData(w, r, filterRoutes(s.currentConfig(), "smart_dns"))

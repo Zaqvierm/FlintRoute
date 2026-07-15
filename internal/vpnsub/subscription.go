@@ -41,7 +41,7 @@ func (s *SubscriptionService) Prepare(ctx context.Context, cfg *config.Config) (
 	}
 	checker := checkerFactory(cfg, probeService)
 	if checker == nil {
-		return PreparedBundle{}, errors.New("VPN outbound checker is not configured")
+		return PreparedBundle{}, errors.New("VPN subscription outbound checker is not configured")
 	}
 
 	downloadRoot := filepath.Join(cfg.Storage.StateDir, "xray", "downloads")

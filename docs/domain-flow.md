@@ -1,7 +1,7 @@
 # Поток домена и трафика
 
-> Соответствует `internal/probe`, `internal/domaincache`, `internal/artifact`,
-> `internal/policy` на commit `4634515`.
+> Основные реализации: `internal/probe`, `internal/domaincache`,
+> `internal/artifact`, `internal/policy`.
 
 ## Новый DNS-запрос
 

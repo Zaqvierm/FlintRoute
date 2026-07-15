@@ -12,8 +12,8 @@
 probe_route(domain, service, route)
 ```
 
-Планировщик выбирает маршрут по доказательствам, а не по догадкам. Проверка
-делится на четыре независимых уровня:
+Перед выбором маршрута FlintRoute проверяет не только доступность сайта, но и
+то, каким путём реально ушёл трафик. Результат состоит из четырёх частей:
 
 1. **DNS resolution** — resolver, протокол, resolved IP, safe/unsafe ответ.
 2. **Классификация** — HTTP status, content markers, regional block, TSPU.
@@ -37,30 +37,35 @@ probe_route(domain, service, route)
 
 ## Статус
 
-Alpha. Локально всё собирается и проходит тесты. На Flint 2 доказаны и
-committed: P1 (Direct + fail-closed Drop, `github.com`) и P3 (Zapret
-`discord.com` с NFQUEUE proof). Post-reboot recovery реализован и локально
-тестирован; физический reboot — часть P13. Полная матрица Smart DNS/VLESS
-activation, reboot/crash, multi-client и 72h soak не закрыта. См.
-[docs/flint2-hardware-report.md](docs/flint2-hardware-report.md).
+FlintRoute пока находится в Alpha. Текущая сборка подходит для разработки и
+контролируемых испытаний на Flint 2, но ещё не для установки «и забыл».
 
-| Фаза | Описание | Готовность |
-|------|----------|-----------|
-| P0 | Transaction state machine, bbolt, adapter | 100% |
-| P0.5 | Candidate-bound артефакты, shell adapter | 100% |
-| P1 | Route proof engine, Smart DNS, VPN/Xray, VLESS health, GeoIP | 100% |
-| P2 | TSPU cache v2, eTLD+1, domain profiling | 75% |
-| P3 | nft/dnsmasq/Xray/Zapret/IP-plan, managed procd lifecycle, flow-offload, DNS proxy; Zapret hardware proof | 85% |
-| P4 | Telegram notifications, tg-ws-proxy | 0% |
-| P5 | Production OpenWrt provider, API | 85% |
-| P6 | Post-reboot recovery (`Reconcile`), boot guard | 55% (код+тесты; физ reboot = P13) |
-| P7 | Auth, security audit | 60% |
-| P8 | Web UI (Aegis Console) | 15% |
-| P9 | Network access (loopback, LAN HTTPS) | 40% |
-| P10 | Build, installer, packaging | 30% |
-| P11 | Test suites | 85% |
-| P12 | Adaptive Zapret strategy orchestration ([design](docs/adaptive-zapret-strategy.md)) | 10% |
-| P13 | Full Flint 2 hardware validation ([matrix](docs/flint2-hardware-validation.md)) | 35% |
+### Работает и проверено
+
+- локальная сборка, тесты, race-проверка и выпуск ARM64-бинарника;
+- транзакции конфигурации с commit/rollback и fail-closed поведением;
+- Direct и Drop на GL-MT6000;
+- Zapret для `discord.com` с подтверждённым NFQUEUE-маршрутом;
+- локальные API, авторизация, журнал изменений и встроенная консоль.
+
+### Реализовано, но требует проверки на железе
+
+- восстановление committed-конфигурации после перезагрузки;
+- постоянная активация VLESS-маршрутов из VPN-подписки;
+- Smart DNS, IPv6 и защита от рекурсивной маршрутизации VPN endpoint;
+- установка, обновление, откат и удаление на чистом OpenWrt;
+- работа под нагрузкой с несколькими клиентами.
+
+### Запланировано
+
+- автоматический выбор профиля Zapret для отдельного сервиса и протокола;
+- полная матрица Direct/Drop/Zapret/Smart DNS/VLESS на Flint 2;
+- reboot/crash fault injection и длительный soak-test;
+- безопасный доступ к панели из LAN.
+
+Точные фазы, проценты и критерии приёмки находятся в
+[`docs/status-matrix.md`](docs/status-matrix.md). Аппаратные результаты — в
+[`docs/flint2-hardware-report.md`](docs/flint2-hardware-report.md).
 
 ## Сборка
 
@@ -120,8 +125,8 @@ router-policy probe-route --route direct github.com github
 # transaction-bound evidence without trying to persist probe history:
 router-policy probe-route --no-persist --route direct github.com github
 router-policy check-domain github.com github
-# Сгенерировать Xray-конфиг из подписки VPN-провайдера (историческое имя vpnsub-normalize):
-router-policy vpnsub-normalize subscription.json
+# Нормализовать VPN-подписку перед генерацией Xray-конфига:
+router-policy subscription-normalize subscription.json
 router-policy tspu-update --out tspu-cache.json
 router-policy security audit
 ```

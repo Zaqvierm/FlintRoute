@@ -65,7 +65,7 @@ func TestGenerateXrayConfigFile(t *testing.T) {
 	subscription := filepath.Join(tmp, "subscription.json")
 	output := filepath.Join(tmp, "xray.json")
 	data := []byte(`[
-	  {"outbounds":[{"tag":"vpnsub-frankfurt-1","protocol":"vless","settings":{"vnext":[{"address":"example.com","port":443,"users":[{"id":"11111111-1111-4111-8111-111111111111","encryption":"none","flow":"xtls-rprx-vision"}]}]},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"serverName":"example.com"}}}]}
+	  {"outbounds":[{"tag":"vpn-frankfurt-1","protocol":"vless","settings":{"vnext":[{"address":"example.com","port":443,"users":[{"id":"11111111-1111-4111-8111-111111111111","encryption":"none","flow":"xtls-rprx-vision"}]}]},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"serverName":"example.com"}}}]}
 	]`)
 	if err := os.WriteFile(subscription, data, 0o600); err != nil {
 		t.Fatal(err)
@@ -91,7 +91,7 @@ func TestGenerateXrayConfigFile(t *testing.T) {
 	if summary.SHA256 != "sha256:"+sha256Hex(raw) {
 		t.Fatalf("summary hash does not bind exact output bytes: summary=%s file=sha256:%s", summary.SHA256, sha256Hex(raw))
 	}
-	if !strings.Contains(string(raw), `"port": 12000`) || !strings.Contains(string(raw), `"outboundTag": "vpnsub-frankfurt-1"`) {
+	if !strings.Contains(string(raw), `"port": 12000`) || !strings.Contains(string(raw), `"outboundTag": "vpn-frankfurt-1"`) {
 		t.Fatalf("generated config missing inbound/routing: %s", raw)
 	}
 }

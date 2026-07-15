@@ -1,7 +1,7 @@
 {
   "outbounds": [
     {
-      "tag": "vpnsub-frankfurt-1",
+      "tag": "vpn-frankfurt-1",
       "remarks": "Frankfurt PLACEHOLDER",
       "protocol": "vless",
       "settings": {

@@ -1,6 +1,6 @@
 # Web UI (Aegis Console)
 
-> Соответствует `ui/src/main.tsx`, `internal/web` на commit `4634515`.
+> Основные реализации: `ui/src/main.tsx`, `internal/web`.
 
 ## Стек
 

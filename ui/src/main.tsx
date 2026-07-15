@@ -507,7 +507,7 @@ function Routes({ routes }: { routes: any[] }) {
 
 function Vless({ routes }: { routes: any[] }) {
   const vless = routes.filter((r) => r.type === 'vless');
-  return <Grid>{(vless.length ? vless : [{ tag: 'VPN pending', type: 'vless', status: 'generated after subscription' }]).map((r) => <Card title={r.tag}><RouteBadge type="vless" /><span>{r.status ?? r.socks5 ?? 'pending'}</span></Card>)}</Grid>;
+  return <Grid>{(vless.length ? vless : [{ tag: 'VPN subscription pending', type: 'vless', status: 'generated after subscription' }]).map((r) => <Card title={r.tag}><RouteBadge type="vless" /><span>{r.status ?? r.socks5 ?? 'pending'}</span></Card>)}</Grid>;
 }
 
 function RouteType({ title, type, routes }: { title: string; type: string; routes: any[] }) {
@@ -539,7 +539,7 @@ function LoginScreen() {
 }
 
 function SetupScreen() {
-  const steps = ['Администратор', 'Платформа', 'Сеть', 'VPN', 'VLESS', 'Smart DNS', 'Zapret', 'Telegram', 'IPv6', 'Политики', 'Приватность', 'Уведомления', 'Backup', 'Test apply', 'Confirm'];
+  const steps = ['Администратор', 'Платформа', 'Сеть', 'VPN-подписка', 'VLESS', 'Smart DNS', 'Zapret', 'Telegram', 'IPv6', 'Политики', 'Приватность', 'Уведомления', 'Backup', 'Test apply', 'Confirm'];
   return <Card title="Первичная настройка">{steps.map((s, i) => <div class="row"><b>{i + 1}</b><span>{s}</span><small>{i < 3 ? 'ready' : 'requires input'}</small></div>)}</Card>;
 }
 

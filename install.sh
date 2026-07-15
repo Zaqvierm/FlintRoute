@@ -112,8 +112,8 @@ install_files() {
     cp "$ROOT/config/default.json" "$ETC_DIR/config/factory-default.json"
   fi
   cp "$ROOT/config/schema.json" "$ETC_DIR/config/schema.json"
-  if [ ! -f "$ETC_DIR/secrets/vpnsub-subscription-url" ]; then
-    : > "$ETC_DIR/secrets/vpnsub-subscription-url"
+  if [ ! -f "$ETC_DIR/secrets/vpn-subscription-url" ]; then
+    : > "$ETC_DIR/secrets/vpn-subscription-url"
   fi
   chmod 700 "$ETC_DIR/secrets"
   for secret in "$ETC_DIR/secrets/"*; do

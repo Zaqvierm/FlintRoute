@@ -1,8 +1,8 @@
 # Flint 2 Hardware Report (обезличенный)
 
 > Доказанные результаты на физическом GL.iNet Flint 2 / GL-MT6000.
-> Обезличено: IP/MAC/UUID/URL подписки/токены удалены. Хеши транзакций и commit
-> SHA оставлены — это не секреты.
+> IP, MAC, UUID, subscription URLs и credentials исключены. Для воспроизводимой
+> сверки оставлены только безопасные хеши транзакционных артефактов.
 
 ## Среда
 
@@ -19,20 +19,8 @@
 | Xray | 25.1.30 (opkg) — manual live process; локальная сборка 26.3.27 (upstream commit `d2758a023cd7`) для `xray run -test` |
 | nfqws | Zapret v72.12 arm64 (внешний pinned provider, не вендорится) |
 
-## Git state на момент отчёта
-
-- Branch: `main`.
-- Key commits:
-  - `6e2a08b` — safe IP rule replacement
-  - `a256daf` — hardware dataplane (P1)
-  - `f88a99d` — P1 docs
-  - `194465d` — managed Xray and Zapret dataplane (P3.1)
-  - `77d0b83` — Zapret strategy validation on Flint
-  - `4634515` — post-reboot recovery
-
 ## P1 — Direct + fail-closed Drop (committed)
 
-- Коммиты: `a256daf` (hardware dataplane), `f88a99d` (closure docs).
 - Scope: только `github.com`, маршруты Direct + fail-closed Drop.
 - Доказано на железе:
   - Direct proof = OK: nft mark/rule/table, conntrack mark, WAN egress, content.
@@ -61,9 +49,9 @@
 
 ### Zapret hardware gate — `discord.com` (committed)
 
-- Подтверждение пользователя получено перед apply.
-- Fresh sysupgrade backup скачан в ignored `.local/`; local/router SHA-256
-  совпали.
+- Перед apply пройден обязательный confirmation gate.
+- Перед активацией создан fresh sysupgrade backup; SHA-256 локальной и
+  маршрутизаторной копий совпали.
 - 2 rehearsal прогона: service/NFQUEUE/rule lifecycle откатились чисто.
 - `blockcheck.sh` (IPv4 TLS 1.2, `discord.com`, внешний watchdog) нашёл рабочую
   стратегию: `--dpi-desync=fake --dpi-desync-ttl=3 --orig-ttl=1
@@ -89,8 +77,9 @@
 
 ## P6 — Post-reboot recovery (код + локальные тесты)
 
-- Коммит `4634515`: `internal/api/recovery.go`, `adapter.Reconcile(RecoveryTarget)`,
-  `openwrt/init.d/router-policy-boot-guard`, `adapter.Status` binding checks.
+- Реализация включает `internal/api/recovery.go`,
+  `adapter.Reconcile(RecoveryTarget)`,
+  `openwrt/init.d/router-policy-boot-guard` и binding checks в `adapter.Status`.
 - `recoverCommittedDataplane` при старте: active revision → transaction →
   ChangeSet → candidate hash check → `Reconcile` → `Status` binding verify.
   Любое расхождение → `failedRecovery` с `reason_code`, persisted в
@@ -124,10 +113,10 @@
 - Multi-client, 72h soak, fault injection matrix, install/upgrade/downgrade.
 - Full route × protocol × AF матрица.
 
-## Честный итог
+## Подтверждённое состояние
 
-Direct + fail-closed Drop и Zapret (`discord.com`) — реально committed и доказаны
-на Flint 2 с bound evidence. Recovery код написан и локально тестирован, но
+Direct + fail-closed Drop и Zapret (`discord.com`) подтверждены на Flint 2 с
+bound evidence. Recovery реализован и локально протестирован, но
 reboot-safe claim требует физического reboot (P13). Проект остаётся Alpha: UI и
 локальные тесты зелёные — не доказательство production-readiness для полной
 матрицы.

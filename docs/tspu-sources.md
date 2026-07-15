@@ -1,6 +1,6 @@
 # Источники списков TSPU
 
-> Соответствуют `internal/tspu/tspu.go`, `config.TSPUSource` на commit `4634515`.
+> Основные реализации: `internal/tspu/tspu.go`, `config.TSPUSource`.
 
 ## Вывод
 
@@ -84,8 +84,7 @@ add element inet router_policy svc_<id>_v4 { 203.0.113.0/24 timeout 12h }
 
 Это пример формата, не команда для текущей машины.
 
-## Честное ограничение
+## Проверенное состояние
 
-Updater юнит-тестирован с `httptest`; против live source URLs в этом проходе не
-гонялся. Качество live-источников требует drop-ratio/history-проверок перед
-автоматическим production-использованием (P12/P13).
+Updater покрыт тестами с `httptest`. Live-source validation требует
+drop-ratio/history-проверок до автоматического production-применения (P12/P13).

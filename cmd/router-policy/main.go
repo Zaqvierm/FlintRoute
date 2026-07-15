@@ -27,13 +27,13 @@ import (
 	"router-policy/internal/domaincache"
 	"router-policy/internal/evidence"
 	"router-policy/internal/geoip"
-	"router-policy/internal/vpnsub"
 	"router-policy/internal/planner"
 	"router-policy/internal/platform"
 	"router-policy/internal/probe"
 	"router-policy/internal/security"
 	"router-policy/internal/state"
 	"router-policy/internal/tspu"
+	"router-policy/internal/vpnsub"
 )
 
 func main() {
@@ -546,17 +546,17 @@ func run(args []string) error {
 			return err
 		}
 		return printJSON(map[string]any{"stored": true})
-	case "vpnsub-normalize":
+	case "subscription-normalize":
 		if len(args) < 2 {
-			return errors.New("usage: router-policy vpnsub-normalize SUBSCRIPTION_JSON")
+			return errors.New("usage: router-policy subscription-normalize SUBSCRIPTION_JSON")
 		}
 		summary, err := vpnsub.NormalizeFile(args[1])
 		if err != nil {
 			return err
 		}
 		return printJSON(summary)
-	case "vpnsub-fetch":
-		fs := flag.NewFlagSet("vpnsub-fetch", flag.ContinueOnError)
+	case "subscription-fetch":
+		fs := flag.NewFlagSet("subscription-fetch", flag.ContinueOnError)
 		urlFile := fs.String("url-file", "", "mode-0600 file containing the HTTPS subscription URL")
 		out := fs.String("out", "", "mode-0600 subscription output")
 		maxBytes := fs.Int64("max-bytes", 4<<20, "maximum subscription bytes")
@@ -564,7 +564,7 @@ func run(args []string) error {
 			return err
 		}
 		if *urlFile == "" || *out == "" || fs.NArg() != 0 {
-			return errors.New("usage: router-policy vpnsub-fetch --url-file URL_SECRET --out SUBSCRIPTION_JSON")
+			return errors.New("usage: router-policy subscription-fetch --url-file URL_SECRET --out SUBSCRIPTION_JSON")
 		}
 		subscriptionURL, err := vpnsub.ReadSubscriptionURLFile(*urlFile)
 		if err != nil {
@@ -575,29 +575,29 @@ func run(args []string) error {
 			return err
 		}
 		return printJSON(summary)
-	case "vpnsub-routes":
-		fs := flag.NewFlagSet("vpnsub-routes", flag.ContinueOnError)
+	case "subscription-routes":
+		fs := flag.NewFlagSet("subscription-routes", flag.ContinueOnError)
 		basePort := fs.Int("base-port", 12000, "first local SOCKS port")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		if fs.NArg() < 1 {
-			return errors.New("usage: router-policy vpnsub-routes [--base-port PORT] SUBSCRIPTION_JSON")
+			return errors.New("usage: router-policy subscription-routes [--base-port PORT] SUBSCRIPTION_JSON")
 		}
 		routes, err := vpnsub.GenerateRoutesFile(fs.Arg(0), *basePort)
 		if err != nil {
 			return err
 		}
 		return printJSON(routes)
-	case "vpnsub-xray":
-		fs := flag.NewFlagSet("vpnsub-xray", flag.ContinueOnError)
+	case "subscription-xray":
+		fs := flag.NewFlagSet("subscription-xray", flag.ContinueOnError)
 		basePort := fs.Int("base-port", 12000, "first local SOCKS port")
 		out := fs.String("out", "", "output Xray config path")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		if fs.NArg() < 1 || *out == "" {
-			return errors.New("usage: router-policy vpnsub-xray [--base-port PORT] --out OUTPUT_JSON SUBSCRIPTION_JSON")
+			return errors.New("usage: router-policy subscription-xray [--base-port PORT] --out OUTPUT_JSON SUBSCRIPTION_JSON")
 		}
 		summary, err := vpnsub.GenerateXrayConfigFile(fs.Arg(0), *out, *basePort)
 		if err != nil {
@@ -679,9 +679,9 @@ func usage() {
   geoip-status
   init-db
   store-result RESULT_JSON
-  vpnsub-normalize SUBSCRIPTION_JSON
-  vpnsub-routes [--base-port PORT] SUBSCRIPTION_JSON
-  vpnsub-xray [--base-port PORT] --out OUTPUT_JSON SUBSCRIPTION_JSON
+  subscription-normalize SUBSCRIPTION_JSON
+  subscription-routes [--base-port PORT] SUBSCRIPTION_JSON
+  subscription-xray [--base-port PORT] --out OUTPUT_JSON SUBSCRIPTION_JSON
   daemon
   install-dry-run
   security audit

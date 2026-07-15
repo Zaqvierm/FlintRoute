@@ -1,7 +1,7 @@
 # Модель отказов
 
-> Соответствует `internal/health/service.go`, `internal/probe/health.go`,
-> `internal/adapter`, `internal/api/recovery.go` на commit `4634515`.
+> Основные реализации: `internal/health/service.go`,
+> `internal/probe/health.go`, `internal/adapter`, `internal/api/recovery.go`.
 
 ## Базовые правила
 

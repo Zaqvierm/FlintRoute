@@ -84,9 +84,10 @@ test-платформы. Для `RequireNonRUEgress` страна `RU` → `RU_E
 через path proof (`DropIPv4Enforced`, `DropIPv6Enforced`, `DropDNSEnforced`).
 `ApplicationStatus=DROP`, результат проходит тот же `finishWithPathProof`.
 
-## Честное ограничение по Zapret
+## Ограничение проверки Zapret
 
-Zapret как Anti-DPI — не отдельный curl proxy. `probe_route` для Zapret честен
+Zapret как Anti-DPI — не отдельный curl proxy. `probe_route` подтверждает Zapret
 только когда на роутере временно применён route namespace/mark, либо есть
 локальный проверочный path через nfqws-обработку. До железного proof Zapret
-остаётся dry-run моделью. Врать, что `curl direct` проверил Zapret, нельзя.
+остаётся dry-run моделью. Проверка direct-маршрута не считается доказательством
+работы Zapret.

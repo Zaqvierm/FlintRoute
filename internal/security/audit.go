@@ -58,7 +58,7 @@ func Audit(cfg *config.Config) AuditReport {
 		Checks:      checks,
 		OpenPorts:   openPorts,
 		Boundaries:  []string{"LAN admin browser -> API", "API -> control plane", "control plane -> OpenWrt adapter", "data plane -> nft/dnsmasq/Xray"},
-		AttackNotes: []string{"Do not expose API listener on WAN", "Do not return VPN URL/UUID/Telegram token through API", "Do not execute subscription content as commands"},
+		AttackNotes: []string{"Do not expose API listener on WAN", "Do not return subscription URL/UUID/Telegram token through API", "Do not execute subscription content as commands"},
 	}
 }
 

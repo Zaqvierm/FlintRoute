@@ -1,9 +1,8 @@
 # VPN-провайдер и Xray
 
-> Соответствует `internal/vpnsub/vpnsub.go` на commit `4634515`.
-> Бренд конкретного провайдера из документации убран намеренно. FlintRoute не
-> привязан к одному поставщику: он принимает любую совместимую Xray/VLESS
-> подписку.
+> Основная реализация: `internal/vpnsub/vpnsub.go`.
+> FlintRoute не привязан к одному поставщику и принимает любую совместимую
+> Xray/VLESS-подписку.
 
 ## Кто такой VPN-провайдер в этой системе
 
@@ -81,12 +80,8 @@ VLESS outbound получает `SUPPORTED` только если:
 `Status`, `Reason`, `SOCKS5`).
 
 ```powershell
-.\dist\router-policy.exe vpnsub-xray --out .\xray.generated.json tests\sample-subscription-array.json
+.\dist\router-policy.exe subscription-xray --out .\xray.generated.json tests\sample-subscription-array.json
 ```
-
-> CLI-имя `vpnsub-xray` — историческое имя реализации обработчика подписки
-> (`internal/vpnsub`). Семантически это «сгенерировать Xray-конфиг из подписки
-> VPN-провайдера».
 
 ## Routes (`GenerateRoutesFile`)
 
@@ -116,7 +111,7 @@ URL остаются вне bbolt/API/UI/SSE. `config.Validate` требует
 routes. Artifact generator мержит bundle в транзакционный `xray.json`; mismatch
 bundle hash/tag/SOCKS → validate fail.
 
-## Live proof (история, обезличено)
+## Проверка совместимости
 
 На реальной подписке VPN-провайдера: 31 VLESS запись → 12 unique supported, 19
 exact duplicates. Локальная сборка Xray 26.3.27 принимает 12-server bundle +
@@ -136,7 +131,7 @@ endpoints unreachable), 1 RU rejected, 1 selected (≈656 ms). Bundle hash
    outbound tag; `evidence.ValidateRouteProof` требует `SOCKS5Loopback=true` +
    bound `XrayOutboundTag == route.Tag`.
 
-## Честное ограничение
+## Ограничения текущей проверки
 
 Локальная генерация + `xray run -test` + health cycle доказаны. Persistent
 activation на Flint 2 (install `/etc/router-policy/xray/active.json`, procd

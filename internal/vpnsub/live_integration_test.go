@@ -9,11 +9,11 @@ import (
 	"router-policy/internal/config"
 )
 
-func TestLiveVPNBundle(t *testing.T) {
+func TestLiveVPNSubscriptionBundle(t *testing.T) {
 	xrayPath := os.Getenv("ROUTER_POLICY_TEST_XRAY")
 	subscriptionPath := os.Getenv("ROUTER_POLICY_TEST_SUBSCRIPTION")
 	if xrayPath == "" || subscriptionPath == "" {
-		t.Skip("set ROUTER_POLICY_TEST_XRAY and ROUTER_POLICY_TEST_SUBSCRIPTION for live VPN verification")
+		t.Skip("set ROUTER_POLICY_TEST_XRAY and ROUTER_POLICY_TEST_SUBSCRIPTION for live VPN subscription verification")
 	}
 	service := config.Service{
 		Category: "LIVE_CONTROL", Domains: []string{"www.gstatic.com"}, AllowedPaths: []string{"vless"}, RequireNonRUEgress: true,
@@ -42,10 +42,10 @@ func TestLiveVPNBundle(t *testing.T) {
 		t.Logf("tag=%s status=%s country=%s latency_ms=%d reason=%s", check.Tag, check.Status, check.ExternalCountry, check.LatencyMS, check.Reason)
 	}
 	if err != nil {
-		t.Fatalf("live VPN candidate was not safely verified: %v", err)
+		t.Fatalf("live VPN subscription candidate was not safely verified: %v", err)
 	}
 	if !result.Ready || result.SelectedTag == "" || result.BundleHash == "" {
-		t.Fatalf("live VPN result is incomplete: ready=%t selected=%q hash_present=%t", result.Ready, result.SelectedTag, result.BundleHash != "")
+		t.Fatalf("live VPN subscription result is incomplete: ready=%t selected=%q hash_present=%t", result.Ready, result.SelectedTag, result.BundleHash != "")
 	}
 	t.Logf("ready=true unique_servers=%d selected=%s bundle_hash=%s", len(result.Routes), result.SelectedTag, result.BundleHash)
 }

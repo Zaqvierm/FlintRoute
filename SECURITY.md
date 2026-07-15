@@ -29,6 +29,11 @@ The API must never return:
 
 Secrets are displayed as masked values only.
 
+Secret-bearing scripts and diagnostics must not use shell tracing (`set -x`),
+dump complete Xray configurations, or include raw subscription payloads in
+logs, crash bundles, API responses, or event streams. Public diagnostics must
+be sanitized before publication.
+
 ## Local Audit
 
 Run:

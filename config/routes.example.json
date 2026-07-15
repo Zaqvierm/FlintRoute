@@ -21,18 +21,17 @@
     },
     {
       "type": "vless",
-      "tag": "vpnsub-frankfurt-3",
+      "tag": "vpn-frankfurt-3",
       "socks5": "127.0.0.1:12003",
       "dns_mode": "socks_remote",
       "external_ip_probe": true
     },
     {
       "type": "vless",
-      "tag": "vpnsub-netherlands-1",
+      "tag": "vpn-netherlands-1",
       "socks5": "127.0.0.1:12004",
       "dns_mode": "socks_remote",
       "external_ip_probe": true
     }
   ]
 }
-

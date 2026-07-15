@@ -1,16 +1,15 @@
-# План реализации
+# Реализация и оставшаяся работа
 
-> Приведено в соответствие коду на commit `4634515` (ветка `main`, 2026-07-14).
-> Источник правды — граф кода (`internal/*`), а не этот документ. Если текст
-> расходится с кодом — код прав.
+> Фактическое поведение определяют реализация и тесты. Этот документ описывает
+> оставшиеся этапы и критерии их завершения.
 
-## Что это
+## Устройство
 
 FlintRoute — Go control plane + Preact/Vite UI + транзакционный OpenWrt data-plane
 адаптер. Shell остаётся только как fixed-command helper под `exec` адаптера;
 сетевой логики в shell нет.
 
-## Реализовано и доказано
+## Текущее основание
 
 ### Control plane (Go)
 
@@ -53,7 +52,7 @@ FlintRoute — Go control plane + Preact/Vite UI + транзакционный 
   nfqws `--dry-run` before apply, NFQUEUE fail-closed (no `bypass`), flow
   offloading preserve/disable.
 
-### Post-reboot recovery (P6, commit `4634515`)
+### Post-reboot recovery
 
 - `api.recoverCommittedDataplane` при старте сервера: загружает active revision
   → transaction → ChangeSet → candidate, проверяет canonical hash совпадение,
@@ -64,13 +63,13 @@ FlintRoute — Go control plane + Preact/Vite UI + транзакционный 
 - Любое расхождение → `failedRecovery` с явным `reason_code`, persisted в bbolt
   `meta/recovery_status`. Ни одна частичная ревизия не активируется.
 
-### Hardware (Flint 2 / GL-MT6000)
+### Проверено на Flint 2 / GL-MT6000
 
-- P1 (commit `a256daf`, closure `f88a99d`): Direct + fail-closed Drop доказаны на
+- Direct + fail-closed Drop доказаны на
   физическом роутере. nft counter movement, mark/rule/table, conntrack, DNS/IPv6
   leak checks, намеренный rollback с восстановлением nft/IP rules/routes/dnsmasq/
   flow offload/management path. Live Xray process hash-preserved.
-- P3 (commit `194465d`, `77d0b83`): Zapret `discord.com` — nfqws v72.12 arm64
+- Zapret `discord.com` — nfqws v72.12 arm64
   `--dry-run` + `nft -c` passed (syntax proof). Live transaction committed:
   NFQUEUE counter, HTTP 200, `path_verified=true`.
 - OpenWrt 24.10.4, firewall4/nftables queue/tproxy support подтверждены.
@@ -93,7 +92,7 @@ FlintRoute — Go control plane + Preact/Vite UI + транзакционный 
    `EvidenceSource`, `PathEvidence`. `evidence.ValidateRouteProof` проверяет
    binding к revision/candidate/manifest и per-type proof.
 
-## Что не реализовано / не доказано
+## Открытые задачи
 
 - **P12**: Adaptive Zapret. Дизайн готов (`adaptive-zapret-strategy.md`), код не
   начат. Bounded catalog, ranking, hysteresis, per-service switching.
@@ -104,7 +103,7 @@ FlintRoute — Go control plane + Preact/Vite UI + транзакционный 
 - API external LAN binding: заблокирован до TLS/firewall checks.
 - Роли кроме admin.
 
-## Порядок следующих этапов
+## Следующие этапы
 
 | Этап | Содержание | Gate |
 |---|---|---|
@@ -114,7 +113,7 @@ FlintRoute — Go control plane + Preact/Vite UI + транзакционный 
 ## Принципы
 
 - Один data-plane хозяин: FlintRoute владеет nft/dnsmasq/procd lifecycle.
-- Никаких shell fragments из HTTP/API/Telegram. Только фиксированные команды.
+- Никаких shell fragments из внешних запросов. Только фиксированные команды.
 - `path_verified=false` → маршрут не production-ready, даже если HTTP 200.
 - Доказательство связывает: intent → generated artifact → live state → traffic.
 - Recovery перед рискованными операциями. Version snapshot после этапа.

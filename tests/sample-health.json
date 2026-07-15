@@ -18,7 +18,7 @@
           "reason": "https_probe_ok",
           "latency_ms": 720,
           "egress_country": "DE",
-          "server_tag": "vpnsub-frankfurt-1"
+          "server_tag": "vpn-frankfurt-1"
         }
       }
     },
@@ -47,7 +47,7 @@
           "reason": "cdn_and_api_ok",
           "latency_ms": 260,
           "egress_country": "NL",
-          "server_tag": "vpnsub-netherlands-1"
+          "server_tag": "vpn-netherlands-1"
         }
       }
     },
@@ -63,7 +63,7 @@
           "reason": "bot_api_and_media_ok",
           "latency_ms": 310,
           "egress_country": "NL",
-          "server_tag": "vpnsub-netherlands-1"
+          "server_tag": "vpn-netherlands-1"
         }
       }
     },
@@ -98,10 +98,9 @@
           "reason": "fallback_ok",
           "latency_ms": 420,
           "egress_country": "DE",
-          "server_tag": "vpnsub-frankfurt-1"
+          "server_tag": "vpn-frankfurt-1"
         }
       }
     }
   }
 }
-

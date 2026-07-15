@@ -2,7 +2,7 @@
 set -eu
 
 DRY_RUN="${DRY_RUN:-1}"
-SECRET_FILE="${SECRET_FILE:-/etc/router-policy/secrets/vpnsub-subscription-url}"
+SECRET_FILE="${SECRET_FILE:-/etc/router-policy/secrets/vpn-subscription-url}"
 WORK_DIR="${WORK_DIR:-/tmp/router-policy/subscription}"
 MAX_BYTES="${MAX_BYTES:-2097152}"
 VALIDATOR="${VALIDATOR:-./scripts/validate-subscription.sh}"

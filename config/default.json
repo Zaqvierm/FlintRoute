@@ -52,7 +52,7 @@
     "probe_dns_resolver": "1.1.1.1:53",
     "dns_proxy_base_port": 14000,
     "transparent_port": 12345,
-    "subscription_secret_file": "/etc/router-policy/secrets/vpnsub-subscription-url"
+    "subscription_secret_file": "/etc/router-policy/secrets/vpn-subscription-url"
   },
   "zapret": {
     "binary": "/usr/bin/nfqws",

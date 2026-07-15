@@ -1,6 +1,6 @@
 # TSPU Cache And Evidence
 
-> Соответствует `internal/tspu/tspu.go` на commit `4634515`.
+> Основная реализация: `internal/tspu/tspu.go`.
 
 ## Назначение
 
@@ -135,10 +135,10 @@ domain -> service lookup -> TSPU evidence -> candidate queue -> probe_route
 `config.policy.tspu_list_update_interval_seconds`. `tspu-check` печатает
 `Match` (без raw-секретов — их в кеше нет).
 
-## Честное ограничение
+## Проверенное состояние
 
-Updater юнит-тестирован с `httptest`, но против live source URLs в этом проходе
-не гонялся. Качество live-источников требует drop-ratio/history-проверок перед
+Updater покрыт тестами с `httptest`. Качество live-источников требует
+drop-ratio/history-проверок перед
 автоматическим production-использованием. Cache v2 даёт для этого инструмент
-(`SourceReport.DropRatio`, `Fresh`, `RetainedPrevious`), но автоматическая
-включалка — за bounded policy P12/P13.
+(`SourceReport.DropRatio`, `Fresh`, `RetainedPrevious`), но автоматическое
+применение остаётся частью bounded policy P12/P13.

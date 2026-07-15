@@ -1,6 +1,6 @@
 # API And Control Plane
 
-> Соответствует `internal/api/*` на commit `4634515`.
+> Основная реализация: `internal/api/*`.
 
 ## Planes
 
