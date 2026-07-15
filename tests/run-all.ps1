@@ -34,9 +34,15 @@ Write-Host "Using Go: $go"
 
 Write-Host "== go test =="
 & $go test ./...
+if ($LASTEXITCODE -ne 0) {
+  throw "go test failed with exit code $LASTEXITCODE"
+}
 
 Write-Host "== go vet =="
 & $go vet ./...
+if ($LASTEXITCODE -ne 0) {
+  throw "go vet failed with exit code $LASTEXITCODE"
+}
 
 Write-Host "== frontend =="
 Invoke-Npm @("run", "typecheck")
@@ -44,6 +50,9 @@ Invoke-Npm @("run", "build")
 
 Write-Host "== build =="
 powershell -ExecutionPolicy Bypass -File .\scripts\build-go.ps1 | Out-Host
+if ($LASTEXITCODE -ne 0) {
+  throw "build script failed with exit code $LASTEXITCODE"
+}
 
 Write-Host "== shellcheck =="
 $shellcheck = $env:SHELLCHECK_BINARY
@@ -55,10 +64,13 @@ if (!$shellcheck) {
   $localSc = Join-Path $root ".tools\shellcheck-stable\shellcheck.exe"
   if (Test-Path $localSc) { $shellcheck = $localSc }
 }
-if (Test-Path $shellcheck) {
+if ($shellcheck -and (Test-Path -LiteralPath $shellcheck)) {
   $shellFiles = Get-ChildItem -Recurse -File -Include *.sh,router-policy,router-policy-boot-guard,router-policy-watchdog,router-policy-xray,router-policy-zapret,95-router-policy,install.sh,uninstall.sh |
     Where-Object { $_.FullName -notmatch '\\.tools\\|\\.git\\|\\.local\\|\\dist\\|\\node_modules\\' }
   & $shellcheck -x @($shellFiles.FullName)
+  if ($LASTEXITCODE -ne 0) {
+    throw "ShellCheck failed with exit code $LASTEXITCODE"
+  }
 } else {
   Write-Host "shellcheck_missing=true"
 }
@@ -72,6 +84,7 @@ if (!$gitSh) {
 if (!$gitSh) {
   $gitSh = "C:\Program Files\Git\bin\bash.exe"
 }
+$env:GO = ($go -replace '\\', '/')
 if (Test-Path $gitSh) {
   & $gitSh tests/installer-backup.sh
   if ($LASTEXITCODE -ne 0) {

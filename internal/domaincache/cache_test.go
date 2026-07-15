@@ -143,7 +143,7 @@ func TestDecisionSurvivesBboltRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 7, 13, 10, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	if _, err := manager.Save("api.example.com", testDecision(now, "vless-a", "vless")); err != nil {
 		t.Fatal(err)
 	}

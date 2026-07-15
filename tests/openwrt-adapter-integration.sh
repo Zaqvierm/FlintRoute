@@ -2,17 +2,41 @@
 set -eu
 
 ROOT=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd)
-TMP="${TMPDIR:-/tmp}/router-policy-openwrt-integration-$$"
+# Use a fresh temp directory that does not inherit a polluted TMPDIR from a previous run.
+_TMPBASE="/tmp"
+if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
+  _TMPBASE="$TMPDIR"
+fi
+TMP="$_TMPBASE/router-policy-openwrt-integration-$$"
+# Ensure Go uses a valid temp directory even if TMPDIR was polluted by a prior run.
+if command -v cygpath >/dev/null 2>&1; then
+  export GOTMPDIR="${GOTMPDIR:-$(cygpath -m /tmp)}"
+else
+  export GOTMPDIR="${GOTMPDIR:-/tmp}"
+fi
+mkdir -p "$GOTMPDIR"
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 mkdir -p "$TMP/state/diagnostics" "$TMP/runtime" "$TMP/etc" "$TMP/xray" "$TMP/bin"
 
+# Convert a POSIX path to a native Windows path when running under MSYS/Git Bash.
+# Node.js on Windows does not understand /h/LAN/... style paths.
+to_native_path() {
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 if command -v cygpath >/dev/null 2>&1; then
   TMP_NATIVE=$(cygpath -m "$TMP")
+  ROOT_NATIVE=$(cygpath -m "$ROOT")
   EXE=.exe
-  GO="${GO:-$ROOT/.tools/go1.26.5/go/bin/go.exe}"
-  ROUTER_POLICY_BIN="${ROUTER_POLICY_BIN:-$ROOT/dist/router-policy.exe}"
+  GO="${GO:-$ROOT_NATIVE/.tools/go1.26.5/go/bin/go.exe}"
+  ROUTER_POLICY_BIN="${ROUTER_POLICY_BIN:-$ROOT_NATIVE/dist/router-policy.exe}"
 else
   TMP_NATIVE="$TMP"
+  ROOT_NATIVE="$ROOT"
   EXE=
   GO="${GO:-$ROOT/.tools/go1.26.5/go/bin/go}"
   ROUTER_POLICY_BIN="${ROUTER_POLICY_BIN:-$ROOT/dist/router-policy}"
@@ -27,7 +51,14 @@ ACTIVE_ZAPRET="$TMP_NATIVE/etc/nfqws.conf"
 ROUTER_POLICY_ADAPTER_SELF="$ROOT/openwrt/adapter.sh"
 MOCK_OPENWRT_LOG="$TMP_NATIVE/openwrt-calls.log"
 
-"$GO" build -o "$TMP_NATIVE/bin/mock-openwrt$EXE" ./tests/mock-openwrt-command
+(cd "$ROOT" && "$GO" build -o "$TMP_NATIVE/bin/mock-openwrt$EXE" ./tests/mock-openwrt-command) || {
+  echo "failed to build mock-openwrt" >&2
+  exit 1
+}
+[ -f "$TMP_NATIVE/bin/mock-openwrt$EXE" ] || {
+  echo "mock-openwrt binary not found after build" >&2
+  exit 1
+}
 for command_name in nft fw4 dnsmasq dnsmasq-init xray xray-init nfqws zapret-init ip uci wget nslookup pidof; do
   cp "$TMP/bin/mock-openwrt$EXE" "$TMP/bin/$command_name$EXE"
 done
@@ -84,7 +115,7 @@ adapter() {
 }
 
 json_field() {
-  node -e 'const fs=require("fs"); const value=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.stdout.write(String(value[process.argv[2]] ?? ""));' "$1" "$2"
+  node -e 'const fs=require("fs"); const value=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.stdout.write(String(value[process.argv[2]] ?? ""));' "$(to_native_path "$1")" "$2"
 }
 
 hash_token() {
@@ -103,12 +134,16 @@ setup_transaction() {
   txdir="$STATE_DIR/transactions/$revision/$txid"
   mkdir -p "$txdir"
   cp "$ROOT/config/default.json" "$txdir/candidate.json"
-  node -e 'const fs=require("fs"); const path=process.argv[1]; const state=process.argv[2]; const runtime=process.argv[3]; const mode=process.argv[4]; const config=JSON.parse(fs.readFileSync(path, "utf8")); config.storage.state_dir=state; config.storage.runtime_dir=runtime; config.storage.database=state+"/router-policy.bbolt"; config.openwrt.flow_offloading_policy="disable"; if(mode==="zapret"){const route=config.routes.find((item)=>item.type==="zapret"); route.disabled=false; route.status="CONFIGURED"; config.services.zapret_acceptance={category:"TSPU_RESTRICTED",domains:["blocked.example"],allowed_paths:["zapret","drop"],forbidden_paths:[],require_non_ru_egress:false,probe_urls:[{name:"web",url:"https://blocked.example/",required:true,expected_codes:[200],body_mode:"optional"}]};} fs.writeFileSync(path, JSON.stringify(config, null, 2)+"\n");' "$txdir/candidate.json" "$STATE_DIR" "$RUNTIME_DIR" "$mode"
-  "$ROUTER_POLICY_BIN" internal-generate-artifacts \
+  node -e 'const fs=require("fs"); const path=process.argv[1]; const state=process.argv[2]; const runtime=process.argv[3]; const mode=process.argv[4]; const config=JSON.parse(fs.readFileSync(path, "utf8")); config.storage.state_dir=state; config.storage.runtime_dir=runtime; config.storage.database=state+"/router-policy.bbolt"; config.openwrt.flow_offloading_policy="disable"; if(mode==="zapret"){const route=config.routes.find((item)=>item.type==="zapret"); route.disabled=false; route.status="CONFIGURED"; config.services.zapret_acceptance={category:"TSPU_RESTRICTED",domains:["blocked.example"],allowed_paths:["zapret","drop"],forbidden_paths:[],require_non_ru_egress:false,probe_urls:[{name:"web",url:"https://blocked.example/",required:true,expected_codes:[200],body_mode:"optional"}]};} fs.writeFileSync(path, JSON.stringify(config, null, 2)+"\n");' "$(to_native_path "$txdir/candidate.json")" "$(to_native_path "$STATE_DIR")" "$(to_native_path "$RUNTIME_DIR")" "$mode"
+  (cd "$ROOT" && "$ROUTER_POLICY_BIN" internal-generate-artifacts \
     --candidate "$txdir/candidate.json" \
     --root "$txdir/generated" \
     --transaction "$txid" \
-    --revision "$revision" > "$txdir/generated-hashes.json"
+    --revision "$revision" > "$txdir/generated-hashes.json" 2>"$txdir/generr.txt") || {
+    echo "internal-generate-artifacts failed:" >&2
+    cat "$txdir/generr.txt" >&2
+    exit 1
+  }
   candidate_hash=$(json_field "$txdir/generated-hashes.json" candidate_hash)
   artifact_manifest_hash=$(json_field "$txdir/generated-hashes.json" artifact_manifest_hash)
   deployment_ready=$(json_field "$txdir/generated-hashes.json" deployment_ready)
@@ -162,7 +197,7 @@ adapter validate-candidate "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/de
 assert_status candidate_validated
 adapter snapshot-current "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 assert_status snapshotted
-node "$ROOT/tests/build-data-plane-evidence.mjs" "$txdir/generated/verification-plan.json" "$artifact_manifest_hash" "$txdir/data-plane-evidence.json"
+node "$(to_native_path "$ROOT/tests/build-data-plane-evidence.mjs")" "$(to_native_path "$txdir/generated/verification-plan.json")" "$artifact_manifest_hash" "$(to_native_path "$txdir/data-plane-evidence.json")"
 adapter apply-candidate "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 assert_status applied
 adapter verify-management "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
@@ -337,7 +372,7 @@ adapter prepare "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 adapter validate-candidate "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 adapter snapshot-current "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 cp "$ROUTER_POLICY_CONFIG_PATH" "$TMP/config-before-foreign-apply"
-node -e 'const fs=require("fs"); const path=process.argv[1]; const config=JSON.parse(fs.readFileSync(path, "utf8")); config.policy.max_probe_seconds += 1; fs.writeFileSync(path, JSON.stringify(config, null, 2)+"\n");' "$txdir/candidate.json"
+node -e 'const fs=require("fs"); const path=process.argv[1]; const config=JSON.parse(fs.readFileSync(path, "utf8")); config.policy.max_probe_seconds += 1; fs.writeFileSync(path, JSON.stringify(config, null, 2)+"\n");' "$(to_native_path "$txdir/candidate.json")"
 set +e
 foreign_output=$(adapter apply-candidate "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" 2>&1)
 foreign_rc=$?
