@@ -75,7 +75,25 @@
   не изменился. Zapret priority 10020 / table 101 alongside P1 Direct rules.
 - Child dataplane services намеренно **не boot-enabled** — reboot recovery это P6.
 
-## P6 — Post-reboot recovery (код + локальные тесты)
+## P3.2 — Полный headless route set (committed)
+
+- Активная транзакция: `tx_2169c2c6a0349d73`, ревизия:
+  `rev_3_3fa9fd0e4c15`.
+- Direct: `OK`, RU egress, IPv4/IPv6, Xray/Zapret bypass.
+- Zapret: `OK`, RU egress, обработанный NFQUEUE flow.
+- VLESS/Xray: `OK`, NL egress, IPv4/IPv6, loopback SOCKS binding к выбранному
+  outbound.
+- Drop: `OK`, IPv4/IPv6/DNS блокировка.
+- Итоговые флаги: DNS leak free, IPv6 leak free и geo kill switch — `true`.
+- Candidate:
+  `sha256:8097fdb95da546df2fbd77518646e6e1a0ef9f2c00f83b4d28dfcf0cbec09cab`.
+- Manifest:
+  `sha256:08c6d59e70bc5043cd12a4c3d854ce7229a7c6bdf269e28e730ebd567d2a631d`.
+
+Smart DNS не входил в этот route set: для него нужен отдельный production
+resolver, а подставлять тестовый адрес в аппаратное доказательство нельзя.
+
+## P6 — Post-reboot recovery (доказано на железе)
 
 - Реализация включает `internal/api/recovery.go`,
   `adapter.Reconcile(RecoveryTarget)`,
@@ -84,13 +102,24 @@
   ChangeSet → candidate hash check → `Reconcile` → `Status` binding verify.
   Любое расхождение → `failedRecovery` с `reason_code`, persisted в
   `meta/recovery_status`.
-- Локальные тесты зелёные: `TestRestartReconcilesCommittedDataplane`,
+- Локальные тесты зелёные: `TestRestartRetriesBusyCommittedDataplaneReconcile`,
+  `TestRestartReconcilesCommittedDataplaneAfterStateRootMigration`,
   `TestRecoveryFinalizesAdapterCommittedTransaction`,
   `TestRecoveryFailClosedBetweenStateMachineSteps`,
   `TestRestartKeepsManagementAvailableWhenCommittedReconcileFails`,
   `TestValidateRecoveryTarget`.
-- **Физический reboot Flint 2 с восстановлением committed dataplane — НЕ доказан.**
-  Это P13 hardware matrix gate.
+- State перенесён из volatile `/var` в `/etc/router-policy/state`; после reboot
+  bbolt и last-good artifacts сохранились без compatibility symlink в
+  `/var/lib/router-policy`.
+- Controller восстановил `rev_3_3fa9fd0e4c15`. Xray, nfqws, nftables, четыре
+  IPv4 и четыре IPv6 policy rule поднялись автоматически; flow offload остался
+  0/0, recovery status — `ok`.
+- На первом контрольном reboot выявлена гонка boot guard/controller за adapter
+  lock. Повтор `adapter_busy` ограничен 30 секундами; следующий физический
+  reboot прошёл без ручного restart.
+- После reboot заново собран и строго проверен bound evidence report для всех
+  четырёх маршрутов. SHA-256 evidence:
+  `3664f1f7477e4565cd3a498782266d1ce35930cdfcc27f03de2b0713a48c53c6`.
 
 ## VPN-провайдер / VLESS (live, обезличено)
 
@@ -101,22 +130,20 @@
 - Health cycle (live): 10/12 exit non-RU OK, 1 UNVERIFIED (GeoIP endpoints
   unreachable), 1 rejected (RU egress), 1 selected (≈656 ms). Bundle hash
   неизменен при пере-проверке.
-- Persistent per-exit activation на Flint 2 (procd lifecycle, external IP proof,
-  route production-ready) — не доказано, часть P3/P13.
+- Persistent VLESS activation на Flint 2 доказана для выбранного выхода; полная
+  матрица выходов остаётся в P13.
 
 ## Что НЕ доказано на железе
 
 - Smart DNS activation (placeholder resolver).
-- VLESS/Xray persistent activation + per-exit route proof.
 - `tg_ws_proxy` transport (route type определён в proof, реализации нет).
-- Физический reboot/crash recovery (P6 код есть, reboot — P13).
+- Hard-crash/power-loss recovery и timer fault injection.
 - Multi-client, 72h soak, fault injection matrix, install/upgrade/downgrade.
 - Full route × protocol × AF матрица.
 
 ## Подтверждённое состояние
 
-Direct + fail-closed Drop и Zapret (`discord.com`) подтверждены на Flint 2 с
-bound evidence. Recovery реализован и локально протестирован, но
-reboot-safe claim требует физического reboot (P13). Проект остаётся Alpha: UI и
-локальные тесты зелёные — не доказательство production-readiness для полной
-матрицы.
+Direct, fail-closed Drop, Zapret и VLESS/Xray подтверждены на Flint 2 с bound
+evidence до и после физического reboot. P3 и P6 закрыты по своим аппаратным
+критериям. Проект остаётся Alpha: Smart DNS, hard-crash/power-loss,
+multi-client, установка на чистое устройство и soak-test ещё не пройдены.

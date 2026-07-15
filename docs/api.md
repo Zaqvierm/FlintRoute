@@ -120,9 +120,9 @@ DNS resolution, классификация, фактический egress, до�
 
 ## Current Limits
 
-- Provider локально fixture-tested; live Flint 2 API collection — read-only gate.
+- Provider fixture-tested и проверен на активном Flint 2 dataplane.
 - Zapret/Xray `NOT_CONFIGURED` на устройстве без бинарника.
-- Direct/Zapret доказаны на Flint 2 (P1/P3); Smart DNS/VLESS data-plane truth —
-  per-route hardware verification (P13).
+- Direct/Zapret/Drop/VLESS доказаны на Flint 2 до и после reboot; Smart DNS
+  требует отдельной проверки с production resolver.
 - API external LAN binding — refused до TLS/firewall LAN-only/WAN-deny checks.
 - Роли кроме admin.

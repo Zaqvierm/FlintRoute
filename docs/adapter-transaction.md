@@ -141,7 +141,9 @@ Rollback timer — transaction-bound и revision-bound, PID + process start time
    (`constantEqual` для `CandidateHash`/`ArtifactManifestHash`).
 4. Проверяет ChangeSet `committed` + binding match.
 5. `loadVerifiedCandidate` + canonical hash совпадение с active config.
-6. `adapter.Reconcile(ctx, RecoveryTarget)`. Не OK → `adapter_reconcile_failed`.
+6. `adapter.Reconcile(ctx, RecoveryTarget)`. Временный `adapter_busy` от
+   параллельного boot guard повторяется с bounded timeout; остальные ошибки →
+   `adapter_reconcile_failed`.
 7. `adapter.Status(ctx)` — evidence должен совпадать: `active_revision`,
    `active_transaction`, `active_candidate_hash`,
    `active_artifact_manifest_hash`, `transaction_state=committed`. Иначе
@@ -151,12 +153,10 @@ Rollback timer — transaction-bound и revision-bound, PID + process start time
 `meta/recovery_status`. Ни одна частичная ревизия не активируется. Boot guard:
 `openwrt/init.d/router-policy-boot-guard`.
 
-## Неподтверждённая аппаратная часть
+## Аппаратная проверка
 
-P0/P0.5 flow локально integration-tested с fake production adapter и shell
-fixtures. На Flint 2 доказаны и committed: P1 (Direct + Drop) и P3 (Zapret
-`discord.com`). Reboot recovery (`Reconcile`) реализован и протестирован
-локально (тесты `TestRestartRecoversAwaitingConfirmation`,
-`TestRecoveryFinalizesAdapterCommittedTransaction`,
-`TestRecoveryFailClosedBetweenStateMachineSteps`), но физический reboot Flint 2
-с восстановлением committed dataplane — часть P13 hardware matrix.
+P0/P0.5 flow integration-tested с production adapter fixtures. На Flint 2
+committed и доказаны Direct, Zapret, Drop и VLESS/Xray. Физический reboot
+восстановил persistent state, controller, Xray, nfqws, nftables и IPv4/IPv6
+policy rules; повторный bound route probe после старта прошёл strict verifier.
+Hard-crash, power-loss и длительные fault-injection сценарии остаются в P13.

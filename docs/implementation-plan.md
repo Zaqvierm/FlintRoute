@@ -62,6 +62,9 @@ FlintRoute — Go control plane + Preact/Vite UI + транзакционный 
 - `openwrt/init.d/router-policy-boot-guard` — boot guard.
 - Любое расхождение → `failedRecovery` с явным `reason_code`, persisted в bbolt
   `meta/recovery_status`. Ни одна частичная ревизия не активируется.
+- На Flint 2 persistent state и committed dataplane восстановлены после
+  физического reboot; post-reboot Direct/Zapret/Drop/VLESS evidence прошёл
+  strict verification.
 
 ### Проверено на Flint 2 / GL-MT6000
 
@@ -72,6 +75,8 @@ FlintRoute — Go control plane + Preact/Vite UI + транзакционный 
 - Zapret `discord.com` — nfqws v72.12 arm64
   `--dry-run` + `nft -c` passed (syntax proof). Live transaction committed:
   NFQUEUE counter, HTTP 200, `path_verified=true`.
+- Managed VLESS/Xray и fail-closed Drop включены в тот же committed route set;
+  после reboot controller, Xray, nfqws, nftables и policy rules восстановлены.
 - OpenWrt 24.10.4, firewall4/nftables queue/tproxy support подтверждены.
 
 ## Четыре уровня проверки маршрута

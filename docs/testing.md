@@ -116,13 +116,10 @@ markers), egress (`RU_EXIT`, consensus mismatch в health quorum), path proof
 (`ValidateRouteProof` per-type: direct bypass, zapret flow/QUIC, smart DNS
 Host/SNI, vless SOCKS loopback, drop enforcement).
 
-## Not proven locally
+## Оставшиеся аппаратные проверки
 
-- persistent P3 helper apply on Flint 2 для всех route types (Direct/Drop/Zapret
-  доказаны; Smart DNS/VLESS activation — нет);
-- target firmware procd Xray/nfqws start/stop/rollback для полной матрицы;
-- физический reboot recovery (P6 recovery код + тесты локально зелёные, reboot
-  на Flint — P13);
+- Smart DNS с production resolver и расширенная protocol/AF-матрица;
+- hard-crash/power-loss recovery и timer firing при потерянном management path;
 - multi-client, 72h soak, install/upgrade/downgrade (P13).
 - Linux namespace/container behavior (нет локального Linux runtime; shell
   integration cross-platform, готов для Linux CI).
