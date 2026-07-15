@@ -131,7 +131,11 @@ func (v *OpenWrtPathVerifier) Verify(ctx context.Context, request PathProofReque
 	if err != nil {
 		return evidence.RouteResult{}, fmt.Errorf("nft_policy_finish_failed: %w", err)
 	}
-	if policy.Counter <= request.Session.CounterBefore {
+	// A VLESS acceptance probe deliberately enters Xray through its loopback
+	// SOCKS inbound. It proves the selected outbound without traversing the
+	// transparent nft ingress rule, so that rule's counter must not be used as
+	// an impossible success condition for this route type.
+	if request.Route.Type != "vless" && policy.Counter <= request.Session.CounterBefore {
 		return evidence.RouteResult{}, errors.New("route_nft_counter_did_not_advance")
 	}
 
@@ -169,14 +173,18 @@ func (v *OpenWrtPathVerifier) Verify(ctx context.Context, request PathProofReque
 	if request.Observation.ConnectedIP == "" || request.Observation.LocalIP == "" {
 		return evidence.RouteResult{}, errors.New("connected_socket_observation_missing")
 	}
-	kernelRoute, err := v.commands.RouteGet(ctx, request.Observation.ConnectedIP, required.Mark)
-	if err != nil {
-		return evidence.RouteResult{}, fmt.Errorf("route_get_failed: %w", err)
+	if request.Route.Type == "vless" {
+		actual.Interface = "lo"
+	} else {
+		kernelRoute, err := v.commands.RouteGet(ctx, request.Observation.ConnectedIP, required.Mark)
+		if err != nil {
+			return evidence.RouteResult{}, fmt.Errorf("route_get_failed: %w", err)
+		}
+		if kernelRoute.Table != required.Table || kernelRoute.Interface == "" {
+			return evidence.RouteResult{}, errors.New("route_get_table_or_interface_mismatch")
+		}
+		actual.Interface = kernelRoute.Interface
 	}
-	if kernelRoute.Table != required.Table || kernelRoute.Interface == "" {
-		return evidence.RouteResult{}, errors.New("route_get_table_or_interface_mismatch")
-	}
-	actual.Interface = kernelRoute.Interface
 	rules, err := v.commands.Rules(ctx)
 	if err != nil {
 		return evidence.RouteResult{}, fmt.Errorf("ip_rule_read_failed: %w", err)
@@ -191,9 +199,11 @@ func (v *OpenWrtPathVerifier) Verify(ctx context.Context, request PathProofReque
 		routeOK, err := v.commands.HasDefaultRoute(ctx, "6", required.Table)
 		actual.IPv6Verified = actual.IPv6Verified && err == nil && routeOK
 	}
-	actual.ConntrackMark, err = v.commands.ConntrackMark(request.Observation.LocalIP, request.Observation.ConnectedIP)
-	if err != nil {
-		return evidence.RouteResult{}, fmt.Errorf("conntrack_proof_failed: %w", err)
+	if request.Route.Type != "vless" {
+		actual.ConntrackMark, err = v.commands.ConntrackMark(request.Observation.LocalIP, request.Observation.ConnectedIP)
+		if err != nil {
+			return evidence.RouteResult{}, fmt.Errorf("conntrack_proof_failed: %w", err)
+		}
 	}
 
 	switch request.Route.Type {

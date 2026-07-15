@@ -765,11 +765,25 @@ verify_data_plane() {
 		fi
 	fi
   if [ ! -f "$evidence_file" ]; then
-    write_status "data_plane_unverified"
-    echo "data_plane_ok=false"
-    echo "verification_status=UNVERIFIED"
-    echo "reason=data_plane_evidence_missing"
-    return 0
+		if [ "${ROUTER_POLICY_AUTO_COLLECT_EVIDENCE:-1}" = "1" ]; then
+			collection_error_file="$txdir/data-plane-collection.error"
+			if ! ROUTER_POLICY_CONFIG="$candidate" "$router_policy_bin" internal-collect-data-plane-evidence --plan "$generated/verification-plan.json" --out "$evidence_file" --transaction "$txid" --revision "$revision" --candidate-hash "$candidate_hash" --manifest-hash "$artifact_manifest_hash" >/dev/null 2>"$collection_error_file"; then
+				collection_error="$(head -c 512 "$collection_error_file" | tr '\r\n' '  ' | sed 's/[^A-Za-z0-9_.: =\/-]/_/g')"
+				write_status "data_plane_unverified"
+				echo "data_plane_ok=false"
+				echo "verification_status=UNVERIFIED"
+				echo "reason=data_plane_evidence_collection_failed"
+				echo "collection_error=$collection_error"
+				return 0
+			fi
+			rm -f "$collection_error_file"
+		else
+			write_status "data_plane_unverified"
+			echo "data_plane_ok=false"
+			echo "verification_status=UNVERIFIED"
+			echo "reason=data_plane_evidence_missing"
+			return 0
+		fi
   fi
   if "$router_policy_bin" internal-verify-data-plane --plan "$generated/verification-plan.json" --evidence "$evidence_file" --transaction "$txid" --revision "$revision" --candidate-hash "$candidate_hash" --manifest-hash "$artifact_manifest_hash" >/dev/null; then
     write_status "data_plane_verified"

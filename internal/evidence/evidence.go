@@ -88,14 +88,24 @@ func LoadAndVerify(planPath, evidencePath string, binding artifact.Binding, mani
 	if err := json.Unmarshal(raw, &report); err != nil {
 		return Report{}, fmt.Errorf("invalid data-plane evidence: %w", err)
 	}
+	if err := VerifyReport(plan, report, binding, manifestHash); err != nil {
+		return Report{}, err
+	}
+	return report, nil
+}
+
+func VerifyReport(plan artifact.VerificationPlan, report Report, binding artifact.Binding, manifestHash string) error {
+	if plan.Binding != binding {
+		return fmt.Errorf("verification plan binding mismatch")
+	}
 	if report.Binding != binding || report.ArtifactManifestHash != manifestHash || report.CheckedAt.IsZero() {
-		return Report{}, fmt.Errorf("data-plane evidence binding mismatch")
+		return fmt.Errorf("data-plane evidence binding mismatch")
 	}
 	if plan.RequireDNSLeakCheck && !report.DNSLeakFree {
-		return Report{}, fmt.Errorf("DNS leak check is not proven")
+		return fmt.Errorf("DNS leak check is not proven")
 	}
 	if plan.RequireIPv6LeakCheck && !report.IPv6LeakFree {
-		return Report{}, fmt.Errorf("IPv6 leak check is not proven")
+		return fmt.Errorf("IPv6 leak check is not proven")
 	}
 	byTag := map[string]RouteResult{}
 	for _, route := range report.Routes {
@@ -104,13 +114,13 @@ func LoadAndVerify(planPath, evidencePath string, binding artifact.Binding, mani
 	for _, required := range plan.RequiredRouteProof {
 		actual, ok := byTag[required.Tag]
 		if !ok {
-			return Report{}, fmt.Errorf("route proof missing: %s", required.Tag)
+			return fmt.Errorf("route proof missing: %s", required.Tag)
 		}
 		if err := ValidateRouteProof(required, actual, binding, manifestHash); err != nil {
-			return Report{}, err
+			return err
 		}
 	}
-	return report, nil
+	return nil
 }
 
 func ValidateRouteProof(required artifact.RouteProof, actual RouteResult, binding artifact.Binding, manifestHash string) error {
@@ -120,8 +130,11 @@ func ValidateRouteProof(required artifact.RouteProof, actual RouteResult, bindin
 	if actual.CheckedAt.IsZero() || actual.EvidenceSource == "" {
 		return fmt.Errorf("route %s lacks timestamp/evidence source", required.Tag)
 	}
-	if required.Mark != "" && (actual.NFTMark != required.Mark || actual.ConntrackMark != required.Mark) {
+	if required.Mark != "" && actual.NFTMark != required.Mark {
 		return fmt.Errorf("route %s mark/table proof mismatch", required.Tag)
+	}
+	if required.Mark != "" && required.Type != "vless" && actual.ConntrackMark != required.Mark {
+		return fmt.Errorf("route %s conntrack mark proof mismatch", required.Tag)
 	}
 	if required.RulePriority > 0 && actual.IPRulePriority != required.RulePriority {
 		return fmt.Errorf("route %s rule priority proof mismatch", required.Tag)

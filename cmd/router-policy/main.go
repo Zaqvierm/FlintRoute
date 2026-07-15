@@ -24,6 +24,7 @@ import (
 	"router-policy/internal/auth"
 	"router-policy/internal/config"
 	"router-policy/internal/dataplane"
+	"router-policy/internal/dataplaneproof"
 	"router-policy/internal/domaincache"
 	"router-policy/internal/evidence"
 	"router-policy/internal/geoip"
@@ -283,6 +284,31 @@ func run(args []string) error {
 		}
 		_, err := evidence.LoadAndVerify(*planPath, *evidencePath, artifact.Binding{TransactionID: *txID, RevisionID: *revision, CandidateHash: *candidateHash}, *manifestHash)
 		return err
+	case "internal-collect-data-plane-evidence":
+		fs := flag.NewFlagSet("internal-collect-data-plane-evidence", flag.ContinueOnError)
+		planPath := fs.String("plan", "", "verification plan")
+		outputPath := fs.String("out", "", "data-plane evidence output")
+		txID := fs.String("transaction", "", "transaction id")
+		revision := fs.String("revision", "", "revision id")
+		candidateHash := fs.String("candidate-hash", "", "candidate hash")
+		manifestHash := fs.String("manifest-hash", "", "manifest hash")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			return err
+		}
+		allowSimulation := cfg.Platform.Target == "test" && os.Getenv("ROUTER_POLICY_ALLOW_SIMULATED_DIAGNOSTICS") == "1"
+		report, err := dataplaneproof.Collect(context.Background(), dataplaneproof.Options{
+			Config: cfg, PlanPath: *planPath, OutputPath: *outputPath,
+			Binding:      artifact.Binding{TransactionID: *txID, RevisionID: *revision, CandidateHash: *candidateHash},
+			ManifestHash: *manifestHash, Prober: probe.NewActiveOpenWrtEngine(cfg, allowSimulation),
+		})
+		if err != nil {
+			return err
+		}
+		return printJSON(map[string]any{"collected": true, "routes": len(report.Routes), "checked_at": report.CheckedAt})
 	case "validate-config":
 		cfg, err := config.Load(cfgPath)
 		if err != nil {

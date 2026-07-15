@@ -13,10 +13,14 @@ import (
 )
 
 type fakeOpenWrtCommands struct {
-	counter       uint64
-	advance       bool
-	routeTable    int
-	conntrackMark string
+	counter        uint64
+	advance        bool
+	routeTable     int
+	conntrackMark  string
+	mark           string
+	rulePriority   int
+	policyActions  map[string]bool
+	processRunning bool
 }
 
 func (f *fakeOpenWrtCommands) RouteGet(context.Context, string, string) (KernelRoute, error) {
@@ -24,9 +28,21 @@ func (f *fakeOpenWrtCommands) RouteGet(context.Context, string, string) (KernelR
 }
 
 func (f *fakeOpenWrtCommands) Rules(context.Context) ([]KernelRule, error) {
+	mark := f.mark
+	if mark == "" {
+		mark = "0x41"
+	}
+	table := f.routeTable
+	if table == 0 {
+		table = 100
+	}
+	priority := f.rulePriority
+	if priority == 0 {
+		priority = 10010
+	}
 	return []KernelRule{
-		{Family: "4", Priority: 10010, Mark: "0x41", Table: 100},
-		{Family: "6", Priority: 10010, Mark: "0x41", Table: 100},
+		{Family: "4", Priority: priority, Mark: mark, Table: table},
+		{Family: "6", Priority: priority, Mark: mark, Table: table},
 	}, nil
 }
 
@@ -39,11 +55,15 @@ func (f *fakeOpenWrtCommands) NFTPolicy(context.Context, string) (NFTPolicy, err
 	if f.advance {
 		f.counter++
 	}
-	return NFTPolicy{Counter: current, Actions: map[string]bool{"direct_bypass": true}}, nil
+	actions := f.policyActions
+	if actions == nil {
+		actions = map[string]bool{"direct_bypass": true}
+	}
+	return NFTPolicy{Counter: current, Actions: actions}, nil
 }
 
 func (f *fakeOpenWrtCommands) ProcessRunning(context.Context, string) (bool, error) {
-	return false, nil
+	return f.processRunning, nil
 }
 
 func (f *fakeOpenWrtCommands) ConntrackMark(string, string) (string, error) {
@@ -134,6 +154,43 @@ func TestVerifySOCKSBindingRequiresInboundRuleAndVLESSOutbound(t *testing.T) {
 	}
 	if _, err := verifier.verifySOCKSBinding(config.Route{Type: "vless", Tag: "vless-a", SOCKS5: "127.0.0.1:12000"}); err == nil {
 		t.Fatal("tampered SOCKS-to-outbound rule was accepted")
+	}
+}
+
+func TestVLESSSOCKSProofDoesNotRequireTransparentCounterOrConntrack(t *testing.T) {
+	root := t.TempDir()
+	binding := artifact.Binding{TransactionID: "tx_0011223344556677", RevisionID: "rev_2_001122334455", CandidateHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+	manifestHash := "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	activePath := filepath.Join(root, "active-transaction.env")
+	active := fmt.Sprintf("transaction_id=%s\nrevision_id=%s\ncandidate_hash=%s\nartifact_manifest_hash=%s\ntransaction_state=applied\n", binding.TransactionID, binding.RevisionID, binding.CandidateHash, manifestHash)
+	if err := os.WriteFile(activePath, []byte(active), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	xray := `{"inbounds":[{"tag":"socks-vless-a","listen":"127.0.0.1","port":12000,"protocol":"socks"}],"outbounds":[{"tag":"vless-a","protocol":"vless"}],"routing":{"rules":[{"type":"field","inboundTag":["socks-vless-a"],"outboundTag":"vless-a"}]}}`
+	if err := os.WriteFile(filepath.Join(root, artifact.XrayFile), []byte(xray), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	required := artifact.RouteProof{Tag: "vless-a", Type: "vless", Mark: "0x43", Table: 102, RulePriority: 10030, RequiresDNS: true, RequiresIPv4: true, RequiresIPv6: true, RequiresEgress: true, RequiresXrayOutbound: true}
+	commands := &fakeOpenWrtCommands{counter: 10, routeTable: 102, mark: "0x43", rulePriority: 10030, policyActions: map[string]bool{"xray": true}, processRunning: true}
+	verifier := &OpenWrtPathVerifier{root: root, activeBindingPath: activePath, binding: binding, manifestHash: manifestHash, plan: artifact.VerificationPlan{Binding: binding, RequiredRouteProof: []artifact.RouteProof{required}}, commands: commands}
+	route := config.Route{Type: "vless", Tag: "vless-a", SOCKS5: "127.0.0.1:12000"}
+	started := time.Now().UTC()
+	session, err := verifier.Begin(context.Background(), PathProofStart{Domain: "geo.example", Route: route, StartedAt: started})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := verifier.Verify(context.Background(), PathProofRequest{Route: route, Session: session, Observation: PathObservation{
+		Domain: "geo.example", DNSResolver: "socks5-remote:127.0.0.1:12000", DNSProtocol: "socks5-remote",
+		ResolvedIPs: []string{"203.0.113.10"}, ConnectedIP: "203.0.113.10", ConnectedPort: 443, LocalIP: "127.0.0.1",
+		AddressFamily: "ipv4", Transport: "socks5", HostPreserved: true, SNIPreserved: true,
+		TLSResult: "OK", HTTPResult: "OK", ContentResult: "OK", ExternalIPHash: "sha256:egress", ExternalCountry: "DE",
+		StartedAt: started, CompletedAt: started.Add(20 * time.Millisecond),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proof.Status != "OK" || !proof.SOCKS5Loopback || proof.XrayOutboundTag != "vless-a" || proof.ConntrackMark != "" || proof.Interface != "lo" {
+		t.Fatalf("incomplete VLESS proof: %+v", proof)
 	}
 }
 
