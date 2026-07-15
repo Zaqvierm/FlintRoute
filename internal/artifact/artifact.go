@@ -862,8 +862,8 @@ func transparentInbound(tag, listen string, port int, v6Only bool) map[string]an
 		sockopt["V6Only"] = true
 	}
 	return map[string]any{
-		"tag": tag, "listen": listen, "port": port, "protocol": "tunnel",
-		"settings":       map[string]any{"allowedNetwork": "tcp,udp", "followRedirect": true},
+		"tag": tag, "listen": listen, "port": port, "protocol": "dokodemo-door",
+		"settings":       map[string]any{"network": "tcp,udp", "followRedirect": true},
 		"sniffing":       map[string]any{"enabled": true, "destOverride": []string{"http", "tls", "quic"}},
 		"streamSettings": map[string]any{"sockopt": sockopt},
 	}

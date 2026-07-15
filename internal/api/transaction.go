@@ -824,7 +824,15 @@ func operationRootAllowed(path string) bool {
 	case "policy", "routes", "services", "overrides":
 		return true
 	case "xray":
-		return len(parts) == 2 && parts[1] == "outbound_bundle_sha256"
+		if len(parts) != 2 {
+			return false
+		}
+		switch parts[1] {
+		case "outbound_bundle_sha256", "activation_mode", "subscription_secret_file":
+			return true
+		default:
+			return false
+		}
 	case "openwrt":
 		return len(parts) == 2 && parts[1] == "flow_offloading_policy"
 	default:

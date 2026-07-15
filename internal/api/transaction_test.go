@@ -49,6 +49,29 @@ func TestImmutableAdapterPathBlocksValidate(t *testing.T) {
 	}
 }
 
+func TestManagedXrayActivationFieldsAreEditable(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Xray.InitScript = "/etc/init.d/router-policy-xray"
+	candidate, _, diff, validation := buildCandidate(cfg, []ChangeOp{
+		{Type: "set", Path: "/xray/activation_mode", Value: "managed"},
+		{Type: "set", Path: "/xray/subscription_secret_file", Value: "/etc/router-policy/secrets/vpn-subscription-url"},
+	})
+	if hasValidationError(validation) {
+		t.Fatalf("managed Xray activation fields were rejected: %+v", validation)
+	}
+	if candidate == nil || candidate.Xray.ActivationMode != "managed" || len(diff) == 0 {
+		t.Fatalf("managed Xray activation was not applied: candidate=%+v diff=%+v", candidate, diff)
+	}
+}
+
+func TestImmutableXrayBinaryPathBlocksValidate(t *testing.T) {
+	cfg := testAPIConfig(t)
+	_, _, _, validation := buildCandidate(cfg, []ChangeOp{{Type: "set", Path: "/xray/binary", Value: "/tmp/xray"}})
+	if !hasValidationError(validation) {
+		t.Fatalf("immutable Xray binary path was editable: %+v", validation)
+	}
+}
+
 func TestOverrideChangeSetPersistsFullCanonicalCandidate(t *testing.T) {
 	fake := newFakeAdapter()
 	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)

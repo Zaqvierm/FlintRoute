@@ -166,9 +166,10 @@ func TestTransparentXrayCandidateIsLoopbackBoundMarkedAndFailClosed(t *testing.T
 	}
 	for tag, listen := range map[string]string{transparentIPv4InboundTag: "127.0.0.1", transparentIPv6InboundTag: "::1"} {
 		inbound := inboundByTag[tag]
+		settings, _ := inbound["settings"].(map[string]any)
 		stream, _ := inbound["streamSettings"].(map[string]any)
 		sockopt, _ := stream["sockopt"].(map[string]any)
-		if inbound["listen"] != listen || inbound["protocol"] != "tunnel" || inbound["port"] != float64(12345) || sockopt["tproxy"] != "tproxy" {
+		if inbound["listen"] != listen || inbound["protocol"] != "dokodemo-door" || inbound["port"] != float64(12345) || settings["network"] != "tcp,udp" || settings["followRedirect"] != true || sockopt["tproxy"] != "tproxy" {
 			t.Fatalf("unsafe transparent inbound %s: %#v", tag, inbound)
 		}
 	}
