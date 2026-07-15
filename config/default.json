@@ -6,9 +6,9 @@
     "unsupported_apply_policy": "refuse"
   },
   "storage": {
-    "state_dir": "/var/lib/router-policy",
+    "state_dir": "/etc/router-policy/state",
     "runtime_dir": "/tmp/router-policy",
-    "database": "/var/lib/router-policy/router-policy.bbolt",
+    "database": "/etc/router-policy/state/router-policy.bbolt",
     "event_retention_days": 30,
     "changeset_retention_days": 90,
     "transaction_retention_days": 30,
@@ -46,7 +46,7 @@
     "activation_mode": "candidate_only",
     "config_dir": "/etc/router-policy/xray",
     "active_config": "/etc/router-policy/xray/active.json",
-    "last_good_config": "/var/lib/router-policy/last-good/xray.json",
+    "last_good_config": "/etc/router-policy/state/last-good/xray.json",
     "generated_dir": "/tmp/router-policy/generated/xray",
     "probe_socks_base_port": 12000,
     "probe_dns_resolver": "1.1.1.1:53",
@@ -64,7 +64,7 @@
   },
   "geoip": {
     "mode": "mmdb",
-    "database": "/var/lib/router-policy/geoip/user-country.mmdb",
+    "database": "/etc/router-policy/state/geoip/user-country.mmdb",
     "source_url": "https://github.com/sapics/ip-location-db/releases/download/latest/user-country.mmdb",
     "max_database_bytes": 16777216,
     "max_age_hours": 336,

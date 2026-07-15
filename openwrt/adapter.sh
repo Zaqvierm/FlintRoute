@@ -10,7 +10,7 @@ recovery_candidate_hash="${5:-}"
 recovery_artifact_manifest_hash="${6:-}"
 
 runtime="${RUNTIME_DIR:-/tmp/router-policy}"
-state="${STATE_DIR:-/var/lib/router-policy}"
+state="${STATE_DIR:-/etc/router-policy/state}"
 txroot="$state/transactions"
 lock_dir="$runtime/transaction.lock"
 pending_file="$runtime/pending-transaction.env"

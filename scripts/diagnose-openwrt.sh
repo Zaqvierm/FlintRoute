@@ -115,7 +115,7 @@ run_sh "init service state" 'for s in dropbear uhttpd dnsmasq firewall xray zapr
 run_sh "listening sockets" 'ss -lntu 2>/dev/null || netstat -lntu 2>/dev/null || true'
 
 section "router-policy files"
-run_sh "router-policy paths" 'for p in /usr/bin/router-policy /usr/lib/router-policy /etc/router-policy /var/lib/router-policy /tmp/router-policy; do if [ -e "$p" ]; then ls -ld "$p"; else echo "$p missing"; fi; done'
+run_sh "router-policy paths" 'for p in /usr/bin/router-policy /usr/lib/router-policy /etc/router-policy /etc/router-policy/state /tmp/router-policy; do if [ -e "$p" ]; then ls -ld "$p"; else echo "$p missing"; fi; done'
 run_sh "router-policy services" 'for s in /etc/init.d/router-policy /etc/init.d/router-policy-watchdog; do if [ -e "$s" ]; then ls -l "$s"; else echo "$s missing"; fi; done'
 
 section "package hints"

@@ -88,7 +88,7 @@ func (s *Server) recoverCommittedDataplane(ctx context.Context) {
 		return
 	}
 
-	reconcile := s.adapter.Reconcile(ctx, target)
+	reconcile := s.reconcileCommittedTarget(ctx, target)
 	if !stepOK(reconcile) {
 		reason := reconcile.Reason
 		if reason == "" {
@@ -111,6 +111,24 @@ func (s *Server) recoverCommittedDataplane(ctx context.Context) {
 		StartedAt: started, FinishedAt: time.Now().UTC(),
 	}
 	s.setRecoveryStatus(result)
+}
+
+func (s *Server) reconcileCommittedTarget(ctx context.Context, target adapter.RecoveryTarget) adapter.StepResult {
+	const maxAttempts = 31
+	for attempt := 1; ; attempt++ {
+		result := s.adapter.Reconcile(ctx, target)
+		busy, _ := result.Evidence["adapter_busy"].(bool)
+		if stepOK(result) || !busy || attempt >= maxAttempts {
+			return result
+		}
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return result
+		case <-timer.C:
+		}
+	}
 }
 
 func failedRecovery(started time.Time, code, reason string, target adapter.RecoveryTarget) recoveryStatus {

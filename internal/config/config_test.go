@@ -18,6 +18,24 @@ func TestValidateCanonicalizesIDNDomains(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsVolatileFlint2State(t *testing.T) {
+	cfg := validConfig()
+	cfg.Platform.Target = "glinet-flint2"
+	cfg.Storage = Storage{StateDir: "/var/lib/router-policy", RuntimeDir: "/tmp/router-policy", Database: "/var/lib/router-policy/router-policy.bbolt"}
+	cfg.Xray.LastGoodConfig = "/var/lib/router-policy/last-good/xray.json"
+	cfg.GeoIP.Database = "/var/lib/router-policy/geoip/user-country.mmdb"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "persistent") {
+		t.Fatalf("volatile Flint 2 state was accepted: %v", err)
+	}
+	cfg.Storage.StateDir = "/etc/router-policy/state"
+	cfg.Storage.Database = "/etc/router-policy/state/router-policy.bbolt"
+	cfg.Xray.LastGoodConfig = "/etc/router-policy/state/last-good/xray.json"
+	cfg.GeoIP.Database = "/etc/router-policy/state/geoip/user-country.mmdb"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("persistent Flint 2 state was rejected: %v", err)
+	}
+}
+
 func TestValidateRejectsPrivateSmartDNS(t *testing.T) {
 	cfg := validConfig()
 	cfg.Routes = append(cfg.Routes, Route{Type: "smart_dns", Tag: "smart", DNSServer: "192.168.1.53:53", ConnectToResolvedIP: true})

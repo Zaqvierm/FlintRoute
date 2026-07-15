@@ -72,6 +72,26 @@ func TestImmutableXrayBinaryPathBlocksValidate(t *testing.T) {
 	}
 }
 
+func TestFlint2PersistentStatePathsAreEditableTogether(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Platform.Target = "glinet-flint2"
+	cfg.Storage = config.Storage{StateDir: "/var/lib/router-policy", RuntimeDir: "/tmp/router-policy", Database: "/var/lib/router-policy/router-policy.bbolt"}
+	cfg.Xray.LastGoodConfig = "/var/lib/router-policy/last-good/xray.json"
+	cfg.GeoIP.Database = "/var/lib/router-policy/geoip/user-country.mmdb"
+	candidate, _, _, validation := buildCandidate(cfg, []ChangeOp{
+		{Type: "set", Path: "/storage/state_dir", Value: "/etc/router-policy/state"},
+		{Type: "set", Path: "/storage/database", Value: "/etc/router-policy/state/router-policy.bbolt"},
+		{Type: "set", Path: "/xray/last_good_config", Value: "/etc/router-policy/state/last-good/xray.json"},
+		{Type: "set", Path: "/geoip/database", Value: "/etc/router-policy/state/geoip/user-country.mmdb"},
+	})
+	if hasValidationError(validation) {
+		t.Fatalf("persistent state migration was rejected: %+v", validation)
+	}
+	if candidate == nil || candidate.Storage.StateDir != "/etc/router-policy/state" || candidate.GeoIP.Database != "/etc/router-policy/state/geoip/user-country.mmdb" {
+		t.Fatalf("persistent state migration was not applied: %+v", candidate)
+	}
+}
+
 func TestOverrideChangeSetPersistsFullCanonicalCandidate(t *testing.T) {
 	fake := newFakeAdapter()
 	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
@@ -665,7 +685,7 @@ func TestStaleChangeSetVersionReturns409(t *testing.T) {
 	}
 }
 
-func TestRestartReconcilesCommittedDataplane(t *testing.T) {
+func TestRestartRetriesBusyCommittedDataplaneReconcile(t *testing.T) {
 	cfg := testAPIConfig(t)
 	fake := newFakeAdapter()
 	srv, ts, client, csrf, authStore := newTransactionHTTP(t, cfg, fake)
@@ -685,6 +705,49 @@ func TestRestartReconcilesCommittedDataplane(t *testing.T) {
 	if got := fake.callCount("reconcile"); got != 0 {
 		t.Fatalf("reconcile ran before restart: %d", got)
 	}
+	fake.mu.Lock()
+	fake.reconcileBusyCount = 1
+	fake.mu.Unlock()
+
+	srv2, err := NewServerWithOptions(cfg, Options{Auth: authStore, Provider: platform.DevelopmentMockProvider{}, ProductionAdapter: fake, Development: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv2.Close()
+	if got := fake.callCount("reconcile"); got != 2 {
+		t.Fatalf("busy committed dataplane reconcile was not retried exactly once: %d", got)
+	}
+	if recovery := srv2.currentRecoveryStatus(); recovery.Status != "ok" {
+		t.Fatalf("transient adapter contention left recovery degraded: %+v", recovery)
+	}
+}
+
+func TestRestartReconcilesCommittedDataplaneAfterStateRootMigration(t *testing.T) {
+	cfg := testAPIConfig(t)
+	fake := newFakeAdapter()
+	srv, ts, client, csrf, authStore := newTransactionHTTP(t, cfg, fake)
+	cs := createValidatedChange(t, client, csrf, ts.URL, "GEO_LOCKED")
+	cs, status := postAction(t, client, csrf, ts.URL, cs.ID, "apply", `{}`)
+	if status != http.StatusOK || cs.State != "awaiting_confirmation" {
+		t.Fatalf("apply status=%d change=%+v", status, cs)
+	}
+	cs, status = postAction(t, client, csrf, ts.URL, cs.ID, "confirm", `{}`)
+	if status != http.StatusOK || cs.State != "committed" {
+		t.Fatalf("confirm status=%d change=%+v", status, cs)
+	}
+	ts.Close()
+	if err := srv.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	oldStateDir := cfg.Storage.StateDir
+	newStateDir := oldStateDir + "-migrated"
+	if err := os.Rename(oldStateDir, newStateDir); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Storage.StateDir = newStateDir
+	cfg.Storage.RuntimeDir = newStateDir
+	cfg.Storage.Database = filepath.Join(newStateDir, "router-policy.bbolt")
 
 	srv2, err := NewServerWithOptions(cfg, Options{Auth: authStore, Provider: platform.DevelopmentMockProvider{}, ProductionAdapter: fake, Development: true})
 	if err != nil {
@@ -692,7 +755,10 @@ func TestRestartReconcilesCommittedDataplane(t *testing.T) {
 	}
 	defer srv2.Close()
 	if got := fake.callCount("reconcile"); got != 1 {
-		t.Fatalf("committed dataplane was not reconciled exactly once after restart: %d", got)
+		t.Fatalf("migrated committed dataplane was not reconciled exactly once: %d", got)
+	}
+	if recovery := srv2.currentRecoveryStatus(); recovery.Status != "ok" {
+		t.Fatalf("state-root migration left recovery degraded: %+v", recovery)
 	}
 }
 

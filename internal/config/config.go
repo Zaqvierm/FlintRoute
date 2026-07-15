@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -240,6 +241,18 @@ func Load(path string) (*Config, error) {
 func (c *Config) Validate() error {
 	if c.Version < 2 {
 		return fmt.Errorf("config version must be >=2")
+	}
+	if c.Platform.Target == "glinet-flint2" {
+		persistentStorage := c.Storage.StateDir == "/etc/router-policy/state" && c.Storage.RuntimeDir == "/tmp/router-policy" && c.Storage.Database == "/etc/router-policy/state/router-policy.bbolt"
+		legacyStorage := c.Storage.StateDir == "/var/lib/router-policy" && c.Storage.RuntimeDir == "/tmp/router-policy" && c.Storage.Database == "/var/lib/router-policy/router-policy.bbolt" && legacyFlint2StateAlias()
+		if !persistentStorage && !legacyStorage {
+			return fmt.Errorf("Flint 2 storage must use persistent /etc/router-policy/state and volatile /tmp/router-policy runtime")
+		}
+		persistentData := c.Xray.LastGoodConfig == "/etc/router-policy/state/last-good/xray.json" && c.GeoIP.Database == "/etc/router-policy/state/geoip/user-country.mmdb"
+		legacyData := c.Xray.LastGoodConfig == "/var/lib/router-policy/last-good/xray.json" && c.GeoIP.Database == "/var/lib/router-policy/geoip/user-country.mmdb" && legacyStorage
+		if !persistentData && !legacyData {
+			return fmt.Errorf("Flint 2 durable data paths must stay under /etc/router-policy/state")
+		}
 	}
 	if len(c.Routes) == 0 {
 		return fmt.Errorf("routes are empty")
@@ -534,6 +547,11 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid tspu_stale_policy")
 	}
 	return nil
+}
+
+func legacyFlint2StateAlias() bool {
+	resolved, err := filepath.EvalSymlinks("/var/lib/router-policy")
+	return err == nil && filepath.Clean(resolved) == "/etc/router-policy/state"
 }
 
 func (c *Config) validateOverrides(routesByTag map[string]Route) error {

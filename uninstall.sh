@@ -4,7 +4,7 @@ umask 077
 
 PREFIX="${PREFIX:-/usr/lib/router-policy}"
 ETC_DIR="${ETC_DIR:-/etc/router-policy}"
-STATE_DIR="${STATE_DIR:-/var/lib/router-policy}"
+STATE_DIR="${STATE_DIR:-/etc/router-policy/state}"
 BACKUP_DIR="${BACKUP_DIR:-/root/router-policy-uninstall-backup-$(date -u +%Y%m%dT%H%M%SZ)}"
 mode="${1:---dry-run}"
 

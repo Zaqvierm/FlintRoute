@@ -22,6 +22,7 @@ type fakeAdapter struct {
 	applyStarted               chan struct{}
 	applyRelease               chan struct{}
 	lastRecoveryTarget         adapter.RecoveryTarget
+	reconcileBusyCount         int
 }
 
 func newFakeAdapter() *fakeAdapter {
@@ -100,6 +101,15 @@ func (f *fakeAdapter) Rollback(_ context.Context, tx adapter.Transaction) adapte
 	return res
 }
 func (f *fakeAdapter) Reconcile(_ context.Context, target adapter.RecoveryTarget) adapter.StepResult {
+	f.mu.Lock()
+	if f.reconcileBusyCount > 0 {
+		f.reconcileBusyCount--
+		f.calls = append(f.calls, "reconcile")
+		f.mu.Unlock()
+		now := time.Now().UTC()
+		return adapter.StepResult{Step: "reconcile", Status: "ERROR", Reason: "adapter busy", Evidence: map[string]any{"adapter_busy": true}, StartedAt: now, FinishedAt: time.Now().UTC()}
+	}
+	f.mu.Unlock()
 	res := f.result("reconcile", adapter.Transaction{})
 	if res.OK {
 		f.mu.Lock()

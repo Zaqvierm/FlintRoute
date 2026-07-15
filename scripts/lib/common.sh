@@ -53,9 +53,9 @@ rp_runtime_dir() {
 rp_state_dir() {
   config="${1:-$(rp_default_config)}"
   if command -v jq >/dev/null 2>&1 && [ -f "$config" ]; then
-    jq -r '.storage.state_dir // "/var/lib/router-policy"' "$config"
+    jq -r '.storage.state_dir // "/etc/router-policy/state"' "$config"
   else
-    printf '%s\n' "/var/lib/router-policy"
+    printf '%s\n' "/etc/router-policy/state"
   fi
 }
 

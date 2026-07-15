@@ -2,7 +2,7 @@
 
 rp_db_path() {
   config="$1"
-  jq -r '.storage.database // "/var/lib/router-policy/router-policy.sqlite"' "$config"
+  jq -r '.storage.database // "/etc/router-policy/state/router-policy.sqlite"' "$config"
 }
 
 rp_db_init() {
@@ -62,4 +62,3 @@ rp_db_store_result() {
     jq -c . "$result_file" >> "$state_dir/json/results.jsonl"
   fi
 }
-

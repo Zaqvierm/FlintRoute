@@ -526,7 +526,11 @@ func (s *Server) loadVerifiedCandidate(cs ChangeSet, tx adapter.Transaction) (*c
 	if !constantEqual(hash, record.Hash) || !constantEqual(hash, cs.CandidateHash) || !constantEqual(hash, tx.CandidateHash) {
 		return nil, conflict("candidate_hash_mismatch", "candidate hash does not match the full canonical config")
 	}
-	fileRaw, err := os.ReadFile(tx.CandidatePath)
+	candidatePath, artifactRoot, failure := s.currentTransactionPaths(tx)
+	if failure != nil {
+		return nil, failure
+	}
+	fileRaw, err := os.ReadFile(candidatePath)
 	if err != nil {
 		return nil, internalFailure(err)
 	}
@@ -542,7 +546,7 @@ func (s *Server) loadVerifiedCandidate(cs ChangeSet, tx adapter.Transaction) (*c
 		return nil, conflict("candidate_invalid", err.Error())
 	}
 	binding := artifact.Binding{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash}
-	manifest, err := artifact.Verify(tx.ArtifactRoot, binding, tx.ArtifactManifestHash)
+	manifest, err := artifact.Verify(artifactRoot, binding, tx.ArtifactManifestHash)
 	if err != nil {
 		return nil, conflict("artifact_manifest_mismatch", err.Error())
 	}
@@ -553,6 +557,26 @@ func (s *Server) loadVerifiedCandidate(cs ChangeSet, tx adapter.Transaction) (*c
 		return nil, conflict("artifact_readiness_mismatch", "candidate, manifest, transaction and ChangeSet readiness differ")
 	}
 	return &fileConfig, nil
+}
+
+func (s *Server) currentTransactionPaths(tx adapter.Transaction) (string, string, *actionFailure) {
+	if !safePathComponent(tx.RevisionID) || !safePathComponent(tx.ID) {
+		return "", "", conflict("transaction_path_invalid", "transaction or revision id cannot form a state path")
+	}
+	root := filepath.Join(s.cfg.Storage.StateDir, "transactions", tx.RevisionID, tx.ID)
+	return filepath.Join(root, "candidate.json"), filepath.Join(root, "generated"), nil
+}
+
+func safePathComponent(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, char := range value {
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '_' && char != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func validateTransactionBinding(cs ChangeSet, tx adapter.Transaction) *actionFailure {
@@ -823,18 +847,22 @@ func operationRootAllowed(path string) bool {
 	switch parts[0] {
 	case "policy", "routes", "services", "overrides":
 		return true
+	case "storage":
+		return len(parts) == 2 && (parts[1] == "state_dir" || parts[1] == "database")
 	case "xray":
 		if len(parts) != 2 {
 			return false
 		}
 		switch parts[1] {
-		case "outbound_bundle_sha256", "activation_mode", "subscription_secret_file":
+		case "outbound_bundle_sha256", "activation_mode", "subscription_secret_file", "last_good_config":
 			return true
 		default:
 			return false
 		}
 	case "openwrt":
 		return len(parts) == 2 && parts[1] == "flow_offloading_policy"
+	case "geoip":
+		return len(parts) == 2 && parts[1] == "database"
 	default:
 		return false
 	}

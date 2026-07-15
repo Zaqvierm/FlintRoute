@@ -5,10 +5,10 @@ umask 077
 ROOT=$(unset CDPATH; cd -- "$(dirname -- "$0")" && pwd)
 PREFIX="${PREFIX:-/usr/lib/router-policy}"
 ETC_DIR="${ETC_DIR:-/etc/router-policy}"
-STATE_DIR="${STATE_DIR:-/var/lib/router-policy}"
+STATE_DIR="${STATE_DIR:-/etc/router-policy/state}"
 RUNTIME_DIR="${RUNTIME_DIR:-/tmp/router-policy}"
 BACKUP_DIR="${BACKUP_DIR:-/root/router-policy-backup-$(date -u +%Y%m%dT%H%M%SZ)}"
-BACKUP_SOURCES="${BACKUP_SOURCES:-/etc/config/network /etc/config/firewall /etc/config/dhcp /etc/dnsmasq.d /etc/nftables.d $ETC_DIR}"
+BACKUP_SOURCES="${BACKUP_SOURCES:-/etc/config/network /etc/config/firewall /etc/config/dhcp /etc/dnsmasq.d /etc/nftables.d $ETC_DIR $STATE_DIR}"
 TAR_BIN="${TAR_BIN:-tar}"
 
 mode=""

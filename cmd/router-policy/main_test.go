@@ -41,6 +41,7 @@ func TestLoadCLIActiveConfigUsesCommittedBboltState(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
+	cfg.Platform.Target = "test"
 	cfg.Storage.StateDir = dir
 	cfg.Storage.Database = filepath.Join(dir, "state.bbolt")
 	cfg.Storage.RuntimeDir = filepath.Join(dir, "runtime")
