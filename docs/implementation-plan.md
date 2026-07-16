@@ -103,9 +103,9 @@ FlintRoute — Go control plane + Preact/Vite UI + транзакционный 
 ## Открытые задачи
 
 - **P12**: Adaptive Zapret. Bounded catalog, первый `nfqws-v1` provider,
-  service bundles и DNS provenance готовы. Shared IP между разными bundles
-  исключается из routable-наборов. Ranking, hysteresis и per-service switching
-  ещё не реализованы.
+  service bundles, DNS provenance и ranking готовы. Shared IP между разными
+  bundles исключается из routable-наборов. Hysteresis, scheduler и per-service
+  switching ещё не реализованы.
 - **P13**: Full hardware matrix. Все route types × TCP/UDP × IPv4/IPv6 ×
   reboot/crash × multi-client × 72h soak. План в `flint2-hardware-validation.md`.
 - Smart DNS: не доказан на железе (placeholder resolver).
