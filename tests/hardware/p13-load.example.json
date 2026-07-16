@@ -1,0 +1,48 @@
+{
+  "workers": 4,
+  "iterations": 3,
+  "cases": [
+    {
+      "id": "direct-github",
+      "route": "direct",
+      "domain": "github.com",
+      "service": "github",
+      "expected_route_type": "direct",
+      "expected_address_family": "ipv4",
+      "expected_path_transport": "direct",
+      "expected_port": 443,
+      "require_tls": true,
+      "require_content": true
+    },
+    {
+      "id": "zapret-discord",
+      "route": "zapret",
+      "domain": "discord.com",
+      "service": "discord_acceptance",
+      "expected_route_type": "zapret",
+      "expected_address_family": "ipv4",
+      "expected_path_transport": "direct",
+      "expected_port": 443,
+      "expected_quic_policy": "forced_tcp",
+      "require_tls": true
+    },
+    {
+      "id": "vless-chatgpt",
+      "route": "proxy-4",
+      "domain": "chatgpt.com",
+      "service": "chatgpt",
+      "expected_route_type": "vless",
+      "expected_address_family": "ipv4",
+      "expected_path_transport": "socks5",
+      "expected_port": 443,
+      "require_tls": true
+    },
+    {
+      "id": "drop",
+      "route": "drop",
+      "domain": "example.invalid",
+      "service": "github",
+      "expected_route_type": "drop"
+    }
+  ]
+}

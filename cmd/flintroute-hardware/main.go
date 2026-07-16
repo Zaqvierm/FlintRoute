@@ -22,7 +22,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: flintroute-hardware baseline|matrix|finalize [flags]")
+		return errors.New("usage: flintroute-hardware baseline|matrix|load|finalize [flags]")
 	}
 	paths := hardwarevalidation.DefaultPaths()
 	switch args[0] {
@@ -68,6 +68,28 @@ func run(args []string) error {
 		runner := hardwarevalidation.ExecRunner{Env: append(os.Environ(), "ROUTER_POLICY_CONFIG="+*config)}
 		harness := hardwarevalidation.Harness{Runner: runner, Paths: paths}
 		result, err := harness.RunMatrix(context.Background(), *runDir, *cases)
+		if printErr := printJSON(result); printErr != nil {
+			return printErr
+		}
+		return err
+	case "load":
+		fs := flag.NewFlagSet("load", flag.ContinueOnError)
+		runDir := fs.String("run-dir", "", "evidence run directory")
+		plan := fs.String("plan", "", "bounded load plan")
+		config := fs.String("config", paths.Config, "active FlintRoute config")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *plan == "" || fs.NArg() != 0 {
+			return errors.New("load requires --plan and no positional arguments")
+		}
+		if err := hardwarevalidation.ValidateDeviceRunDir(*runDir); err != nil {
+			return err
+		}
+		paths.Config = *config
+		runner := hardwarevalidation.ExecRunner{Env: append(os.Environ(), "ROUTER_POLICY_CONFIG="+*config)}
+		harness := hardwarevalidation.Harness{Runner: runner, Paths: paths}
+		result, err := harness.RunLoad(context.Background(), *runDir, *plan)
 		if printErr := printJSON(result); printErr != nil {
 			return printErr
 		}

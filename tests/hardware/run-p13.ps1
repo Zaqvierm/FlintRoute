@@ -5,6 +5,7 @@ param(
   [Parameter(Mandatory = $true)][string]$RecoveryBundle,
   [Parameter(Mandatory = $true)][string]$OutputRoot,
   [string]$CasesPath = "",
+  [string]$LoadPath = "",
   [string]$RunId = "",
   [switch]$KeepRemote
 )
@@ -21,6 +22,7 @@ if ($RouterHost -notmatch '^[A-Za-z0-9.:-]+$') { throw "Unsafe router host" }
 foreach ($required in @($ssh, $scp, $IdentityFile, $KnownHostsFile, $RecoveryBundle, $CasesPath)) {
   if (!(Test-Path -LiteralPath $required -PathType Leaf)) { throw "Missing required file: $required" }
 }
+if ($LoadPath -and !(Test-Path -LiteralPath $LoadPath -PathType Leaf)) { throw "Missing load plan: $LoadPath" }
 
 $commit = (& git -C $repo rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[0-9a-f]{40}$') { throw "Cannot resolve source commit" }
@@ -52,7 +54,9 @@ $remoteRun = "$remoteBase/$RunId"
 
 & $ssh @sshArgs "umask 077; mkdir -p '$remoteRun'; chmod 700 '$remoteRun'"
 if ($LASTEXITCODE -ne 0) { throw "Remote evidence directory creation failed" }
-& $scp @scpArgs $hardwareBinary $CasesPath "root@${RouterHost}:$remoteRun/"
+$uploads = @($hardwareBinary, $CasesPath)
+if ($LoadPath) { $uploads += $LoadPath }
+& $scp @scpArgs $uploads "root@${RouterHost}:$remoteRun/"
 if ($LASTEXITCODE -ne 0) { throw "Harness upload failed" }
 
 $remoteBinarySHA = (& $ssh @sshArgs "sha256sum /usr/bin/router-policy | awk '{print `$1}'").Trim()
@@ -63,6 +67,11 @@ $remoteCases = "$remoteRun/$([System.IO.Path]::GetFileName($CasesPath))"
 if ($LASTEXITCODE -ne 0) { throw "P13 baseline gate failed" }
 & $ssh @sshArgs "'$remoteHarness' matrix --run-dir '$remoteRun' --cases '$remoteCases'"
 if ($LASTEXITCODE -ne 0) { throw "P13 route matrix failed" }
+if ($LoadPath) {
+  $remoteLoad = "$remoteRun/$([System.IO.Path]::GetFileName($LoadPath))"
+  & $ssh @sshArgs "'$remoteHarness' load --run-dir '$remoteRun' --plan '$remoteLoad'"
+  if ($LASTEXITCODE -ne 0) { throw "P13 bounded load run failed" }
+}
 & $ssh @sshArgs "'$remoteHarness' finalize --run-dir '$remoteRun'"
 if ($LASTEXITCODE -ne 0) { throw "P13 evidence finalization failed" }
 

@@ -122,6 +122,28 @@ func TestRunMatrixFailsClosedOnWrongRouteProof(t *testing.T) {
 	}
 }
 
+func TestRunLoadUsesBoundedWorkersAndKeepsMultiClientHonest(t *testing.T) {
+	root := t.TempDir()
+	paths := testPaths(root)
+	direct := completeResult("direct")
+	runner := fakeRunner{outputs: map[string][]byte{
+		paths.RouterPolicy + " probe-route --no-persist --route direct github.com github": mustJSON(t, direct),
+	}}
+	planPath := filepath.Join(root, "load.json")
+	writeTestJSON(t, planPath, LoadPlan{
+		Workers: 2, Iterations: 4,
+		Cases: []MatrixCase{{ID: "direct", Route: "direct", Domain: "github.com", Service: "github", ExpectedRouteType: "direct", ExpectedAddressFamily: "ipv4", ExpectedPathTransport: "direct", ExpectedPort: 443, RequireTLS: true, RequireContent: true}},
+	})
+	harness := Harness{Runner: runner, Paths: paths}
+	summary, err := harness.RunLoad(context.Background(), filepath.Join(root, "evidence"), planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Total != 4 || summary.Passed != 4 || summary.Failed != 0 || !summary.SingleNode || summary.MultiClient != "NOT_TESTED" {
+		t.Fatalf("unexpected load summary: %+v", summary)
+	}
+}
+
 func TestFinalizeRejectsSymlinksAndWritesStableManifest(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, "b.txt"), "b")
