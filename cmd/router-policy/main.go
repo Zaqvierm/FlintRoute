@@ -465,7 +465,7 @@ func run(args []string) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		cfg, err := config.Load(cfgPath)
+		cfg, err := loadRuntimeConfig(cfgPath)
 		if err != nil {
 			return err
 		}
@@ -473,18 +473,8 @@ func run(args []string) error {
 		if outPath == "" {
 			outPath = filepath.Join(cfg.Storage.StateDir, "tspu-cache.json")
 		}
-		ttl := time.Duration(cfg.Policy.TSPUListUpdateIntervalSeconds) * time.Second
-		var previous *tspu.Cache
-		if current, loadErr := tspu.Load(outPath); loadErr == nil {
-			previous = &current
-		} else if !errors.Is(loadErr, os.ErrNotExist) {
-			return fmt.Errorf("load current TSPU cache: %w", loadErr)
-		}
-		cache, err := tspu.UpdateWithPrevious(context.Background(), nil, cfg.TSPUSources, cfg.Policy.MaxTSPUListBytes, ttl, time.Now().UTC(), previous)
+		cache, err := tspu.RefreshFile(context.Background(), nil, cfg, outPath, time.Now().UTC())
 		if err != nil {
-			return err
-		}
-		if err := tspu.Save(outPath, cache); err != nil {
 			return err
 		}
 		return printJSON(map[string]any{
@@ -721,7 +711,7 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 	if !safeListenAddress(listen) {
 		return fmt.Errorf("refusing non-loopback listen address %q; LAN listener needs TLS, firewall and WAN-deny verification first", listen)
 	}
-	cfg, err := config.Load(cfgPath)
+	cfg, err := loadRuntimeConfig(cfgPath)
 	if err != nil {
 		return err
 	}
@@ -785,6 +775,26 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 		}
 		return err
 	}
+}
+
+func loadRuntimeConfig(path string) (*config.Config, error) {
+	cfg, err := config.Load(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(cfg.TSPUSources) > 0 {
+		return cfg, nil
+	}
+	factoryPath := filepath.Join(filepath.Dir(path), "factory-default.json")
+	factory, err := config.Load(factoryPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return cfg, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load factory config for TSPU sources: %w", err)
+	}
+	cfg.TSPUSources = append([]config.TSPUSource(nil), factory.TSPUSources...)
+	return cfg, nil
 }
 
 func printJSON(v any) error {

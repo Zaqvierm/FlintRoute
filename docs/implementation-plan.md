@@ -78,6 +78,9 @@ FlintRoute — Go control plane + Preact/Vite UI + транзакционный 
 - Managed VLESS/Xray и fail-closed Drop включены в тот же committed route set;
   после reboot controller, Xray, nfqws, nftables и policy rules восстановлены.
 - OpenWrt 24.10.4, firewall4/nftables queue/tproxy support подтверждены.
+- TSPU cache обновляется фоновым планировщиком с jitter/backoff и сохранением
+  последнего валидного состояния. На Flint 2 приняты 2/2 живых источника,
+  получена матрица Direct 5/5 `NO_MATCH` и TSPU 5/5 `MATCH`.
 
 ## Четыре уровня проверки маршрута
 

@@ -52,6 +52,39 @@ func TestSetupTokenIfNeededIsIdempotentAfterAdminCreation(t *testing.T) {
 	}
 }
 
+func TestLoadRuntimeConfigUsesFactoryTSPUSourcesForUpgradedConfig(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("..", "..", "config", "default.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	active := *cfg
+	active.TSPUSources = nil
+	activeRaw, err := json.Marshal(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	factoryRaw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activePath := filepath.Join(dir, "default.json")
+	if err := os.WriteFile(activePath, activeRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "factory-default.json"), factoryRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := loadRuntimeConfig(activePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.TSPUSources) != len(cfg.TSPUSources) || len(loaded.TSPUSources) == 0 {
+		t.Fatalf("factory TSPU sources were not inherited: got=%d want=%d", len(loaded.TSPUSources), len(cfg.TSPUSources))
+	}
+}
+
 func TestSafeListenAddress(t *testing.T) {
 	ok := []string{"127.0.0.1:8787", "localhost:8787", "[::1]:8787"}
 	for _, addr := range ok {

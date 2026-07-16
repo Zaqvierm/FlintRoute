@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"router-policy/internal/probe"
 	"router-policy/internal/security"
 	"router-policy/internal/state"
+	"router-policy/internal/tspu"
 	"router-policy/internal/vpnsub"
 	"router-policy/internal/web"
 )
@@ -36,12 +38,17 @@ type Options struct {
 	ProductionAdapter    adapter.Interface
 	SubscriptionPreparer SubscriptionPreparer
 	ProbeEngineFactory   func(*config.Config) health.ProbeEngine
+	TSPURefresh          TSPURefreshFunc
 	Development          bool
 }
 
 type SubscriptionPreparer interface {
 	Prepare(context.Context, *config.Config) (vpnsub.PreparedBundle, error)
 }
+
+type TSPURefreshFunc func(context.Context, *config.Config, time.Time) (tspu.Cache, error)
+
+type tspuDelayFunc func(time.Duration, int, bool) time.Duration
 
 type actionLockEntry struct {
 	mu   sync.Mutex
@@ -56,6 +63,8 @@ type Server struct {
 	adapter              adapter.Interface
 	subscriptionPreparer SubscriptionPreparer
 	probeEngineFactory   func(*config.Config) health.ProbeEngine
+	tspuRefresh          TSPURefreshFunc
+	tspuDelay            tspuDelayFunc
 	healthTracker        *probe.HealthTracker
 	development          bool
 	broker               *EventBroker
@@ -71,6 +80,9 @@ type Server struct {
 	configVersion        int64
 	recovery             recoveryStatus
 	hideSensitive        bool
+	schedulerOnce        sync.Once
+	schedulerCancel      context.CancelFunc
+	schedulerWG          sync.WaitGroup
 	closeOnce            sync.Once
 	closeErr             error
 }
@@ -124,6 +136,13 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 			return probe.NewActiveOpenWrtEngine(active, allowSimulation)
 		}
 	}
+	tspuRefresh := opts.TSPURefresh
+	if tspuRefresh == nil {
+		tspuRefresh = func(ctx context.Context, active *config.Config, now time.Time) (tspu.Cache, error) {
+			path := filepath.Join(active.Storage.StateDir, "tspu-cache.json")
+			return tspu.RefreshFile(ctx, nil, active, path, now)
+		}
+	}
 	s := &Server{
 		cfg:                  cfg,
 		auth:                 authStore,
@@ -132,6 +151,8 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		adapter:              opts.ProductionAdapter,
 		subscriptionPreparer: opts.SubscriptionPreparer,
 		probeEngineFactory:   probeEngineFactory,
+		tspuRefresh:          tspuRefresh,
+		tspuDelay:            randomTSPUDelay,
 		healthTracker:        probe.NewHealthTracker(persistedHealth),
 		development:          opts.Development,
 		broker:               NewEventBroker(512),
@@ -166,11 +187,16 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) Close() error {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
+		cancelScheduler := s.schedulerCancel
 		for id, timer := range s.timers {
 			timer.Stop()
 			delete(s.timers, id)
 		}
 		s.mu.Unlock()
+		if cancelScheduler != nil {
+			cancelScheduler()
+		}
+		s.schedulerWG.Wait()
 		if s.store != nil {
 			s.closeErr = s.store.Close()
 		}
@@ -179,29 +205,167 @@ func (s *Server) Close() error {
 }
 
 func (s *Server) StartScheduler(ctx context.Context) {
-	interval := time.Duration(s.cfg.Policy.HealthCheckIntervalSeconds) * time.Second
-	if interval <= 0 {
-		interval = 5 * time.Minute
-	}
-	go func() {
-		s.runHealthCycle(ctx)
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		maintenance := time.NewTicker(6 * time.Hour)
-		defer maintenance.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				s.runHealthCycle(ctx)
-			case <-maintenance.C:
-				if err := s.store.Maintain(time.Now().UTC()); err != nil {
-					s.publishEvent(Event{Type: "state.maintenance_failed", Severity: "error", ReasonCode: "bbolt_maintenance_failed", Details: map[string]any{"error": err.Error()}})
+	s.schedulerOnce.Do(func() {
+		schedulerCtx, cancel := context.WithCancel(ctx)
+		s.mu.Lock()
+		s.schedulerCancel = cancel
+		s.mu.Unlock()
+
+		interval := time.Duration(s.cfg.Policy.HealthCheckIntervalSeconds) * time.Second
+		if interval <= 0 {
+			interval = 5 * time.Minute
+		}
+		s.schedulerWG.Add(1)
+		go func() {
+			defer s.schedulerWG.Done()
+			s.runHealthCycle(schedulerCtx)
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			maintenance := time.NewTicker(6 * time.Hour)
+			defer maintenance.Stop()
+			for {
+				select {
+				case <-schedulerCtx.Done():
+					return
+				case <-ticker.C:
+					s.runHealthCycle(schedulerCtx)
+				case <-maintenance.C:
+					if err := s.store.Maintain(time.Now().UTC()); err != nil {
+						s.publishEvent(Event{Type: "state.maintenance_failed", Severity: "error", ReasonCode: "bbolt_maintenance_failed", Details: map[string]any{"error": err.Error()}})
+					}
 				}
 			}
-		}
+		}()
+		s.startTSPUScheduler(schedulerCtx)
+	})
+}
+
+func (s *Server) startTSPUScheduler(ctx context.Context) {
+	s.schedulerWG.Add(1)
+	go func() {
+		defer s.schedulerWG.Done()
+		s.runTSPUScheduler(ctx)
 	}()
+}
+
+func (s *Server) runTSPUScheduler(ctx context.Context) {
+	failures := 0
+	initial := true
+	for {
+		active := s.tspuSchedulerConfig()
+		interval := time.Duration(active.Policy.TSPUListUpdateIntervalSeconds) * time.Second
+		if interval <= 0 || len(active.TSPUSources) == 0 {
+			failures = 0
+			if !waitForScheduler(ctx, 5*time.Minute) {
+				return
+			}
+			continue
+		}
+
+		delay := s.tspuDelay(interval, failures, initial)
+		initial = false
+		if !waitForScheduler(ctx, delay) {
+			return
+		}
+		if err := s.runTSPURefresh(ctx); err != nil {
+			failures++
+		} else {
+			failures = 0
+		}
+	}
+}
+
+func (s *Server) runTSPURefresh(ctx context.Context) error {
+	active := s.tspuSchedulerConfig()
+	refreshCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	cache, err := s.tspuRefresh(refreshCtx, active, time.Now().UTC())
+	details := map[string]any{
+		"entries": len(cache.Entries), "fresh_sources": cache.FreshSources,
+	}
+	if err != nil {
+		details["error"] = err.Error()
+		s.publishEvent(Event{Type: "tspu.cache", Severity: "warning", ReasonCode: "tspu_cache_refresh_failed", Details: details})
+		return err
+	}
+	details["sha256"] = cache.SHA256
+	details["previous_sha256"] = cache.PreviousSHA256
+	details["expires_at"] = cache.ExpiresAt
+	s.publishEvent(Event{Type: "tspu.cache", Severity: "info", ReasonCode: "tspu_cache_refresh_completed", Details: details})
+	return nil
+}
+
+func (s *Server) tspuSchedulerConfig() *config.Config {
+	active := s.currentConfig()
+	if active == nil || len(active.TSPUSources) > 0 || s.cfg == nil || len(s.cfg.TSPUSources) == 0 {
+		return active
+	}
+	merged := *active
+	merged.TSPUSources = append([]config.TSPUSource(nil), s.cfg.TSPUSources...)
+	return &merged
+}
+
+func waitForScheduler(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		delay = time.Millisecond
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func randomTSPUDelay(interval time.Duration, failures int, initial bool) time.Duration {
+	base := tspuBaseDelay(interval, failures, initial)
+	var random [2]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return base
+	}
+	sample := uint16(random[0])<<8 | uint16(random[1])
+	return jitterTSPUDelay(base, sample)
+}
+
+func tspuBaseDelay(interval time.Duration, failures int, initial bool) time.Duration {
+	if interval <= 0 {
+		return 5 * time.Minute
+	}
+	if initial {
+		if interval < 30*time.Second {
+			return interval
+		}
+		return 30 * time.Second
+	}
+	if failures <= 0 {
+		return interval
+	}
+	retry := time.Minute
+	for attempt := 1; attempt < failures && retry < time.Hour; attempt++ {
+		retry *= 2
+	}
+	if retry > time.Hour {
+		retry = time.Hour
+	}
+	if retry > interval {
+		return interval
+	}
+	return retry
+}
+
+func jitterTSPUDelay(base time.Duration, sample uint16) time.Duration {
+	if base <= 0 {
+		return time.Millisecond
+	}
+	span := base / 10
+	offset := time.Duration(float64(span) * (float64(sample)/float64(^uint16(0))*2 - 1))
+	delay := base + offset
+	if delay < time.Millisecond {
+		return time.Millisecond
+	}
+	return delay
 }
 
 func (s *Server) runHealthCycle(ctx context.Context) {

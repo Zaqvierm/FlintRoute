@@ -114,6 +114,49 @@ func TestDropRatioRetainsPreviousAcceptedVersion(t *testing.T) {
 	}
 }
 
+func TestRefreshFilePreservesValidCacheWhenAllSourcesFail(t *testing.T) {
+	fail := false
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		if fail {
+			writer.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = writer.Write([]byte("one.example\ntwo.example\nthree.example\n"))
+	}))
+	defer server.Close()
+	cfg := &config.Config{
+		Policy:      config.Policy{TSPUListUpdateIntervalSeconds: 3600, MaxTSPUListBytes: 4096},
+		TSPUSources: []config.TSPUSource{{Name: "fixture", Type: "domains", URL: server.URL, MinEntries: 3, MaxDropRatio: 0.25}},
+	}
+	path := filepath.Join(t.TempDir(), "tspu-cache.json")
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	first, err := RefreshFile(context.Background(), server.Client(), cfg, path, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fail = true
+	retained, err := RefreshFile(context.Background(), server.Client(), cfg, path, now.Add(time.Hour))
+	if err == nil || len(retained.Entries) != len(first.Entries) || !retained.Sources[0].RetainedPrevious {
+		t.Fatalf("failed source did not report retained previous cache: cache=%+v err=%v", retained, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("failed refresh replaced the last valid cache")
+	}
+	loaded, err := Load(path)
+	if err != nil || loaded.SHA256 != first.SHA256 {
+		t.Fatalf("last valid cache is no longer loadable: cache=%+v err=%v", loaded, err)
+	}
+}
+
 func TestSaveKeepsPreviousAndLoadRejectsCorruption(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "tspu-cache.json")
