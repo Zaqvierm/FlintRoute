@@ -58,6 +58,7 @@ type CandidateScore struct {
 	WilsonUpperBound     float64     `json:"wilson_upper_bound"`
 	SuccessRatio         float64     `json:"success_ratio"`
 	StableWindows        int         `json:"stable_windows"`
+	FailedWindows        int         `json:"failed_windows"`
 	FailureStreak        int         `json:"failure_streak"`
 	MedianLatencyMS      float64     `json:"median_latency_ms"`
 	P95LatencyMS         float64     `json:"p95_latency_ms"`
@@ -330,6 +331,19 @@ func (r *Ranker) scoreLocked(key DecisionKey, profileID string, routeCost int, n
 			break
 		}
 		score.StableWindows++
+	}
+	for _, item := range windows {
+		failed := false
+		for _, sample := range item.samples {
+			if !sample.Success {
+				failed = true
+				break
+			}
+		}
+		if !failed {
+			break
+		}
+		score.FailedWindows++
 	}
 	recent := windows
 	if len(recent) > r.policy.RecentSafetyWindows {

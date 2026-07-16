@@ -23,7 +23,7 @@
 | P9 | 40% | Loopback и доступ к панели из LAN |
 | P10 | 75% | Проверяемый OpenWrt-пакет и обновление доказаны на Flint 2 |
 | P11 | 85% | Автоматические тесты |
-| P12 | 65% | Профили, service bundles, DNS provenance и bounded ranking готовы; переключение ещё не реализовано |
+| P12 | 85% | Ranking, scheduler, hysteresis, pin, quarantine и rollback state machine готовы; осталась аппаратная проверка |
 | P13 | 35% | Полная аппаратная матрица и внесение отказов |
 
 | Область | Реализовано | Проверено локально | Требуется Flint 2 |
@@ -44,6 +44,7 @@
 | Bounded-каталог Zapret и проверка nfqws по version/digest pins | да | модульные тесты и race | `nfqws` v72.12 принял config-embedded `--dry-run`; активный config не изменился |
 | Service bundles и DNS provenance с блокировкой shared IP | да | модульные, race и отрицательные routing-тесты | не требуется до проверки переключения профилей |
 | Rolling windows и ranking профилей по Wilson/latency | да | детерминированные модульные тесты и race | требуется вместе с bounded switch |
+| Bounded scheduler и переключение Zapret-профилей с cooldown/pin/quarantine | да | модульные, rollback и race | два bundles, два profiles и negative control |
 | Схема bbolt, retention, очистка backup и восстановление active compaction | да | модульные тесты | нет |
 | Эпоха SSE-потока и долгоживущий ответ | да | модульные и API-тесты | нет |
 | OpenWrt adapter с фиксированными командами | да | модульные, mocked shell integration и Flint apply/rollback/commit | остальные типы маршрутов |
