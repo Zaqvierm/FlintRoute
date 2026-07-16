@@ -105,8 +105,9 @@ Verified: every Go package passed.
   simulated-diagnostics refusal, candidate/artifact mismatch refusal. Managed
   Zapret: nfqws `--dry-run` before apply, service start before nft load,
   rollback active config + prior service state. Включает P6 reconcile path.
-- `tests/installer-backup.sh` — empty archive stops backup, не пишет
-  `last-backup-path`.
+- `tests/installer-backup.sh` — empty archive останавливает install/uninstall до удаления файлов и не пишет `last-backup-path`;
+- `tests/installer-lifecycle.sh` — clean install, повторный upgrade, rollback невалидной версии и verified uninstall;
+- `tests/package-openwrt.sh` — состав, SHA-256 manifest и отказ при повреждении OpenWrt-пакета.
 
 ## Четыре уровня covered
 

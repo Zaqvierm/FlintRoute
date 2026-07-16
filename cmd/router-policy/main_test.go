@@ -1,16 +1,56 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"router-policy/internal/auth"
 	"router-policy/internal/config"
 	"router-policy/internal/state"
 	"router-policy/internal/tspu"
 )
+
+func TestSetupTokenIfNeededIsIdempotentAfterAdminCreation(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("..", "..", "config", "default.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	cfg.Platform.Target = "test"
+	cfg.Storage.StateDir = dir
+	cfg.Storage.RuntimeDir = filepath.Join(dir, "runtime")
+	cfg.Storage.Database = filepath.Join(dir, "state.bbolt")
+	configPath := filepath.Join(dir, "config.json")
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := auth.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := store.CreateSetupToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetupAdmin("admin", "correct horse battery staple", token); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ROUTER_POLICY_CONFIG", configPath)
+	if err := run([]string{"auth", "setup-token", "--if-needed"}); err != nil {
+		t.Fatalf("idempotent setup-token failed after admin creation: %v", err)
+	}
+	if err := run([]string{"auth", "setup-token"}); err == nil {
+		t.Fatal("setup-token without --if-needed must still reject an initialized store")
+	}
+}
 
 func TestSafeListenAddress(t *testing.T) {
 	ok := []string{"127.0.0.1:8787", "localhost:8787", "[::1]:8787"}

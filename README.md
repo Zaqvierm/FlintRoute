@@ -98,18 +98,16 @@ sh install.sh --diagnose
 # Сухой запуск
 sh install.sh --dry-run
 
-# Установка файлов
-sh install.sh --install
-
-# Включить сервисы
+# Установка и запуск control plane
 sh install.sh --install --enable-services
 
-# Откат
-sh install.sh --rollback
+# При ошибке установки предыдущая версия восстанавливается автоматически
 
 # Удаление
 sh uninstall.sh --uninstall
 ```
+
+Полный порядок сборки пакета, обновления и удаления: [`docs/installation.md`](docs/installation.md).
 
 ## CLI
 

@@ -1,6 +1,7 @@
-# Status Matrix
+# Матрица состояния
 
-> Матрица разделяет реализацию, локальную проверку и аппаратное подтверждение.
+> Здесь отдельно указаны реализация, локальная проверка и подтверждение на
+> реальном роутере.
 
 ## Фазы
 
@@ -9,65 +10,68 @@
 
 | Фаза | Готовность | Коротко |
 |---|---:|---|
-| P0 | 100% | Transaction state machine, bbolt и adapter |
-| P0.5 | 100% | Candidate-bound артефакты и shell adapter |
-| P1 | 100% | Route proof, Smart DNS, VPN/Xray, VLESS health и GeoIP |
-| P2 | 75% | TSPU cache, eTLD+1 и domain profiling |
-| P3 | 100% | Headless Direct/Zapret/Drop/VLESS dataplane доказан на Flint 2 |
-| P4 | 0% | Telegram notifications и tg-ws-proxy |
-| P5 | 85% | Production OpenWrt provider и API |
-| P6 | 100% | Persistent state и post-reboot recovery доказаны на Flint 2 |
-| P7 | 60% | Auth и security audit |
-| P8 | 15% | Встроенная Web UI |
+| P0 | 100% | Машина состояний транзакции, bbolt и адаптер |
+| P0.5 | 100% | Привязанные к кандидату артефакты и shell-адаптер |
+| P1 | 100% | Доказательство маршрута, Smart DNS, VPN/Xray, проверка VLESS и GeoIP |
+| P2 | 75% | TSPU cache, eTLD+1 и профилирование доменов |
+| P3 | 100% | Headless dataplane Direct/Zapret/Drop/VLESS доказан на Flint 2 |
+| P4 | 0% | Уведомления Telegram и tg-ws-proxy |
+| P5 | 85% | Рабочий провайдер OpenWrt и API |
+| P6 | 100% | Постоянное состояние и восстановление после перезагрузки доказаны на Flint 2 |
+| P7 | 60% | Авторизация и аудит безопасности |
+| P8 | 15% | Встроенный Web UI |
 | P9 | 40% | Loopback и доступ к панели из LAN |
-| P10 | 30% | Сборка, установщик и упаковка |
+| P10 | 60% | Проверяемый OpenWrt-пакет, откат обновления и безопасное удаление |
 | P11 | 85% | Автоматические тесты |
 | P12 | 10% | Адаптивный выбор стратегии Zapret |
-| P13 | 35% | Полная аппаратная матрица и fault injection |
+| P13 | 35% | Полная аппаратная матрица и внесение отказов |
 
-| Area | Implemented | Tested locally | Needs Flint 2 |
+| Область | Реализовано | Проверено локально | Требуется Flint 2 |
 |---|---:|---:|---:|
-| Full canonical candidate + real diff/hash | yes | integration | no |
-| Candidate -> nft/dnsmasq/Xray/nfqws/IP artifacts + manifest v6 binding | yes | unit + shell integration | no |
-| IP route then IP rule fixed-argument plan | yes | unit + shell integration + Flint Direct/Zapret/VLESS/Drop proof | no for active route set |
-| Missing/simulated network diagnostics fail closed | yes | unit + API + shell integration + Flint diagnostics | no |
-| Adapter dependency injection | yes | unit/integration | no |
-| Fake production apply/verify/commit | yes | integration + race | no |
-| Filesystem adapter fail-closed (SKIPPED/UNVERIFIED/requires_device) | yes | unit/integration | no |
-| Confirm calls adapter Commit | yes | integration | no |
-| Rollback and automatic rollback call adapter | yes | integration | no |
-| Expiry timer and restart recovery (in-flight ChangeSet) | yes | integration + race | no |
-| **Post-reboot recovery: committed dataplane via `Reconcile`** | yes | unit + integration + physical Flint 2 reboot | no |
-| Idempotent Go/shell rollback and stale timer protection | yes | API + shell integration + race | reboot/crash matrix |
-| Concurrent apply/action locking with lock cleanup | yes | integration + race | no |
-| bbolt schema/retention/backup pruning/active compaction recovery | yes | unit | no |
-| SSE stream epoch and long-lived response | yes | unit/API | no |
-| Production OpenWrt fixed-command exec adapter | yes | unit + mocked shell integration + Flint apply/rollback/commit | remaining route types |
-| Unified helper lock with stale-owner proof | yes | shell integration + ShellCheck + Flint transactions | reboot/crash matrix |
-| Snapshot hash and absent-marker enforcement | yes | shell integration + Flint rollback | reboot/crash matrix |
-| config/nft/dnsmasq/Xray/Zapret/active-revision rollback restore | yes | shell integration + Flint rollback with live Xray hash preservation | real Xray activation/rollback |
-| Managed Xray TPROXY procd lifecycle | yes | unit + shell integration + persistent Flint VLESS proof | broader exit/protocol matrix |
-| Managed Zapret/nfqws lifecycle, fixed preset, NFQUEUE fail-closed | yes | unit + shell integration + Flint nfqws dry-run/nft syntax + Zapret `discord.com` committed | full matrix |
-| Flow offloading preserve/disable transaction | yes | unit + shell integration + Flint UCI 1/1 -> 0/0 | no |
-| VPN-подписка: extract/dedup/classify/retag/bundle | yes | unit + live subscription (12 supported) | per-exit persistent proof |
-| VLESS health cycle (quorum, EWMA, roles) | yes | unit + race + live | persistent selected route |
-| Proxy endpoint recursion guard | no | no | required before persistent VLESS activation |
-| TSPU cache v2 (multi-source, ETag, drop-ratio, wildcard, SHA-256) | yes | unit + httptest | live source quality |
-| GeoIP MMDB + two-source consensus | yes | unit + live | no |
-| Domain decision cache (bounded LRU, revision-bound, TTL) | yes | unit | no |
-| Installer atomic backup validation | yes | shell integration | yes |
-| Full local suite | yes | `run-all.ps1` | no |
-| Full Go race suite | yes | `go test -race ./...` | no |
+| Полный канонический кандидат с настоящим diff и хешем | да | интеграционные тесты | нет |
+| Генерация nft/dnsmasq/Xray/nfqws/IP и привязка манифеста v6 | да | модульные и shell-интеграция | нет |
+| План `IP route`, затем `IP rule`, с фиксированными аргументами | да | модульные, shell integration и доказательство Direct/Zapret/VLESS/Drop на Flint | нет для активного набора маршрутов |
+| Отсутствующая или симулированная сетевая диагностика закрывается безопасно | да | модульные, API, shell-интеграция и диагностика Flint | нет |
+| Подмена зависимостей адаптера | да | модульные и интеграционные тесты | нет |
+| Тестовый apply/verify/commit рабочего контура | да | интеграционные тесты и race | нет |
+| Filesystem-адаптер закрывается безопасно при `SKIPPED`, `UNVERIFIED`, `requires_device` | да | модульные и интеграционные тесты | нет |
+| Confirm вызывает `adapter.Commit` | да | интеграционные тесты | нет |
+| Ручной и автоматический rollback вызывают адаптер | да | интеграционные тесты | нет |
+| Таймер истечения и восстановление незавершённого ChangeSet после перезапуска | да | интеграционные тесты и race | нет |
+| **Восстановление committed dataplane после перезагрузки через `Reconcile`** | да | модульные, интеграционные и физическая перезагрузка Flint 2 | нет |
+| Идемпотентный rollback в Go/shell и защита от устаревшего таймера | да | API, shell-интеграция и race | матрица перезагрузок и аварийных завершений |
+| Блокировка параллельных apply/action с очисткой lock | да | интеграционные тесты и race | нет |
+| Схема bbolt, retention, очистка backup и восстановление active compaction | да | модульные тесты | нет |
+| Эпоха SSE-потока и долгоживущий ответ | да | модульные и API-тесты | нет |
+| OpenWrt adapter с фиксированными командами | да | модульные, mocked shell integration и Flint apply/rollback/commit | остальные типы маршрутов |
+| Общий helper lock с проверкой устаревшего владельца | да | shell-интеграция, ShellCheck и транзакции Flint | матрица перезагрузок и аварийных завершений |
+| Проверка хеша снимка и маркеров отсутствующих файлов | да | shell-интеграция и rollback на Flint | матрица перезагрузок и аварийных завершений |
+| Восстановление config/nft/dnsmasq/Xray/Zapret/active revision | да | shell-интеграция и Flint rollback с сохранением хеша рабочего Xray | реальная активация и rollback Xray |
+| Управляемый жизненный цикл Xray TPROXY через procd | да | модульные, shell-интеграция и постоянный VLESS на Flint | расширенная матрица выходов и протоколов |
+| Управляемый Zapret/nfqws, фиксированный preset и безопасный отказ NFQUEUE | да | модульные, shell-интеграция, nfqws dry-run/nft syntax на Flint и committed Zapret для `discord.com` | полная матрица |
+| Транзакционное сохранение и отключение flow offloading | да | модульные, shell integration и Flint UCI 1/1 -> 0/0 | нет |
+| VPN-подписка: извлечение, дедупликация, классификация, смена тегов и пакет | да | модульные и живая подписка, 12 поддерживаемых маршрутов | постоянное доказательство для каждого выхода |
+| Цикл проверки VLESS: quorum, EWMA и роли | да | модульные, race и живая проверка | постоянный выбранный маршрут |
+| Защита от рекурсии через конечную точку proxy | нет | нет | нужна до постоянной активации VLESS |
+| TSPU cache v2: несколько источников, ETag, drop-ratio, wildcard и SHA-256 | да | модульные и httptest | качество живых источников |
+| GeoIP MMDB и согласование двух источников | да | модульные и живая проверка | нет |
+| Кэш решений по доменам: ограниченный LRU, привязка к revision и TTL | да | модульные тесты | нет |
+| SHA-256 пакета OpenWrt, откат установки/обновления и проверенное удаление | да | shell-проверка жизненного цикла | да |
+| Полный локальный набор тестов | да | `run-all.ps1` | нет |
+| Полный Go race suite | да | `go test -race ./...` | нет |
 
-## Remaining hardware gates
+## Оставшиеся проверки на железе
 
-- Direct, Zapret, fail-closed Drop and VLESS/Xray are committed and proved on
-  Flint 2. A fresh bound evidence run after physical reboot also passed strict
-  verification; DNS, IPv6 and geo kill-switch report flags are true.
-- Post-reboot recovery is proved with state under `/etc/router-policy/state`,
-  no `/var/lib/router-policy` compatibility alias, and automatic restoration of
-  controller, Xray, nfqws, nftables and IPv4/IPv6 policy rules.
-- Reboot/crash matrix, timer firing under lost management, multi-client and
-  production install/upgrade/downgrade still need hardware runs.
-- Smart DNS still needs a real production resolver. The broader route ×
-  protocol × address-family matrix remains part of P13.
+- Direct, Zapret, fail-closed Drop и VLESS/Xray применены и доказаны на Flint 2.
+  После физической перезагрузки повторный связанный сбор доказательств прошёл строгую
+  проверку; флаги DNS, IPv6 и geo kill-switch имеют ожидаемые значения.
+- Восстановление после перезагрузки доказано с состоянием в
+  `/etc/router-policy/state`, без совместимого псевдонима `/var/lib/router-policy`.
+  Контроллер, Xray, nfqws, nftables и правила IPv4/IPv6 восстановились
+  автоматически.
+- Матрица перезагрузок и аварийных завершений, срабатывание таймера при потере
+  управления, несколько клиентов и рабочий цикл установки/обновления/понижения
+  версии ещё требуют аппаратного
+  прогона.
+- Smart DNS всё ещё требует настоящего рабочего резолвера. Расширенная матрица
+  «маршрут × протокол × семейство адресов» остаётся частью P13.

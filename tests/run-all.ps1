@@ -94,6 +94,18 @@ if (Test-Path $gitSh) {
   throw "Git sh is required for installer backup behavior test"
 }
 
+Write-Host "== OpenWrt package =="
+& $gitSh tests/package-openwrt.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "OpenWrt package verification failed"
+}
+
+Write-Host "== installer lifecycle =="
+& $gitSh tests/installer-lifecycle.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "installer lifecycle test failed"
+}
+
 Write-Host "== adapter rollback integrity =="
 & $gitSh tests/adapter-rollback.sh
 if ($LASTEXITCODE -ne 0) {

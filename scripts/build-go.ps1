@@ -48,6 +48,20 @@ $env:GOARCH = "arm64"
 $env:CGO_ENABLED = "0"
 & $go build -trimpath -ldflags="-s -w" -o (Join-Path $dist "router-policy-linux-arm64") ./cmd/router-policy
 
+$bashCommand = Get-Command bash -ErrorAction SilentlyContinue
+$bashPath = if ($bashCommand) { $bashCommand.Source } else { $null }
+if (!$bashPath) {
+  $gitBash = "C:\Program Files\Git\bin\bash.exe"
+  if (Test-Path $gitBash) { $bashPath = $gitBash }
+}
+if (!$bashPath) {
+  throw "Git Bash is required to package the OpenWrt bundle"
+}
+& $bashPath scripts/package-openwrt.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "OpenWrt package build failed with exit code $LASTEXITCODE"
+}
+
 Remove-Item Env:\GOOS -ErrorAction SilentlyContinue
 Remove-Item Env:\GOARCH -ErrorAction SilentlyContinue
 Remove-Item Env:\CGO_ENABLED -ErrorAction SilentlyContinue

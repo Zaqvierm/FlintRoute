@@ -18,5 +18,6 @@ mkdir -p "$ROOT/dist"
 "$GO" test ./...
 "$GO" build -o "$ROOT/dist/router-policy" ./cmd/router-policy
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 "$GO" build -trimpath -ldflags="-s -w" -o "$ROOT/dist/router-policy-linux-arm64" ./cmd/router-policy
+sh "$ROOT/scripts/package-openwrt.sh"
 
 ls -l "$ROOT/dist"

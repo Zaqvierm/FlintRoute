@@ -24,6 +24,7 @@ FlintRoute не привязан к конкретному поставщику 
 | `flint2-hardware-report.md` | обезличенные аппаратные результаты и ограничения |
 | `flint2-hardware-validation.md` | полная аппаратная матрица приёмки |
 | `testing.md` | автоматизированные проверки и непокрытые hardware gates |
+| `installation.md` | сборка пакета, установка, обновление и удаление на OpenWrt |
 | `status-matrix.md` | подтверждённое состояние подсистем |
 | `implementation-plan.md` | оставшиеся этапы реализации и критерии завершения |
 | `web-ui.md` | web console и её API/security contract |

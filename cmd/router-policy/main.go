@@ -78,8 +78,8 @@ func run(args []string) error {
 		}
 		return runHTTPProcess(cfgPath, *listen, true, false)
 	case "auth":
-		if len(args) < 2 || args[1] != "setup-token" {
-			return errors.New("usage: router-policy auth setup-token")
+		if len(args) < 2 || args[1] != "setup-token" || len(args) > 3 || (len(args) == 3 && args[2] != "--if-needed") {
+			return errors.New("usage: router-policy auth setup-token [--if-needed]")
 		}
 		cfg, err := config.Load(cfgPath)
 		if err != nil {
@@ -89,11 +89,14 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
+		if len(args) == 3 && store.HasUsers() {
+			return printJSON(map[string]any{"setup_required": false})
+		}
 		token, meta, err := store.CreateSetupToken()
 		if err != nil {
 			return err
 		}
-		return printJSON(map[string]any{"setup_token": token, "expires_at": meta.ExpiresAt, "uses_left": meta.UsesLeft})
+		return printJSON(map[string]any{"setup_required": true, "setup_token": token, "expires_at": meta.ExpiresAt, "uses_left": meta.UsesLeft})
 	case "internal-verify-rollback-token":
 		if len(args) != 2 {
 			return errors.New("rollback token hash is required")
@@ -691,7 +694,7 @@ func usage() {
   run [--listen 127.0.0.1:8787]
   serve [--listen 127.0.0.1:8787]
   serve-dev [--listen 127.0.0.1:8787]
-  auth setup-token
+  auth setup-token [--if-needed]
   status
   validate-config
   routes

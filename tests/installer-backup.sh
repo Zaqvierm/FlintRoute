@@ -41,3 +41,17 @@ if [ -f "$STATE_DIR/last-backup-path" ]; then
   exit 1
 fi
 echo "installer_invalid_backup_blocked=true"
+
+SYSTEM_ROOT="$TMP/uninstall-root"
+mkdir -p "$SYSTEM_ROOT/etc/router-policy" "$SYSTEM_ROOT/usr/bin"
+printf 'config\n' > "$SYSTEM_ROOT/etc/router-policy/default.json"
+printf 'binary\n' > "$SYSTEM_ROOT/usr/bin/router-policy"
+if BACKUP_DIR="$TMP/uninstall-backup" ROUTER_POLICY_SYSTEM_ROOT="$SYSTEM_ROOT" TAR_BIN="$TMP/fake-tar" sh "$ROOT/uninstall.sh" --uninstall >/dev/null 2>&1; then
+  echo "uninstaller accepted an invalid empty backup" >&2
+  exit 1
+fi
+if [ ! -f "$SYSTEM_ROOT/usr/bin/router-policy" ]; then
+  echo "uninstaller deleted files after backup failure" >&2
+  exit 1
+fi
+echo "uninstaller_invalid_backup_blocked=true"

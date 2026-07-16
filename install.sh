@@ -3,13 +3,24 @@ set -eu
 umask 077
 
 ROOT=$(unset CDPATH; cd -- "$(dirname -- "$0")" && pwd)
-PREFIX="${PREFIX:-/usr/lib/router-policy}"
-ETC_DIR="${ETC_DIR:-/etc/router-policy}"
-STATE_DIR="${STATE_DIR:-/etc/router-policy/state}"
-RUNTIME_DIR="${RUNTIME_DIR:-/tmp/router-policy}"
-BACKUP_DIR="${BACKUP_DIR:-/root/router-policy-backup-$(date -u +%Y%m%dT%H%M%SZ)}"
-BACKUP_SOURCES="${BACKUP_SOURCES:-/etc/config/network /etc/config/firewall /etc/config/dhcp /etc/dnsmasq.d /etc/nftables.d $ETC_DIR $STATE_DIR}"
+SYSTEM_ROOT="${ROUTER_POLICY_SYSTEM_ROOT:-}"
+PREFIX="${PREFIX:-$SYSTEM_ROOT/usr/lib/router-policy}"
+ETC_DIR="${ETC_DIR:-$SYSTEM_ROOT/etc/router-policy}"
+STATE_DIR="${STATE_DIR:-$ETC_DIR/state}"
+RUNTIME_DIR="${RUNTIME_DIR:-$SYSTEM_ROOT/tmp/router-policy}"
+BIN_DIR="${BIN_DIR:-$SYSTEM_ROOT/usr/bin}"
+INIT_DIR="${INIT_DIR:-$SYSTEM_ROOT/etc/init.d}"
+RC_DIR="${RC_DIR:-$SYSTEM_ROOT/etc/rc.d}"
+HOTPLUG_IFACE_DIR="${HOTPLUG_IFACE_DIR:-$SYSTEM_ROOT/etc/hotplug.d/iface}"
+HOTPLUG_FIREWALL_DIR="${HOTPLUG_FIREWALL_DIR:-$SYSTEM_ROOT/etc/hotplug.d/firewall}"
+DNSMASQ_DIR="${DNSMASQ_DIR:-$SYSTEM_ROOT/etc/dnsmasq.d}"
+ROUTER_POLICY_BIN="${ROUTER_POLICY_BIN:-$BIN_DIR/router-policy}"
+SOURCE_BINARY="${SOURCE_BINARY:-$ROOT/dist/router-policy-linux-arm64}"
+BACKUP_DIR="${BACKUP_DIR:-$SYSTEM_ROOT/root/router-policy-backup-$(date -u +%Y%m%dT%H%M%SZ)}"
+BACKUP_SOURCES="${BACKUP_SOURCES:-$SYSTEM_ROOT/etc/config/network $SYSTEM_ROOT/etc/config/firewall $SYSTEM_ROOT/etc/config/dhcp $SYSTEM_ROOT/etc/dnsmasq.d $SYSTEM_ROOT/etc/nftables.d $ETC_DIR}"
 TAR_BIN="${TAR_BIN:-tar}"
+SERVICES="router-policy-boot-guard router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
+INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $INIT_DIR/router-policy $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/secrets/vpn-subscription-url $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
 
 mode=""
 enable_services=0
@@ -35,9 +46,20 @@ done
 [ -n "$mode" ] || mode="--dry-run"
 
 need_root_for_apply() {
-  if [ "$(id -u)" != "0" ]; then
+  if [ -z "$SYSTEM_ROOT" ] && [ "$(id -u)" != "0" ]; then
     echo "must run as root on OpenWrt for $mode" >&2
     exit 1
+  fi
+}
+
+preflight_install() {
+  [ -f "$SOURCE_BINARY" ] || { echo "missing $SOURCE_BINARY; run scripts/build-go.sh before install" >&2; return 1; }
+  for p in "$ROOT/scripts" "$ROOT/openwrt" "$ROOT/config/default.json" "$ROOT/config/schema.json"; do
+    [ -e "$p" ] || { echo "missing install source: $p" >&2; return 1; }
+  done
+  if [ -f "$ROOT/SHA256SUMS" ]; then
+    command -v sha256sum >/dev/null 2>&1 || { echo "sha256sum is required to verify this install bundle" >&2; return 1; }
+    (cd "$ROOT" && sha256sum -c SHA256SUMS >/dev/null) || { echo "install bundle checksum verification failed" >&2; return 1; }
   fi
 }
 
@@ -94,24 +116,137 @@ backup() {
   echo "$BACKUP_DIR" > "$STATE_DIR/last-backup-path"
 }
 
+snapshot_installation() {
+  snapshot="$BACKUP_DIR/install-rollback"
+  staging="$snapshot/staging"
+  archive="$snapshot/files.tar"
+  manifest="$snapshot/manifest.txt"
+  services="$snapshot/services.txt"
+  rm -rf "$snapshot"
+  mkdir -p "$staging"
+  : > "$manifest"
+  : > "$services"
+  for p in $INSTALL_TARGETS; do
+    case "$p" in
+      /) echo "unsafe install target: /" >&2; return 1 ;;
+      /*) ;;
+      *) echo "unsafe non-absolute install target: $p" >&2; return 1 ;;
+    esac
+    if [ -e "$p" ]; then
+      relative="${p#/}"
+      mkdir -p "$staging/$(dirname "$relative")"
+      cp -R "$p" "$staging/$relative"
+      echo "present|$p" >> "$manifest"
+    else
+      echo "absent|$p" >> "$manifest"
+    fi
+  done
+  for service in $SERVICES; do
+    init="$INIT_DIR/$service"
+    enabled=0
+    running=0
+    [ -x "$init" ] && "$init" enabled >/dev/null 2>&1 && enabled=1
+    [ -x "$init" ] && "$init" running >/dev/null 2>&1 && running=1
+    echo "$service|$enabled|$running" >> "$services"
+  done
+  "$TAR_BIN" -C "$staging" -cf "$archive.tmp" .
+  mv "$archive.tmp" "$archive"
+  "$TAR_BIN" -tf "$archive" >/dev/null
+  rm -rf "$staging"
+}
+
+restore_installation() {
+  snapshot="$BACKUP_DIR/install-rollback"
+  archive="$snapshot/files.tar"
+  manifest="$snapshot/manifest.txt"
+  services="$snapshot/services.txt"
+  [ -s "$manifest" ] && [ -s "$archive" ] || {
+    echo "automatic install rollback unavailable: invalid snapshot" >&2
+    return 1
+  }
+  for service in $SERVICES; do
+    init="$INIT_DIR/$service"
+    [ -x "$init" ] && "$init" stop >/dev/null 2>&1 || true
+    [ -x "$init" ] && "$init" disable >/dev/null 2>&1 || true
+  done
+  while IFS='|' read -r presence p; do
+    [ "$presence" = "present" ] || [ "$presence" = "absent" ] || continue
+    rm -rf "$p"
+  done < "$manifest"
+  "$TAR_BIN" -C / -xf "$archive"
+  if [ -s "$services" ]; then
+    while IFS='|' read -r service enabled running; do
+      init="$INIT_DIR/$service"
+      [ -x "$init" ] || continue
+      if [ "$enabled" = "1" ]; then "$init" enable >/dev/null 2>&1 || true; else "$init" disable >/dev/null 2>&1 || true; fi
+      [ "$running" = "1" ] && "$init" start >/dev/null 2>&1 || true
+    done < "$services"
+  fi
+  echo "install_rollback=restored" >&2
+}
+
+service_was_running() {
+  service="$1"
+  grep -F "$service|" "$BACKUP_DIR/install-rollback/services.txt" 2>/dev/null | grep -F '|1' >/dev/null 2>&1
+}
+
+restart_running_services() {
+  for service in router-policy-xray router-policy-zapret router-policy router-policy-watchdog; do
+    service_was_running "$service" || continue
+    "$INIT_DIR/$service" restart
+    "$INIT_DIR/$service" running
+  done
+}
+
+start_control_services() {
+  for service in router-policy router-policy-watchdog; do
+    if ! "$INIT_DIR/$service" running >/dev/null 2>&1; then
+      "$INIT_DIR/$service" start
+    fi
+    "$INIT_DIR/$service" running
+  done
+}
+
+install_exit() {
+  status="$1"
+  trap - EXIT
+  if [ "$status" -ne 0 ] && [ "${INSTALL_ROLLBACK_ARMED:-0}" = "1" ]; then
+    restore_installation || echo "automatic install rollback failed; backup=$BACKUP_DIR" >&2
+  fi
+  exit "$status"
+}
+
+atomic_copy() {
+  source="$1"
+  target="$2"
+  mode_bits="$3"
+  mkdir -p "$(dirname "$target")"
+  tmp="$target.install.$$"
+  rm -rf "$tmp"
+  cp "$source" "$tmp"
+  chmod "$mode_bits" "$tmp"
+  mv "$tmp" "$target"
+}
+
 install_files() {
-  mkdir -p "$PREFIX" "$ETC_DIR/config" "$ETC_DIR/secrets" "$ETC_DIR/xray" "$ETC_DIR/zapret" "$ETC_DIR/firewall" "$STATE_DIR/last-good" "$RUNTIME_DIR" /etc/init.d /etc/hotplug.d/iface /etc/hotplug.d/firewall /etc/dnsmasq.d
-  cp -R "$ROOT/bin" "$PREFIX/"
-  cp -R "$ROOT/scripts" "$PREFIX/"
-  cp -R "$ROOT/openwrt" "$PREFIX/"
-  if [ -f "$ROOT/dist/router-policy-linux-arm64" ]; then
-    cp "$ROOT/dist/router-policy-linux-arm64" /usr/bin/router-policy
-    chmod +x /usr/bin/router-policy
-  else
-    echo "missing dist/router-policy-linux-arm64; run scripts/build-go.sh before install" >&2
-    exit 1
-  fi
+  mkdir -p "$(dirname "$PREFIX")" "$ETC_DIR/config" "$ETC_DIR/secrets" "$ETC_DIR/xray" "$ETC_DIR/zapret" "$ETC_DIR/firewall" "$STATE_DIR/last-good" "$RUNTIME_DIR" "$BIN_DIR" "$INIT_DIR" "$RC_DIR" "$HOTPLUG_IFACE_DIR" "$HOTPLUG_FIREWALL_DIR" "$DNSMASQ_DIR"
+  staged_prefix="$PREFIX.install.$$"
+  old_prefix="$PREFIX.old.$$"
+  rm -rf "$staged_prefix" "$old_prefix"
+  mkdir -p "$staged_prefix"
+  cp -R "$ROOT/scripts" "$staged_prefix/"
+  cp -R "$ROOT/openwrt" "$staged_prefix/"
+  chmod +x "$staged_prefix/openwrt/adapter.sh"
+  [ ! -e "$PREFIX" ] || mv "$PREFIX" "$old_prefix"
+  mv "$staged_prefix" "$PREFIX"
+  rm -rf "$old_prefix"
+  atomic_copy "$SOURCE_BINARY" "$ROUTER_POLICY_BIN" 755
   if [ ! -f "$ETC_DIR/config/default.json" ]; then
-    cp "$ROOT/config/default.json" "$ETC_DIR/config/default.json"
+    atomic_copy "$ROOT/config/default.json" "$ETC_DIR/config/default.json" 600
   else
-    cp "$ROOT/config/default.json" "$ETC_DIR/config/factory-default.json"
+    atomic_copy "$ROOT/config/default.json" "$ETC_DIR/config/factory-default.json" 600
   fi
-  cp "$ROOT/config/schema.json" "$ETC_DIR/config/schema.json"
+  atomic_copy "$ROOT/config/schema.json" "$ETC_DIR/config/schema.json" 600
   if [ ! -f "$ETC_DIR/secrets/vpn-subscription-url" ]; then
     : > "$ETC_DIR/secrets/vpn-subscription-url"
   fi
@@ -119,14 +254,13 @@ install_files() {
   for secret in "$ETC_DIR/secrets/"*; do
     [ -e "$secret" ] && chmod 600 "$secret"
   done
-  cp "$ROOT/openwrt/init.d/router-policy" /etc/init.d/router-policy
-  cp "$ROOT/openwrt/init.d/router-policy-boot-guard" /etc/init.d/router-policy-boot-guard
-  cp "$ROOT/openwrt/init.d/router-policy-watchdog" /etc/init.d/router-policy-watchdog
-  cp "$ROOT/openwrt/init.d/router-policy-xray" /etc/init.d/router-policy-xray
-  cp "$ROOT/openwrt/init.d/router-policy-zapret" /etc/init.d/router-policy-zapret
-  cp "$ROOT/openwrt/hotplug/iface/95-router-policy" /etc/hotplug.d/iface/95-router-policy
-  cp "$ROOT/openwrt/hotplug/firewall/95-router-policy" /etc/hotplug.d/firewall/95-router-policy
-  chmod +x "$PREFIX/openwrt/adapter.sh" /etc/init.d/router-policy /etc/init.d/router-policy-boot-guard /etc/init.d/router-policy-watchdog /etc/init.d/router-policy-xray /etc/init.d/router-policy-zapret /etc/hotplug.d/iface/95-router-policy /etc/hotplug.d/firewall/95-router-policy /usr/bin/router-policy
+  atomic_copy "$ROOT/openwrt/init.d/router-policy" "$INIT_DIR/router-policy" 755
+  atomic_copy "$ROOT/openwrt/init.d/router-policy-boot-guard" "$INIT_DIR/router-policy-boot-guard" 755
+  atomic_copy "$ROOT/openwrt/init.d/router-policy-watchdog" "$INIT_DIR/router-policy-watchdog" 755
+  atomic_copy "$ROOT/openwrt/init.d/router-policy-xray" "$INIT_DIR/router-policy-xray" 755
+  atomic_copy "$ROOT/openwrt/init.d/router-policy-zapret" "$INIT_DIR/router-policy-zapret" 755
+  atomic_copy "$ROOT/openwrt/hotplug/iface/95-router-policy" "$HOTPLUG_IFACE_DIR/95-router-policy" 755
+  atomic_copy "$ROOT/openwrt/hotplug/firewall/95-router-policy" "$HOTPLUG_FIREWALL_DIR/95-router-policy" 755
 }
 
 dry_run() {
@@ -152,24 +286,36 @@ case "$mode" in
     ;;
   --install)
     need_root_for_apply
+    preflight_install
     mkdir -p "$STATE_DIR"
+    snapshot_installation
+    INSTALL_ROLLBACK_ARMED=1
+    trap 'install_exit $?' EXIT
+    trap 'exit 130' INT HUP
+    trap 'exit 143' TERM
     detect
     backup
     install_files
-    ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" /usr/bin/router-policy validate-config
+    ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$ROUTER_POLICY_BIN" validate-config
     echo "== setup token =="
-    ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" /usr/bin/router-policy auth setup-token
+    ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$ROUTER_POLICY_BIN" auth setup-token --if-needed
+    restart_running_services
     if [ "$enable_services" = "1" ]; then
-      /etc/init.d/router-policy-boot-guard enable
-      /etc/init.d/router-policy enable
-      /etc/init.d/router-policy-watchdog enable
+      "$INIT_DIR/router-policy-boot-guard" enable
+      "$INIT_DIR/router-policy" enable
+      "$INIT_DIR/router-policy-watchdog" enable
+      start_control_services
       echo "services_enabled=router-policy-boot-guard router-policy router-policy-watchdog"
+      echo "control_services_running=router-policy router-policy-watchdog"
       echo "dataplane_services_boot_enabled=false"
     else
       echo "services_enabled=false"
       echo "enable_services_with=install.sh --install --enable-services"
     fi
+    INSTALL_ROLLBACK_ARMED=0
+    trap - EXIT INT HUP TERM
     echo "installed=true"
+    echo "backup=$BACKUP_DIR"
     echo "activate_with=install.sh --activate --yes"
     ;;
   --test-apply)
