@@ -176,6 +176,23 @@ gate остаётся открытым.
   присутствует в сводном restricted-листе, но его сервисные политики запрещают
   `direct` и `zapret`, поэтому список не меняет требование non-RU egress.
 
+## P12 — bundle-scoped Adaptive Zapret
+
+- `nfqws` v72.12 принял config с двумя service bundles. Каждый bundle получил
+  отдельные HTTP/TLS host scopes; всего nfqws разобрал четыре user-defined
+  desync profile. Проверка шла с config-embedded `--dry-run`, активный файл и
+  работающий процесс не менялись.
+- Живой Zapret proof для `discord.com` вернул `path_verified=true`, обработку
+  nfqws и RU egress. Одновременно VLESS proof для `chatgpt.com` подтвердил
+  другой выход с non-RU egress.
+- Direct proof для `github.com` использован как отрицательный контроль:
+  `direct_bypass_xray=true`, `direct_bypass_zapret=true`. Все три проверки
+  выполнены без simulation и завершились `route_path_verified`.
+- Bundle config теперь входит в тот же artifact manifest, что nftables,
+  dnsmasq, Xray и IP plan. Adaptive switch использует обычную последовательность
+  prepare/validate/snapshot/apply/verify/commit; провал после snapshot вызывает
+  существующий rollback и quarantine кандидата.
+
 ## Что НЕ доказано на железе
 
 - Smart DNS activation (placeholder resolver).

@@ -388,6 +388,23 @@ P12.4 добавляет bounded scheduler и state machine переключен
 аварии, rollback помещает плохой профиль в quarantine, а manual pin явно
 выбирает `fail_closed`, `safe_fallback` или безопасный `hold_last`.
 
+P12.5 связывает выбранный профиль с уже существующей OpenWrt-транзакцией.
+Bundle-scoped config добавляет `--hostlist-domains` к каждому transport filter,
+не разрешает профилям выйти за allowlist своего bundle и требует общий
+управляемый NFQUEUE. После замены `nfqws.conf` пересчитываются artifact entry,
+manifest и transaction binding. Решение также привязано к bundle, transport,
+port, address family и network fingerprint, поэтому устаревший или чужой
+candidate не доходит до adapter.
+
+На Flint 2 `nfqws` v72.12 принял config с двумя bundles и четырьмя изолированными
+HTTP/TLS-профилями в режиме `--dry-run`; активный config при этом не менялся.
+Живые проверки одновременно подтвердили Zapret для `discord.com`, VLESS для
+`chatgpt.com` и Direct как отрицательный контроль для `github.com`. Во всех
+трёх результатах `path_verified=true`, `simulation=false`; Direct обошёл и
+Xray, и Zapret, а Zapret-поток действительно прошёл через nfqws. Ошибка после
+snapshot в интеграционном тесте вызывает adapter rollback и quarantine
+кандидата. Жёсткие сбои питания и длительная матрица отказов остаются в P13.
+
 P12 заканчивается не красивым JSON, а доказательством на Flint 2: два сервиса
 одновременно используют разные выходы, контрольный трафик не затронут,
 деградация вызывает bounded switch, а плохой кандидат полностью откатывается.
