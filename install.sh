@@ -190,12 +190,30 @@ service_was_running() {
   grep -F "$service|" "$BACKUP_DIR/install-rollback/services.txt" 2>/dev/null | grep -F '|1' >/dev/null 2>&1
 }
 
+wait_control_health() {
+  command -v wget >/dev/null 2>&1 || { echo "wget is required to verify the control plane" >&2; return 1; }
+  attempt=0
+  while [ "$attempt" -lt 20 ]; do
+    if wget -q -O "$RUNTIME_DIR/install-health.json" http://127.0.0.1:8787/api/v1/health; then
+      echo "control_plane_health=ok"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+  echo "control plane did not become healthy after ${attempt}s" >&2
+  return 1
+}
+
 restart_running_services() {
   for service in router-policy-xray router-policy-zapret router-policy router-policy-watchdog; do
     service_was_running "$service" || continue
     "$INIT_DIR/$service" restart
     "$INIT_DIR/$service" running
   done
+  if service_was_running router-policy; then
+    wait_control_health
+  fi
 }
 
 start_control_services() {
@@ -205,6 +223,7 @@ start_control_services() {
     fi
     "$INIT_DIR/$service" running
   done
+  wait_control_health
 }
 
 install_exit() {

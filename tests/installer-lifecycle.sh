@@ -76,7 +76,30 @@ sh "$ROOT/uninstall.sh" --uninstall >/dev/null
 [ -s "$BACKUP_BASE/uninstall/router-policy-etc.tar" ]
 grep -E '^sha256=[0-9a-f]{64}$' "$BACKUP_BASE/uninstall/manifest.txt" >/dev/null
 
+RUNTIME_DIR="$SYSTEM_ROOT/tmp/router-policy"
+mkdir -p "$TMP/fake-bin" "$RUNTIME_DIR"
+cat > "$TMP/fake-bin/wget" <<'SH'
+#!/bin/sh
+set -eu
+count=0
+[ ! -f "$HEALTH_COUNTER" ] || count=$(cat "$HEALTH_COUNTER")
+count=$((count + 1))
+printf '%s\n' "$count" > "$HEALTH_COUNTER"
+[ "$count" -ge 3 ] || exit 1
+printf '{"status":"ok"}\n' > "$3"
+SH
+chmod +x "$TMP/fake-bin/wget"
+HEALTH_COUNTER="$TMP/health-attempts"
+PATH="$TMP/fake-bin:$PATH"
+ROUTER_POLICY_INSTALL_LIB_ONLY=1
+export HEALTH_COUNTER PATH ROUTER_POLICY_INSTALL_LIB_ONLY RUNTIME_DIR
+# shellcheck source=install.sh
+. "$ROOT/install.sh"
+wait_control_health >/dev/null
+[ "$(cat "$HEALTH_COUNTER")" = "3" ]
+
 echo "installer_clean_install=true"
 echo "installer_idempotent_upgrade=true"
 echo "installer_failed_upgrade_rollback=true"
 echo "installer_verified_uninstall=true"
+echo "installer_waits_for_control_health=true"
