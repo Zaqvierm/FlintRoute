@@ -15,6 +15,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,6 +37,7 @@ import (
 	"router-policy/internal/state"
 	"router-policy/internal/tspu"
 	"router-policy/internal/vpnsub"
+	"router-policy/internal/zapret"
 )
 
 func main() {
@@ -139,6 +142,62 @@ func run(args []string) error {
 			return fmt.Errorf("candidate canonical hash mismatch")
 		}
 		return nil
+	case "internal-verify-zapret-provider":
+		fs := flag.NewFlagSet("internal-verify-zapret-provider", flag.ContinueOnError)
+		binary := fs.String("binary", "/usr/bin/nfqws", "nfqws binary")
+		profileID := fs.String("profile", "", "reviewed profile ID")
+		providerVersion := fs.String("provider-version", "", "pinned nfqws version")
+		binaryDigest := fs.String("binary-digest", "", "pinned nfqws SHA-256")
+		strategyPath := fs.String("strategy", "", "reviewed strategy config")
+		strategyDigest := fs.String("strategy-digest", "", "pinned strategy SHA-256")
+		familiesRaw := fs.String("ip-families", "ipv4", "comma-separated IP families")
+		transportsRaw := fs.String("transports", "tcp", "comma-separated transports")
+		portsRaw := fs.String("ports", "80,443", "comma-separated ports")
+		queue := fs.Uint("queue", 0, "NFQUEUE number")
+		tempDir := fs.String("temp-dir", "", "secure temporary directory")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 || *profileID == "" || *providerVersion == "" || *binaryDigest == "" || *strategyPath == "" || *strategyDigest == "" || *queue == 0 || *queue > 65535 {
+			return errors.New("incomplete Zapret provider verification request")
+		}
+		strategyFile, err := os.Open(*strategyPath)
+		if err != nil {
+			return fmt.Errorf("open reviewed Zapret strategy: %w", err)
+		}
+		strategy, readErr := io.ReadAll(io.LimitReader(strategyFile, zapret.MaxStrategyBytes+1))
+		closeErr := strategyFile.Close()
+		if readErr != nil {
+			return fmt.Errorf("read reviewed Zapret strategy: %w", readErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("close reviewed Zapret strategy: %w", closeErr)
+		}
+		ports, err := parseZapretPorts(*portsRaw)
+		if err != nil {
+			return err
+		}
+		profile := zapret.Profile{
+			ID: *profileID, Provider: "nfqws-v1", ProviderVersion: *providerVersion,
+			BinaryDigest: *binaryDigest, RouteType: "zapret", IPFamilies: splitZapretValues(*familiesRaw),
+			Transports: splitZapretValues(*transportsRaw), Ports: ports, Queue: uint16(*queue),
+			Safety: "reviewed", StrategyDigest: *strategyDigest, Strategy: strategy,
+		}
+		catalog, err := zapret.NewCatalog([]zapret.Profile{profile})
+		if err != nil {
+			return err
+		}
+		provider, err := zapret.NewNFQWSv1(*binary, *tempDir, nil)
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		verification, err := provider.Validate(ctx, catalog, profile.ID)
+		if err != nil {
+			return err
+		}
+		return printJSON(verification)
 	case "internal-generate-artifacts":
 		fs := flag.NewFlagSet("internal-generate-artifacts", flag.ContinueOnError)
 		candidatePath := fs.String("candidate", "", "candidate config")
@@ -904,4 +963,26 @@ func safeListenAddress(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func splitZapretValues(raw string) []string {
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		values = append(values, strings.TrimSpace(part))
+	}
+	return values
+}
+
+func parseZapretPorts(raw string) ([]uint16, error) {
+	values := splitZapretValues(raw)
+	ports := make([]uint16, 0, len(values))
+	for _, value := range values {
+		parsed, err := strconv.ParseUint(value, 10, 16)
+		if err != nil || parsed == 0 {
+			return nil, fmt.Errorf("invalid Zapret port %q", value)
+		}
+		ports = append(ports, uint16(parsed))
+	}
+	return ports, nil
 }

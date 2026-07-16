@@ -186,3 +186,15 @@ func TestTSPUMatchForDomainRejectsCorruptCache(t *testing.T) {
 		t.Fatal("corrupt TSPU cache must not silently become NO_MATCH")
 	}
 }
+
+func TestParseZapretPorts(t *testing.T) {
+	ports, err := parseZapretPorts("80, 443")
+	if err != nil || len(ports) != 2 || ports[0] != 80 || ports[1] != 443 {
+		t.Fatalf("unexpected ports: %v err=%v", ports, err)
+	}
+	for _, raw := range []string{"", "0", "443,", "65536", "https"} {
+		if _, err := parseZapretPorts(raw); err == nil {
+			t.Fatalf("invalid port list %q was accepted", raw)
+		}
+	}
+}

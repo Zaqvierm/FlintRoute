@@ -360,6 +360,11 @@ rollback. Где доказательства нет — статус `unknown`,
 | P12.4 | scheduler, hysteresis, cooldown, pin, quarantine | race/crash/rollback tests |
 | P12.5 | narrow Flint 2 proof для двух bundles и двух profiles | path/leak/negative-control evidence |
 
+P12.1 проверен на Flint 2 с `nfqws` v72.12. Provider отклоняет неизвестные
+опции, незакреплённые версии и несовпадающие SHA-256, создаёт временный config
+с правами `0600` и передаёт его как единственный аргумент `nfqws @candidate`.
+Проверка с `--dry-run` прошла, хеш активного config до и после запуска совпал.
+
 P12 заканчивается не красивым JSON, а доказательством на Flint 2: два сервиса
 одновременно используют разные выходы, контрольный трафик не затронут,
 деградация вызывает bounded switch, а плохой кандидат полностью откатывается.
