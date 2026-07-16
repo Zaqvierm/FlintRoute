@@ -107,6 +107,7 @@ Verified: every Go package passed.
   rollback active config + prior service state. Включает P6 reconcile path.
 - `tests/installer-backup.sh` — empty archive останавливает install/uninstall до удаления файлов и не пишет `last-backup-path`;
 - `tests/installer-lifecycle.sh` — clean install, повторный upgrade, rollback невалидной версии и verified uninstall;
+- `tests/hardware/run-p13-faults.ps1` — перезапуск managed процессов и controlled reboot с проверкой целой committed revision;
 - `tests/package-openwrt.sh` — состав, SHA-256 manifest и отказ при повреждении OpenWrt-пакета.
 
 ## Четыре уровня covered
