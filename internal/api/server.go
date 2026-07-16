@@ -80,6 +80,7 @@ type Server struct {
 	configVersion        int64
 	recovery             recoveryStatus
 	hideSensitive        bool
+	adaptiveZapret       *adaptiveRuntime
 	schedulerOnce        sync.Once
 	schedulerCancel      context.CancelFunc
 	schedulerWG          sync.WaitGroup
@@ -164,6 +165,13 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		activeRevision:       activeRevision,
 		configVersion:        configVersion,
 		hideSensitive:        true,
+	}
+	if activeConfig.Zapret.AdaptiveEnabled {
+		s.adaptiveZapret, err = newAdaptiveRuntime(activeConfig, stateStore)
+		if err != nil {
+			_ = stateStore.Close()
+			return nil, fmt.Errorf("initialize adaptive Zapret: %w", err)
+		}
 	}
 	if initial := s.broker.Recent(0, 1); len(initial) == 1 {
 		if err := s.persistEvent(initial[0]); err != nil {
@@ -416,6 +424,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/xray/subscription/prepare", s.requireRole(auth.RoleAdministrator, s.handleXraySubscriptionPrepare))
 	s.mux.HandleFunc("/api/v1/smart-dns", s.requireRole(auth.RoleViewer, s.handleSmartDNS))
 	s.mux.HandleFunc("/api/v1/zapret", s.requireRole(auth.RoleViewer, s.handleZapret))
+	s.mux.HandleFunc("/api/v1/zapret/adaptive/evaluate", s.requireRole(auth.RoleAdministrator, s.handleAdaptiveZapretEvaluate))
 	s.mux.HandleFunc("/api/v1/telegram", s.requireRole(auth.RoleViewer, s.handleTelegram))
 	s.mux.HandleFunc("/api/v1/diagnostics", s.requireRole(auth.RoleDiagnostician, s.handleDiagnostics))
 	s.mux.HandleFunc("/api/v1/probes", s.requireRole(auth.RoleDiagnostician, s.handleProbes))

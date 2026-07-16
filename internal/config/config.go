@@ -95,12 +95,20 @@ type Xray struct {
 }
 
 type Zapret struct {
-	Binary         string `json:"binary"`
-	InitScript     string `json:"init_script"`
-	ActiveConfig   string `json:"active_config"`
-	ActivationMode string `json:"activation_mode"`
-	Strategy       string `json:"strategy"`
-	QueueNum       int    `json:"queue_num"`
+	Binary              string                    `json:"binary"`
+	InitScript          string                    `json:"init_script"`
+	ActiveConfig        string                    `json:"active_config"`
+	ActivationMode      string                    `json:"activation_mode"`
+	Strategy            string                    `json:"strategy"`
+	QueueNum            int                       `json:"queue_num"`
+	AdaptiveEnabled     bool                      `json:"adaptive_enabled,omitempty"`
+	AdaptiveCatalogFile string                    `json:"adaptive_catalog_file,omitempty"`
+	AdaptiveAssignments []ZapretProfileAssignment `json:"adaptive_assignments,omitempty"`
+}
+
+type ZapretProfileAssignment struct {
+	BundleID  string `json:"bundle_id"`
+	ProfileID string `json:"profile_id"`
 }
 
 type GeoIP struct {
@@ -382,6 +390,26 @@ func (c *Config) Validate() error {
 		if c.Zapret.Strategy != "tls-fake-ttl3-v1" {
 			return fmt.Errorf("unsupported zapret strategy")
 		}
+		if c.Zapret.AdaptiveEnabled {
+			if !filepath.IsAbs(c.Zapret.AdaptiveCatalogFile) || len(c.Zapret.AdaptiveAssignments) == 0 || len(c.Zapret.AdaptiveAssignments) > 64 {
+				return fmt.Errorf("adaptive Zapret requires a catalog and bounded assignments")
+			}
+			if c.Platform.Target == "glinet-flint2" && c.Zapret.AdaptiveCatalogFile != "/etc/router-policy/zapret/catalog.json" {
+				return fmt.Errorf("Flint 2 adaptive Zapret catalog must use the project-owned path")
+			}
+			seenBundles := map[string]bool{}
+			for _, assignment := range c.Zapret.AdaptiveAssignments {
+				if !routeTagPattern.MatchString(assignment.BundleID) || !routeTagPattern.MatchString(assignment.ProfileID) || seenBundles[assignment.BundleID] {
+					return fmt.Errorf("adaptive Zapret assignment is invalid or duplicated")
+				}
+				seenBundles[assignment.BundleID] = true
+			}
+		} else if c.Zapret.AdaptiveCatalogFile != "" || len(c.Zapret.AdaptiveAssignments) != 0 {
+			return fmt.Errorf("adaptive Zapret catalog and assignments require adaptive_enabled")
+		}
+	}
+	if !hasZapret && (c.Zapret.AdaptiveEnabled || c.Zapret.AdaptiveCatalogFile != "" || len(c.Zapret.AdaptiveAssignments) != 0) {
+		return fmt.Errorf("adaptive Zapret requires an enabled zapret route")
 	}
 	if !hasVLESS && c.Xray.OutboundBundleSHA256 != "" {
 		return fmt.Errorf("Xray outbound bundle is set without enabled vless routes")

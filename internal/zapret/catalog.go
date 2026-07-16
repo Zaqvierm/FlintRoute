@@ -30,18 +30,18 @@ var (
 )
 
 type Profile struct {
-	ID              string
-	Provider        string
-	ProviderVersion string
-	BinaryDigest    string
-	RouteType       string
-	IPFamilies      []string
-	Transports      []string
-	Ports           []uint16
-	Queue           uint16
-	Safety          string
-	StrategyDigest  string
-	Strategy        []byte
+	ID              string   `json:"id"`
+	Provider        string   `json:"provider"`
+	ProviderVersion string   `json:"provider_version"`
+	BinaryDigest    string   `json:"binary_digest"`
+	RouteType       string   `json:"route_type"`
+	IPFamilies      []string `json:"ip_families"`
+	Transports      []string `json:"transports"`
+	Ports           []uint16 `json:"ports"`
+	Queue           uint16   `json:"queue"`
+	Safety          string   `json:"safety"`
+	StrategyDigest  string   `json:"strategy_digest"`
+	Strategy        []byte   `json:"-"`
 }
 
 type Catalog struct {

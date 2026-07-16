@@ -178,6 +178,11 @@ func (s *Server) validateChangeSet(cs ChangeSet) (ChangeSet, *actionFailure) {
 	tx.ArtifactsReady = manifest.DeploymentReady
 	tx.ArtifactBlockReason = manifest.BlockReason
 	tx.ArtifactsSimulation = manifest.Simulation
+	if err := bindAdaptiveCandidate(&tx, candidate); err != nil {
+		_ = adapter.RetireCapability(tx)
+		return cs, &actionFailure{Status: 422, Code: "adaptive_candidate_invalid", Message: err.Error()}
+	}
+	manifestHash = tx.ArtifactManifestHash
 	if err := adapter.PersistBinding(tx); err != nil {
 		_ = adapter.RetireCapability(tx)
 		return cs, internalFailure(err)
@@ -859,6 +864,8 @@ func operationRootAllowed(path string) bool {
 		default:
 			return false
 		}
+	case "zapret":
+		return len(parts) == 2 && parts[1] == "adaptive_assignments"
 	case "openwrt":
 		return len(parts) == 2 && parts[1] == "flow_offloading_policy"
 	case "geoip":

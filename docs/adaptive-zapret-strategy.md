@@ -405,6 +405,13 @@ Xray, и Zapret, а Zapret-поток действительно прошёл ч
 snapshot в интеграционном тесте вызывает adapter rollback и quarantine
 кандидата. Жёсткие сбои питания и длительная матрица отказов остаются в P13.
 
+Рабочий control plane загружает bounded catalog из project-owned файла,
+восстанавливает cooldown/quarantine из bbolt и принимает ranking через
+административный endpoint. Решение `SWITCH` создаёт обычный ChangeSet: новый
+bundle assignment проходит генерацию artifact manifest, apply, обе проверки и
+commit. При ошибке выполняется штатный rollback, а challenger попадает в
+quarantine. Клиент не может передать произвольную nfqws-стратегию в запросе.
+
 P12 заканчивается не красивым JSON, а доказательством на Flint 2: два сервиса
 одновременно используют разные выходы, контрольный трафик не затронут,
 деградация вызывает bounded switch, а плохой кандидат полностью откатывается.

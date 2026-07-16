@@ -60,7 +60,8 @@
     "active_config": "/etc/router-policy/zapret/nfqws.conf",
     "activation_mode": "managed",
     "strategy": "tls-fake-ttl3-v1",
-    "queue_num": 200
+    "queue_num": 200,
+    "adaptive_enabled": false
   },
   "geoip": {
     "mode": "mmdb",

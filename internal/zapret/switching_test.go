@@ -39,6 +39,31 @@ func TestSwitchControllerUsesHysteresisCooldownAndEmergencyBypass(t *testing.T) 
 	}
 }
 
+func TestSwitchControllerRestoresCooldownAndQuarantine(t *testing.T) {
+	controller := testSwitchController(t)
+	key := switchKey()
+	now := time.Date(2026, 7, 16, 17, 30, 0, 0, time.UTC)
+	state := SwitchState{
+		Key: key, ActiveProfileID: "zapret-a", LastSwitchAt: now.Add(-time.Minute),
+		CooldownUntil: now.Add(time.Hour), QuarantinedUntil: map[string]time.Time{"zapret-b": now.Add(2 * time.Hour)},
+	}
+	if err := controller.Restore(state); err != nil {
+		t.Fatal(err)
+	}
+	ranking := switchRanking(key)
+	decision, err := controller.Evaluate(key, ranking, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Action != SwitchHold || decision.Reason != "cooldown_active" {
+		t.Fatalf("restored cooldown was ignored: %+v", decision)
+	}
+	snapshot := controller.Snapshot(key, now)
+	if !snapshot.QuarantinedUntil["zapret-b"].Equal(state.QuarantinedUntil["zapret-b"]) {
+		t.Fatal("restored quarantine was lost")
+	}
+}
+
 func TestManualPinFailsClosedAndUsesOnlyAllowedFallback(t *testing.T) {
 	controller := testSwitchController(t)
 	key := switchKey()

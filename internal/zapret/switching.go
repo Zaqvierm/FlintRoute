@@ -88,21 +88,11 @@ func (c *SwitchController) SetActive(key DecisionKey, profileID string, now time
 }
 
 func (c *SwitchController) SetPin(key DecisionKey, pin ManualPin) error {
-	if c == nil || !profileIDPattern.MatchString(pin.ProfileID) {
+	if c == nil {
 		return errors.New("valid pinned profile is required")
 	}
-	if pin.Mode != PinFailClosed && pin.Mode != PinSafeFallback && pin.Mode != PinHoldLast {
-		return errors.New("unsupported pin mode")
-	}
-	seen := make(map[string]bool, len(pin.AllowedFallbacks))
-	for _, profileID := range pin.AllowedFallbacks {
-		if !profileIDPattern.MatchString(profileID) || profileID == pin.ProfileID || seen[profileID] {
-			return errors.New("invalid pinned fallback list")
-		}
-		seen[profileID] = true
-	}
-	if pin.Mode != PinSafeFallback && len(pin.AllowedFallbacks) > 0 {
-		return errors.New("fallbacks are only valid for safe_fallback pins")
+	if err := validateManualPin(pin); err != nil {
+		return err
 	}
 	copyPin := pin
 	copyPin.AllowedFallbacks = append([]string(nil), pin.AllowedFallbacks...)
@@ -245,6 +235,31 @@ func (c *SwitchController) Snapshot(key DecisionKey, now time.Time) SwitchState 
 	c.purgeQuarantineLocked(&state, now.UTC())
 	c.states[decisionKeyString(key)] = state
 	return cloneSwitchState(state)
+}
+
+// Restore loads a previously persisted decision state. The caller remains
+// responsible for binding it to the current network fingerprint.
+func (c *SwitchController) Restore(state SwitchState) error {
+	if c == nil || state.Key.BundleID == "" || state.ActiveProfileID == "" {
+		return errors.New("complete persisted switch state is required")
+	}
+	if !profileIDPattern.MatchString(state.ActiveProfileID) {
+		return errors.New("persisted active profile is invalid")
+	}
+	if state.Pin != nil {
+		if err := validateManualPin(*state.Pin); err != nil {
+			return err
+		}
+	}
+	for profileID, until := range state.QuarantinedUntil {
+		if !profileIDPattern.MatchString(profileID) || until.IsZero() {
+			return errors.New("persisted quarantine state is invalid")
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.states[decisionKeyString(state.Key)] = cloneSwitchState(state)
+	return nil
 }
 
 type SwitchApplier interface {
@@ -433,6 +448,26 @@ func validateSwitchingPolicy(policy SwitchingPolicy) error {
 		policy.Cooldown < time.Minute || policy.Cooldown > 24*time.Hour ||
 		policy.Quarantine < time.Minute || policy.Quarantine > 7*24*time.Hour {
 		return errors.New("switching timing policy is outside the bounded range")
+	}
+	return nil
+}
+
+func validateManualPin(pin ManualPin) error {
+	if !profileIDPattern.MatchString(pin.ProfileID) {
+		return errors.New("valid pinned profile is required")
+	}
+	if pin.Mode != PinFailClosed && pin.Mode != PinSafeFallback && pin.Mode != PinHoldLast {
+		return errors.New("unsupported pin mode")
+	}
+	seen := make(map[string]bool, len(pin.AllowedFallbacks))
+	for _, profileID := range pin.AllowedFallbacks {
+		if !profileIDPattern.MatchString(profileID) || profileID == pin.ProfileID || seen[profileID] {
+			return errors.New("invalid pinned fallback list")
+		}
+		seen[profileID] = true
+	}
+	if pin.Mode != PinSafeFallback && len(pin.AllowedFallbacks) > 0 {
+		return errors.New("fallbacks are only valid for safe_fallback pins")
 	}
 	return nil
 }

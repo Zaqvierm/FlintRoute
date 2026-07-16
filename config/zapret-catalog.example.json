@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "id": "profile-a",
+      "provider": "nfqws-v1",
+      "provider_version": "72.12",
+      "binary_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "route_type": "zapret",
+      "ip_families": ["ipv4"],
+      "transports": ["tcp"],
+      "ports": [80, 443],
+      "queue": 200,
+      "safety": "reviewed",
+      "strategy_digest": "sha256:70c34a71ff9251c49d596b8eeeaeec8e5ca2184b1edbd9ac39e94b7ac304e09c",
+      "strategy": "--qnum=200\n--filter-tcp=80,443\n--dpi-desync=fake\n"
+    },
+    {
+      "id": "profile-b",
+      "provider": "nfqws-v1",
+      "provider_version": "72.12",
+      "binary_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "route_type": "zapret",
+      "ip_families": ["ipv4"],
+      "transports": ["tcp"],
+      "ports": [80, 443],
+      "queue": 200,
+      "safety": "reviewed",
+      "strategy_digest": "sha256:45ecec1cf41433721096f661ee68edd569361c4ad816299beff08796da7ddc16",
+      "strategy": "--qnum=200\n--filter-tcp=80,443\n--dpi-desync=fake\n--dpi-desync-ttl=3\n"
+    }
+  ],
+  "bundles": [
+    {
+      "id": "discord",
+      "category": "TSPU_RESTRICTED",
+      "required_domains": ["discord.com", "gateway.discord.gg"],
+      "protocols": [
+        { "transport": "tcp", "port": 80 },
+        { "transport": "tcp", "port": 443 }
+      ],
+      "ip_families": ["ipv4"],
+      "allowed_profiles": ["profile-a", "profile-b"],
+      "failure_route": "drop"
+    }
+  ]
+}
