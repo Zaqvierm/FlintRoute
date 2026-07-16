@@ -1,0 +1,60 @@
+[
+  {
+    "id": "direct-github-ipv4-tls",
+    "route": "direct",
+    "domain": "github.com",
+    "service": "github",
+    "expected_status": "OK",
+    "expected_route_type": "direct",
+    "expected_address_family": "ipv4",
+    "expected_path_transport": "direct",
+    "expected_port": 443,
+    "require_tls": true,
+    "require_content": true
+  },
+  {
+    "id": "zapret-discord-ipv4-tls",
+    "route": "zapret",
+    "domain": "discord.com",
+    "service": "discord_acceptance",
+    "expected_status": "OK",
+    "expected_route_type": "zapret",
+    "expected_address_family": "ipv4",
+    "expected_path_transport": "direct",
+    "expected_port": 443,
+    "expected_quic_policy": "forced_tcp",
+    "require_tls": true
+  },
+  {
+    "id": "vless-chatgpt-ipv4-tls",
+    "route": "proxy-4",
+    "domain": "chatgpt.com",
+    "service": "chatgpt",
+    "expected_status": "OK",
+    "expected_route_type": "vless",
+    "expected_address_family": "ipv4",
+    "expected_path_transport": "socks5",
+    "expected_port": 443,
+    "require_tls": true
+  },
+  {
+    "id": "drop-ipv4-ipv6-dns",
+    "route": "drop",
+    "domain": "example.invalid",
+    "service": "github",
+    "expected_status": "OK",
+    "expected_route_type": "drop"
+  },
+  {
+    "id": "smart-dns",
+    "skip_reason": "No production Smart DNS resolver is configured in this deployment"
+  },
+  {
+    "id": "native-ipv6",
+    "skip_reason": "WAN6 is disabled in this deployment; no IPv6 default route exists"
+  },
+  {
+    "id": "tcp-80",
+    "skip_reason": "The active acceptance services expose only TLS probes"
+  }
+]
