@@ -54,11 +54,13 @@ else
 fi
 echo "verified_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$manifest"
 
-for service in $SERVICES; do
-  init="$INIT_DIR/$service"
-  [ -x "$init" ] && "$init" stop 2>/dev/null || true
-  [ -x "$init" ] && "$init" disable 2>/dev/null || true
-done
+if [ -z "$SYSTEM_ROOT" ]; then
+  for service in $SERVICES; do
+    init="$INIT_DIR/$service"
+    [ -x "$init" ] && "$init" stop 2>/dev/null || true
+    [ -x "$init" ] && "$init" disable 2>/dev/null || true
+  done
+fi
 
 rm -f "$INIT_DIR/router-policy" "$INIT_DIR/router-policy-boot-guard" "$INIT_DIR/router-policy-watchdog" "$INIT_DIR/router-policy-xray" "$INIT_DIR/router-policy-zapret"
 rm -f "$HOTPLUG_IFACE_DIR/95-router-policy" "$HOTPLUG_FIREWALL_DIR/95-router-policy"

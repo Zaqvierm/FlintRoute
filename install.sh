@@ -53,6 +53,10 @@ need_root_for_apply() {
 }
 
 preflight_install() {
+  command -v stat >/dev/null 2>&1 || {
+    echo "stat is required by the transactional adapter; install the OpenWrt coreutils-stat package" >&2
+    return 1
+  }
   [ -f "$SOURCE_BINARY" ] || { echo "missing $SOURCE_BINARY; run scripts/build-go.sh before install" >&2; return 1; }
   for p in "$ROOT/scripts" "$ROOT/openwrt" "$ROOT/config/default.json" "$ROOT/config/schema.json"; do
     [ -e "$p" ] || { echo "missing install source: $p" >&2; return 1; }
@@ -145,8 +149,10 @@ snapshot_installation() {
     init="$INIT_DIR/$service"
     enabled=0
     running=0
-    [ -x "$init" ] && "$init" enabled >/dev/null 2>&1 && enabled=1
-    [ -x "$init" ] && "$init" running >/dev/null 2>&1 && running=1
+    if [ -z "$SYSTEM_ROOT" ]; then
+      [ -x "$init" ] && "$init" enabled >/dev/null 2>&1 && enabled=1
+      [ -x "$init" ] && "$init" running >/dev/null 2>&1 && running=1
+    fi
     echo "$service|$enabled|$running" >> "$services"
   done
   "$TAR_BIN" -C "$staging" -cf "$archive.tmp" .
@@ -164,17 +170,19 @@ restore_installation() {
     echo "automatic install rollback unavailable: invalid snapshot" >&2
     return 1
   }
-  for service in $SERVICES; do
-    init="$INIT_DIR/$service"
-    [ -x "$init" ] && "$init" stop >/dev/null 2>&1 || true
-    [ -x "$init" ] && "$init" disable >/dev/null 2>&1 || true
-  done
+  if [ -z "$SYSTEM_ROOT" ]; then
+    for service in $SERVICES; do
+      init="$INIT_DIR/$service"
+      [ -x "$init" ] && "$init" stop >/dev/null 2>&1 || true
+      [ -x "$init" ] && "$init" disable >/dev/null 2>&1 || true
+    done
+  fi
   while IFS='|' read -r presence p; do
     [ "$presence" = "present" ] || [ "$presence" = "absent" ] || continue
     rm -rf "$p"
   done < "$manifest"
   "$TAR_BIN" -C / -xf "$archive"
-  if [ -s "$services" ]; then
+  if [ -z "$SYSTEM_ROOT" ] && [ -s "$services" ]; then
     while IFS='|' read -r service enabled running; do
       init="$INIT_DIR/$service"
       [ -x "$init" ] || continue
@@ -206,6 +214,7 @@ wait_control_health() {
 }
 
 restart_running_services() {
+  [ -z "$SYSTEM_ROOT" ] || return 0
   for service in router-policy-xray router-policy-zapret router-policy router-policy-watchdog; do
     service_was_running "$service" || continue
     "$INIT_DIR/$service" restart
@@ -217,6 +226,7 @@ restart_running_services() {
 }
 
 start_control_services() {
+  [ -z "$SYSTEM_ROOT" ] || return 0
   for service in router-policy router-policy-watchdog; do
     if ! "$INIT_DIR/$service" running >/dev/null 2>&1; then
       "$INIT_DIR/$service" start

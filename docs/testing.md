@@ -106,7 +106,7 @@ Verified: every Go package passed.
   Zapret: nfqws `--dry-run` before apply, service start before nft load,
   rollback active config + prior service state. Включает P6 reconcile path.
 - `tests/installer-backup.sh` — empty archive останавливает install/uninstall до удаления файлов и не пишет `last-backup-path`;
-- `tests/installer-lifecycle.sh` — clean install, повторный upgrade, rollback невалидной версии и verified uninstall;
+- `tests/installer-lifecycle.sh` — clean install, повторный upgrade, compatible downgrade, rollback невалидной версии, verified uninstall и запрет service-manager side effects в sandbox;
 - `tests/hardware/run-p13-faults.ps1` — перезапуск managed процессов и controlled reboot с проверкой целой committed revision;
 - `tests/package-openwrt.sh` — состав, SHA-256 manifest и отказ при повреждении OpenWrt-пакета.
 
@@ -122,6 +122,6 @@ Host/SNI, vless SOCKS loopback, drop enforcement).
 
 - Smart DNS с production resolver и расширенная protocol/AF-матрица;
 - hard-crash/power-loss recovery и timer firing при потерянном management path;
-- multi-client, 72h soak, install/upgrade/downgrade (P13).
+- multi-client, hardware install/upgrade/downgrade/uninstall и 72h soak (P13).
 - Linux namespace/container behavior (нет локального Linux runtime; shell
   integration cross-platform, готов для Linux CI).

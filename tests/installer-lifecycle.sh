@@ -9,6 +9,7 @@ SYSTEM_ROOT="$TMP/root"
 BACKUP_BASE="$TMP/backups"
 SOURCE_BINARY="$TMP/router-policy-source"
 FAKE_CALL_LOG="$TMP/router-policy-calls.log"
+SERVICE_CONTROL_LOG="$TMP/service-control.log"
 BACKUP_SOURCES="$SYSTEM_ROOT/etc/config/network $SYSTEM_ROOT/etc/router-policy"
 mkdir -p "$SYSTEM_ROOT/etc/config" "$BACKUP_BASE"
 printf 'network-fixture\n' > "$SYSTEM_ROOT/etc/config/network"
@@ -40,12 +41,26 @@ run_install() {
   sh "$ROOT/install.sh" --install
 }
 
+install_service_sentinels() {
+  for service in router-policy-boot-guard router-policy router-policy-watchdog router-policy-xray router-policy-zapret; do
+    cat > "$SYSTEM_ROOT/etc/init.d/$service" <<'SH'
+#!/bin/sh
+printf '%s\n' "$0:$*" >> "$SERVICE_CONTROL_LOG"
+exit 1
+SH
+    chmod +x "$SYSTEM_ROOT/etc/init.d/$service"
+  done
+}
+
+export SERVICE_CONTROL_LOG
+
 write_fake_binary v1 0
 run_install "$BACKUP_BASE/first" >/dev/null
 [ -x "$SYSTEM_ROOT/usr/bin/router-policy" ]
 [ -f "$SYSTEM_ROOT/usr/lib/router-policy/openwrt/adapter.sh" ]
 [ -f "$SYSTEM_ROOT/etc/init.d/router-policy" ]
 grep -F 'v1:auth setup-token --if-needed' "$FAKE_CALL_LOG" >/dev/null
+install_service_sentinels
 
 printf '{"local":"preserved"}\n' > "$SYSTEM_ROOT/etc/router-policy/config/default.json"
 write_fake_binary v2 0
@@ -54,6 +69,19 @@ grep -F '"local":"preserved"' "$SYSTEM_ROOT/etc/router-policy/config/default.jso
 grep -F 'v2:validate-config' "$FAKE_CALL_LOG" >/dev/null
 grep -F 'v2:auth setup-token --if-needed' "$FAKE_CALL_LOG" >/dev/null
 [ -f "$SYSTEM_ROOT/etc/router-policy/config/factory-default.json" ]
+install_service_sentinels
+
+write_fake_binary v1-downgrade 0
+run_install "$BACKUP_BASE/downgrade" >/dev/null
+grep -F '"local":"preserved"' "$SYSTEM_ROOT/etc/router-policy/config/default.json" >/dev/null
+grep -F 'v1-downgrade:validate-config' "$FAKE_CALL_LOG" >/dev/null
+grep -F 'v1-downgrade:auth setup-token --if-needed' "$FAKE_CALL_LOG" >/dev/null
+install_service_sentinels
+
+write_fake_binary v2 0
+run_install "$BACKUP_BASE/restore-current" >/dev/null
+grep -F '"local":"preserved"' "$SYSTEM_ROOT/etc/router-policy/config/default.json" >/dev/null
+install_service_sentinels
 
 cp "$SYSTEM_ROOT/usr/bin/router-policy" "$TMP/expected-v2"
 printf 'stable-prefix\n' > "$SYSTEM_ROOT/usr/lib/router-policy/local-marker"
@@ -65,6 +93,7 @@ fi
 cmp "$TMP/expected-v2" "$SYSTEM_ROOT/usr/bin/router-policy"
 [ "$(cat "$SYSTEM_ROOT/usr/lib/router-policy/local-marker")" = "stable-prefix" ]
 grep -F '"local":"preserved"' "$SYSTEM_ROOT/etc/router-policy/config/default.json" >/dev/null
+install_service_sentinels
 
 BACKUP_DIR="$BACKUP_BASE/uninstall" \
 ROUTER_POLICY_SYSTEM_ROOT="$SYSTEM_ROOT" \
@@ -75,6 +104,7 @@ sh "$ROOT/uninstall.sh" --uninstall >/dev/null
 [ -f "$SYSTEM_ROOT/etc/router-policy/config/default.json" ]
 [ -s "$BACKUP_BASE/uninstall/router-policy-etc.tar" ]
 grep -E '^sha256=[0-9a-f]{64}$' "$BACKUP_BASE/uninstall/manifest.txt" >/dev/null
+[ ! -e "$SERVICE_CONTROL_LOG" ]
 
 RUNTIME_DIR="$SYSTEM_ROOT/tmp/router-policy"
 mkdir -p "$TMP/fake-bin" "$RUNTIME_DIR"
@@ -98,8 +128,17 @@ export HEALTH_COUNTER PATH ROUTER_POLICY_INSTALL_LIB_ONLY RUNTIME_DIR
 wait_control_health >/dev/null
 [ "$(cat "$HEALTH_COUNTER")" = "3" ]
 
+mkdir -p "$TMP/path-without-stat"
+if PATH="$TMP/path-without-stat" preflight_install >"$TMP/preflight-no-stat.out" 2>&1; then
+  echo "installer accepted a system without stat" >&2
+  exit 1
+fi
+grep -F 'install the OpenWrt coreutils-stat package' "$TMP/preflight-no-stat.out" >/dev/null
+
 echo "installer_clean_install=true"
 echo "installer_idempotent_upgrade=true"
+echo "installer_compatible_downgrade=true"
 echo "installer_failed_upgrade_rollback=true"
 echo "installer_verified_uninstall=true"
 echo "installer_waits_for_control_health=true"
+echo "installer_checks_transaction_dependencies=true"
