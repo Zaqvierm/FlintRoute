@@ -4,7 +4,8 @@ param(
   [Parameter(Mandatory = $true)][string]$KnownHostsFile,
   [Parameter(Mandatory = $true)][string]$CredentialFile,
   [Parameter(Mandatory = $true)][string]$OutputRoot,
-  [string]$RunId = ""
+  [string]$RunId = "",
+  [switch]$VerifyProductionCalibration
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,6 +33,7 @@ $password = $null
 $adaptiveEnabled = $false
 $catalogInstalled = $false
 $completed = $false
+$productionCalibration = $null
 
 function Set-Phase([string]$Name) {
   Write-Host "p13_adaptive_phase=$Name"
@@ -132,6 +134,40 @@ function Get-AdaptiveState([hashtable]$Key) {
   return (Invoke-API "POST" "/zapret/adaptive/state" $body).data
 }
 
+function Connect-AdministratorAPI {
+  Invoke-SSH "rm -f '$cookie'" | Out-Null
+  $login = Invoke-API "POST" "/auth/login" (@{ username = "admin"; password = $password } | ConvertTo-Json -Compress) -NoCSRF
+  $script:csrf = [string]$login.data.csrf_token
+  if ($login.data.role -ne "administrator" -or !$script:csrf) { throw "Administrator login failed" }
+}
+
+function Restart-ControlPlane {
+  $beforePID = (Invoke-SSH "pgrep -f '^/usr/bin/router-policy run --listen' 2>/dev/null || true").Trim()
+  Invoke-SSH "/etc/init.d/router-policy restart" | Out-Null
+  $healthy = $false
+  for ($attempt = 0; $attempt -lt 45; $attempt++) {
+    try {
+      $afterPID = (Invoke-SSH "pgrep -f '^/usr/bin/router-policy run --listen' 2>/dev/null || true").Trim()
+      $health = Invoke-SSH "wget -qO- http://127.0.0.1:8787/api/v1/health"
+      if ($afterPID -and $afterPID -ne $beforePID -and ($health | ConvertFrom-Json).data.status -eq "ok") { $healthy = $true; break }
+    } catch { }
+    Start-Sleep -Seconds 1
+  }
+  if (!$healthy) { throw "Control plane did not recover after restart" }
+  Connect-AdministratorAPI
+}
+
+function Wait-AdaptiveBudget([int]$Minimum, [int]$Attempts = 90) {
+  for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
+    $runtime = (Invoke-API "GET" "/zapret/adaptive/runtime").data
+    if ($runtime.status -eq "OK" -and [int]$runtime.budget_used -ge $Minimum -and [int]$runtime.in_flight -eq 0) {
+      return $runtime
+    }
+    Start-Sleep -Seconds 1
+  }
+  throw "Adaptive production probe budget did not reach $Minimum"
+}
+
 function Assert-Route([string]$Route, [string]$Domain, [string]$Service, [string]$Type) {
   foreach ($value in @($Route, $Domain, $Service, $Type)) {
     if ($value -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$') { throw "Unsafe route proof value" }
@@ -159,9 +195,7 @@ try {
   $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
   try { $password = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
   Set-Phase "login"
-  $login = Invoke-API "POST" "/auth/login" (@{ username = "admin"; password = $password } | ConvertTo-Json -Compress) -NoCSRF
-  $csrf = [string]$login.data.csrf_token
-  if ($login.data.role -ne "administrator" -or !$csrf) { throw "Administrator login failed" }
+  Connect-AdministratorAPI
 
   Set-Phase "inspect-baseline"
   $configRaw = Invoke-SSH "cat /etc/router-policy/config/default.json"
@@ -203,6 +237,55 @@ try {
   Set-Phase "enable-adaptive"
   $enabled = Invoke-Change $enableOps "Enable bounded adaptive Zapret"
   $adaptiveEnabled = $true
+  if ($VerifyProductionCalibration) {
+    Set-Phase "production-calibration-active"
+    Restart-ControlPlane
+    $firstRuntime = Wait-AdaptiveBudget 1
+    Restart-ControlPlane
+    $secondRuntime = Wait-AdaptiveBudget 2
+    $profileIDs = @($secondRuntime.rankings | ForEach-Object profile_id | Where-Object { $_ } | Sort-Object -Unique)
+    if ($profileIDs -notcontains $stable -or $profileIDs -notcontains $challenger) {
+      throw "Production scheduler did not collect both active and challenger evidence"
+    }
+    $budgetBeforeRestart = [int]$secondRuntime.budget_used
+    Restart-ControlPlane
+    $restoredRuntime = (Invoke-API "GET" "/zapret/adaptive/runtime").data
+    if ([int]$restoredRuntime.budget_used -lt $budgetBeforeRestart -or @($restoredRuntime.rankings).Count -lt 2) {
+      throw "Adaptive scheduler or ranking state was not restored after restart"
+    }
+
+    Set-Phase "production-calibration-fingerprint"
+    $fingerprintCatalog = $catalog | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $fingerprintProfile = $fingerprintCatalog.profiles[0].PSObject.Copy()
+    $fingerprintProfile.id = "fingerprint-v72"
+    $fingerprintCatalog.profiles += $fingerprintProfile
+    $fingerprintCatalog.bundles[0].allowed_profiles += $fingerprintProfile.id
+    $fingerprintFile = Join-Path $temp "catalog-fingerprint.json"
+    [IO.File]::WriteAllText($fingerprintFile, ($fingerprintCatalog | ConvertTo-Json -Depth 20), (New-Object Text.UTF8Encoding($false)))
+    & $scp @scpArgs $fingerprintFile "root@${RouterHost}:$remoteCatalogBad"
+    if ($LASTEXITCODE -ne 0) { throw "Fingerprint catalog upload failed" }
+    Invoke-SSH "cp '$remoteCatalogBad' '$catalogPath'; chmod 0600 '$catalogPath'"
+    Restart-ControlPlane
+    $fingerprintRuntime = (Invoke-API "GET" "/zapret/adaptive/runtime").data
+    if ($fingerprintRuntime.network_fingerprint -eq $secondRuntime.network_fingerprint) {
+      throw "Catalog-bound network fingerprint did not change"
+    }
+    $newFingerprintAttempts = @($fingerprintRuntime.rankings | Measure-Object -Property attempts -Sum).Sum
+    $budgetDelta = [int]$fingerprintRuntime.budget_used - $budgetBeforeRestart
+    if ([int]$newFingerprintAttempts -gt [Math]::Max(0, $budgetDelta)) {
+      throw "Old ranking evidence leaked into the new network fingerprint"
+    }
+    Invoke-SSH "cp '$remoteCatalog' '$catalogPath'; chmod 0600 '$catalogPath'"
+    Restart-ControlPlane
+    $productionCalibration = [ordered]@{
+      live_active_and_challenger = $true
+      persisted_across_restart = $true
+      catalog_bound_fingerprint_changed = $true
+      old_ranking_leak = $false
+      budget_used = [int]$restoredRuntime.budget_used
+      profiles = $profileIDs
+    }
+  }
   $fingerprint = "sha256:" + (Invoke-SSH "{ ubus call network.interface.wan status 2>/dev/null || true; ip route show table main; } | sha256sum | awk '{print `$1}'").Trim()
   if ($fingerprint -notmatch '^sha256:[0-9a-f]{64}$') { throw "Network fingerprint is invalid" }
   $key = @{ bundle_id = $bundle; transport = "tcp"; port = 443; ip_family = "ipv4"; network_fingerprint = $fingerprint }
@@ -263,6 +346,7 @@ try {
     pin_safe_fallback = [ordered]@{ mode = "safe_fallback"; restored_profile = $stable; committed = $true }
     cooldown = [ordered]@{ action = $cooldown.decision.action; reason = $cooldown.decision.reason; passed = $true }
     bad_challenger = [ordered]@{ http_status = $badResult.Status; quarantined = $true; reselection_blocked = $true }
+    production_calibration = $productionCalibration
     static_baseline_restored = $true
     post_test_routes = $postRoutes
     passed = $true

@@ -23,6 +23,12 @@ state-changing операция идёт через API и ChangeSet.
 - Session — HttpOnly cookie `rp_session`. JSON login не отдаёт session ID.
 - CSRF header `X-CSRF-Token` для state-changing `/api/v1/*`.
 - Body limit 1 MiB. Responses несут `request_id` + `X-Request-ID`.
+- Session ID, CSRF token, setup token, revision/transaction IDs и имена atomic
+  temp-файлов создаются только через проверенный `crypto/rand`; ошибка entropy
+  source останавливает операцию.
+- Security audit различает loopback, wildcard и non-loopback listeners.
+  Wildcard bind не считается безопасным без firewall topology proof; API на
+  таком bind даёт critical failure.
 
 ## Endpoints
 
@@ -37,12 +43,14 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/domains` | domain policy / decision cache |
 | `/api/v1/policies` | policy + overrides |
 | `/api/v1/routes` | route descriptors, including disabled |
+| `/api/v1/traffic` | cumulative RX/TX bytes, packets and errors from `/proc/net/dev` |
 | `/api/v1/probes` | persisted probe evidence; `domain`/`service`/`route`/`limit` filters |
 | `/api/v1/route-health` | VLESS health matrix, selected/standby/quarantine roles |
 | `/api/v1/proxies` | proxy/VLESS server status |
 | `/api/v1/diagnostics` | network diagnostics provenance (source/hash/expiry/simulation) |
 | `/api/v1/smart-dns` | smart DNS state |
 | `/api/v1/zapret` | managed Zapret/nfqws plan state |
+| `/api/v1/zapret/adaptive/runtime` | production scheduler budget, fingerprint and live ranking |
 | `/api/v1/zapret/adaptive/evaluate` | bounded profile evaluation and transactional bundle switch |
 | `/api/v1/zapret/adaptive/state` | persisted active profile, cooldown, pin and quarantine state |
 | `/api/v1/zapret/adaptive/pin` | set a validated bundle-local manual pin and allowed fallbacks |
@@ -71,6 +79,10 @@ failed | expired | requires_device
 `validate` клонирует active typed config, применяет все операции, запускает
 `config.Validate()`, persist полный canonical candidate, SHA-256. Неподдержанные
 операции → `draft` + error.
+
+Создание ChangeSet требует непустой список явных операций и текущий
+`config_version` из `/api/v1/revisions`. UI не подставляет скрытую операцию или
+фиксированную базовую версию.
 
 `apply` создаёт revision/transaction metadata и вызывает adapter contract:
 `Prepare → ValidateCandidate → SnapshotCurrent → ApplyCandidate →

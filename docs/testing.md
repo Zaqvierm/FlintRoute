@@ -92,6 +92,10 @@ Verified: every Go package passed.
 - `TestProbesEndpointReadsPersistedResultsAndRedactsIPs`, `TestListProbeResultsReturnsNewestFirstAndHonorsLimit`
 - `TestRouteHealthPersistsAcrossRestart`, `TestServerHealthCycleCallsInjectedEnginePersistsAndExposesStatus`
 - `TestXraySubscriptionPrepareCreatesValidatableChangeSet`, `TestXraySubscriptionPrepareFailureCreatesNoChangeSet`
+- `TestProductionAdaptiveCycleCollectsActiveAndCandidateEvidence`, `TestAdaptiveNetworkFingerprintInvalidatesOldRanking`
+- `TestEventBrokerFailsWhenEntropyIsUnavailable`, `TestRequestIDFailsClosedWhenEntropyIsUnavailable`
+- `TestCreateChangeSetRejectsEmptyOperations`, `TestWildcardAPIListenerFailsClosed`
+- `TestParseProcNetDev`, `TestParseProcNetDevRejectsTruncatedCounters`
 - `TestStorePersistsJSONAcrossReopen`, `TestMigratesLegacyDatabaseWithoutSchemaVersion`
 
 ## Shell behavior tests
@@ -120,6 +124,11 @@ Verified: every Go package passed.
   ограниченную bbolt-копию, повреждает только активную базу FlintRoute, сохраняет
   committed dataplane и управляемые providers, автономно восстанавливает state,
   затем повторяет Direct/Zapret/VLESS/Smart DNS path proofs;
+- `tests/hardware/run-p13-adaptive.ps1 -VerifyProductionCalibration` — получает
+  live active/challenger evidence из production health cycle, проверяет
+  сохранение scheduler/ranking после restart, catalog-bound fingerprint
+  isolation, transaction-bound switch, cooldown, pin, quarantine и возврат
+  static baseline;
 - `tests/package-openwrt.sh` — состав, SHA-256 manifest и отказ при повреждении OpenWrt-пакета.
 
 ## Четыре уровня covered
@@ -140,7 +149,6 @@ protocol-specific packet proof и bound route evidence; один HTTPS PASS не
 
 ## Оставшиеся аппаратные проверки
 
-- production adaptive calibration через живые probes и смену network fingerprint;
 - физическое power-loss recovery;
 - multi-client, hardware install/upgrade/downgrade/uninstall и 72h soak (P13).
 - Linux namespace/container behavior (нет локального Linux runtime; shell

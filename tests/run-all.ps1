@@ -78,11 +78,12 @@ if ($shellcheck -and (Test-Path -LiteralPath $shellcheck)) {
 Write-Host "== installer backup failure =="
 $gitSh = $env:GIT_BASH
 if (!$gitSh) {
-  $bashCmd = Get-Command bash -ErrorAction SilentlyContinue
-  if ($bashCmd) { $gitSh = $bashCmd.Source }
+  $gitBash = "C:\Program Files\Git\bin\bash.exe"
+  if (Test-Path -LiteralPath $gitBash) { $gitSh = $gitBash }
 }
 if (!$gitSh) {
-  $gitSh = "C:\Program Files\Git\bin\bash.exe"
+  $bashCmd = Get-Command bash -ErrorAction SilentlyContinue
+  if ($bashCmd) { $gitSh = $bashCmd.Source }
 }
 $env:GO = ($go -replace '\\', '/')
 if (Test-Path $gitSh) {

@@ -30,6 +30,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-go.ps1
 - первичная настройка (`SetupScreen`);
 - обзор (`OverviewScreen`);
 - карта сети (`NetworkMap`, topology);
+- трафик (`Traffic`) — RX/TX bytes, текущая скорость, packets/errors по интерфейсам;
 - устройства (`Devices`, `DeviceCard`);
 - сервисы (`Services`, `ServiceGroup`);
 - политики (таблица/доска, `Policies`);
@@ -56,7 +57,9 @@ UI не пишет nft/Xray/dnsmasq/UCI/routes напрямую. Все state-ch
 Production UI не подставляет mock-данные. API недоступен → ошибка API и
 stale/unavailable состояния. После загрузки UI вызывает `/auth/me`: 401 → форма
 входа; 428/первый запуск — admin через setup token. После входа —
-overview/topology/devices/services/routes/events/security/system/changes + SSE.
+overview/topology/devices/services/routes/traffic/events/system/revisions + SSE.
+`security/audit` загружается только для diagnostician/admin, а `changes` — только
+для admin; 403 на дополнительном экране не валит общий dashboard.
 
 Development simulation — только отдельной командой:
 
@@ -83,7 +86,7 @@ topology за реальные данные.
 ```text
 index.html  ~0.40 kB
 CSS         ~5–6 kB
-JS          ~29–30 kB (gzip ~11 kB)
+JS          ~34 kB (gzip ~13 kB)
 ```
 
 Нормально для роутера: статические файлы внутри Go binary.
@@ -92,7 +95,7 @@ JS          ~29–30 kB (gzip ~11 kB)
 
 - реальные edit controls для policies/routes/devices;
 - подтверждение опасных операций отдельным modal;
-- роли кроме admin;
-- отображение реальных counters из OpenWrt adapter;
+- отдельные состояния disabled/read-only для каждого role-specific control;
+- группировка интерфейсов и графики скорости вместо базовой таблицы counters;
 - live topology из `ubus`/DHCP leases/wireless clients;
 - отображение recovery status (`/api/v1/system`).
