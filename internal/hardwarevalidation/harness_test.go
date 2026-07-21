@@ -202,9 +202,12 @@ func TestPublishedP13MatrixDeclaresFullCartesianCoverage(t *testing.T) {
 			unavailable++
 		default:
 			active++
+			if !testCase.RequireTransportProof {
+				t.Fatalf("active matrix case lacks protocol-specific proof: %s", testCase.ID)
+			}
 		}
 	}
-	if active != 4 || pending != 21 || unavailable != 25 {
+	if active != 23 || pending != 0 || unavailable != 27 {
 		t.Fatalf("published matrix classification drifted: active=%d pending=%d unavailable=%d", active, pending, unavailable)
 	}
 }

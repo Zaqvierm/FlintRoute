@@ -24,14 +24,14 @@
 | P10 | 85% | Проверяемый OpenWrt-пакет, обновление и чистая установка доказаны на Flint 2; downgrade/uninstall остаются |
 | P11 | 85% | Автоматические тесты |
 | P12 | 100% | Adaptive Zapret привязан к OpenWrt transaction; два bundle-профиля и независимые выходы проверены на Flint 2 |
-| P13 | 70% | Production Smart DNS, recursion guard, rollback timer, controlled reboot, SIGKILL managed-процессов и восстановление повреждённого state доказаны; 21 IPv4 matrix cell, power-loss, multi-client, lifecycle и soak остаются |
+| P13 | 78% | Полная применимая protocol/AF-матрица, production Smart DNS, recursion guard, rollback timer, controlled reboot, SIGKILL managed-процессов и восстановление повреждённого state доказаны; adaptive faults, power-loss, multi-client, lifecycle и soak остаются |
 
 ### P13 по подэтапам
 
 | Подэтап | Состояние | Подтверждено | Остаётся |
 |---|---|---|---|
 | P13.0 | завершён | Harness, metadata, route cases, evidence parsing и bounded result bundle | финальный публичный redacted bundle после soak |
-| P13.1 | частично | Полный 50-cell manifest `route × protocol × AF`; 4 PASS, 0 FAIL, 21 NOT_TESTED и 25 NOT_APPLICABLE; Direct/Zapret/VLESS/Smart DNS HTTPS, UDP/TCP resolver transport и production Smart DNS activation доказаны | LAN DNS, TCP/80, QUIC и transport-specific DROP; native IPv6 неприменим, пока WAN6 отсутствует |
+| P13.1 | завершён | Полный 50-cell manifest `route × protocol × AF`: 23 PASS, 0 FAIL, 0 NOT_TESTED, 27 NOT_APPLICABLE; каждая применимая клетка имеет protocol-specific packet proof и bound route evidence | 25 IPv6-клеток требуют отсутствующий WAN6; Zapret × DNS UDP/TCP неприменимы, потому что LAN DNS перехватывается до route classification |
 | P13.2 | частично | Два bundle scope, независимые Direct/Zapret/VLESS paths и transaction-bound adaptive apply | деградация активного профиля, quarantine/cooldown/pin и bad challenger на железе |
 | P13.3 | частично | SIGKILL managed nfqws/Xray/controller, controlled reboot, реальный 180-second rollback timer и восстановление повреждённой bbolt пройдены; committed dataplane и route proofs сохранены | физическое power loss |
 | P13.4 | начат | Bounded sampler и локальная проверка resource limits | три одновременных клиента и реальные throughput/latency/resource пределы |
@@ -96,8 +96,9 @@
 - Production Smart DNS resolver выбран; оба endpoint дали безопасные A/AAAA
   через UDP/53 и TCP/53 непосредственно на Flint 2. Два route транзакционно
   committed; оба bound path proof и соседние Direct/Zapret/VLESS proofs прошли.
-- Матрица больше не маскирует непройденные тесты как неприменимые: текущий
-  результат — 4 PASS, 0 FAIL, 21 NOT_TESTED и 25 NOT_APPLICABLE из-за отсутствия WAN6.
+- Полная матрица содержит 23 PASS, 0 FAIL и 0 NOT_TESTED. Из 27
+  `NOT_APPLICABLE` 25 относятся к отсутствующему WAN6, ещё две — к Zapret DNS:
+  LAN DNS перехватывается до Zapret route classification.
 - Защита от рекурсии proxy endpoint прошла отдельный runtime gate на Flint 2.
   Все 15 неблокирующих Xray outbound имеют configured bypass mark, активные nft
   rules стоят до policy classification, bound VLESS probe подтверждён, а live

@@ -132,13 +132,14 @@ Host/SNI, vless SOCKS loopback, drop enforcement).
 
 P13 matrix plan перечисляет полный декартов набор из пяти route types, пяти
 transport cases и двух address families. Harness отклоняет отсутствующую,
-лишнюю или продублированную клетку. Непроверенный transport получает явный
-`NOT_TESTED`; `NOT_APPLICABLE` разрешён только когда тест невозможен на этом
-hardware profile. Соседний HTTPS PASS ни один из этих статусов не закрывает.
+лишнюю или продублированную клетку. Каждая активная клетка требует отдельный
+protocol-specific packet proof и bound route evidence; один HTTPS PASS не может
+закрыть соседний protocol. На Flint 2 прошли все 23 применимые клетки. Из 27
+`NOT_APPLICABLE` 25 требуют отсутствующий WAN6, а Zapret DNS UDP/TCP
+перехватываются раньше route classification.
 
 ## Оставшиеся аппаратные проверки
 
-- оставшиеся 21 IPv4-клетка protocol/AF-матрицы;
 - физическое power-loss recovery;
 - multi-client, hardware install/upgrade/downgrade/uninstall и 72h soak (P13).
 - Linux namespace/container behavior (нет локального Linux runtime; shell

@@ -239,3 +239,32 @@ committed dataplane, restored a backup with the expected SHA-256 digest, and
 returned controller health plus watchdog supervision. Bound Direct, Zapret,
 VLESS and Smart DNS probes all passed after recovery. Evidence is stored outside
 the repository under the private Flint 2 hardware results.
+
+## 2026-07-19 08:45–09:05 +07 — protocol matrix initially reused HTTPS evidence
+
+### What was tested
+
+The published 50-cell matrix was rerun with protocol-specific packets for DNS
+over UDP/TCP, TCP/80, TCP/443 and UDP/443 instead of treating the protocol field
+as descriptive metadata.
+
+### What happened
+
+The previous harness executed the same HTTPS route probe for every active cell.
+The first strict run produced 8 PASS and 17 FAIL. Follow-up runs exposed four
+test-contract errors: inherited route marks were not applied, VLESS traffic was
+sent to its policy table instead of its SOCKS ingress, DROP expected a connected
+IPv4 address even though its proof is dual-stack enforcement, and the TCP probe
+stopped after the first resolved address. Zapret DNS also had no matching output
+counter because LAN DNS is intercepted before Zapret classification; those two
+Cartesian cells are not applicable by design.
+
+### Fix and verification
+
+Active cells now require a packet for their declared protocol plus bound route
+evidence. Direct, Smart DNS, Zapret and DROP use their configured marks and exact
+nft route counters. VLESS uses its route-bound SOCKS TCP/UDP ingress. TCP probes
+try every resolved IPv4 target. A final Flint 2 run completed 23 applicable
+cells with 23 PASS, 0 FAIL and 0 NOT_TESTED. The other 27 cells are explicit:
+25 require unavailable WAN6 and two are pre-route Zapret DNS combinations. The
+same run repeated the production Smart DNS and proxy-recursion release gates.

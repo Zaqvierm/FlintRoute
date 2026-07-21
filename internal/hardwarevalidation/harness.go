@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"router-policy/internal/config"
 	"router-policy/internal/probe"
 )
 
@@ -123,6 +124,7 @@ type MatrixCase struct {
 	Domain                string `json:"domain"`
 	Service               string `json:"service"`
 	Protocol              string `json:"protocol,omitempty"`
+	TransportDomain       string `json:"transport_domain,omitempty"`
 	AddressFamily         string `json:"address_family,omitempty"`
 	ExpectedStatus        string `json:"expected_status"`
 	ExpectedRouteType     string `json:"expected_route_type"`
@@ -132,6 +134,7 @@ type MatrixCase struct {
 	ExpectedQUICPolicy    string `json:"expected_quic_policy,omitempty"`
 	RequireTLS            bool   `json:"require_tls,omitempty"`
 	RequireContent        bool   `json:"require_content,omitempty"`
+	RequireTransportProof bool   `json:"require_transport_proof,omitempty"`
 	SkipReason            string `json:"skip_reason,omitempty"`
 	PendingReason         string `json:"pending_reason,omitempty"`
 }
@@ -295,6 +298,21 @@ func (h Harness) RunMatrix(ctx context.Context, runDir, casesPath string) (Matri
 		return MatrixSummary{}, err
 	}
 	defer probeFile.Close()
+	transportFile, err := os.OpenFile(filepath.Join(runDir, "transport.jsonl"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return MatrixSummary{}, err
+	}
+	defer transportFile.Close()
+	var activeConfig *config.Config
+	for _, testCase := range cases {
+		if testCase.RequireTransportProof {
+			activeConfig, err = config.Load(h.Paths.Config)
+			if err != nil {
+				return MatrixSummary{}, errors.New("transport matrix requires the active config")
+			}
+			break
+		}
+	}
 
 	seen := map[string]struct{}{}
 	summary := MatrixSummary{Total: len(cases), CoveragePassed: plan.RequireFullCoverage}
@@ -338,6 +356,15 @@ func (h Harness) RunMatrix(ctx context.Context, runDir, casesPath string) (Matri
 			return summary, fmt.Errorf("case %s returned invalid probe JSON: %w", testCase.ID, err)
 		}
 		reasons := evaluateCase(testCase, routeResult)
+		if len(reasons) == 0 && testCase.RequireTransportProof {
+			transportEvidence, transportErr := h.runTransportCase(ctx, activeConfig, testCase)
+			if err := appendJSON(transportFile, transportEvidence); err != nil {
+				return summary, err
+			}
+			if transportErr != nil {
+				reasons = append(reasons, "protocol-specific route evidence failed")
+			}
+		}
 		if len(reasons) == 0 {
 			result.Status = "PASS"
 			summary.Passed++
@@ -619,6 +646,9 @@ func validateCase(testCase MatrixCase, seen map[string]struct{}) error {
 	}
 	if testCase.ExpectedPort < 0 || testCase.ExpectedPort > 65535 {
 		return fmt.Errorf("invalid expected port for %s", testCase.ID)
+	}
+	if testCase.TransportDomain != "" && !caseIDPattern.MatchString(strings.ToLower(testCase.TransportDomain)) {
+		return fmt.Errorf("invalid transport domain for %s", testCase.ID)
 	}
 	return nil
 }

@@ -25,7 +25,14 @@
       "expected_route_type": "direct",
       "protocol": "dns_udp_53",
       "address_family": "ipv4",
-      "pending_reason": "LAN DNS intercept evidence for this route is not attached"
+      "route": "direct",
+      "domain": "github.com",
+      "service": "github",
+      "expected_status": "OK",
+      "expected_address_family": "ipv4",
+      "expected_path_transport": "direct",
+      "expected_port": 443,
+      "require_transport_proof": true
     },
     {
       "id": "direct-dns-udp-53-ipv6",
@@ -39,7 +46,14 @@
       "expected_route_type": "direct",
       "protocol": "dns_tcp_53",
       "address_family": "ipv4",
-      "pending_reason": "LAN DNS intercept evidence for this route is not attached"
+      "route": "direct",
+      "domain": "github.com",
+      "service": "github",
+      "expected_status": "OK",
+      "expected_address_family": "ipv4",
+      "expected_path_transport": "direct",
+      "expected_port": 443,
+      "require_transport_proof": true
     },
     {
       "id": "direct-dns-tcp-53-ipv6",
@@ -53,7 +67,14 @@
       "expected_route_type": "direct",
       "protocol": "tcp_80",
       "address_family": "ipv4",
-      "pending_reason": "TCP/80 acceptance service is not configured"
+      "route": "direct",
+      "domain": "github.com",
+      "service": "github",
+      "expected_status": "OK",
+      "expected_address_family": "ipv4",
+      "expected_path_transport": "direct",
+      "expected_port": 443,
+      "require_transport_proof": true
     },
     {
       "id": "direct-tcp-80-ipv6",
@@ -75,7 +96,8 @@
       "expected_path_transport": "direct",
       "expected_port": 443,
       "require_tls": true,
-      "require_content": true
+      "require_content": true,
+      "require_transport_proof": true
     },
     {
       "id": "direct-tcp-443-ipv6",
@@ -89,7 +111,14 @@
       "expected_route_type": "direct",
       "protocol": "udp_443",
       "address_family": "ipv4",
-      "pending_reason": "Live QUIC evidence is not attached"
+      "route": "direct",
+      "domain": "github.com",
+      "service": "github",
+      "expected_status": "OK",
+      "expected_address_family": "ipv4",
+      "expected_path_transport": "direct",
+      "expected_port": 443,
+      "require_transport_proof": true
     },
     {
       "id": "direct-udp-443-ipv6",
@@ -103,7 +132,7 @@
       "expected_route_type": "zapret",
       "protocol": "dns_udp_53",
       "address_family": "ipv4",
-      "pending_reason": "LAN DNS intercept evidence for this route is not attached"
+      "skip_reason": "LAN DNS is intercepted before Zapret route classification"
     },
     {
       "id": "zapret-dns-udp-53-ipv6",
@@ -117,7 +146,7 @@
       "expected_route_type": "zapret",
       "protocol": "dns_tcp_53",
       "address_family": "ipv4",
-      "pending_reason": "LAN DNS intercept evidence for this route is not attached"
+      "skip_reason": "LAN DNS is intercepted before Zapret route classification"
     },
     {
       "id": "zapret-dns-tcp-53-ipv6",
@@ -131,7 +160,16 @@
       "expected_route_type": "zapret",
       "protocol": "tcp_80",
       "address_family": "ipv4",
-      "pending_reason": "TCP/80 acceptance service is not configured"
+      "transport_domain": "github.com",
+      "route": "zapret",
+      "domain": "discord.com",
+      "service": "discord_acceptance",
+      "expected_status": "OK",
+      "expected_address_family": "ipv4",
+      "expected_path_transport": "direct",
+      "expected_port": 443,
+      "expected_quic_policy": "forced_tcp",
+      "require_transport_proof": true
     },
     {
       "id": "zapret-tcp-80-ipv6",
@@ -153,7 +191,8 @@
       "expected_path_transport": "direct",
       "expected_port": 443,
       "expected_quic_policy": "forced_tcp",
-      "require_tls": true
+      "require_tls": true,
+      "require_transport_proof": true
     },
     {
       "id": "zapret-tcp-443-ipv6",
@@ -167,7 +206,15 @@
       "expected_route_type": "zapret",
       "protocol": "udp_443",
       "address_family": "ipv4",
-      "pending_reason": "Live QUIC fallback evidence is not attached"
+      "route": "zapret",
+      "domain": "discord.com",
+      "service": "discord_acceptance",
+      "expected_status": "OK",
+      "expected_address_family": "ipv4",
+      "expected_path_transport": "direct",
+      "expected_port": 443,
+      "expected_quic_policy": "forced_tcp",
+      "require_transport_proof": true
     },
     {
       "id": "zapret-udp-443-ipv6",
@@ -181,7 +228,14 @@
       "expected_route_type": "smart_dns",
       "protocol": "dns_udp_53",
       "address_family": "ipv4",
-      "pending_reason": "Resolver transport and bound activation pass separate gates; matrix binding is not implemented"
+      "route": "smart-dns-primary",
+      "domain": "chatgpt.com",
+      "service": "chatgpt",
+      "expected_status": "OK",
+      "expected_address_family": "ipv4",
+      "expected_path_transport": "direct",
+      "expected_port": 443,
+      "require_transport_proof": true
     },
     {
       "id": "smart_dns-dns-udp-53-ipv6",
@@ -195,7 +249,14 @@
       "expected_route_type": "smart_dns",
       "protocol": "dns_tcp_53",
       "address_family": "ipv4",
-      "pending_reason": "Resolver transport and bound activation pass separate gates; matrix binding is not implemented"
+      "route": "smart-dns-primary",
+      "domain": "chatgpt.com",
+      "service": "chatgpt",
+      "expected_status": "OK",
+      "expected_address_family": "ipv4",
+      "expected_path_transport": "direct",
+      "expected_port": 443,
+      "require_transport_proof": true
     },
     {
       "id": "smart_dns-dns-tcp-53-ipv6",
@@ -209,7 +270,14 @@
       "expected_route_type": "smart_dns",
       "protocol": "tcp_80",
       "address_family": "ipv4",
-      "pending_reason": "TCP/80 acceptance service is not configured"
+      "route": "smart-dns-primary",
+      "domain": "chatgpt.com",
+      "service": "chatgpt",
+      "expected_status": "OK",
+      "expected_address_family": "ipv4",
+      "expected_path_transport": "direct",
+      "expected_port": 443,
+      "require_transport_proof": true
     },
     {
       "id": "smart_dns-tcp-80-ipv6",
@@ -230,7 +298,8 @@
       "expected_address_family": "ipv4",
       "expected_path_transport": "direct",
       "expected_port": 443,
-      "require_tls": true
+      "require_tls": true,
+      "require_transport_proof": true
     },
     {
       "id": "smart_dns-tcp-443-ipv6",
@@ -244,7 +313,14 @@
       "expected_route_type": "smart_dns",
       "protocol": "udp_443",
       "address_family": "ipv4",
-      "pending_reason": "Live QUIC evidence is not attached"
+      "route": "smart-dns-primary",
+      "domain": "chatgpt.com",
+      "service": "chatgpt",
+      "expected_status": "OK",
+      "expected_address_family": "ipv4",
+      "expected_path_transport": "direct",
+      "expected_port": 443,
+      "require_transport_proof": true
     },
     {
       "id": "smart_dns-udp-443-ipv6",
@@ -258,7 +334,14 @@
       "expected_route_type": "vless",
       "protocol": "dns_udp_53",
       "address_family": "ipv4",
-      "pending_reason": "LAN DNS intercept evidence for this route is not attached"
+      "route": "proxy-4",
+      "domain": "chatgpt.com",
+      "service": "chatgpt",
+      "expected_status": "OK",
+      "expected_address_family": "ipv4",
+      "expected_path_transport": "socks5",
+      "expected_port": 443,
+      "require_transport_proof": true
     },
     {
       "id": "vless-dns-udp-53-ipv6",
@@ -272,7 +355,14 @@
       "expected_route_type": "vless",
       "protocol": "dns_tcp_53",
       "address_family": "ipv4",
-      "pending_reason": "LAN DNS intercept evidence for this route is not attached"
+      "route": "proxy-4",
+      "domain": "chatgpt.com",
+      "service": "chatgpt",
+      "expected_status": "OK",
+      "expected_address_family": "ipv4",
+      "expected_path_transport": "socks5",
+      "expected_port": 443,
+      "require_transport_proof": true
     },
     {
       "id": "vless-dns-tcp-53-ipv6",
@@ -286,7 +376,14 @@
       "expected_route_type": "vless",
       "protocol": "tcp_80",
       "address_family": "ipv4",
-      "pending_reason": "TCP/80 acceptance service is not configured"
+      "route": "proxy-4",
+      "domain": "chatgpt.com",
+      "service": "chatgpt",
+      "expected_status": "OK",
+      "expected_address_family": "ipv4",
+      "expected_path_transport": "socks5",
+      "expected_port": 443,
+      "require_transport_proof": true
     },
     {
       "id": "vless-tcp-80-ipv6",
@@ -307,7 +404,8 @@
       "expected_address_family": "ipv4",
       "expected_path_transport": "socks5",
       "expected_port": 443,
-      "require_tls": true
+      "require_tls": true,
+      "require_transport_proof": true
     },
     {
       "id": "vless-tcp-443-ipv6",
@@ -321,7 +419,14 @@
       "expected_route_type": "vless",
       "protocol": "udp_443",
       "address_family": "ipv4",
-      "pending_reason": "Live QUIC evidence is not attached"
+      "route": "proxy-4",
+      "domain": "chatgpt.com",
+      "service": "chatgpt",
+      "expected_status": "OK",
+      "expected_address_family": "ipv4",
+      "expected_path_transport": "socks5",
+      "expected_port": 443,
+      "require_transport_proof": true
     },
     {
       "id": "vless-udp-443-ipv6",
@@ -335,7 +440,11 @@
       "expected_route_type": "drop",
       "protocol": "dns_udp_53",
       "address_family": "ipv4",
-      "pending_reason": "Transport-specific DROP counter evidence is not attached"
+      "route": "drop",
+      "domain": "github.com",
+      "service": "github",
+      "expected_status": "OK",
+      "require_transport_proof": true
     },
     {
       "id": "drop-dns-udp-53-ipv6",
@@ -349,7 +458,11 @@
       "expected_route_type": "drop",
       "protocol": "dns_tcp_53",
       "address_family": "ipv4",
-      "pending_reason": "Transport-specific DROP counter evidence is not attached"
+      "route": "drop",
+      "domain": "github.com",
+      "service": "github",
+      "expected_status": "OK",
+      "require_transport_proof": true
     },
     {
       "id": "drop-dns-tcp-53-ipv6",
@@ -363,7 +476,11 @@
       "expected_route_type": "drop",
       "protocol": "tcp_80",
       "address_family": "ipv4",
-      "pending_reason": "Transport-specific DROP counter evidence is not attached"
+      "route": "drop",
+      "domain": "github.com",
+      "service": "github",
+      "expected_status": "OK",
+      "require_transport_proof": true
     },
     {
       "id": "drop-tcp-80-ipv6",
@@ -377,7 +494,11 @@
       "expected_route_type": "drop",
       "protocol": "tcp_443",
       "address_family": "ipv4",
-      "pending_reason": "Transport-specific DROP counter evidence is not attached"
+      "route": "drop",
+      "domain": "github.com",
+      "service": "github",
+      "expected_status": "OK",
+      "require_transport_proof": true
     },
     {
       "id": "drop-tcp-443-ipv6",
@@ -391,7 +512,11 @@
       "expected_route_type": "drop",
       "protocol": "udp_443",
       "address_family": "ipv4",
-      "pending_reason": "Transport-specific DROP counter evidence is not attached"
+      "route": "drop",
+      "domain": "github.com",
+      "service": "github",
+      "expected_status": "OK",
+      "require_transport_proof": true
     },
     {
       "id": "drop-udp-443-ipv6",
