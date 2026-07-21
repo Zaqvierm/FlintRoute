@@ -346,6 +346,19 @@ func run(args []string) error {
 		}
 		_, err := evidence.LoadAndVerify(*planPath, *evidencePath, artifact.Binding{TransactionID: *txID, RevisionID: *revision, CandidateHash: *candidateHash}, *manifestHash)
 		return err
+	case "internal-verify-state-backup":
+		fs := flag.NewFlagSet("internal-verify-state-backup", flag.ContinueOnError)
+		path := fs.String("path", "", "state backup path")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 || *path == "" {
+			return errors.New("usage: router-policy internal-verify-state-backup --path BACKUP")
+		}
+		if err := state.VerifyDatabaseFile(*path); err != nil {
+			return err
+		}
+		return printJSON(map[string]any{"verified": true})
 	case "internal-collect-data-plane-evidence":
 		fs := flag.NewFlagSet("internal-collect-data-plane-evidence", flag.ContinueOnError)
 		planPath := fs.String("plan", "", "verification plan")

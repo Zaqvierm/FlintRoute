@@ -116,6 +116,10 @@ Verified: every Go package passed.
   с проверкой целой committed revision; общий `pidof xray/nfqws` запрещён.
   `-SkipControlledReboot` отделяет process matrix от reboot и всё равно
   завершает evidence manifest и удаляет проверенный remote run directory;
+- `tests/hardware/run-p13-state-corruption.ps1` — создаёт и полностью проверяет
+  ограниченную bbolt-копию, повреждает только активную базу FlintRoute, сохраняет
+  committed dataplane и управляемые providers, автономно восстанавливает state,
+  затем повторяет Direct/Zapret/VLESS/Smart DNS path proofs;
 - `tests/package-openwrt.sh` — состав, SHA-256 manifest и отказ при повреждении OpenWrt-пакета.
 
 ## Четыре уровня covered
@@ -135,7 +139,7 @@ hardware profile. Соседний HTTPS PASS ни один из этих ста
 ## Оставшиеся аппаратные проверки
 
 - оставшиеся 21 IPv4-клетка protocol/AF-матрицы;
-- hard-crash/power-loss recovery и повреждение state;
+- физическое power-loss recovery;
 - multi-client, hardware install/upgrade/downgrade/uninstall и 72h soak (P13).
 - Linux namespace/container behavior (нет локального Linux runtime; shell
   integration cross-platform, готов для Linux CI).

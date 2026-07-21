@@ -576,6 +576,20 @@ func validateBoltFile(path string) error {
 	})
 }
 
+func VerifyDatabaseFile(path string) error {
+	if path == "" {
+		return fmt.Errorf("database path is required")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() == 0 {
+		return fmt.Errorf("database file is unsafe or empty")
+	}
+	return validateBoltFile(path)
+}
+
 func recoverInterruptedCompaction(path string) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil
@@ -636,7 +650,13 @@ func (s *Store) Maintain(now time.Time) error {
 		return err
 	}
 	if !lastBackup.IsZero() && now.Sub(lastBackup) < s.retention.backupInterval {
-		return s.pruneBackups()
+		usable, err := hasUsableBackup(s.stateDir)
+		if err != nil {
+			return err
+		}
+		if usable {
+			return s.pruneBackups()
+		}
 	}
 	var lastCompact time.Time
 	err = s.LoadJSON("meta", "last_compact_at", &lastCompact)
@@ -691,6 +711,26 @@ func (s *Store) Maintain(now time.Time) error {
 		return s.SaveJSON("meta", "last_active_compact_at", now.UTC())
 	}
 	return nil
+}
+
+func hasUsableBackup(stateDir string) (bool, error) {
+	backupDir := filepath.Join(stateDir, "backups")
+	entries, err := os.ReadDir(backupDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() || !strings.HasPrefix(entry.Name(), "router-policy-") || !strings.HasSuffix(entry.Name(), ".bbolt") {
+			continue
+		}
+		if err := VerifyDatabaseFile(filepath.Join(backupDir, entry.Name())); err == nil {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func trimBucket(bucket *bolt.Bucket, max int) error {

@@ -24,7 +24,7 @@
 | P10 | 85% | Проверяемый OpenWrt-пакет, обновление и чистая установка доказаны на Flint 2; downgrade/uninstall остаются |
 | P11 | 85% | Автоматические тесты |
 | P12 | 100% | Adaptive Zapret привязан к OpenWrt transaction; два bundle-профиля и независимые выходы проверены на Flint 2 |
-| P13 | 65% | Production Smart DNS, recursion guard, rollback timer, controlled reboot и SIGKILL managed-процессов доказаны; 21 IPv4 matrix cell, расширенные faults, multi-client, lifecycle и soak остаются |
+| P13 | 70% | Production Smart DNS, recursion guard, rollback timer, controlled reboot, SIGKILL managed-процессов и восстановление повреждённого state доказаны; 21 IPv4 matrix cell, power-loss, multi-client, lifecycle и soak остаются |
 
 ### P13 по подэтапам
 
@@ -33,7 +33,7 @@
 | P13.0 | завершён | Harness, metadata, route cases, evidence parsing и bounded result bundle | финальный публичный redacted bundle после soak |
 | P13.1 | частично | Полный 50-cell manifest `route × protocol × AF`; 4 PASS, 0 FAIL, 21 NOT_TESTED и 25 NOT_APPLICABLE; Direct/Zapret/VLESS/Smart DNS HTTPS, UDP/TCP resolver transport и production Smart DNS activation доказаны | LAN DNS, TCP/80, QUIC и transport-specific DROP; native IPv6 неприменим, пока WAN6 отсутствует |
 | P13.2 | частично | Два bundle scope, независимые Direct/Zapret/VLESS paths и transaction-bound adaptive apply | деградация активного профиля, quarantine/cooldown/pin и bad challenger на железе |
-| P13.3 | частично | SIGKILL managed nfqws/Xray/controller, controlled reboot и реальный 180-second rollback timer пройдены; config/binding и route proofs восстановлены | power loss и повреждение state на железе |
+| P13.3 | частично | SIGKILL managed nfqws/Xray/controller, controlled reboot, реальный 180-second rollback timer и восстановление повреждённой bbolt пройдены; committed dataplane и route proofs сохранены | физическое power loss |
 | P13.4 | начат | Bounded sampler и локальная проверка resource limits | три одновременных клиента и реальные throughput/latency/resource пределы |
 | P13.5 | частично | In-place upgrade, factory clean install, первая активация и post-reboot recovery | аппаратные downgrade, rollback upgrade и uninstall |
 | P13.6 | не начат | — | 72-часовой soak и финальный audit |
@@ -91,13 +91,14 @@
 - Последовательный SIGKILL managed nfqws, Xray и controller пройден на Flint 2.
   После каждого сбоя procd поднял новый PID, соответствующий route proof прошёл,
   а committed artifacts и active transaction binding не изменились. Timer fault,
-  power-loss и проверка повреждённого state остаются в P13.
+  Повреждение bbolt также пройдено с автономным восстановлением проверенной копии.
+  Физическое power-loss остаётся в P13.
 - Production Smart DNS resolver выбран; оба endpoint дали безопасные A/AAAA
   через UDP/53 и TCP/53 непосредственно на Flint 2. Два route транзакционно
   committed; оба bound path proof и соседние Direct/Zapret/VLESS proofs прошли.
 - Матрица больше не маскирует непройденные тесты как неприменимые: текущий
   результат — 4 PASS, 0 FAIL, 21 NOT_TESTED и 25 NOT_APPLICABLE из-за отсутствия WAN6.
 - Защита от рекурсии proxy endpoint прошла отдельный runtime gate на Flint 2.
-  Все 13 неблокирующих Xray outbound имеют configured bypass mark, активные nft
+  Все 15 неблокирующих Xray outbound имеют configured bypass mark, активные nft
   rules стоят до policy classification, bound VLESS probe подтверждён, а live
   bypass counter вырос во время проверки. Этот release blocker закрыт.

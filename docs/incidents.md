@@ -188,3 +188,54 @@ rollback. A separate confirmed ChangeSet then activated both production Smart
 DNS routes. Both Smart DNS path proofs and the three existing route proofs
 passed after commit. This closes the timer and Smart DNS activation parts of
 the incident; the isolated loopback reset remains unexplained but did not recur.
+
+## 2026-07-19 08:08–08:13 +07 — backup metadata existed without a backup file
+
+### What was tested
+
+The state-corruption preflight checked whether Flint 2 had a restorable bbolt
+backup before any destructive fault injection.
+
+### What happened
+
+The active database existed and was healthy, but the state backup directory had
+no backup file. Maintenance can retain a recent `last_backup_at` value inside
+the database after the corresponding file has disappeared. While that timestamp
+is inside the configured interval, the old code skipped backup creation and
+only ran pruning. A state-corruption test would therefore have had no local
+recovery source.
+
+### Fix and verification
+
+Maintenance now verifies that at least one regular, non-symlink bbolt backup
+exists and passes a full bbolt consistency check before trusting the timestamp.
+If not, it creates a new backup immediately. Unit and race tests cover the
+missing-file case. The fixed binary created a backup on Flint 2 and the router
+verified it before fault injection.
+
+## 2026-07-19 08:21–08:27 +07 — state rescue runner assumed `nohup`
+
+### What was tested
+
+The active bbolt database was deliberately damaged after a verified byte-for-byte
+backup had been created. The test keeps the committed dataplane and managed Xray
+and Zapret processes running, then requires autonomous state restoration before
+checking Direct, Zapret, VLESS and Smart DNS again.
+
+### What happened
+
+The first run stopped after taking the backup because factory OpenWrt does not
+ship `nohup`. The PowerShell emergency restore returned the verified database and
+started the controller; routing tables 100/101/102 and managed providers stayed
+present. The watchdog needed an explicit start after this failed setup run. A
+second run proved that the autonomous rescue itself worked, but its local wrapper
+was terminated before it could collect the final evidence bundle.
+
+### Fix and verification
+
+The rescue process now uses a redirected background shell without depending on
+`nohup`. A complete repeated run detected the corrupted database, preserved the
+committed dataplane, restored a backup with the expected SHA-256 digest, and
+returned controller health plus watchdog supervision. Bound Direct, Zapret,
+VLESS and Smart DNS probes all passed after recovery. Evidence is stored outside
+the repository under the private Flint 2 hardware results.

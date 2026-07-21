@@ -312,6 +312,62 @@ func TestMaintainPrunesBackupsAndCompactsActiveDatabase(t *testing.T) {
 	}
 }
 
+func TestMaintainRecreatesMissingBackupDespiteFreshMetadata(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := config.Config{Storage: config.Storage{
+		StateDir: tmp, Database: filepath.Join(tmp, "router-policy.bbolt"),
+		BackupIntervalHours: 24, CompactIntervalDays: 7, MaxStateBackups: 3,
+	}}
+	store, err := Open(&cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 7, 19, 1, 0, 0, 0, time.UTC)
+	if err := store.SaveJSON("meta", "last_backup_at", now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Maintain(now); err != nil {
+		t.Fatal(err)
+	}
+	usable, err := hasUsableBackup(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !usable {
+		t.Fatal("maintenance trusted fresh metadata without recreating the missing backup")
+	}
+}
+
+func TestVerifyDatabaseFileRejectsCorruptAndSymlinkedBackups(t *testing.T) {
+	tmp := t.TempDir()
+	valid := filepath.Join(tmp, "valid.bbolt")
+	cfg := config.Config{Storage: config.Storage{StateDir: tmp, Database: valid}}
+	store, err := Open(&cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyDatabaseFile(valid); err != nil {
+		t.Fatalf("valid database was rejected: %v", err)
+	}
+	corrupt := filepath.Join(tmp, "corrupt.bbolt")
+	if err := os.WriteFile(corrupt, []byte("not a bbolt database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyDatabaseFile(corrupt); err == nil {
+		t.Fatal("corrupt database was accepted")
+	}
+	link := filepath.Join(tmp, "link.bbolt")
+	if err := os.Symlink(valid, link); err == nil {
+		if err := VerifyDatabaseFile(link); err == nil {
+			t.Fatal("symlinked database was accepted")
+		}
+	}
+}
+
 func TestOpenRecoversInterruptedActiveCompaction(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "state.bbolt")
