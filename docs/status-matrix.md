@@ -24,7 +24,7 @@
 | P10 | 85% | Проверяемый OpenWrt-пакет, обновление и чистая установка доказаны на Flint 2; downgrade/uninstall остаются |
 | P11 | 85% | Автоматические тесты |
 | P12 | 100% | Adaptive Zapret привязан к OpenWrt transaction; два bundle-профиля и независимые выходы проверены на Flint 2 |
-| P13 | 78% | Полная применимая protocol/AF-матрица, production Smart DNS, recursion guard, rollback timer, controlled reboot, SIGKILL managed-процессов и восстановление повреждённого state доказаны; adaptive faults, power-loss, multi-client, lifecycle и soak остаются |
+| P13 | 80% | Полная применимая protocol/AF-матрица, production Smart DNS, recursion guard, rollback timer, controlled reboot, SIGKILL managed-процессов, восстановление повреждённого state и adaptive fault-switching доказаны; автоматическая калибровка, power-loss, multi-client, lifecycle и soak остаются |
 
 ### P13 по подэтапам
 
@@ -32,7 +32,7 @@
 |---|---|---|---|
 | P13.0 | завершён | Harness, metadata, route cases, evidence parsing и bounded result bundle | финальный публичный redacted bundle после soak |
 | P13.1 | завершён | Полный 50-cell manifest `route × protocol × AF`: 23 PASS, 0 FAIL, 0 NOT_TESTED, 27 NOT_APPLICABLE; каждая применимая клетка имеет protocol-specific packet proof и bound route evidence | 25 IPv6-клеток требуют отсутствующий WAN6; Zapret × DNS UDP/TCP неприменимы, потому что LAN DNS перехватывается до route classification |
-| P13.2 | частично | Два bundle scope, независимые Direct/Zapret/VLESS paths и transaction-bound adaptive apply | деградация активного профиля, quarantine/cooldown/pin и bad challenger на железе |
+| P13.2 | частично | Деградация активного профиля, transaction-bound switch, manual pin с safe fallback, cooldown, отказ и quarantine повреждённого challenger, блокировка его повторного выбора и возврат static baseline пройдены на Flint 2 | подключить `ProbeScheduler`/`Ranker` к production health cycle, получать ranking из живых probes и доказать инвалидирование решения при смене network fingerprint |
 | P13.3 | частично | SIGKILL managed nfqws/Xray/controller, controlled reboot, реальный 180-second rollback timer и восстановление повреждённой bbolt пройдены; committed dataplane и route proofs сохранены | физическое power loss |
 | P13.4 | начат | Bounded sampler и локальная проверка resource limits | три одновременных клиента и реальные throughput/latency/resource пределы |
 | P13.5 | частично | In-place upgrade, factory clean install, первая активация и post-reboot recovery | аппаратные downgrade, rollback upgrade и uninstall |
@@ -56,7 +56,7 @@
 | Bounded-каталог Zapret и проверка nfqws по version/digest pins | да | модульные тесты и race | `nfqws` v72.12 принял config-embedded `--dry-run`; активный config не изменился |
 | Service bundles и DNS provenance с блокировкой shared IP | да | модульные, race и отрицательные routing-тесты | не требуется до проверки переключения профилей |
 | Rolling windows и ranking профилей по Wilson/latency | да | детерминированные модульные тесты и race | требуется вместе с bounded switch |
-| Bounded scheduler и переключение Zapret-профилей с cooldown/pin/quarantine | да | модульные, rollback и race | два bundles и bundle-scoped nfqws config приняты; Zapret/VLESS/Direct path proof прошёл |
+| Bounded scheduler и переключение Zapret-профилей с cooldown/pin/quarantine | частично | модульные, rollback и race; switch/pin/cooldown/quarantine/bad-candidate на Flint 2 | production health cycle ещё не вызывает scheduler/ranker автоматически |
 | Схема bbolt, retention, очистка backup и восстановление active compaction | да | модульные тесты | нет |
 | Эпоха SSE-потока и долгоживущий ответ | да | модульные и API-тесты | нет |
 | OpenWrt adapter с фиксированными командами | да | модульные, mocked shell integration и Flint apply/rollback/commit | остальные типы маршрутов |

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"router-policy/internal/artifact"
@@ -29,6 +30,14 @@ type Options struct {
 	ManifestHash string
 	Prober       RouteProber
 	Now          func() time.Time
+	Parallelism  int
+}
+
+type collectedRoute struct {
+	index    int
+	required artifact.RouteProof
+	proof    evidence.RouteResult
+	err      error
 }
 
 func Collect(ctx context.Context, opts Options) (evidence.Report, error) {
@@ -53,23 +62,25 @@ func Collect(ctx context.Context, opts Options) (evidence.Report, error) {
 		IPv6LeakFree:         true,
 		CheckedAt:            now().UTC(),
 	}
-	for _, required := range plan.RequiredRouteProof {
-		route, ok := opts.Config.RouteByTag(required.Tag)
-		if !ok || route.Type != required.Type {
-			return evidence.Report{}, fmt.Errorf("verification route is missing from candidate: %s", required.Tag)
-		}
-		serviceName, domain, service, err := selectProbeTarget(opts.Config, route)
-		if err != nil {
-			return evidence.Report{}, err
-		}
-		result := opts.Prober.ProbeRoute(ctx, opts.Config, domain, serviceName, service, route)
-		if result.Status != "OK" || !result.PathVerified || result.PathEvidence == nil {
-			return evidence.Report{}, fmt.Errorf("route %s probe is not verified: status=%s reason=%s", route.Tag, result.Status, result.ReasonCode)
-		}
-		proof := *result.PathEvidence
-		if err := evidence.ValidateRouteProof(required, proof, opts.Binding, opts.ManifestHash); err != nil {
-			return evidence.Report{}, err
-		}
+	parallelism := opts.Parallelism
+	if parallelism <= 0 {
+		parallelism = opts.Config.Policy.ParallelServerChecks
+	}
+	if parallelism <= 0 {
+		parallelism = 1
+	}
+	if parallelism > 4 {
+		parallelism = 4
+	}
+	if parallelism > len(plan.RequiredRouteProof) {
+		parallelism = len(plan.RequiredRouteProof)
+	}
+	collected, err := collectRoutes(ctx, opts, plan.RequiredRouteProof, parallelism)
+	if err != nil {
+		return evidence.Report{}, err
+	}
+	for _, item := range collected {
+		required, proof := item.required, item.proof
 		if required.RequiresDNS && (proof.DNSResolver == "" || proof.DNSProtocol == "" || net.ParseIP(proof.ResolvedIP) == nil) {
 			report.DNSLeakFree = false
 		}
@@ -88,6 +99,87 @@ func Collect(ctx context.Context, opts Options) (evidence.Report, error) {
 		return evidence.Report{}, err
 	}
 	return report, nil
+}
+
+func collectRoutes(ctx context.Context, opts Options, required []artifact.RouteProof, parallelism int) ([]collectedRoute, error) {
+	if len(required) == 0 {
+		return nil, errors.New("verification plan has no required routes")
+	}
+	workerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	jobs := make(chan int)
+	results := make(chan collectedRoute, len(required))
+	var workers sync.WaitGroup
+	for worker := 0; worker < parallelism; worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for index := range jobs {
+				item := collectRoute(workerCtx, opts, index, required[index])
+				results <- item
+				if item.err != nil {
+					cancel()
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for index := range required {
+			select {
+			case jobs <- index:
+			case <-workerCtx.Done():
+				return
+			}
+		}
+	}()
+	go func() {
+		workers.Wait()
+		close(results)
+	}()
+	ordered := make([]collectedRoute, len(required))
+	completed := 0
+	var firstErr error
+	for item := range results {
+		if item.err != nil && firstErr == nil {
+			firstErr = item.err
+		}
+		if item.err == nil {
+			ordered[item.index] = item
+			completed++
+		}
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	if completed != len(required) {
+		return nil, errors.New("data-plane evidence collection was interrupted")
+	}
+	return ordered, nil
+}
+
+func collectRoute(ctx context.Context, opts Options, index int, required artifact.RouteProof) collectedRoute {
+	item := collectedRoute{index: index, required: required}
+	route, ok := opts.Config.RouteByTag(required.Tag)
+	if !ok || route.Type != required.Type {
+		item.err = fmt.Errorf("verification route is missing from candidate: %s", required.Tag)
+		return item
+	}
+	serviceName, domain, service, err := selectProbeTarget(opts.Config, route)
+	if err != nil {
+		item.err = err
+		return item
+	}
+	result := opts.Prober.ProbeRoute(ctx, opts.Config, domain, serviceName, service, route)
+	if result.Status != "OK" || !result.PathVerified || result.PathEvidence == nil {
+		item.err = fmt.Errorf("route %s probe is not verified: status=%s reason=%s", route.Tag, result.Status, result.ReasonCode)
+		return item
+	}
+	item.proof = *result.PathEvidence
+	if err := evidence.ValidateRouteProof(required, item.proof, opts.Binding, opts.ManifestHash); err != nil {
+		item.err = err
+	}
+	return item
 }
 
 type probeTarget struct {

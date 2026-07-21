@@ -166,12 +166,10 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		configVersion:        configVersion,
 		hideSensitive:        true,
 	}
-	if activeConfig.Zapret.AdaptiveEnabled {
-		s.adaptiveZapret, err = newAdaptiveRuntime(activeConfig, stateStore)
-		if err != nil {
-			_ = stateStore.Close()
-			return nil, fmt.Errorf("initialize adaptive Zapret: %w", err)
-		}
+	s.adaptiveZapret, err = buildAdaptiveRuntime(activeConfig, stateStore)
+	if err != nil {
+		_ = stateStore.Close()
+		return nil, fmt.Errorf("initialize adaptive Zapret: %w", err)
 	}
 	if initial := s.broker.Recent(0, 1); len(initial) == 1 {
 		if err := s.persistEvent(initial[0]); err != nil {
@@ -183,6 +181,11 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 	if err := s.recoverTransactions(context.Background()); err != nil {
 		_ = stateStore.Close()
 		return nil, err
+	}
+	s.adaptiveZapret, err = buildAdaptiveRuntime(s.currentConfig(), stateStore)
+	if err != nil {
+		_ = stateStore.Close()
+		return nil, fmt.Errorf("refresh adaptive Zapret after recovery: %w", err)
 	}
 	s.recoverCommittedDataplane(context.Background())
 	return s, nil
@@ -425,6 +428,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/smart-dns", s.requireRole(auth.RoleViewer, s.handleSmartDNS))
 	s.mux.HandleFunc("/api/v1/zapret", s.requireRole(auth.RoleViewer, s.handleZapret))
 	s.mux.HandleFunc("/api/v1/zapret/adaptive/evaluate", s.requireRole(auth.RoleAdministrator, s.handleAdaptiveZapretEvaluate))
+	s.mux.HandleFunc("/api/v1/zapret/adaptive/state", s.requireRole(auth.RoleAdministrator, s.handleAdaptiveZapretState))
+	s.mux.HandleFunc("/api/v1/zapret/adaptive/pin", s.requireRole(auth.RoleAdministrator, s.handleAdaptiveZapretPin))
+	s.mux.HandleFunc("/api/v1/zapret/adaptive/unpin", s.requireRole(auth.RoleAdministrator, s.handleAdaptiveZapretUnpin))
 	s.mux.HandleFunc("/api/v1/telegram", s.requireRole(auth.RoleViewer, s.handleTelegram))
 	s.mux.HandleFunc("/api/v1/diagnostics", s.requireRole(auth.RoleDiagnostician, s.handleDiagnostics))
 	s.mux.HandleFunc("/api/v1/probes", s.requireRole(auth.RoleDiagnostician, s.handleProbes))

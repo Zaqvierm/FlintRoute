@@ -32,6 +32,15 @@ type adaptiveEvaluateResponse struct {
 	Change   *ChangeSet            `json:"change,omitempty"`
 }
 
+type adaptiveStateRequest struct {
+	Key zapret.DecisionKey `json:"key"`
+}
+
+type adaptivePinRequest struct {
+	Key zapret.DecisionKey `json:"key"`
+	Pin zapret.ManualPin   `json:"pin"`
+}
+
 func newAdaptiveRuntime(cfg *config.Config, store *state.Store) (*adaptiveRuntime, error) {
 	if cfg == nil || store == nil || !cfg.Zapret.AdaptiveEnabled {
 		return nil, errors.New("adaptive Zapret config and state store are required")
@@ -48,6 +57,13 @@ func newAdaptiveRuntime(cfg *config.Config, store *state.Store) (*adaptiveRuntim
 		return nil, err
 	}
 	return &adaptiveRuntime{profiles: profiles, bundles: bundles, controller: controller, store: store}, nil
+}
+
+func buildAdaptiveRuntime(cfg *config.Config, store *state.Store) (*adaptiveRuntime, error) {
+	if cfg == nil || !cfg.Zapret.AdaptiveEnabled {
+		return nil, nil
+	}
+	return newAdaptiveRuntime(cfg, store)
 }
 
 func bindAdaptiveCandidate(tx *adapter.Transaction, candidate *config.Config) error {
@@ -82,7 +98,7 @@ func (s *Server) handleAdaptiveZapretEvaluate(w http.ResponseWriter, r *http.Req
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
 		return
 	}
-	if s.adaptiveZapret == nil {
+	if s.currentAdaptiveRuntime() == nil {
 		writeError(w, r, http.StatusConflict, "adaptive_zapret_disabled", "adaptive Zapret is not configured")
 		return
 	}
@@ -99,32 +115,155 @@ func (s *Server) handleAdaptiveZapretEvaluate(w http.ResponseWriter, r *http.Req
 	writeData(w, r, response)
 }
 
-func (s *Server) evaluateAdaptiveZapret(ctx context.Context, request adaptiveEvaluateRequest, now time.Time) (adaptiveEvaluateResponse, *actionFailure) {
-	runtime := s.adaptiveZapret
-	active := s.currentConfig()
-	currentProfile := profileForBundle(active.Zapret.AdaptiveAssignments, request.Key.BundleID)
-	if currentProfile == "" {
-		return adaptiveEvaluateResponse{}, conflict("adaptive_assignment_missing", "service bundle has no active profile")
+func (s *Server) handleAdaptiveZapretState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
 	}
-	stateKey, err := adaptiveStateKey(request.Key)
+	var request adaptiveStateRequest
+	if err := readJSON(r, &request); err != nil {
+		writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	runtime, stateKey, failure := s.restoreAdaptiveState(request.Key, time.Now().UTC())
+	if failure != nil {
+		writeError(w, r, failure.Status, failure.Code, failure.Message)
+		return
+	}
+	state := runtime.controller.Snapshot(request.Key, time.Now().UTC())
+	if err := runtime.store.SaveJSON("zapret_switch", stateKey, state); err != nil {
+		writeError(w, r, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	writeData(w, r, state)
+}
+
+func (s *Server) handleAdaptiveZapretPin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	var request adaptivePinRequest
+	if err := readJSON(r, &request); err != nil {
+		writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	runtime, stateKey, failure := s.restoreAdaptiveState(request.Key, time.Now().UTC())
+	if failure != nil {
+		writeError(w, r, failure.Status, failure.Code, failure.Message)
+		return
+	}
+	if err := validateAdaptivePin(runtime, request.Key, request.Pin); err != nil {
+		writeError(w, r, http.StatusUnprocessableEntity, "adaptive_pin_invalid", err.Error())
+		return
+	}
+	if err := runtime.controller.SetPin(request.Key, request.Pin); err != nil {
+		writeError(w, r, http.StatusUnprocessableEntity, "adaptive_pin_invalid", err.Error())
+		return
+	}
+	now := time.Now().UTC()
+	state := runtime.controller.Snapshot(request.Key, now)
+	if err := runtime.store.SaveJSON("zapret_switch", stateKey, state); err != nil {
+		writeError(w, r, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	s.publishEvent(Event{Type: "zapret.adaptive_pin", Severity: "info", ReasonCode: "manual_pin_set", Details: map[string]any{"bundle_id": request.Key.BundleID, "profile_id": request.Pin.ProfileID, "mode": request.Pin.Mode}})
+	writeData(w, r, state)
+}
+
+func validateAdaptivePin(runtime *adaptiveRuntime, key zapret.DecisionKey, pin zapret.ManualPin) error {
+	if runtime == nil || runtime.bundles == nil {
+		return errors.New("adaptive Zapret is not configured")
+	}
+	bundle, ok := runtime.bundles.Lookup(key.BundleID)
+	if !ok {
+		return errors.New("service bundle is absent from the adaptive catalog")
+	}
+	allowed := make(map[string]bool, len(bundle.AllowedProfiles))
+	for _, profileID := range bundle.AllowedProfiles {
+		allowed[profileID] = true
+	}
+	if !allowed[pin.ProfileID] {
+		return errors.New("pinned profile is not allowed for the service bundle")
+	}
+	for _, profileID := range pin.AllowedFallbacks {
+		if !allowed[profileID] {
+			return errors.New("pinned fallback is not allowed for the service bundle")
+		}
+	}
+	return nil
+}
+
+func (s *Server) handleAdaptiveZapretUnpin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	var request adaptiveStateRequest
+	if err := readJSON(r, &request); err != nil {
+		writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	runtime, stateKey, failure := s.restoreAdaptiveState(request.Key, time.Now().UTC())
+	if failure != nil {
+		writeError(w, r, failure.Status, failure.Code, failure.Message)
+		return
+	}
+	runtime.controller.ClearPin(request.Key)
+	now := time.Now().UTC()
+	state := runtime.controller.Snapshot(request.Key, now)
+	if err := runtime.store.SaveJSON("zapret_switch", stateKey, state); err != nil {
+		writeError(w, r, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	s.publishEvent(Event{Type: "zapret.adaptive_pin", Severity: "info", ReasonCode: "manual_pin_cleared", Details: map[string]any{"bundle_id": request.Key.BundleID}})
+	writeData(w, r, state)
+}
+
+func (s *Server) currentAdaptiveRuntime() *adaptiveRuntime {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.adaptiveZapret
+}
+
+func (s *Server) restoreAdaptiveState(key zapret.DecisionKey, now time.Time) (*adaptiveRuntime, string, *actionFailure) {
+	runtime := s.currentAdaptiveRuntime()
+	if runtime == nil {
+		return nil, "", conflict("adaptive_zapret_disabled", "adaptive Zapret is not configured")
+	}
+	active := s.currentConfig()
+	currentProfile := profileForBundle(active.Zapret.AdaptiveAssignments, key.BundleID)
+	if currentProfile == "" {
+		return nil, "", conflict("adaptive_assignment_missing", "service bundle has no active profile")
+	}
+	stateKey, err := adaptiveStateKey(key)
 	if err != nil {
-		return adaptiveEvaluateResponse{}, &actionFailure{Status: 400, Code: "adaptive_key_invalid", Message: err.Error()}
+		return nil, "", &actionFailure{Status: 400, Code: "adaptive_key_invalid", Message: err.Error()}
 	}
 	var persisted zapret.SwitchState
 	if err := runtime.store.LoadJSON("zapret_switch", stateKey, &persisted); err == nil {
 		if persisted.ActiveProfileID != currentProfile {
-			return adaptiveEvaluateResponse{}, conflict("adaptive_state_conflict", "persisted profile does not match the active config")
+			return nil, "", conflict("adaptive_state_conflict", "persisted profile does not match the active config")
 		}
 		if err := runtime.controller.Restore(persisted); err != nil {
-			return adaptiveEvaluateResponse{}, internalFailure(err)
+			return nil, "", internalFailure(err)
 		}
 	} else if errors.Is(err, state.ErrNotFound) {
-		if err := runtime.controller.SetActive(request.Key, currentProfile, now); err != nil {
-			return adaptiveEvaluateResponse{}, &actionFailure{Status: 400, Code: "adaptive_key_invalid", Message: err.Error()}
+		if err := runtime.controller.SetActive(key, currentProfile, now); err != nil {
+			return nil, "", &actionFailure{Status: 400, Code: "adaptive_key_invalid", Message: err.Error()}
 		}
 	} else {
-		return adaptiveEvaluateResponse{}, internalFailure(err)
+		return nil, "", internalFailure(err)
 	}
+	return runtime, stateKey, nil
+}
+
+func (s *Server) evaluateAdaptiveZapret(ctx context.Context, request adaptiveEvaluateRequest, now time.Time) (adaptiveEvaluateResponse, *actionFailure) {
+	runtime, stateKey, failure := s.restoreAdaptiveState(request.Key, now)
+	if failure != nil {
+		return adaptiveEvaluateResponse{}, failure
+	}
+	active := s.currentConfig()
 	decision, err := runtime.controller.Evaluate(request.Key, request.Ranking, now)
 	if err != nil {
 		return adaptiveEvaluateResponse{}, &actionFailure{Status: 422, Code: "adaptive_ranking_invalid", Message: err.Error()}
@@ -146,7 +285,7 @@ func (s *Server) evaluateAdaptiveZapret(ctx context.Context, request adaptiveEva
 	if err != nil {
 		return adaptiveEvaluateResponse{}, internalFailure(err)
 	}
-	change, failure := s.validateChangeSet(change)
+	change, failure = s.validateChangeSet(change)
 	if failure == nil {
 		change, failure = s.applyChangeSet(ctx, change)
 	}

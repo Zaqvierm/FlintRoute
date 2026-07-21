@@ -268,3 +268,34 @@ try every resolved IPv4 target. A final Flint 2 run completed 23 applicable
 cells with 23 PASS, 0 FAIL and 0 NOT_TESTED. The other 27 cells are explicit:
 25 require unavailable WAN6 and two are pre-route Zapret DNS combinations. The
 same run repeated the production Smart DNS and proxy-recursion release gates.
+
+## 2026-07-19 09:35–10:30 +07 — scoped Zapret profiles lost pre-SNI setup
+
+### What was tested
+
+The adaptive acceptance run enabled a bundle-scoped nfqws profile, switched to
+a challenger, exercised cooldown and pin behavior, and required every ChangeSet
+to pass the normal data-plane proof before commit.
+
+### What happened
+
+The first candidate reached nfqws but the Discord proof stalled until the
+180-second transaction timer rolled it back. An isolated run reproduced the
+failure in 248 seconds. nfqws debug output showed that the initial packets used
+its empty fallback profile; only after TLS SNI was decoded did the
+`discord.com` hostlist select the intended profile. The static strategy depends
+on `orig-*` connection setup before SNI exists, so copying that strategy into a
+host-scoped profile changed its behavior even though the hostlist match itself
+was correct.
+
+### Fix and verification
+
+Adaptive rendering now derives a common pre-hostname bootstrap from the selected
+profiles, rejects conflicting bootstrap options across bundles, and appends one
+unscoped hard-filter fallback after the scoped profiles. The scoped Flint 2
+probe completed in nine seconds, compared with the previous timeout. A complete
+acceptance run then passed active-profile degradation, transactional challenger
+switching, safe-fallback pinning, cooldown, corrupted-challenger quarantine,
+reselection blocking, static baseline restoration and Direct/Zapret/VLESS route
+proofs. Automatic production scheduling and live ranking remain a separate
+P13.2 requirement and are not claimed by this result.

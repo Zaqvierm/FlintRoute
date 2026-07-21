@@ -44,6 +44,9 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/smart-dns` | smart DNS state |
 | `/api/v1/zapret` | managed Zapret/nfqws plan state |
 | `/api/v1/zapret/adaptive/evaluate` | bounded profile evaluation and transactional bundle switch |
+| `/api/v1/zapret/adaptive/state` | persisted active profile, cooldown, pin and quarantine state |
+| `/api/v1/zapret/adaptive/pin` | set a validated bundle-local manual pin and allowed fallbacks |
+| `/api/v1/zapret/adaptive/unpin` | clear the manual pin without changing unrelated bundles |
 | `/api/v1/xray/subscription/prepare` | authenticated VPN-подписка → draft ChangeSet |
 | `/api/v1/events` | persisted history merged with live epoch |
 | `/api/v1/events/stream` | SSE stream |

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,30 @@ import (
 
 type fakeProber struct {
 	results map[string]probe.RouteResult
+}
+
+type concurrentProber struct {
+	mu      sync.Mutex
+	active  int
+	maximum int
+	results map[string]probe.RouteResult
+}
+
+func (p *concurrentProber) ProbeRoute(ctx context.Context, _ *config.Config, _, _ string, _ config.Service, route config.Route) probe.RouteResult {
+	p.mu.Lock()
+	p.active++
+	if p.active > p.maximum {
+		p.maximum = p.active
+	}
+	p.mu.Unlock()
+	select {
+	case <-ctx.Done():
+	case <-time.After(25 * time.Millisecond):
+	}
+	p.mu.Lock()
+	p.active--
+	p.mu.Unlock()
+	return p.results[route.Tag]
 }
 
 func (f fakeProber) ProbeRoute(_ context.Context, _ *config.Config, _, _ string, _ config.Service, route config.Route) probe.RouteResult {
@@ -41,16 +66,21 @@ func TestCollectWritesStrictlyBoundReport(t *testing.T) {
 		ReasonCode: "drop_enforced", Status: "OK", EvidenceSource: "test", CheckedAt: now,
 	}
 	cfg := testConfig()
+	cfg.Policy.ParallelServerChecks = 2
 	out := filepath.Join(root, "evidence.json")
-	report, err := Collect(context.Background(), Options{Config: cfg, PlanPath: planPath, OutputPath: out, Binding: binding, ManifestHash: manifestHash, Prober: fakeProber{results: map[string]probe.RouteResult{
+	prober := &concurrentProber{results: map[string]probe.RouteResult{
 		"direct": {Status: "OK", PathVerified: true, PathEvidence: &direct},
 		"drop":   {Status: "OK", PathVerified: true, PathEvidence: &drop},
-	}}, Now: func() time.Time { return now }})
+	}}
+	report, err := Collect(context.Background(), Options{Config: cfg, PlanPath: planPath, OutputPath: out, Binding: binding, ManifestHash: manifestHash, Prober: prober, Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !report.DNSLeakFree || !report.IPv6LeakFree || !report.GeoLockedKillSwitch {
 		t.Fatalf("incomplete aggregate proof: %+v", report)
+	}
+	if prober.maximum < 2 {
+		t.Fatalf("bounded collector did not run independent route probes concurrently: max=%d", prober.maximum)
 	}
 	if _, err := evidence.LoadAndVerify(planPath, out, binding, manifestHash); err != nil {
 		t.Fatal(err)

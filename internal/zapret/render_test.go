@@ -31,6 +31,10 @@ func TestRenderBundleProfilesScopesTwoBundlesDeterministically(t *testing.T) {
 	if !strings.Contains(text, "--dpi-desync-ttl=3\n") || !strings.Contains(text, "--dpi-desync-fooling=md5sig\n") {
 		t.Fatalf("profile strategies were not preserved:\n%s", text)
 	}
+	bootstrap := "--new\n--filter-tcp=443\n--orig-ttl=1\n--orig-mod-start=s1\n--orig-mod-cutoff=d1\n"
+	if strings.Count(text, bootstrap) != 1 || !strings.HasSuffix(text, bootstrap) {
+		t.Fatalf("common pre-hostname bootstrap is missing or misplaced:\n%s", text)
+	}
 }
 
 func TestRenderBundleProfilesRejectsEscapeDuplicateAndQueueMismatch(t *testing.T) {
@@ -48,6 +52,28 @@ func TestRenderBundleProfilesRejectsEscapeDuplicateAndQueueMismatch(t *testing.T
 		{BundleID: "discord", ProfileID: "profile-a"}, {BundleID: "signal", ProfileID: "profile-b"},
 	}); err == nil {
 		t.Fatal("profiles from different queues were accepted")
+	}
+}
+
+func TestRenderBundleProfilesRejectsConflictingPreHostnameBootstrap(t *testing.T) {
+	profiles, bundles := renderCatalogs(t, 200, 200)
+	second, ok := profiles.Lookup("profile-b")
+	if !ok {
+		t.Fatal("profile-b is missing")
+	}
+	second.Strategy = []byte(strings.ReplaceAll(string(second.Strategy), "--orig-ttl=1", "--orig-ttl=2"))
+	second.StrategyDigest = Digest(second.Strategy)
+	first, _ := profiles.Lookup("profile-a")
+	profiles, err := NewCatalog([]Profile{first, second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = RenderBundleProfiles(bundles, profiles, []BundleProfileAssignment{
+		{BundleID: "discord", ProfileID: "profile-a"},
+		{BundleID: "signal", ProfileID: "profile-b"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "identical pre-hostname bootstrap") {
+		t.Fatalf("conflicting pre-hostname bootstrap was accepted: %v", err)
 	}
 }
 

@@ -367,6 +367,10 @@ func (s *Server) confirmChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet,
 	if failure != nil {
 		return s.rollbackLocked(ctx, cs, tx, "failed", "candidate_recheck_failed")
 	}
+	adaptiveRuntime, err := buildAdaptiveRuntime(candidate, s.store)
+	if err != nil {
+		return s.rollbackLocked(ctx, cs, tx, "failed", "adaptive_runtime_invalid")
+	}
 	now := time.Now().UTC()
 	cs.State = "committed"
 	cs.Version++
@@ -385,6 +389,7 @@ func (s *Server) confirmChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet,
 	}
 	s.mu.Lock()
 	s.activeConfig = candidate
+	s.adaptiveZapret = adaptiveRuntime
 	s.activeRevision = tx.RevisionID
 	s.configVersion = tx.CandidateVersion
 	s.changes[cs.ID] = cs
@@ -865,7 +870,15 @@ func operationRootAllowed(path string) bool {
 			return false
 		}
 	case "zapret":
-		return len(parts) == 2 && parts[1] == "adaptive_assignments"
+		if len(parts) != 2 {
+			return false
+		}
+		switch parts[1] {
+		case "adaptive_enabled", "adaptive_catalog_file", "adaptive_assignments":
+			return true
+		default:
+			return false
+		}
 	case "openwrt":
 		return len(parts) == 2 && parts[1] == "flow_offloading_policy"
 	case "geoip":

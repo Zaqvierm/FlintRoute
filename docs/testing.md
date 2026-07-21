@@ -140,6 +140,7 @@ protocol-specific packet proof и bound route evidence; один HTTPS PASS не
 
 ## Оставшиеся аппаратные проверки
 
+- production adaptive calibration через живые probes и смену network fingerprint;
 - физическое power-loss recovery;
 - multi-client, hardware install/upgrade/downgrade/uninstall и 72h soak (P13).
 - Linux namespace/container behavior (нет локального Linux runtime; shell
