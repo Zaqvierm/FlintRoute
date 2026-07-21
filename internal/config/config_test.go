@@ -67,6 +67,26 @@ func TestValidateRejectsUnsafeGeoLockedPolicy(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsPathThatIsAllowedAndForbidden(t *testing.T) {
+	cfg := validConfig()
+	service := cfg.Services["site"]
+	service.ForbiddenPaths = append(service.ForbiddenPaths, service.AllowedPaths[0])
+	cfg.Services["site"] = service
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "both allowed and forbidden") {
+		t.Fatalf("expected conflicting service path rejection, got %v", err)
+	}
+}
+
+func TestValidateRejectsDuplicateForbiddenPath(t *testing.T) {
+	cfg := validConfig()
+	service := cfg.Services["site"]
+	service.ForbiddenPaths = []string{"smart_dns", "smart_dns"}
+	cfg.Services["site"] = service
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate forbidden path") {
+		t.Fatalf("expected duplicate forbidden path rejection, got %v", err)
+	}
+}
+
 func TestValidateRejectsMarkMappedToDifferentTables(t *testing.T) {
 	cfg := validConfig()
 	cfg.Routes = append(cfg.Routes, Route{Type: "zapret", Tag: "zapret", Mark: "0x41", Status: "CONFIGURED"})

@@ -237,11 +237,40 @@ path; восстановление выполнено перепрошивкой
 install, upgrade, compatible downgrade, rollback и uninstall. Hardware
 lifecycle теперь выполняется только поэтапно с отдельным management gate.
 
+### Production Smart DNS resolver preflight
+
+На Flint 2 проверены два независимых production resolver. Оба вернули безопасные
+A и AAAA ответы через UDP/53 и TCP/53. Проверка выполнена ARM64 harness из
+`d8ed7de`; evidence содержит только роли resolver, число ответов и результат
+валидации, без endpoint и самих адресов ответа.
+
+Это доказывает доступность resolver и корректность DNS transport. Smart DNS
+route ещё должен пройти транзакционную активацию, соединение с возвращённым IP
+с сохранёнными Host/SNI и negative test при отказе primary.
+
+### Managed process crash recovery
+
+На Flint 2 последовательно отправлен `SIGKILL` ровно одному procd-managed PID
+для nfqws, Xray и controller. Перед каждым воздействием PID сверялся с
+ожидаемым executable через `ubus` и `/proc`. После каждого сбоя procd поднял
+новый процесс, а соответствующий route proof прошёл. Хеши committed artifacts
+и active transaction binding до и после серии совпали. Controlled reboot и
+power-loss в этот запуск не входили.
+
+### Proxy endpoint recursion guard
+
+Runtime gate проверил активную Xray-конфигурацию и nftables на Flint 2. Все 13
+неблокирующих Xray outbound используют configured bypass mark, ранние bypass
+rules присутствуют в prerouting и output chains, а live VLESS probe привязан к
+нужному outbound и не использует simulation. Во время пробы счётчик output
+bypass вырос с 731 до 841 пакета. Защита от повторного захвата трафика к proxy
+endpoint подтверждена на железе.
+
 ## Что НЕ доказано на железе
 
-- Smart DNS activation (placeholder resolver).
+- Smart DNS activation и bound path proof; transport preflight уже пройден.
 - `tg_ws_proxy` transport (route type определён в proof, реализации нет).
-- Hard-crash/power-loss recovery и timer fault injection.
+- Power-loss recovery, timer fault injection и повреждение persistent state.
 - Multi-client, 72h soak, расширенная fault injection matrix, downgrade и
   uninstall на железе.
 - Full route × protocol × AF матрица.
@@ -252,5 +281,5 @@ Direct, fail-closed Drop, Zapret и VLESS/Xray подтверждены на Fli
 evidence до и после физического reboot. P3 и P6 закрыты по своим аппаратным
 критериям. In-place upgrade из проверяемого OpenWrt-пакета тоже пройден. Проект
 Factory clean install и повторное post-reboot восстановление теперь доказаны.
-Проект остаётся Alpha: Smart DNS, hard-crash/power-loss, multi-client,
+Проект остаётся Alpha: Smart DNS path, hard-crash/power-loss, multi-client,
 downgrade/uninstall и soak-test ещё не пройдены.

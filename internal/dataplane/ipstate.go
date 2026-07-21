@@ -283,7 +283,15 @@ func VerifyIPState(ctx context.Context, runner CommandRunner, ipBinary string, p
 }
 
 func routeKey(family string, table int, dest string) string {
+	dest = canonicalRouteDestination(family, dest)
 	return family + ":" + strconv.Itoa(table) + ":" + dest
+}
+
+func canonicalRouteDestination(family, dest string) string {
+	if dest == "default" || family == "ipv4" && dest == "0.0.0.0/0" || family == "ipv6" && dest == "::/0" {
+		return "default"
+	}
+	return dest
 }
 
 func ruleKey(family string, priority int) string {
@@ -330,6 +338,11 @@ func restrictRoutes(routes []IPStateRoute, plan artifact.IPPlan) []IPStateRoute 
 	out := make([]IPStateRoute, 0, len(routes))
 	for _, r := range routes {
 		if allowed[routeKey(r.Family, r.Table, r.Destination)] {
+			r.Destination = canonicalRouteDestination(r.Family, r.Destination)
+			if r.Type == "unreachable" {
+				r.Via = ""
+				r.Device = ""
+			}
 			out = append(out, r)
 		}
 	}

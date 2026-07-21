@@ -136,7 +136,7 @@ func (s *stateRunner) routeReplace(fam string, args []string) {
 		kind = args[0]
 		idx = 1
 	}
-	dest := args[idx]
+	dest := canonicalRouteDestination(fam, args[idx])
 	r := stateRoute{kind: kind}
 	for i := idx + 1; i+1 < len(args); i += 2 {
 		switch args[i] {
@@ -160,7 +160,7 @@ func (s *stateRunner) routeDel(fam string, args []string) {
 		idx = 1
 	}
 	_ = kind
-	dest := args[idx]
+	dest := canonicalRouteDestination(fam, args[idx])
 	for i := idx + 1; i+1 < len(args); i += 2 {
 		if args[i] == "table" {
 			tbl := atoiOr(args[i+1], 0)
@@ -302,11 +302,16 @@ func TestRollbackRemovesCreatedRulesAndRoutesFromEmptyPreState(t *testing.T) {
 func TestRollbackRestoresPreStateWhenPriorRevisionExisted(t *testing.T) {
 	st := newStateRunner()
 	plan := samplePlan()
+	plan.Routes = append(plan.Routes, artifact.IPRoute{Family: "ipv4", Table: 102, Destination: "0.0.0.0/0", Type: "local", Device: "lo"})
 
 	// Prior committed revision left a different rule at the same priority and a
 	// different default route in table 100.
 	st.ensureRouteTable("ipv4", 100)
 	st.routes["ipv4"][100]["default"] = stateRoute{via: "198.51.100.1", dev: "eth1", kind: "unicast"}
+	st.ensureRouteTable("ipv4", 102)
+	st.routes["ipv4"][102]["default"] = stateRoute{dev: "lo", kind: "local"}
+	st.ensureRouteTable("ipv6", 100)
+	st.routes["ipv6"][100]["default"] = stateRoute{dev: "lo", kind: "unreachable"}
 	if st.rules["ipv4"] == nil {
 		st.rules["ipv4"] = map[int]stateRule{}
 	}
@@ -319,7 +324,7 @@ func TestRollbackRestoresPreStateWhenPriorRevisionExisted(t *testing.T) {
 	if len(pre.Rules) != 1 || pre.Rules[0].Mark != "0x99" || pre.Rules[0].Table != 99 {
 		t.Fatalf("pre-state did not capture prior rule: %+v", pre.Rules)
 	}
-	if len(pre.Routes) != 1 || pre.Routes[0].Via != "198.51.100.1" {
+	if len(pre.Routes) != 3 {
 		t.Fatalf("pre-state did not capture prior route: %+v", pre.Routes)
 	}
 
@@ -334,13 +339,20 @@ func TestRollbackRestoresPreStateWhenPriorRevisionExisted(t *testing.T) {
 		t.Fatalf("rollback: %v", err)
 	}
 	if err := VerifyIPState(context.Background(), st, "ip", plan, pre); err != nil {
-		t.Fatalf("verify after restore: %v", err)
+		current, _ := SnapshotIPState(context.Background(), st, "ip", plan)
+		t.Fatalf("verify after restore: %v pre=%+v current=%+v", err, pre.Routes, current.Routes)
 	}
 	if got := st.rules["ipv4"][10010]; got.mark != "0x99" || got.table != 99 {
 		t.Fatalf("rollback did not restore prior rule: %+v", got)
 	}
 	if got := st.routes["ipv4"][100]["default"]; got.via != "198.51.100.1" || got.dev != "eth1" {
 		t.Fatalf("rollback did not restore prior route: %+v", got)
+	}
+	if got := st.routes["ipv4"][102]["default"]; got.kind != "local" || got.dev != "lo" {
+		t.Fatalf("rollback did not normalize IPv4 default route: %+v", got)
+	}
+	if got := st.routes["ipv6"][100]["default"]; got.kind != "unreachable" {
+		t.Fatalf("rollback did not normalize IPv6 default route: %+v", got)
 	}
 }
 

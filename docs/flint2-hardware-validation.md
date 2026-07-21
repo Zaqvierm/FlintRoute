@@ -67,6 +67,11 @@ GitHub или другого сервиса, тест провален даже 
 `not applicable` допустим только с записанной причиной. Молча пропустить IPv6
 потому, что тестовый скрипт его не увидел, нельзя.
 
+Файл hardware cases содержит все 50 клеток: пять route types × пять transport
+cases × две address families. Наличие строки означает только полноту manifest.
+PASS появляется лишь после проверки именно этой клетки; один HTTPS probe не
+засчитывает DNS, TCP/80 или QUIC.
+
 ### Service isolation
 
 Минимальный набор одновременно активных bundles:
@@ -226,6 +231,10 @@ Secrets, subscription URLs и private keys в evidence запрещены. `run-
 P13 считается завершённым только если:
 
 - вся применимая матрица имеет evidence-backed PASS;
+- live VLESS traffic увеличивает nft counter раннего Xray recursion bypass, а
+  каждый non-blackhole outbound в установленном Xray config несёт тот же mark;
+- primary и secondary Smart DNS отвечают безопасными A/AAAA результатами через
+  UDP/53 и TCP/53; сами endpoint и ответы не публикуются в evidence;
 - нет unsafe Direct fallback для TSPU_RESTRICTED/GEO_LOCKED;
 - service isolation доказана negative controls;
 - rollback и crash recovery идемпотентны;

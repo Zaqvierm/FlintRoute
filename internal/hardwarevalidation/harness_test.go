@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,22 @@ import (
 type fakeRunner struct {
 	outputs map[string][]byte
 	errors  map[string]error
+}
+
+type sequenceRunner struct {
+	outputs map[string][][]byte
+	calls   map[string]int
+}
+
+func (r *sequenceRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	key := name + " " + strings.Join(args, " ")
+	values := r.outputs[key]
+	index := r.calls[key]
+	if index >= len(values) {
+		return nil, errors.New("unexpected command: " + key)
+	}
+	r.calls[key] = index + 1
+	return values[index], nil
 }
 
 func (f fakeRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -74,7 +91,7 @@ func TestBaselineRequiresBoundRecoveryAndWritesRedactedSnapshots(t *testing.T) {
 	}
 }
 
-func TestRunMatrixSeparatesPassFailureAndNotApplicable(t *testing.T) {
+func TestRunMatrixSeparatesPassFailureNotTestedAndNotApplicable(t *testing.T) {
 	root := t.TempDir()
 	paths := testPaths(root)
 	direct := completeResult("direct")
@@ -87,6 +104,7 @@ func TestRunMatrixSeparatesPassFailureAndNotApplicable(t *testing.T) {
 		{ID: "direct-v4-tls", Route: "direct", Domain: "github.com", Service: "github", ExpectedRouteType: "direct", ExpectedAddressFamily: "ipv4", ExpectedPathTransport: "direct", ExpectedPort: 443, RequireTLS: true, RequireContent: true},
 		{ID: "vless-v4-tls", Route: "proxy", Domain: "chatgpt.com", Service: "chatgpt", ExpectedRouteType: "vless", ExpectedAddressFamily: "ipv4", ExpectedPathTransport: "socks5", ExpectedPort: 443, RequireTLS: true},
 		{ID: "ipv6", SkipReason: "WAN6 is disabled on this hardware profile"},
+		{ID: "quic", PendingReason: "live QUIC evidence is not attached"},
 	}
 	casesPath := filepath.Join(root, "cases.json")
 	writeTestJSON(t, casesPath, cases)
@@ -95,7 +113,7 @@ func TestRunMatrixSeparatesPassFailureAndNotApplicable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.Passed != 2 || summary.NotApplicable != 1 || summary.Failed != 0 {
+	if summary.Passed != 2 || summary.NotApplicable != 1 || summary.NotTested != 1 || summary.Failed != 0 {
 		t.Fatalf("unexpected summary: %#v", summary)
 	}
 	probes, err := os.ReadFile(filepath.Join(root, "evidence", "probes.jsonl"))
@@ -119,6 +137,129 @@ func TestRunMatrixFailsClosedOnWrongRouteProof(t *testing.T) {
 	summary, err := harness.RunMatrix(context.Background(), filepath.Join(root, "evidence"), casesPath)
 	if err == nil || summary.Failed != 1 {
 		t.Fatalf("wrong proof was accepted: summary=%#v err=%v", summary, err)
+	}
+}
+
+func TestRunMatrixRequiresEveryDeclaredCoverageCell(t *testing.T) {
+	root := t.TempDir()
+	paths := testPaths(root)
+	plan := MatrixPlan{
+		SchemaVersion: 1, RequireFullCoverage: true,
+		RouteTypes: []string{"direct", "drop"}, Protocols: []string{"tcp_443"}, AddressFamilies: []string{"ipv4", "ipv6"},
+		Cases: []MatrixCase{
+			{ID: "direct-tcp443-ipv4", ExpectedRouteType: "direct", Protocol: "tcp_443", AddressFamily: "ipv4", SkipReason: "fixture"},
+			{ID: "direct-tcp443-ipv6", ExpectedRouteType: "direct", Protocol: "tcp_443", AddressFamily: "ipv6", SkipReason: "fixture"},
+			{ID: "drop-tcp443-ipv4", ExpectedRouteType: "drop", Protocol: "tcp_443", AddressFamily: "ipv4", SkipReason: "fixture"},
+		},
+	}
+	planPath := filepath.Join(root, "matrix.json")
+	writeTestJSON(t, planPath, plan)
+	harness := Harness{Runner: fakeRunner{}, Paths: paths}
+	if _, err := harness.RunMatrix(context.Background(), filepath.Join(root, "evidence"), planPath); err == nil || !strings.Contains(err.Error(), "requires 4 cells") {
+		t.Fatalf("incomplete full matrix was accepted: %v", err)
+	}
+
+	plan.Cases = append(plan.Cases, MatrixCase{ID: "drop-tcp443-ipv6", ExpectedRouteType: "drop", Protocol: "tcp_443", AddressFamily: "ipv6", SkipReason: "fixture"})
+	writeTestJSON(t, planPath, plan)
+	summary, err := harness.RunMatrix(context.Background(), filepath.Join(root, "evidence"), planPath)
+	if err != nil || !summary.CoveragePassed || summary.NotApplicable != 4 {
+		t.Fatalf("complete declared matrix failed: summary=%+v err=%v", summary, err)
+	}
+}
+
+func TestRunMatrixRejectsAmbiguousUntestedClassification(t *testing.T) {
+	root := t.TempDir()
+	paths := testPaths(root)
+	casesPath := filepath.Join(root, "cases.json")
+	writeTestJSON(t, casesPath, []MatrixCase{{ID: "ambiguous", SkipReason: "not applicable", PendingReason: "not tested"}})
+	harness := Harness{Runner: fakeRunner{}, Paths: paths}
+	if _, err := harness.RunMatrix(context.Background(), filepath.Join(root, "evidence"), casesPath); err == nil || !strings.Contains(err.Error(), "both not applicable and not tested") {
+		t.Fatalf("ambiguous matrix classification was accepted: %v", err)
+	}
+}
+
+func TestPublishedP13MatrixDeclaresFullCartesianCoverage(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "tests", "hardware", "p13-cases.example.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := decodeMatrixPlan(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateMatrixCoverage(plan); err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Cases) != 50 {
+		t.Fatalf("unexpected published matrix size: %d", len(plan.Cases))
+	}
+	active, pending, unavailable := 0, 0, 0
+	for _, testCase := range plan.Cases {
+		switch {
+		case testCase.PendingReason != "":
+			pending++
+		case testCase.SkipReason != "":
+			unavailable++
+		default:
+			active++
+		}
+	}
+	if active != 4 || pending != 21 || unavailable != 25 {
+		t.Fatalf("published matrix classification drifted: active=%d pending=%d unavailable=%d", active, pending, unavailable)
+	}
+}
+
+func TestVerifyProxyRecursionRequiresMarkedOutboundAndLiveCounter(t *testing.T) {
+	root := t.TempDir()
+	paths := testPaths(root)
+	xrayPath := filepath.Join(root, "active-xray.json")
+	writeTestFile(t, xrayPath, `{"outbounds":[{"tag":"proxy","protocol":"vless","streamSettings":{"sockopt":{"mark":512}}},{"tag":"direct","protocol":"freedom","streamSettings":{"sockopt":{"mark":512}}},{"tag":"blocked","protocol":"blackhole","settings":{}}]}`)
+	writeTestFile(t, paths.Config, `{"xray":{"active_config":`+strconv.Quote(xrayPath)+`},"openwrt":{"nft_family":"inet","nft_table":"router_policy","xray_bypass_mark":"0x200"},"routes":[{"type":"vless","tag":"proxy"}]}`)
+	vless := completeResult("vless")
+	vless.Route = "proxy"
+	vless.PathEvidence.RouteTag = "proxy"
+	vless.PathEvidence.XrayOutboundTag = "proxy"
+	vless.PathEvidence.ProxyFlowProcessed = false
+	runner := &sequenceRunner{calls: map[string]int{}, outputs: map[string][][]byte{
+		paths.NftBinary + " list chain inet router_policy rp_prerouting":                   {[]byte(`meta mark 0x00000200 counter packets 0 bytes 0 return comment "rp action=xray_recursion_bypass"`)},
+		paths.NftBinary + " list chain inet router_policy probe_output":                    {[]byte(`meta mark 0x00000200 counter packets 10 bytes 100 return comment "rp action=xray_recursion_bypass"`), []byte(`meta mark 0x00000200 counter packets 14 bytes 400 return comment "rp action=xray_recursion_bypass"`)},
+		paths.RouterPolicy + " probe-route --no-persist --route proxy chatgpt.com chatgpt": {mustJSON(t, vless)},
+	}}
+	harness := Harness{Runner: runner, Paths: paths, Now: func() time.Time { return time.Date(2026, 7, 19, 1, 2, 3, 0, time.UTC) }}
+	result, err := harness.VerifyProxyRecursion(context.Background(), ProxyRecursionOptions{RunDir: filepath.Join(root, "evidence"), Route: "proxy", Domain: "chatgpt.com", Service: "chatgpt"})
+	if err != nil || !result.Passed || result.ProtectedOutbounds != 2 || result.OutputPacketsBefore != 10 || result.OutputPacketsAfter != 14 {
+		t.Fatalf("recursion proof failed: result=%+v err=%v", result, err)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "evidence", "proxy-recursion.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), xrayPath) || strings.Contains(string(raw), "chatgpt.com") {
+		t.Fatalf("recursion evidence leaked private runtime details: %s", raw)
+	}
+}
+
+func TestVerifyProxyRecursionFailsWhenCounterDoesNotMove(t *testing.T) {
+	root := t.TempDir()
+	paths := testPaths(root)
+	xrayPath := filepath.Join(root, "active-xray.json")
+	writeTestFile(t, xrayPath, `{"outbounds":[{"tag":"proxy","protocol":"vless","streamSettings":{"sockopt":{"mark":512}}}]}`)
+	writeTestFile(t, paths.Config, `{"xray":{"active_config":`+strconv.Quote(xrayPath)+`},"openwrt":{"nft_family":"inet","nft_table":"router_policy","xray_bypass_mark":"0x200"},"routes":[{"type":"vless","tag":"proxy"}]}`)
+	vless := completeResult("vless")
+	vless.Route = "proxy"
+	vless.PathEvidence.RouteTag = "proxy"
+	vless.PathEvidence.XrayOutboundTag = "proxy"
+	vless.PathEvidence.ProxyFlowProcessed = false
+	line := []byte(`meta mark 0x00000200 counter packets 10 bytes 100 return comment "rp action=xray_recursion_bypass"`)
+	runner := &sequenceRunner{calls: map[string]int{}, outputs: map[string][][]byte{
+		paths.NftBinary + " list chain inet router_policy rp_prerouting":                   {line},
+		paths.NftBinary + " list chain inet router_policy probe_output":                    {line, line},
+		paths.RouterPolicy + " probe-route --no-persist --route proxy chatgpt.com chatgpt": {mustJSON(t, vless)},
+	}}
+	harness := Harness{Runner: runner, Paths: paths}
+	result, err := harness.VerifyProxyRecursion(context.Background(), ProxyRecursionOptions{RunDir: filepath.Join(root, "evidence"), Route: "proxy", Domain: "chatgpt.com", Service: "chatgpt"})
+	if err == nil || result.Passed || result.Reason != "live VLESS traffic did not hit the recursion bypass" {
+		t.Fatalf("stale recursion counter was accepted: result=%+v err=%v", result, err)
 	}
 }
 

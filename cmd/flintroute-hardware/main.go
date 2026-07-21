@@ -22,7 +22,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: flintroute-hardware baseline|matrix|load|finalize [flags]")
+		return errors.New("usage: flintroute-hardware baseline|smart-dns|matrix|recursion|load|finalize [flags]")
 	}
 	paths := hardwarevalidation.DefaultPaths()
 	switch args[0] {
@@ -68,6 +68,51 @@ func run(args []string) error {
 		runner := hardwarevalidation.ExecRunner{Env: append(os.Environ(), "ROUTER_POLICY_CONFIG="+*config)}
 		harness := hardwarevalidation.Harness{Runner: runner, Paths: paths}
 		result, err := harness.RunMatrix(context.Background(), *runDir, *cases)
+		if printErr := printJSON(result); printErr != nil {
+			return printErr
+		}
+		return err
+	case "smart-dns":
+		fs := flag.NewFlagSet("smart-dns", flag.ContinueOnError)
+		runDir := fs.String("run-dir", "", "evidence run directory")
+		primary := fs.String("primary", "", "primary production Smart DNS resolver")
+		secondary := fs.String("secondary", "", "secondary production Smart DNS resolver")
+		domain := fs.String("domain", "chatgpt.com", "validation domain")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return errors.New("smart-dns received unexpected arguments")
+		}
+		if err := hardwarevalidation.ValidateDeviceRunDir(*runDir); err != nil {
+			return err
+		}
+		harness := hardwarevalidation.Harness{Runner: hardwarevalidation.ExecRunner{}, Paths: paths}
+		result, err := harness.VerifySmartDNSResolvers(context.Background(), hardwarevalidation.SmartDNSOptions{RunDir: *runDir, Primary: *primary, Secondary: *secondary, Domain: *domain})
+		if printErr := printJSON(result); printErr != nil {
+			return printErr
+		}
+		return err
+	case "recursion":
+		fs := flag.NewFlagSet("recursion", flag.ContinueOnError)
+		runDir := fs.String("run-dir", "", "evidence run directory")
+		route := fs.String("route", "", "VLESS route tag")
+		domain := fs.String("domain", "", "probe domain")
+		service := fs.String("service", "", "probe service")
+		config := fs.String("config", paths.Config, "active FlintRoute config")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return errors.New("recursion received unexpected arguments")
+		}
+		if err := hardwarevalidation.ValidateDeviceRunDir(*runDir); err != nil {
+			return err
+		}
+		paths.Config = *config
+		runner := hardwarevalidation.ExecRunner{Env: append(os.Environ(), "ROUTER_POLICY_CONFIG="+*config)}
+		harness := hardwarevalidation.Harness{Runner: runner, Paths: paths}
+		result, err := harness.VerifyProxyRecursion(context.Background(), hardwarevalidation.ProxyRecursionOptions{RunDir: *runDir, Route: *route, Domain: *domain, Service: *service})
 		if printErr := printJSON(result); printErr != nil {
 			return printErr
 		}

@@ -122,6 +122,8 @@ type MatrixCase struct {
 	Route                 string `json:"route"`
 	Domain                string `json:"domain"`
 	Service               string `json:"service"`
+	Protocol              string `json:"protocol,omitempty"`
+	AddressFamily         string `json:"address_family,omitempty"`
 	ExpectedStatus        string `json:"expected_status"`
 	ExpectedRouteType     string `json:"expected_route_type"`
 	ExpectedAddressFamily string `json:"expected_address_family,omitempty"`
@@ -131,22 +133,36 @@ type MatrixCase struct {
 	RequireTLS            bool   `json:"require_tls,omitempty"`
 	RequireContent        bool   `json:"require_content,omitempty"`
 	SkipReason            string `json:"skip_reason,omitempty"`
+	PendingReason         string `json:"pending_reason,omitempty"`
+}
+
+type MatrixPlan struct {
+	SchemaVersion       int          `json:"schema_version"`
+	RequireFullCoverage bool         `json:"require_full_coverage"`
+	RouteTypes          []string     `json:"route_types"`
+	Protocols           []string     `json:"protocols"`
+	AddressFamilies     []string     `json:"address_families"`
+	Cases               []MatrixCase `json:"cases"`
 }
 
 type MatrixResult struct {
-	ID        string   `json:"id"`
-	Status    string   `json:"status"`
-	Route     string   `json:"route,omitempty"`
-	RouteType string   `json:"route_type,omitempty"`
-	Reasons   []string `json:"reasons,omitempty"`
-	CheckedAt string   `json:"checked_at"`
+	ID            string   `json:"id"`
+	Status        string   `json:"status"`
+	Route         string   `json:"route,omitempty"`
+	RouteType     string   `json:"route_type,omitempty"`
+	Protocol      string   `json:"protocol,omitempty"`
+	AddressFamily string   `json:"address_family,omitempty"`
+	Reasons       []string `json:"reasons,omitempty"`
+	CheckedAt     string   `json:"checked_at"`
 }
 
 type MatrixSummary struct {
-	Total         int `json:"total"`
-	Passed        int `json:"passed"`
-	Failed        int `json:"failed"`
-	NotApplicable int `json:"not_applicable"`
+	Total          int  `json:"total"`
+	Passed         int  `json:"passed"`
+	Failed         int  `json:"failed"`
+	NotTested      int  `json:"not_tested"`
+	NotApplicable  int  `json:"not_applicable"`
+	CoveragePassed bool `json:"coverage_passed"`
 }
 
 func (h Harness) Baseline(ctx context.Context, options BaselineOptions) (Baseline, error) {
@@ -257,12 +273,16 @@ func (h Harness) RunMatrix(ctx context.Context, runDir, casesPath string) (Matri
 	if err != nil {
 		return MatrixSummary{}, err
 	}
-	var cases []MatrixCase
-	if err := json.Unmarshal(raw, &cases); err != nil {
-		return MatrixSummary{}, fmt.Errorf("decode matrix cases: %w", err)
+	plan, err := decodeMatrixPlan(raw)
+	if err != nil {
+		return MatrixSummary{}, err
 	}
+	cases := plan.Cases
 	if len(cases) == 0 || len(cases) > 128 {
 		return MatrixSummary{}, errors.New("matrix must contain 1..128 cases")
+	}
+	if err := validateMatrixCoverage(plan); err != nil {
+		return MatrixSummary{}, err
 	}
 
 	resultFile, err := os.OpenFile(filepath.Join(runDir, "matrix.jsonl"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
@@ -277,17 +297,26 @@ func (h Harness) RunMatrix(ctx context.Context, runDir, casesPath string) (Matri
 	defer probeFile.Close()
 
 	seen := map[string]struct{}{}
-	summary := MatrixSummary{Total: len(cases)}
+	summary := MatrixSummary{Total: len(cases), CoveragePassed: plan.RequireFullCoverage}
 	for _, testCase := range cases {
 		if err := validateCase(testCase, seen); err != nil {
 			return summary, err
 		}
 		seen[testCase.ID] = struct{}{}
-		result := MatrixResult{ID: testCase.ID, Route: testCase.Route, RouteType: testCase.ExpectedRouteType, CheckedAt: h.now().Format(time.RFC3339)}
+		result := MatrixResult{ID: testCase.ID, Route: testCase.Route, RouteType: testCase.ExpectedRouteType, Protocol: testCase.Protocol, AddressFamily: testCase.AddressFamily, CheckedAt: h.now().Format(time.RFC3339)}
 		if testCase.SkipReason != "" {
 			result.Status = "NOT_APPLICABLE"
 			result.Reasons = []string{testCase.SkipReason}
 			summary.NotApplicable++
+			if err := appendJSON(resultFile, result); err != nil {
+				return summary, err
+			}
+			continue
+		}
+		if testCase.PendingReason != "" {
+			result.Status = "NOT_TESTED"
+			result.Reasons = []string{testCase.PendingReason}
+			summary.NotTested++
 			if err := appendJSON(resultFile, result); err != nil {
 				return summary, err
 			}
@@ -502,6 +531,67 @@ func redactProbe(result probe.RouteResult) probe.RouteResult {
 	return result
 }
 
+func decodeMatrixPlan(raw []byte) (MatrixPlan, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if strings.HasPrefix(trimmed, "[") {
+		var cases []MatrixCase
+		if err := json.Unmarshal(raw, &cases); err != nil {
+			return MatrixPlan{}, fmt.Errorf("decode matrix cases: %w", err)
+		}
+		return MatrixPlan{Cases: cases}, nil
+	}
+	var plan MatrixPlan
+	if err := json.Unmarshal(raw, &plan); err != nil {
+		return MatrixPlan{}, fmt.Errorf("decode matrix plan: %w", err)
+	}
+	if plan.SchemaVersion != 1 {
+		return MatrixPlan{}, errors.New("matrix plan schema_version must be 1")
+	}
+	return plan, nil
+}
+
+func validateMatrixCoverage(plan MatrixPlan) error {
+	if !plan.RequireFullCoverage {
+		return nil
+	}
+	if len(plan.RouteTypes) == 0 || len(plan.Protocols) == 0 || len(plan.AddressFamilies) == 0 {
+		return errors.New("full matrix dimensions must not be empty")
+	}
+	dimensions := []struct {
+		name   string
+		values []string
+	}{{"route type", plan.RouteTypes}, {"protocol", plan.Protocols}, {"address family", plan.AddressFamilies}}
+	sets := make([]map[string]bool, len(dimensions))
+	for index, dimension := range dimensions {
+		sets[index] = map[string]bool{}
+		for _, value := range dimension.values {
+			if !caseIDPattern.MatchString(value) || sets[index][value] {
+				return fmt.Errorf("invalid or duplicate matrix %s %q", dimension.name, value)
+			}
+			sets[index][value] = true
+		}
+	}
+	expected := len(plan.RouteTypes) * len(plan.Protocols) * len(plan.AddressFamilies)
+	if len(plan.Cases) != expected {
+		return fmt.Errorf("full matrix requires %d cells, got %d", expected, len(plan.Cases))
+	}
+	seen := map[string]bool{}
+	for _, testCase := range plan.Cases {
+		if !sets[0][testCase.ExpectedRouteType] || !sets[1][testCase.Protocol] || !sets[2][testCase.AddressFamily] {
+			return fmt.Errorf("case %s is outside declared matrix dimensions", testCase.ID)
+		}
+		key := testCase.ExpectedRouteType + "\x00" + testCase.Protocol + "\x00" + testCase.AddressFamily
+		if seen[key] {
+			return fmt.Errorf("duplicate matrix cell for %s/%s/%s", testCase.ExpectedRouteType, testCase.Protocol, testCase.AddressFamily)
+		}
+		seen[key] = true
+		if testCase.ExpectedAddressFamily != "" && testCase.ExpectedAddressFamily != testCase.AddressFamily {
+			return fmt.Errorf("case %s address family expectation is inconsistent", testCase.ID)
+		}
+	}
+	return nil
+}
+
 func validateCase(testCase MatrixCase, seen map[string]struct{}) error {
 	if !caseIDPattern.MatchString(testCase.ID) {
 		return fmt.Errorf("invalid case ID %q", testCase.ID)
@@ -509,9 +599,16 @@ func validateCase(testCase MatrixCase, seen map[string]struct{}) error {
 	if _, exists := seen[testCase.ID]; exists {
 		return fmt.Errorf("duplicate case ID %q", testCase.ID)
 	}
-	if testCase.SkipReason != "" {
-		if len(testCase.SkipReason) > 256 {
-			return fmt.Errorf("skip reason is too long for %s", testCase.ID)
+	if testCase.SkipReason != "" || testCase.PendingReason != "" {
+		if testCase.SkipReason != "" && testCase.PendingReason != "" {
+			return fmt.Errorf("case %s cannot be both not applicable and not tested", testCase.ID)
+		}
+		reason := testCase.SkipReason
+		if reason == "" {
+			reason = testCase.PendingReason
+		}
+		if len(reason) > 256 {
+			return fmt.Errorf("case reason is too long for %s", testCase.ID)
 		}
 		return nil
 	}

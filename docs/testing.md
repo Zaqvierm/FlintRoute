@@ -107,7 +107,15 @@ Verified: every Go package passed.
   rollback active config + prior service state. Включает P6 reconcile path.
 - `tests/installer-backup.sh` — empty archive останавливает install/uninstall до удаления файлов и не пишет `last-backup-path`;
 - `tests/installer-lifecycle.sh` — clean install, повторный upgrade, compatible downgrade, rollback невалидной версии, verified uninstall и запрет service-manager side effects в sandbox;
-- `tests/hardware/run-p13-faults.ps1` — перезапуск managed процессов и controlled reboot с проверкой целой committed revision;
+- `tests/hardware/run-p13.ps1` — recovery baseline, UDP/TCP-проверка двух
+  production Smart DNS resolvers, route matrix и обязательный proxy-recursion
+  gate: установленный Xray config должен маркировать outbounds, nft bypass
+  должен присутствовать, а live VLESS probe — увеличить его counter;
+- `tests/hardware/run-p13-faults.ps1` — SIGKILL только PID, который procd
+  привязал к ожидаемому project service и executable, затем controlled reboot
+  с проверкой целой committed revision; общий `pidof xray/nfqws` запрещён.
+  `-SkipControlledReboot` отделяет process matrix от reboot и всё равно
+  завершает evidence manifest и удаляет проверенный remote run directory;
 - `tests/package-openwrt.sh` — состав, SHA-256 manifest и отказ при повреждении OpenWrt-пакета.
 
 ## Четыре уровня covered
@@ -118,10 +126,16 @@ markers), egress (`RU_EXIT`, consensus mismatch в health quorum), path proof
 (`ValidateRouteProof` per-type: direct bypass, zapret flow/QUIC, smart DNS
 Host/SNI, vless SOCKS loopback, drop enforcement).
 
+P13 matrix plan перечисляет полный декартов набор из пяти route types, пяти
+transport cases и двух address families. Harness отклоняет отсутствующую,
+лишнюю или продублированную клетку. Непроверенный transport получает явный
+`NOT_TESTED`; `NOT_APPLICABLE` разрешён только когда тест невозможен на этом
+hardware profile. Соседний HTTPS PASS ни один из этих статусов не закрывает.
+
 ## Оставшиеся аппаратные проверки
 
-- Smart DNS с production resolver и расширенная protocol/AF-матрица;
-- hard-crash/power-loss recovery и timer firing при потерянном management path;
+- оставшиеся 21 IPv4-клетка protocol/AF-матрицы;
+- hard-crash/power-loss recovery и повреждение state;
 - multi-client, hardware install/upgrade/downgrade/uninstall и 72h soak (P13).
 - Linux namespace/container behavior (нет локального Linux runtime; shell
   integration cross-platform, готов для Linux CI).

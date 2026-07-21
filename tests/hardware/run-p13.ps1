@@ -6,6 +6,12 @@ param(
   [Parameter(Mandatory = $true)][string]$OutputRoot,
   [string]$CasesPath = "",
   [string]$LoadPath = "",
+  [string]$RecursionRoute = "proxy-4",
+  [string]$RecursionDomain = "chatgpt.com",
+  [string]$RecursionService = "chatgpt",
+  [string]$SmartDNSPrimary = "",
+  [string]$SmartDNSSecondary = "",
+  [string]$SmartDNSDomain = "chatgpt.com",
   [string]$RunId = "",
   [switch]$KeepRemote
 )
@@ -23,6 +29,9 @@ foreach ($required in @($ssh, $scp, $IdentityFile, $KnownHostsFile, $RecoveryBun
   if (!(Test-Path -LiteralPath $required -PathType Leaf)) { throw "Missing required file: $required" }
 }
 if ($LoadPath -and !(Test-Path -LiteralPath $LoadPath -PathType Leaf)) { throw "Missing load plan: $LoadPath" }
+foreach ($resolver in @($SmartDNSPrimary, $SmartDNSSecondary)) {
+  if ($resolver -notmatch '^\[?[0-9A-Fa-f:.]+\]?(?::53)?$') { throw "P13 requires a production Smart DNS IP endpoint" }
+}
 
 $commit = (& git -C $repo rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[0-9a-f]{40}$') { throw "Cannot resolve source commit" }
@@ -65,8 +74,15 @@ $remoteHarness = "$remoteRun/flintroute-hardware"
 $remoteCases = "$remoteRun/$([System.IO.Path]::GetFileName($CasesPath))"
 & $ssh @sshArgs "chmod 700 '$remoteHarness' && '$remoteHarness' baseline --run-dir '$remoteRun' --commit '$commit' --build-sha256 '$remoteBinarySHA' --recovery-sha256 '$recoverySHA'"
 if ($LASTEXITCODE -ne 0) { throw "P13 baseline gate failed" }
+& $ssh @sshArgs "'$remoteHarness' smart-dns --run-dir '$remoteRun' --primary '$SmartDNSPrimary' --secondary '$SmartDNSSecondary' --domain '$SmartDNSDomain'"
+if ($LASTEXITCODE -ne 0) { throw "P13 production Smart DNS resolver gate failed" }
 & $ssh @sshArgs "'$remoteHarness' matrix --run-dir '$remoteRun' --cases '$remoteCases'"
 if ($LASTEXITCODE -ne 0) { throw "P13 route matrix failed" }
+foreach ($value in @($RecursionRoute, $RecursionDomain, $RecursionService)) {
+  if ($value -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$') { throw "Unsafe recursion probe value" }
+}
+& $ssh @sshArgs "'$remoteHarness' recursion --run-dir '$remoteRun' --route '$RecursionRoute' --domain '$RecursionDomain' --service '$RecursionService'"
+if ($LASTEXITCODE -ne 0) { throw "P13 proxy recursion gate failed" }
 if ($LoadPath) {
   $remoteLoad = "$remoteRun/$([System.IO.Path]::GetFileName($LoadPath))"
   & $ssh @sshArgs "'$remoteHarness' load --run-dir '$remoteRun' --plan '$remoteLoad'"
@@ -97,4 +113,4 @@ Remove-Item -LiteralPath $temp -Recurse -Force
 Write-Host "p13_run=$RunId"
 Write-Host "p13_commit=$commit"
 Write-Host "p13_evidence=$localRun"
-Write-Host "p13_baseline_matrix=PASS"
+Write-Host "p13_baseline_matrix_recursion=PASS"

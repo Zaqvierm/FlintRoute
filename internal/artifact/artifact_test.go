@@ -716,6 +716,40 @@ func smartDNSPolicyConfig(t *testing.T, root string) *config.Config {
 	return cfg
 }
 
+func TestProofPlanUsesTheInstalledRuleForSharedMarks(t *testing.T) {
+	cfg := testConfig(t, t.TempDir())
+	routes := []config.Route{
+		{Type: "direct", Tag: "direct", Mark: "0x41"},
+		{Type: "vless", Tag: "proxy-a", Mark: "0x43"},
+		{Type: "drop", Tag: "drop", Mark: "0x4f"},
+		{Type: "vless", Tag: "proxy-b", Mark: "0x43"},
+		{Type: "smart_dns", Tag: "smart", Mark: "0x41"},
+	}
+	proofs := buildProofPlan(cfg, routes)
+	rules := buildIPRules(cfg, proofs)
+	for _, proof := range proofs {
+		if proof.Type == "drop" {
+			continue
+		}
+		matched := false
+		for _, rule := range rules {
+			if rule.Family == "ipv4" && rule.Mark == proof.Mark && rule.Table == proof.Table && rule.Priority == proof.RulePriority {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			t.Fatalf("proof for %s does not match an installed rule: %+v", proof.Tag, proof)
+		}
+	}
+	if proofs[3].RulePriority != proofs[1].RulePriority {
+		t.Fatalf("VLESS routes with one mark/table must share a rule priority: %+v", proofs)
+	}
+	if proofs[4].RulePriority != proofs[0].RulePriority {
+		t.Fatalf("Smart DNS and direct routes with one mark/table must share a rule priority: %+v", proofs)
+	}
+}
+
 func writeFlowDiagnostics(t *testing.T, root, status string, software, hardware bool) {
 	t.Helper()
 	diagnostics := fmt.Sprintf(`{"status":"VERIFIED","source":"flow-offload-fixture","simulation":true,"wan_interface":"wan","lan_interfaces":["br-lan"],"ipv4_gateway":"192.0.2.1","ipv6_gateway":"2001:db8::1","ipv6_available":true,"transparent_proxy_mode":"tproxy","flow_offloading_status":%q,"software_flow_offloading":%t,"hardware_flow_offloading":%t,"collected_at":"1969-01-01T00:00:00Z","expires_at":"2999-01-01T00:00:00Z"}`, status, software, hardware)

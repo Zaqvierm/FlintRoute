@@ -1,60 +1,404 @@
-[
-  {
-    "id": "direct-github-ipv4-tls",
-    "route": "direct",
-    "domain": "github.com",
-    "service": "github",
-    "expected_status": "OK",
-    "expected_route_type": "direct",
-    "expected_address_family": "ipv4",
-    "expected_path_transport": "direct",
-    "expected_port": 443,
-    "require_tls": true,
-    "require_content": true
-  },
-  {
-    "id": "zapret-discord-ipv4-tls",
-    "route": "zapret",
-    "domain": "discord.com",
-    "service": "discord_acceptance",
-    "expected_status": "OK",
-    "expected_route_type": "zapret",
-    "expected_address_family": "ipv4",
-    "expected_path_transport": "direct",
-    "expected_port": 443,
-    "expected_quic_policy": "forced_tcp",
-    "require_tls": true
-  },
-  {
-    "id": "vless-chatgpt-ipv4-tls",
-    "route": "proxy-4",
-    "domain": "chatgpt.com",
-    "service": "chatgpt",
-    "expected_status": "OK",
-    "expected_route_type": "vless",
-    "expected_address_family": "ipv4",
-    "expected_path_transport": "socks5",
-    "expected_port": 443,
-    "require_tls": true
-  },
-  {
-    "id": "drop-ipv4-ipv6-dns",
-    "route": "drop",
-    "domain": "example.invalid",
-    "service": "github",
-    "expected_status": "OK",
-    "expected_route_type": "drop"
-  },
-  {
-    "id": "smart-dns",
-    "skip_reason": "No production Smart DNS resolver is configured in this deployment"
-  },
-  {
-    "id": "native-ipv6",
-    "skip_reason": "WAN6 is disabled in this deployment; no IPv6 default route exists"
-  },
-  {
-    "id": "tcp-80",
-    "skip_reason": "The active acceptance services expose only TLS probes"
-  }
-]
+{
+  "schema_version": 1,
+  "require_full_coverage": true,
+  "route_types": [
+    "direct",
+    "zapret",
+    "smart_dns",
+    "vless",
+    "drop"
+  ],
+  "protocols": [
+    "dns_udp_53",
+    "dns_tcp_53",
+    "tcp_80",
+    "tcp_443",
+    "udp_443"
+  ],
+  "address_families": [
+    "ipv4",
+    "ipv6"
+  ],
+  "cases": [
+    {
+      "id": "direct-dns-udp-53-ipv4",
+      "expected_route_type": "direct",
+      "protocol": "dns_udp_53",
+      "address_family": "ipv4",
+      "pending_reason": "LAN DNS intercept evidence for this route is not attached"
+    },
+    {
+      "id": "direct-dns-udp-53-ipv6",
+      "expected_route_type": "direct",
+      "protocol": "dns_udp_53",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "direct-dns-tcp-53-ipv4",
+      "expected_route_type": "direct",
+      "protocol": "dns_tcp_53",
+      "address_family": "ipv4",
+      "pending_reason": "LAN DNS intercept evidence for this route is not attached"
+    },
+    {
+      "id": "direct-dns-tcp-53-ipv6",
+      "expected_route_type": "direct",
+      "protocol": "dns_tcp_53",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "direct-tcp-80-ipv4",
+      "expected_route_type": "direct",
+      "protocol": "tcp_80",
+      "address_family": "ipv4",
+      "pending_reason": "TCP/80 acceptance service is not configured"
+    },
+    {
+      "id": "direct-tcp-80-ipv6",
+      "expected_route_type": "direct",
+      "protocol": "tcp_80",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "direct-tcp-443-ipv4",
+      "expected_route_type": "direct",
+      "protocol": "tcp_443",
+      "address_family": "ipv4",
+      "route": "direct",
+      "domain": "github.com",
+      "service": "github",
+      "expected_status": "OK",
+      "expected_address_family": "ipv4",
+      "expected_path_transport": "direct",
+      "expected_port": 443,
+      "require_tls": true,
+      "require_content": true
+    },
+    {
+      "id": "direct-tcp-443-ipv6",
+      "expected_route_type": "direct",
+      "protocol": "tcp_443",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "direct-udp-443-ipv4",
+      "expected_route_type": "direct",
+      "protocol": "udp_443",
+      "address_family": "ipv4",
+      "pending_reason": "Live QUIC evidence is not attached"
+    },
+    {
+      "id": "direct-udp-443-ipv6",
+      "expected_route_type": "direct",
+      "protocol": "udp_443",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "zapret-dns-udp-53-ipv4",
+      "expected_route_type": "zapret",
+      "protocol": "dns_udp_53",
+      "address_family": "ipv4",
+      "pending_reason": "LAN DNS intercept evidence for this route is not attached"
+    },
+    {
+      "id": "zapret-dns-udp-53-ipv6",
+      "expected_route_type": "zapret",
+      "protocol": "dns_udp_53",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "zapret-dns-tcp-53-ipv4",
+      "expected_route_type": "zapret",
+      "protocol": "dns_tcp_53",
+      "address_family": "ipv4",
+      "pending_reason": "LAN DNS intercept evidence for this route is not attached"
+    },
+    {
+      "id": "zapret-dns-tcp-53-ipv6",
+      "expected_route_type": "zapret",
+      "protocol": "dns_tcp_53",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "zapret-tcp-80-ipv4",
+      "expected_route_type": "zapret",
+      "protocol": "tcp_80",
+      "address_family": "ipv4",
+      "pending_reason": "TCP/80 acceptance service is not configured"
+    },
+    {
+      "id": "zapret-tcp-80-ipv6",
+      "expected_route_type": "zapret",
+      "protocol": "tcp_80",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "zapret-tcp-443-ipv4",
+      "expected_route_type": "zapret",
+      "protocol": "tcp_443",
+      "address_family": "ipv4",
+      "route": "zapret",
+      "domain": "discord.com",
+      "service": "discord_acceptance",
+      "expected_status": "OK",
+      "expected_address_family": "ipv4",
+      "expected_path_transport": "direct",
+      "expected_port": 443,
+      "expected_quic_policy": "forced_tcp",
+      "require_tls": true
+    },
+    {
+      "id": "zapret-tcp-443-ipv6",
+      "expected_route_type": "zapret",
+      "protocol": "tcp_443",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "zapret-udp-443-ipv4",
+      "expected_route_type": "zapret",
+      "protocol": "udp_443",
+      "address_family": "ipv4",
+      "pending_reason": "Live QUIC fallback evidence is not attached"
+    },
+    {
+      "id": "zapret-udp-443-ipv6",
+      "expected_route_type": "zapret",
+      "protocol": "udp_443",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "smart_dns-dns-udp-53-ipv4",
+      "expected_route_type": "smart_dns",
+      "protocol": "dns_udp_53",
+      "address_family": "ipv4",
+      "pending_reason": "Resolver transport and bound activation pass separate gates; matrix binding is not implemented"
+    },
+    {
+      "id": "smart_dns-dns-udp-53-ipv6",
+      "expected_route_type": "smart_dns",
+      "protocol": "dns_udp_53",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "smart_dns-dns-tcp-53-ipv4",
+      "expected_route_type": "smart_dns",
+      "protocol": "dns_tcp_53",
+      "address_family": "ipv4",
+      "pending_reason": "Resolver transport and bound activation pass separate gates; matrix binding is not implemented"
+    },
+    {
+      "id": "smart_dns-dns-tcp-53-ipv6",
+      "expected_route_type": "smart_dns",
+      "protocol": "dns_tcp_53",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "smart_dns-tcp-80-ipv4",
+      "expected_route_type": "smart_dns",
+      "protocol": "tcp_80",
+      "address_family": "ipv4",
+      "pending_reason": "TCP/80 acceptance service is not configured"
+    },
+    {
+      "id": "smart_dns-tcp-80-ipv6",
+      "expected_route_type": "smart_dns",
+      "protocol": "tcp_80",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "smart_dns-tcp-443-ipv4",
+      "expected_route_type": "smart_dns",
+      "protocol": "tcp_443",
+      "address_family": "ipv4",
+      "route": "smart-dns-primary",
+      "domain": "chatgpt.com",
+      "service": "chatgpt",
+      "expected_status": "OK",
+      "expected_address_family": "ipv4",
+      "expected_path_transport": "direct",
+      "expected_port": 443,
+      "require_tls": true
+    },
+    {
+      "id": "smart_dns-tcp-443-ipv6",
+      "expected_route_type": "smart_dns",
+      "protocol": "tcp_443",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "smart_dns-udp-443-ipv4",
+      "expected_route_type": "smart_dns",
+      "protocol": "udp_443",
+      "address_family": "ipv4",
+      "pending_reason": "Live QUIC evidence is not attached"
+    },
+    {
+      "id": "smart_dns-udp-443-ipv6",
+      "expected_route_type": "smart_dns",
+      "protocol": "udp_443",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "vless-dns-udp-53-ipv4",
+      "expected_route_type": "vless",
+      "protocol": "dns_udp_53",
+      "address_family": "ipv4",
+      "pending_reason": "LAN DNS intercept evidence for this route is not attached"
+    },
+    {
+      "id": "vless-dns-udp-53-ipv6",
+      "expected_route_type": "vless",
+      "protocol": "dns_udp_53",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "vless-dns-tcp-53-ipv4",
+      "expected_route_type": "vless",
+      "protocol": "dns_tcp_53",
+      "address_family": "ipv4",
+      "pending_reason": "LAN DNS intercept evidence for this route is not attached"
+    },
+    {
+      "id": "vless-dns-tcp-53-ipv6",
+      "expected_route_type": "vless",
+      "protocol": "dns_tcp_53",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "vless-tcp-80-ipv4",
+      "expected_route_type": "vless",
+      "protocol": "tcp_80",
+      "address_family": "ipv4",
+      "pending_reason": "TCP/80 acceptance service is not configured"
+    },
+    {
+      "id": "vless-tcp-80-ipv6",
+      "expected_route_type": "vless",
+      "protocol": "tcp_80",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "vless-tcp-443-ipv4",
+      "expected_route_type": "vless",
+      "protocol": "tcp_443",
+      "address_family": "ipv4",
+      "route": "proxy-4",
+      "domain": "chatgpt.com",
+      "service": "chatgpt",
+      "expected_status": "OK",
+      "expected_address_family": "ipv4",
+      "expected_path_transport": "socks5",
+      "expected_port": 443,
+      "require_tls": true
+    },
+    {
+      "id": "vless-tcp-443-ipv6",
+      "expected_route_type": "vless",
+      "protocol": "tcp_443",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "vless-udp-443-ipv4",
+      "expected_route_type": "vless",
+      "protocol": "udp_443",
+      "address_family": "ipv4",
+      "pending_reason": "Live QUIC evidence is not attached"
+    },
+    {
+      "id": "vless-udp-443-ipv6",
+      "expected_route_type": "vless",
+      "protocol": "udp_443",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "drop-dns-udp-53-ipv4",
+      "expected_route_type": "drop",
+      "protocol": "dns_udp_53",
+      "address_family": "ipv4",
+      "pending_reason": "Transport-specific DROP counter evidence is not attached"
+    },
+    {
+      "id": "drop-dns-udp-53-ipv6",
+      "expected_route_type": "drop",
+      "protocol": "dns_udp_53",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "drop-dns-tcp-53-ipv4",
+      "expected_route_type": "drop",
+      "protocol": "dns_tcp_53",
+      "address_family": "ipv4",
+      "pending_reason": "Transport-specific DROP counter evidence is not attached"
+    },
+    {
+      "id": "drop-dns-tcp-53-ipv6",
+      "expected_route_type": "drop",
+      "protocol": "dns_tcp_53",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "drop-tcp-80-ipv4",
+      "expected_route_type": "drop",
+      "protocol": "tcp_80",
+      "address_family": "ipv4",
+      "pending_reason": "Transport-specific DROP counter evidence is not attached"
+    },
+    {
+      "id": "drop-tcp-80-ipv6",
+      "expected_route_type": "drop",
+      "protocol": "tcp_80",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "drop-tcp-443-ipv4",
+      "expected_route_type": "drop",
+      "protocol": "tcp_443",
+      "address_family": "ipv4",
+      "pending_reason": "Transport-specific DROP counter evidence is not attached"
+    },
+    {
+      "id": "drop-tcp-443-ipv6",
+      "expected_route_type": "drop",
+      "protocol": "tcp_443",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    },
+    {
+      "id": "drop-udp-443-ipv4",
+      "expected_route_type": "drop",
+      "protocol": "udp_443",
+      "address_family": "ipv4",
+      "pending_reason": "Transport-specific DROP counter evidence is not attached"
+    },
+    {
+      "id": "drop-udp-443-ipv6",
+      "expected_route_type": "drop",
+      "protocol": "udp_443",
+      "address_family": "ipv6",
+      "skip_reason": "WAN6 is disabled; no native IPv6 default route is available"
+    }
+  ]
+}

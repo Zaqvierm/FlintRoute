@@ -72,7 +72,7 @@ func (h Harness) RunLoad(ctx context.Context, runDir, planPath string) (LoadSumm
 	}
 	seen := map[string]struct{}{}
 	for _, testCase := range plan.Cases {
-		if testCase.SkipReason != "" {
+		if testCase.SkipReason != "" || testCase.PendingReason != "" {
 			return LoadSummary{}, fmt.Errorf("load case %s cannot be skipped", testCase.ID)
 		}
 		if err := validateCase(testCase, seen); err != nil {

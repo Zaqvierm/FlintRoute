@@ -902,12 +902,26 @@ func withOutboundBypassMark(raw json.RawMessage, mark uint64) (json.RawMessage, 
 }
 
 func buildProofPlan(cfg *config.Config, routes []config.Route) []RouteProof {
+	type ruleKey struct {
+		mark  string
+		table int
+	}
+	priorities := make(map[ruleKey]int)
 	proofs := make([]RouteProof, 0, len(routes))
 	for i, route := range routes {
 		requiresEgress := route.Type == "direct" || route.Type == "zapret" || route.Type == "vless" || route.Type == "tg_ws_proxy"
+		mark := firstNonEmpty(route.Mark, markForType(cfg, route.Type))
+		table := tableForType(cfg, route.Type)
+		priority := 10010 + i*10
+		key := ruleKey{mark: mark, table: table}
+		if existing, ok := priorities[key]; ok && mark != "" && table > 0 {
+			priority = existing
+		} else if mark != "" && table > 0 {
+			priorities[key] = priority
+		}
 		proofs = append(proofs, RouteProof{
-			Tag: route.Tag, Type: route.Type, Mark: firstNonEmpty(route.Mark, markForType(cfg, route.Type)),
-			Table: tableForType(cfg, route.Type), RulePriority: 10010 + i*10,
+			Tag: route.Tag, Type: route.Type, Mark: mark,
+			Table: table, RulePriority: priority,
 			RequiresDNS: route.Type != "drop", RequiresIPv4: route.Type != "drop", RequiresIPv6: route.Type != "drop",
 			RequiresEgress: requiresEgress, RequiresXrayOutbound: route.Type == "vless",
 			RequiresZapretFlow: route.Type == "zapret", RequiresDropProof: route.Type == "drop",
@@ -1687,12 +1701,22 @@ func validateIPRoutes(routes []IPRoute) (map[string]bool, error) {
 }
 
 func validateIPRules(rules []RouteProof, routeFamilies map[string]bool, requireTables bool) error {
-	priorities := map[int]bool{}
+	type ruleBinding struct {
+		mark  string
+		table int
+	}
+	priorities := map[int]ruleBinding{}
+	tags := map[string]bool{}
 	for _, rule := range rules {
-		if rule.Tag == "" || rule.Type == "" || rule.RulePriority < 1 || priorities[rule.RulePriority] {
+		if rule.Tag == "" || rule.Type == "" || rule.RulePriority < 1 || tags[rule.Tag] {
 			return fmt.Errorf("invalid or duplicate ip rule")
 		}
-		priorities[rule.RulePriority] = true
+		tags[rule.Tag] = true
+		binding := ruleBinding{mark: rule.Mark, table: rule.Table}
+		if previous, ok := priorities[rule.RulePriority]; ok && previous != binding {
+			return fmt.Errorf("ip rule priority %d has conflicting mark/table bindings", rule.RulePriority)
+		}
+		priorities[rule.RulePriority] = binding
 		if rule.Type != "drop" && (rule.Table < 1 || !validMark(rule.Mark)) {
 			return fmt.Errorf("route %s has invalid mark/table", rule.Tag)
 		}

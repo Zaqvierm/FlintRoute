@@ -505,9 +505,13 @@ func (c *Config) Validate() error {
 			seenPaths[path] = true
 		}
 		for _, path := range svc.ForbiddenPaths {
-			if !validRouteType(path) {
-				return fmt.Errorf("service %s has invalid forbidden path", name)
+			if !validRouteType(path) || seenPaths["forbidden:"+path] {
+				return fmt.Errorf("service %s has invalid or duplicate forbidden path", name)
 			}
+			if seenPaths[path] {
+				return fmt.Errorf("service %s path %s is both allowed and forbidden", name, path)
+			}
+			seenPaths["forbidden:"+path] = true
 		}
 		if svc.Category == "DIRECT_ONLY" && (len(svc.AllowedPaths) != 1 || svc.AllowedPaths[0] != "direct") {
 			return fmt.Errorf("DIRECT_ONLY service %s must allow only direct", name)

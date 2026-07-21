@@ -4,7 +4,8 @@ param(
   [Parameter(Mandatory = $true)][string]$KnownHostsFile,
   [Parameter(Mandatory = $true)][string]$RecoveryBundle,
   [Parameter(Mandatory = $true)][string]$OutputRoot,
-  [string]$RunId = ""
+  [string]$RunId = "",
+  [switch]$SkipControlledReboot
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,6 +27,20 @@ $sshArgs = @("-i", $IdentityFile, "-o", "BatchMode=yes", "-o", "UserKnownHostsFi
 $scpArgs = @("-O", "-i", $IdentityFile, "-o", "BatchMode=yes", "-o", "UserKnownHostsFile=$KnownHostsFile", "-o", "StrictHostKeyChecking=yes")
 $remoteRun = "/tmp/flintroute-p13/$RunId"
 
+function Complete-FaultRun([string]$RebootStatus) {
+  @("recovery_sha256=$recoverySHA", "controlled_reboot=$RebootStatus", "process_restart_matrix=PASS") | Set-Content -LiteralPath (Join-Path $localRun "summary.txt") -Encoding ASCII
+  $manifest = Get-ChildItem -LiteralPath $localRun -File | Sort-Object Name | ForEach-Object {
+    "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant(), $_.Name
+  }
+  $manifest | Set-Content -LiteralPath (Join-Path $localRun "SHA256SUMS.txt") -Encoding ASCII
+  & $ssh @sshArgs "case '$remoteRun' in /tmp/flintroute-p13/p13-fault-*) rm -rf '$remoteRun' ;; *) exit 64 ;; esac"
+  if ($LASTEXITCODE -ne 0) { throw "Verified remote fault cleanup failed" }
+  Write-Host "p13_fault_run=$RunId"
+  Write-Host "p13_fault_evidence=$localRun"
+  Write-Host "p13_fault_process_matrix=PASS"
+  Write-Host "p13_fault_controlled_reboot=$RebootStatus"
+}
+
 & $ssh @sshArgs "umask 077; mkdir -p '$remoteRun'; chmod 700 '$remoteRun'"
 if ($LASTEXITCODE -ne 0) { throw "Cannot create remote fault directory" }
 & $scp @scpArgs $runner "root@${RouterHost}:$remoteRun/p13-fault-runner.sh"
@@ -34,6 +49,10 @@ if ($LASTEXITCODE -ne 0) { throw "Fault runner upload failed" }
 if ($LASTEXITCODE -ne 0) { throw "Process fault matrix failed" }
 & $scp @scpArgs "root@${RouterHost}:$remoteRun/*" "$localRun\"
 if ($LASTEXITCODE -ne 0) { throw "Fault evidence download failed" }
+if ($SkipControlledReboot) {
+  Complete-FaultRun "NOT_RUN"
+  exit 0
+}
 
 $preReboot = & $ssh @sshArgs "sha256sum /etc/router-policy/config/default.json /etc/router-policy/zapret/nfqws.conf; cat /tmp/router-policy/active-transaction.env"
 if ($LASTEXITCODE -ne 0) { throw "Cannot capture pre-reboot state" }
@@ -103,11 +122,4 @@ foreach ($probe in $probes) {
   $jsonText | Set-Content -LiteralPath (Join-Path $localRun $probe.Name) -Encoding UTF8
 }
 
-@("recovery_sha256=$recoverySHA", "controlled_reboot=PASS", "process_restart_matrix=PASS") | Set-Content -LiteralPath (Join-Path $localRun "summary.txt") -Encoding ASCII
-$manifest = Get-ChildItem -LiteralPath $localRun -File | Sort-Object Name | ForEach-Object {
-  "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant(), $_.Name
-}
-$manifest | Set-Content -LiteralPath (Join-Path $localRun "SHA256SUMS.txt") -Encoding ASCII
-Write-Host "p13_fault_run=$RunId"
-Write-Host "p13_fault_evidence=$localRun"
-Write-Host "p13_fault_controlled=PASS"
+Complete-FaultRun "PASS"
