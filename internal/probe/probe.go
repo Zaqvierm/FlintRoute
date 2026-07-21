@@ -109,6 +109,17 @@ func ProbeRoute(ctx context.Context, cfg *config.Config, domain, serviceName str
 }
 
 func (e *Engine) ProbeRoute(ctx context.Context, cfg *config.Config, domain, serviceName string, svc config.Service, route config.Route) RouteResult {
+	return e.probeRoute(ctx, cfg, domain, serviceName, svc, route, "")
+}
+
+// ProbeRouteFamily executes the same route contract while requiring the
+// application connection to use one address family. It is used by adaptive
+// calibration so IPv4 evidence cannot be counted as IPv6 evidence or vice versa.
+func (e *Engine) ProbeRouteFamily(ctx context.Context, cfg *config.Config, domain, serviceName string, svc config.Service, route config.Route, family string) RouteResult {
+	return e.probeRoute(ctx, cfg, domain, serviceName, svc, route, family)
+}
+
+func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, serviceName string, svc config.Service, route config.Route, family string) RouteResult {
 	startAll := time.Now()
 	result := RouteResult{
 		Domain:        domain,
@@ -141,8 +152,15 @@ func (e *Engine) ProbeRoute(ctx context.Context, cfg *config.Config, domain, ser
 		return e.finishWithPathProof(ctx, cfg, route, result, startAll, proofSession)
 	}
 
+	if family != "" && family != "ipv4" && family != "ipv6" {
+		reason := "unsupported_address_family"
+		result.ApplicationStatus = "NOT_RUN"
+		result.ReasonCode = reason
+		result.Reason = &reason
+		return result
+	}
 	for _, check := range svc.ProbeURLs {
-		checkResult := probeOne(ctx, cfg, route, check)
+		checkResult := probeOne(ctx, cfg, route, check, family)
 		result.Checks = append(result.Checks, checkResult)
 		result.DNSOK = result.DNSOK || checkResult.DNSOK
 		result.TransportOK = result.TransportOK || checkResult.TransportOK
@@ -243,7 +261,7 @@ func (e *Engine) ProbeRoute(ctx context.Context, cfg *config.Config, domain, ser
 	return e.finishWithPathProof(ctx, cfg, route, result, startAll, proofSession)
 }
 
-func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check config.ProbeCheck) CheckResult {
+func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check config.ProbeCheck, family string) CheckResult {
 	start := time.Now()
 	res := CheckResult{
 		Name:     check.Name,
@@ -292,7 +310,17 @@ func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check
 		return res
 	}
 
-	targets := ips
+	targets := make([]netip.Addr, 0, len(ips))
+	for _, ip := range ips {
+		if family == "ipv4" && !ip.Is4() || family == "ipv6" && !ip.Is6() {
+			continue
+		}
+		targets = append(targets, ip)
+	}
+	if len(targets) == 0 {
+		res.Reason = "dns_address_family_unavailable"
+		return res
+	}
 
 	var lastReason string
 	for _, ip := range targets {

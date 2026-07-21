@@ -94,10 +94,16 @@ pre { overflow: auto; font-size: 12px; border: 1px solid var(--line); border-rad
 .event { display: grid; grid-template-columns: 90px 1fr auto; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
 .event small { color: var(--muted); }
 .change { border-top: 1px solid var(--line); padding: 12px 0; }
+.change-editor { display: grid; gap: 12px; margin-bottom: 16px; padding: 16px; border: 1px solid var(--line); border-radius: 10px; }
+.change-editor label { display: grid; gap: 6px; }
+.change-editor textarea { min-height: 80px; resize: vertical; }
+.traffic-row { display: grid; grid-template-columns: minmax(110px, .7fr) repeat(2, minmax(160px, 1fr)) minmax(220px, 1.2fr); gap: 12px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.traffic-row.warn { color: var(--drop); }
 @media (max-width: 1100px) {
   .shell { grid-template-columns: 1fr; }
   .side { position: static; height: auto; }
   .topbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dashboard { grid-template-columns: 1fr; }
   .groups { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .traffic-row { grid-template-columns: 1fr; }
 }

@@ -29,7 +29,7 @@ export type ChangeSet = {
   revision_id?: string;
   transaction_id?: string;
   adapter_status?: string;
-  operations: Array<{ type: string; path: string; value?: unknown }>;
+  operations: ChangeOp[];
   validation: Array<{ level: string; code: string; message: string }>;
   diff: Array<{ type: string; path: string; value?: unknown }>;
   data_plane_verified: boolean;
@@ -37,6 +37,30 @@ export type ChangeSet = {
   updated_at: string;
   expires_at?: string;
   author: string;
+};
+export type ChangeOp = { type: 'set' | 'remove'; path: string; value?: unknown };
+export type RevisionSummary = {
+  source: string;
+  status: string;
+  active_revision: string;
+  config_version: number;
+  items: unknown[];
+};
+export type TrafficInterface = {
+  name: string;
+  rx_bytes: number;
+  rx_packets: number;
+  rx_errors: number;
+  tx_bytes: number;
+  tx_packets: number;
+  tx_errors: number;
+};
+export type TrafficSnapshot = {
+  status: string;
+  source: string;
+  collected_at: string;
+  interfaces: TrafficInterface[];
+  reason?: string;
 };
 
 export class APIError extends Error {
@@ -104,12 +128,16 @@ export async function getTopology(): Promise<any> { return request('/topology');
 export async function getDevices(): Promise<any[]> { return request('/devices'); }
 export async function getServices(): Promise<any[]> { return request('/services'); }
 export async function getRoutes(): Promise<any[]> { return request('/routes'); }
+export async function getTraffic(): Promise<TrafficSnapshot> { return request('/traffic'); }
 export async function getEvents(): Promise<EventItem[]> { return request('/events'); }
 export async function getSecurity(): Promise<any> { return request('/security/audit'); }
 export async function getSystem(): Promise<any> { return request('/system'); }
 export async function getChanges(): Promise<ChangeSet[]> { return request('/changes'); }
-export async function createChange(title: string): Promise<ChangeSet> {
-  return request('/changes', { method: 'POST', body: JSON.stringify({ title, base_version: 1, operations: [{ type: 'set', path: '/services/github/category', value: 'DIRECT_PREFERRED' }] }) });
+export async function getRevisions(): Promise<RevisionSummary> { return request('/revisions'); }
+export async function createChange(title: string, baseVersion: number, operations: ChangeOp[]): Promise<ChangeSet> {
+  if (!Number.isSafeInteger(baseVersion) || baseVersion < 1) throw new Error('Некорректная версия конфигурации');
+  if (operations.length === 0) throw new Error('ChangeSet должен содержать хотя бы одну операцию');
+  return request('/changes', { method: 'POST', body: JSON.stringify({ title, base_version: baseVersion, operations }) });
 }
 export async function changeAction(id: string, action: string): Promise<ChangeSet> {
   return request(`/changes/${id}/${action}`, { method: 'POST', body: '{}' });

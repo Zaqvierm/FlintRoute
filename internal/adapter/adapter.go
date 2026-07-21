@@ -2,7 +2,6 @@ package adapter
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -15,7 +14,10 @@ import (
 	"time"
 
 	"router-policy/internal/config"
+	"router-policy/internal/secureid"
 )
+
+var secureRandomHex = secureid.Hex
 
 type Interface interface {
 	Diagnose(context.Context) StepResult
@@ -109,10 +111,17 @@ func NewTransaction(cfg *config.Config, changeID, revisionID string, baseVersion
 	if len(canonicalCandidate) == 0 {
 		return Transaction{}, fmt.Errorf("canonical candidate is required")
 	}
-	id := "tx_" + randomHex(8)
+	randomID, err := secureRandomHex(8)
+	if err != nil {
+		return Transaction{}, fmt.Errorf("generate transaction ID: %w", err)
+	}
+	id := "tx_" + randomID
 	txDir := filepath.Join(cfg.Storage.StateDir, "transactions", revisionID, id)
 	candidatePath := filepath.Join(txDir, "candidate.json")
-	token := randomHex(32)
+	token, err := secureRandomHex(32)
+	if err != nil {
+		return Transaction{}, fmt.Errorf("generate rollback capability: %w", err)
+	}
 	now := time.Now().UTC()
 	ttl := time.Duration(cfg.OpenWrt.RollbackTimeoutSeconds) * time.Second
 	if ttl <= 0 {
@@ -144,7 +153,11 @@ func PersistBinding(tx Transaction) error {
 	if err := os.MkdirAll(filepath.Dir(tx.BindingPath), 0o700); err != nil {
 		return err
 	}
-	tmp := tx.BindingPath + ".tmp." + randomHex(6)
+	suffix, err := secureRandomHex(6)
+	if err != nil {
+		return fmt.Errorf("generate binding temporary name: %w", err)
+	}
+	tmp := tx.BindingPath + ".tmp." + suffix
 	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
 		return err
 	}
@@ -166,7 +179,11 @@ func PersistCapability(tx Transaction) error {
 	if err := os.MkdirAll(filepath.Dir(tx.CapabilityPath), 0o700); err != nil {
 		return err
 	}
-	tmp := tx.CapabilityPath + ".tmp." + randomHex(6)
+	suffix, err := secureRandomHex(6)
+	if err != nil {
+		return fmt.Errorf("generate capability temporary name: %w", err)
+	}
+	tmp := tx.CapabilityPath + ".tmp." + suffix
 	if err := os.WriteFile(tmp, []byte(tx.RollbackToken+"\n"), 0o600); err != nil {
 		return err
 	}
@@ -437,7 +454,11 @@ func writeJSONAtomic(path string, value any, perm os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp." + randomHex(6)
+	suffix, err := secureRandomHex(6)
+	if err != nil {
+		return fmt.Errorf("generate JSON temporary name: %w", err)
+	}
+	tmp := path + ".tmp." + suffix
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm)
 	if err != nil {
 		return err
@@ -477,10 +498,4 @@ func VerifyRollbackToken(expectedHash, token string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(actual), []byte(expectedHash)) == 1
-}
-
-func randomHex(n int) string {
-	raw := make([]byte, n)
-	_, _ = rand.Read(raw)
-	return hex.EncodeToString(raw)
 }

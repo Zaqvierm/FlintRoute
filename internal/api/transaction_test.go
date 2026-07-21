@@ -164,6 +164,32 @@ func TestOverrideChangeSetPersistsFullCanonicalCandidate(t *testing.T) {
 	}
 }
 
+func TestCreateChangeSetRejectsEmptyOperations(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer srv.Close()
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/changes", strings.NewReader(`{"title":"Empty change","base_version":1,"operations":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+	var env ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Error.Code != "operations_required" {
+		t.Fatalf("unexpected error envelope: %+v", env.Error)
+	}
+}
+
 func TestFlowOffloadingDisableChangeSetIsExplicitlyWarned(t *testing.T) {
 	fake := newFakeAdapter()
 	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)

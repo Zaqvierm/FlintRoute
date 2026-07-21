@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,12 +23,16 @@ import (
 	"router-policy/internal/health"
 	"router-policy/internal/platform"
 	"router-policy/internal/probe"
+	"router-policy/internal/secureid"
 	"router-policy/internal/security"
 	"router-policy/internal/state"
+	"router-policy/internal/traffic"
 	"router-policy/internal/tspu"
 	"router-policy/internal/vpnsub"
 	"router-policy/internal/web"
 )
+
+var secureRandomHex = secureid.Hex
 
 type Options struct {
 	Auth                 *auth.Store
@@ -144,6 +147,11 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 			return tspu.RefreshFile(ctx, nil, active, path, now)
 		}
 	}
+	broker, err := NewEventBroker(512)
+	if err != nil {
+		_ = stateStore.Close()
+		return nil, err
+	}
 	s := &Server{
 		cfg:                  cfg,
 		auth:                 authStore,
@@ -156,7 +164,7 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		tspuDelay:            randomTSPUDelay,
 		healthTracker:        probe.NewHealthTracker(persistedHealth),
 		development:          opts.Development,
-		broker:               NewEventBroker(512),
+		broker:               broker,
 		mux:                  http.NewServeMux(),
 		changes:              changes,
 		actionLocks:          map[string]*actionLockEntry{},
@@ -382,11 +390,12 @@ func jitterTSPUDelay(base time.Duration, sample uint16) time.Duration {
 func (s *Server) runHealthCycle(ctx context.Context) {
 	active := s.currentConfig()
 	engine := s.probeEngineFactory(active)
+	now := time.Now().UTC()
 	service := health.Service{
 		Tracker: s.healthTracker, Store: s.store,
 		Parallelism: active.Policy.ParallelServerChecks, MaxControlServices: 3,
 	}
-	cycle, err := service.RunCycle(ctx, active, engine, time.Now().UTC())
+	cycle, err := service.RunCycle(ctx, active, engine, now)
 	severity := "info"
 	reason := "vless_health_cycle_completed"
 	if err != nil {
@@ -407,6 +416,7 @@ func (s *Server) runHealthCycle(ctx context.Context) {
 		details["error"] = err.Error()
 	}
 	s.publishEvent(Event{Type: "route.health", Severity: severity, ReasonCode: reason, Details: details})
+	s.runAdaptiveZapretCycle(ctx, active, engine, now)
 }
 
 func (s *Server) routes() {
@@ -422,11 +432,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/domains", s.requireRole(auth.RoleViewer, s.handleDomains))
 	s.mux.HandleFunc("/api/v1/policies", s.requireRole(auth.RoleViewer, s.handlePolicies))
 	s.mux.HandleFunc("/api/v1/routes", s.requireRole(auth.RoleViewer, s.handleRoutes))
+	s.mux.HandleFunc("/api/v1/traffic", s.requireRole(auth.RoleViewer, s.handleTraffic))
 	s.mux.HandleFunc("/api/v1/route-health", s.requireRole(auth.RoleViewer, s.handleRouteHealth))
 	s.mux.HandleFunc("/api/v1/proxies", s.requireRole(auth.RoleViewer, s.handleProxies))
 	s.mux.HandleFunc("/api/v1/xray/subscription/prepare", s.requireRole(auth.RoleAdministrator, s.handleXraySubscriptionPrepare))
 	s.mux.HandleFunc("/api/v1/smart-dns", s.requireRole(auth.RoleViewer, s.handleSmartDNS))
 	s.mux.HandleFunc("/api/v1/zapret", s.requireRole(auth.RoleViewer, s.handleZapret))
+	s.mux.HandleFunc("/api/v1/zapret/adaptive/runtime", s.requireRole(auth.RoleViewer, s.handleAdaptiveZapretRuntime))
 	s.mux.HandleFunc("/api/v1/zapret/adaptive/evaluate", s.requireRole(auth.RoleAdministrator, s.handleAdaptiveZapretEvaluate))
 	s.mux.HandleFunc("/api/v1/zapret/adaptive/state", s.requireRole(auth.RoleAdministrator, s.handleAdaptiveZapretState))
 	s.mux.HandleFunc("/api/v1/zapret/adaptive/pin", s.requireRole(auth.RoleAdministrator, s.handleAdaptiveZapretPin))
@@ -469,7 +481,12 @@ func (s *Server) withRequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-ID")
 		if id == "" {
-			id = randomHex(12)
+			var err error
+			id, err = secureRandomHex(12)
+			if err != nil {
+				writeError(w, r, http.StatusServiceUnavailable, "entropy_unavailable", "secure random source is unavailable")
+				return
+			}
 		}
 		w.Header().Set("X-Request-ID", id)
 		next.ServeHTTP(w, r.WithContext(withRequestID(r.Context(), id)))
@@ -639,6 +656,9 @@ func (s *Server) handlePolicies(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	writeData(w, r, s.currentConfig().Routes)
+}
+func (s *Server) handleTraffic(w http.ResponseWriter, r *http.Request) {
+	writeData(w, r, traffic.ReadProcNetDev("/proc/net/dev", time.Now().UTC()))
 }
 func (s *Server) handleRouteHealth(w http.ResponseWriter, r *http.Request) {
 	items := s.healthTracker.Snapshot()
@@ -871,6 +891,10 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, 400, "invalid_title", "title is required and must be <=120 chars")
 			return
 		}
+		if len(req.Operations) == 0 {
+			writeError(w, r, 400, "operations_required", "at least one explicit operation is required")
+			return
+		}
 		session := currentSession(r)
 		cs, err := s.createDraftChange(req.Title, req.Description, req.BaseVersion, req.Operations, session.User)
 		if errors.Is(err, errBaseVersionConflict) {
@@ -1085,12 +1109,6 @@ func writeError(w http.ResponseWriter, r *http.Request, status int, code, messag
 func writeSSE(w http.ResponseWriter, ev Event) {
 	b, _ := json.Marshal(ev)
 	fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", ev.ID, ev.Type, b)
-}
-
-func randomHex(n int) string {
-	b := make([]byte, n)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
 }
 
 func (s *Server) sessionCookie(r *http.Request, session auth.Session, clear bool) *http.Cookie {

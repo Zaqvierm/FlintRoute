@@ -153,7 +153,11 @@ func (s *Server) validateChangeSet(cs ChangeSet) (ChangeSet, *actionFailure) {
 		return cs, &actionFailure{Status: 422, Code: "candidate_invalid", Message: "candidate config validation failed"}
 	}
 	candidateVersion := currentVersion + 1
-	revisionID := fmt.Sprintf("rev_%d_%s", candidateVersion, randomHex(6))
+	randomRevision, err := secureRandomHex(6)
+	if err != nil {
+		return cs, internalFailure(fmt.Errorf("generate revision ID: %w", err))
+	}
+	revisionID := fmt.Sprintf("rev_%d_%s", candidateVersion, randomRevision)
 	tx, err := adapter.NewTransaction(s.cfg, cs.ID, revisionID, cs.BaseVersion, candidateVersion, canonical)
 	if err != nil {
 		return cs, internalFailure(err)
@@ -925,7 +929,11 @@ func writeFileAtomic(path string, raw []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	tmp := path + ".tmp." + randomHex(6)
+	suffix, err := secureRandomHex(6)
+	if err != nil {
+		return fmt.Errorf("generate API temporary name: %w", err)
+	}
+	tmp := path + ".tmp." + suffix
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
 	if err != nil {
 		return err

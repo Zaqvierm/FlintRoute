@@ -1,7 +1,6 @@
 package vpnsub
 
 import (
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -12,7 +11,11 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"router-policy/internal/secureid"
 )
+
+var secureRandomHex = secureid.Hex
 
 const (
 	maxSubscriptionFileBytes = 4 << 20
@@ -705,7 +708,11 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	tmp := path + ".tmp." + randomHex(6)
+	suffix, err := secureRandomHex(6)
+	if err != nil {
+		return fmt.Errorf("generate subscription temporary name: %w", err)
+	}
+	tmp := path + ".tmp." + suffix
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
 	if err != nil {
 		return err
@@ -739,10 +746,4 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return fmt.Sprintf("%x", sum[:])
-}
-
-func randomHex(n int) string {
-	raw := make([]byte, n)
-	_, _ = rand.Read(raw)
-	return fmt.Sprintf("%x", raw)
 }

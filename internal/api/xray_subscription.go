@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"time"
@@ -181,8 +182,13 @@ func (s *Server) createDraftChange(title, description string, baseVersion int64,
 		return ChangeSet{}, errBaseVersionConflict
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
+	randomID, err := secureRandomHex(8)
+	if err != nil {
+		s.mu.Unlock()
+		return ChangeSet{}, fmt.Errorf("generate change ID: %w", err)
+	}
 	change := ChangeSet{
-		ID: "chg_" + randomHex(8), State: "draft", Title: title, Description: description,
+		ID: "chg_" + randomID, State: "draft", Title: title, Description: description,
 		BaseVersion: baseVersion, Version: 1, Operations: operations, CreatedAt: now, UpdatedAt: now, Author: author,
 	}
 	s.changes[change.ID] = change

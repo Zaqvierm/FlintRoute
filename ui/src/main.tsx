@@ -8,18 +8,22 @@ import {
   getDevices,
   getEvents,
   getOverview,
+  getRevisions,
   getRoutes,
   getSecurity,
   getServices,
   getSystem,
+  getTraffic,
   getTopology,
   login,
   logout,
   me,
   setupAdmin,
   type ChangeSet,
+  type ChangeOp,
   type EventItem,
-  type SessionInfo
+  type SessionInfo,
+  type TrafficSnapshot
 } from './api';
 import './styles.css';
 
@@ -28,6 +32,7 @@ const screens = [
   'Первичная настройка',
   'Обзор',
   'Карта сети',
+  'Трафик',
   'Устройства',
   'Карточка устройства',
   'Сервисы',
@@ -82,30 +87,52 @@ function App() {
   const [changes, setChanges] = useState<ChangeSet[]>([]);
   const [security, setSecurity] = useState<any>(null);
   const [system, setSystem] = useState<any>(null);
+  const [configVersion, setConfigVersion] = useState(0);
+  const [traffic, setTraffic] = useState<TrafficView>({ status: 'unavailable', source: 'api-unavailable', collected_at: '', interfaces: [] });
 
   async function refresh() {
     try {
-      const [nextOverview, nextTopology, nextDevices, nextServices, nextRoutes, nextEvents, nextChanges, nextSecurity, nextSystem] = await Promise.all([
+      const [nextOverview, nextTopology, nextDevices, nextServices, nextRoutes, nextTraffic, nextEvents, nextSystem, nextRevisions] = await Promise.all([
         getOverview(),
         getTopology(),
         getDevices(),
         getServices(),
         getRoutes(),
+        getTraffic(),
         getEvents(),
-        getChanges(),
-        getSecurity(),
-        getSystem()
+        getSystem(),
+        getRevisions()
       ]);
       setOverview(nextOverview);
       setTopology(nextTopology);
       setDevices(nextDevices);
       setServices(nextServices);
       setRoutes(nextRoutes);
+      setTraffic((previous) => withTrafficRates(previous, nextTraffic));
       setEvents(nextEvents);
-      setChanges(nextChanges);
-      setSecurity(nextSecurity);
       setSystem(nextSystem);
-      setApiError('');
+      setConfigVersion(nextRevisions.config_version);
+
+      const optionalErrors: string[] = [];
+      if (session?.role === 'administrator') {
+        try {
+          setChanges(await getChanges());
+        } catch (err) {
+          optionalErrors.push(err instanceof Error ? err.message : 'Очередь изменений недоступна');
+        }
+      } else {
+        setChanges([]);
+      }
+      if (session?.role === 'administrator' || session?.role === 'diagnostician') {
+        try {
+          setSecurity(await getSecurity());
+        } catch (err) {
+          optionalErrors.push(err instanceof Error ? err.message : 'Аудит безопасности недоступен');
+        }
+      } else {
+        setSecurity(null);
+      }
+      setApiError(optionalErrors.join('; '));
     } catch (err) {
       if (err instanceof APIError && err.status === 401) {
         setSession(null);
@@ -159,7 +186,7 @@ function App() {
       window.clearInterval(timer);
       es?.close();
     };
-  }, [session?.user]);
+  }, [session?.user, session?.role]);
 
   async function handleLogin(username: string, password: string) {
     setAuthError('');
@@ -230,7 +257,7 @@ function App() {
       <main>
         <SessionBar session={session} apiError={apiError} onLogout={handleLogout} />
         <TopBar overview={overview} />
-        <Content screen={screen} overview={overview} topology={topology} devices={devices} services={services} routes={routes} events={events} changes={changes} security={security} system={system} refresh={refresh} />
+        <Content screen={screen} session={session} configVersion={configVersion} overview={overview} topology={topology} devices={devices} services={services} routes={routes} traffic={traffic} events={events} changes={changes} security={security} system={system} refresh={refresh} />
       </main>
     </div>
   );
@@ -340,6 +367,8 @@ function Content(props: any) {
       return <OverviewScreen {...props} />;
     case 'Карта сети':
       return <NetworkMap topology={props.topology} expanded />;
+    case 'Трафик':
+      return <Traffic data={props.traffic} />;
     case 'Устройства':
       return <Devices devices={props.devices} />;
     case 'Карточка устройства':
@@ -353,7 +382,7 @@ function Content(props: any) {
     case 'Политики: доска':
       return <Policies mode="board" />;
     case 'Очередь изменений':
-      return <Changes changes={props.changes} refresh={props.refresh} />;
+      return <Changes changes={props.changes} refresh={props.refresh} role={props.session.role} configVersion={props.configVersion} />;
     case 'Маршруты':
       return <Routes routes={props.routes} />;
     case 'VLESS-серверы':
@@ -477,10 +506,37 @@ function Policies({ mode }: { mode: string }) {
   return <Card title={`Политики: ${mode}`}>{items.map((p, i) => <div class="row"><b>{i + 1}</b><span>{p}</span><small>формальный приоритет</small></div>)}</Card>;
 }
 
-function Changes({ changes, refresh }: { changes: ChangeSet[]; refresh: () => void }) {
+function Changes({ changes, refresh, role, configVersion }: { changes: ChangeSet[]; refresh: () => void; role: SessionInfo['role']; configVersion: number }) {
+  const [title, setTitle] = useState('');
+  const [operationType, setOperationType] = useState<ChangeOp['type']>('set');
+  const [path, setPath] = useState('');
+  const [value, setValue] = useState('');
+  const [error, setError] = useState('');
+
+  if (role !== 'administrator') {
+    return <Generic title="Очередь изменений" text="Просмотр и создание ChangeSet доступны только администратору." />;
+  }
+
   async function create() {
-    await createChange('UI staged demo change');
-    await refresh();
+    setError('');
+    try {
+      const normalizedTitle = title.trim();
+      const normalizedPath = path.trim();
+      if (!normalizedTitle) throw new Error('Укажи название изменения');
+      if (!normalizedPath.startsWith('/')) throw new Error('Путь операции должен начинаться с /');
+      const operation: ChangeOp = { type: operationType, path: normalizedPath };
+      if (operationType === 'set') {
+        if (!value.trim()) throw new Error('Укажи JSON-значение операции');
+        operation.value = JSON.parse(value);
+      }
+      await createChange(normalizedTitle, configVersion, [operation]);
+      setTitle('');
+      setPath('');
+      setValue('');
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось создать ChangeSet');
+    }
   }
   async function act(id: string, action: string) {
     await changeAction(id, action);
@@ -488,7 +544,15 @@ function Changes({ changes, refresh }: { changes: ChangeSet[]; refresh: () => vo
   }
   return (
     <Card title="Очередь изменений">
-      <button class="primary" onClick={create}>Создать ChangeSet</button>
+      <div class="change-editor">
+        <label><span>Название</span><input value={title} onInput={(e) => setTitle((e.target as HTMLInputElement).value)} /></label>
+        <label><span>Операция</span><select value={operationType} onChange={(e) => setOperationType((e.target as HTMLSelectElement).value as ChangeOp['type'])}><option value="set">set</option><option value="remove">remove</option></select></label>
+        <label><span>Путь</span><input class="mono" placeholder="/services/example/category" value={path} onInput={(e) => setPath((e.target as HTMLInputElement).value)} /></label>
+        {operationType === 'set' && <label><span>JSON-значение</span><textarea class="mono" placeholder={'"DIRECT_PREFERRED"'} value={value} onInput={(e) => setValue((e.target as HTMLTextAreaElement).value)} /></label>}
+        <small>Базовая версия: {configVersion || 'загрузка...'}</small>
+        {error && <p class="auth-error">{error}</p>}
+        <button class="primary" disabled={!configVersion} onClick={create}>Создать ChangeSet</button>
+      </div>
       {changes.map((c) => (
         <div class="change" key={c.id}>
           <b>{c.title}</b><span>{c.state}</span>
@@ -503,6 +567,58 @@ function Changes({ changes, refresh }: { changes: ChangeSet[]; refresh: () => vo
 
 function Routes({ routes }: { routes: any[] }) {
   return <Grid>{routes.map((r) => <Card title={r.tag}><RouteBadge type={r.type} /><pre>{JSON.stringify(r, null, 2)}</pre></Card>)}</Grid>;
+}
+
+type TrafficView = Omit<TrafficSnapshot, 'interfaces'> & { interfaces: Array<TrafficSnapshot['interfaces'][number] & { rx_bps?: number; tx_bps?: number }> };
+
+function withTrafficRates(previous: TrafficView, current: TrafficSnapshot): TrafficView {
+  const elapsed = (Date.parse(current.collected_at) - Date.parse(previous.collected_at)) / 1000;
+  const old = new Map(previous.interfaces.map((item) => [item.name, item]));
+  return {
+    ...current,
+    interfaces: current.interfaces.map((item) => {
+      const before = old.get(item.name);
+      if (!before || !Number.isFinite(elapsed) || elapsed <= 0) return item;
+      return {
+        ...item,
+        rx_bps: item.rx_bytes >= before.rx_bytes ? (item.rx_bytes - before.rx_bytes) / elapsed : 0,
+        tx_bps: item.tx_bytes >= before.tx_bytes ? (item.tx_bytes - before.tx_bytes) / elapsed : 0
+      };
+    })
+  };
+}
+
+function Traffic({ data }: { data: TrafficView }) {
+  return (
+    <Card title="Трафик интерфейсов">
+      <div class="row"><b>{data.status}</b><span>{data.source}</span><small>{data.collected_at ? new Date(data.collected_at).toLocaleTimeString() : data.reason ?? 'нет данных'}</small></div>
+      {data.interfaces.map((item) => (
+        <div class={`traffic-row ${(item.rx_errors || item.tx_errors) ? 'warn' : ''}`} key={item.name}>
+          <b class="mono">{item.name}</b>
+          <span>RX {formatBytes(item.rx_bytes)} · {formatRate(item.rx_bps)}</span>
+          <span>TX {formatBytes(item.tx_bytes)} · {formatRate(item.tx_bps)}</span>
+          <small>пакеты {item.rx_packets}/{item.tx_packets} · ошибки {item.rx_errors}/{item.tx_errors}</small>
+        </div>
+      ))}
+      {data.interfaces.length === 0 && <p>{data.reason ?? 'Счётчики интерфейсов недоступны'}</p>}
+    </Card>
+  );
+}
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value)) return 'n/a';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let amount = value;
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024;
+    unit++;
+  }
+  return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function formatRate(value?: number): string {
+  return value === undefined ? 'сбор базовой точки' : `${formatBytes(value)}/с`;
 }
 
 function Vless({ routes }: { routes: any[] }) {

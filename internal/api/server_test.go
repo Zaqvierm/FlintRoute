@@ -47,8 +47,14 @@ func TestAuthAndOverview(t *testing.T) {
 }
 
 func TestEventBrokerUsesNewEpochAfterRestart(t *testing.T) {
-	first := NewEventBroker(8)
-	second := NewEventBroker(8)
+	first, err := NewEventBroker(8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewEventBroker(8)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if first.Epoch() == "" || second.Epoch() == "" || first.Epoch() == second.Epoch() {
 		t.Fatalf("event stream epochs are not process-unique: first=%q second=%q", first.Epoch(), second.Epoch())
 	}

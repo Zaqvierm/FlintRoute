@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	MaxSamplesPerProfile = 256
-	MaxRouteCost         = 1000
+	MaxSamplesPerProfile     = 256
+	MaxRouteCost             = 1000
+	MaxPersistedObservations = 4096
 )
 
 type DecisionKey struct {
@@ -172,6 +173,96 @@ func (r *Ranker) Snapshot(key DecisionKey, profileID string, now time.Time) (Can
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.scoreLocked(normalized, profileID, 0, now.UTC()), nil
+}
+
+// Restore replaces the in-memory sample set with a validated persisted snapshot.
+// Invalid, future and expired observations are rejected instead of silently
+// influencing a new network decision.
+func (r *Ranker) Restore(observations []ProbeObservation, now time.Time) error {
+	if r == nil || now.IsZero() {
+		return errors.New("Zapret ranker and current time are required")
+	}
+	if len(observations) > MaxPersistedObservations {
+		return fmt.Errorf("persisted observation count exceeds %d", MaxPersistedObservations)
+	}
+	now = now.UTC()
+	cutoff := now.Add(-r.policy.Retention)
+	restored := make(map[string]map[string][]ProbeObservation)
+	for _, raw := range observations {
+		normalized, err := r.normalizeObservation(raw)
+		if err != nil {
+			return fmt.Errorf("restore probe observation: %w", err)
+		}
+		if normalized.ObservedAt.After(now) {
+			return errors.New("persisted probe observation is from the future")
+		}
+		if normalized.ObservedAt.Before(cutoff) {
+			continue
+		}
+		key := decisionKeyString(normalized.Key)
+		profiles := restored[key]
+		if profiles == nil {
+			profiles = make(map[string][]ProbeObservation)
+			restored[key] = profiles
+		}
+		profiles[normalized.ProfileID] = append(profiles[normalized.ProfileID], normalized)
+	}
+	for _, profiles := range restored {
+		for profileID, samples := range profiles {
+			sort.SliceStable(samples, func(i, j int) bool { return samples[i].ObservedAt.Before(samples[j].ObservedAt) })
+			if len(samples) > r.policy.MaxSamplesPerProfile {
+				samples = append([]ProbeObservation(nil), samples[len(samples)-r.policy.MaxSamplesPerProfile:]...)
+			}
+			profiles[profileID] = samples
+		}
+	}
+	r.mu.Lock()
+	r.samples = restored
+	r.mu.Unlock()
+	return nil
+}
+
+// Observations returns a bounded, retention-pruned persistence snapshot.
+func (r *Ranker) Observations(now time.Time) ([]ProbeObservation, error) {
+	if r == nil || now.IsZero() {
+		return nil, errors.New("Zapret ranker and current time are required")
+	}
+	now = now.UTC()
+	cutoff := now.Add(-r.policy.Retention)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	result := make([]ProbeObservation, 0)
+	for key, profiles := range r.samples {
+		for profileID, samples := range profiles {
+			kept := samples[:0]
+			for _, sample := range samples {
+				if !sample.ObservedAt.After(now) && !sample.ObservedAt.Before(cutoff) {
+					kept = append(kept, sample)
+					result = append(result, sample)
+				}
+			}
+			if len(kept) == 0 {
+				delete(profiles, profileID)
+			} else {
+				profiles[profileID] = kept
+			}
+		}
+		if len(profiles) == 0 {
+			delete(r.samples, key)
+		}
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if !result[i].ObservedAt.Equal(result[j].ObservedAt) {
+			return result[i].ObservedAt.Before(result[j].ObservedAt)
+		}
+		left := decisionKeyString(result[i].Key) + "|" + result[i].ProfileID
+		right := decisionKeyString(result[j].Key) + "|" + result[j].ProfileID
+		return left < right
+	})
+	if len(result) > MaxPersistedObservations {
+		result = append([]ProbeObservation(nil), result[len(result)-MaxPersistedObservations:]...)
+	}
+	return result, nil
 }
 
 func BetterCandidate(left, right CandidateScore) bool {

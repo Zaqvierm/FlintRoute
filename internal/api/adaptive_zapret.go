@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"sync"
 	"time"
 
 	"router-policy/internal/adapter"
@@ -16,10 +17,14 @@ import (
 )
 
 type adaptiveRuntime struct {
-	profiles   *zapret.Catalog
-	bundles    *zapret.BundleCatalog
-	controller *zapret.SwitchController
-	store      *state.Store
+	profiles      *zapret.Catalog
+	bundles       *zapret.BundleCatalog
+	controller    *zapret.SwitchController
+	ranker        *zapret.Ranker
+	scheduler     *zapret.ProbeScheduler
+	store         *state.Store
+	catalogDigest string
+	probeMu       sync.Mutex
 }
 
 type adaptiveEvaluateRequest struct {
@@ -56,7 +61,23 @@ func newAdaptiveRuntime(cfg *config.Config, store *state.Store) (*adaptiveRuntim
 	if err != nil {
 		return nil, err
 	}
-	return &adaptiveRuntime{profiles: profiles, bundles: bundles, controller: controller, store: store}, nil
+	ranker, err := zapret.NewRanker(bundles, profiles, zapret.DefaultRankingPolicy())
+	if err != nil {
+		return nil, err
+	}
+	scheduler, err := zapret.NewProbeScheduler(zapret.DefaultProbeSchedulePolicy())
+	if err != nil {
+		return nil, err
+	}
+	catalogDigest, err := adaptiveCatalogDigest(cfg, profiles, bundles)
+	if err != nil {
+		return nil, err
+	}
+	runtime := &adaptiveRuntime{profiles: profiles, bundles: bundles, controller: controller, ranker: ranker, scheduler: scheduler, store: store, catalogDigest: catalogDigest}
+	if err := restoreAdaptiveProbeRuntime(runtime, time.Now().UTC()); err != nil {
+		return nil, err
+	}
+	return runtime, nil
 }
 
 func buildAdaptiveRuntime(cfg *config.Config, store *state.Store) (*adaptiveRuntime, error) {

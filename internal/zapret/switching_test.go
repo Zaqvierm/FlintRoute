@@ -198,6 +198,67 @@ func TestProbeSchedulerEnforcesDailyBudgetAndResetsAtUTCDate(t *testing.T) {
 	}
 }
 
+func TestProbeSchedulerRestoresCompletedLeasesAndDailyBudget(t *testing.T) {
+	policy := DefaultProbeSchedulePolicy()
+	policy.JitterFraction = 0
+	scheduler, err := NewProbeScheduler(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)
+	key := switchKey()
+	ranking := switchRanking(key)
+	probe, ok, err := scheduler.Next(key, ranking[0].ProfileID, ranking, now)
+	if err != nil || !ok {
+		t.Fatalf("initial lease failed: ok=%v err=%v", ok, err)
+	}
+	if err := scheduler.Complete(probe.Token, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := scheduler.Snapshot(now.Add(2 * time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := NewProbeScheduler(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Restore(snapshot, now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	used, limit, inFlight := restored.Budget(now.Add(3 * time.Second))
+	if used != 1 || limit != policy.MaxDailyProbes || inFlight != 0 {
+		t.Fatalf("scheduler persistence mismatch: used=%d limit=%d in_flight=%d", used, limit, inFlight)
+	}
+	next, due, err := restored.Next(key, ranking[0].ProfileID, ranking, now.Add(time.Minute))
+	if err != nil || !due || next.ProfileID == ranking[0].ProfileID {
+		t.Fatalf("restored active lease interval was lost: probe=%+v due=%v err=%v", next, due, err)
+	}
+}
+
+func TestProbeSchedulerCancelReleasesLeaseWithoutDelayingRetry(t *testing.T) {
+	policy := DefaultProbeSchedulePolicy()
+	policy.JitterFraction = 0
+	scheduler, err := NewProbeScheduler(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 16, 11, 0, 0, 0, time.UTC)
+	key := switchKey()
+	ranking := switchRanking(key)
+	probe, ok, err := scheduler.Next(key, "zapret-a", ranking, now)
+	if err != nil || !ok {
+		t.Fatalf("initial lease failed: ok=%v err=%v", ok, err)
+	}
+	if err := scheduler.Cancel(probe.Token); err != nil {
+		t.Fatal(err)
+	}
+	retry, ok, err := scheduler.Next(key, "zapret-a", ranking, now.Add(time.Second))
+	if err != nil || !ok || retry.ProfileID != probe.ProfileID {
+		t.Fatalf("cancelled lease was delayed: probe=%+v ok=%v err=%v", retry, ok, err)
+	}
+}
+
 type fakeSwitchApplier struct {
 	mu       sync.Mutex
 	failStep string

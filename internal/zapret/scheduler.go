@@ -47,6 +47,12 @@ type ProbeScheduler struct {
 	sequence      uint64
 }
 
+type ProbeSchedulerState struct {
+	LastCompleted map[string]time.Time `json:"last_completed"`
+	BudgetDay     time.Time            `json:"budget_day"`
+	BudgetUsed    int                  `json:"budget_used"`
+}
+
 func DefaultProbeSchedulePolicy() ProbeSchedulePolicy {
 	return ProbeSchedulePolicy{
 		ActiveInterval: 5 * time.Minute, BackupInterval: 30 * time.Minute, OtherInterval: 6 * time.Hour,
@@ -181,6 +187,21 @@ func (s *ProbeScheduler) Complete(token string, finishedAt time.Time) error {
 	return nil
 }
 
+// Cancel releases a lease without advancing its interval. The daily budget is
+// still consumed, preventing transaction contention from becoming a busy loop.
+func (s *ProbeScheduler) Cancel(token string) error {
+	if s == nil || token == "" {
+		return errors.New("cancel probe lease is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.inFlight[token]; !ok {
+		return errors.New("probe lease is unknown or expired")
+	}
+	delete(s.inFlight, token)
+	return nil
+}
+
 func (s *ProbeScheduler) Budget(now time.Time) (used, limit, inFlight int) {
 	if s == nil {
 		return 0, 0, 0
@@ -191,6 +212,56 @@ func (s *ProbeScheduler) Budget(now time.Time) (used, limit, inFlight int) {
 	s.resetBudgetLocked(now)
 	s.purgeExpiredLocked(now)
 	return s.budgetUsed, s.policy.MaxDailyProbes, len(s.inFlight)
+}
+
+// Snapshot persists completed leases and the daily budget. In-flight leases
+// are intentionally not restored after a process restart.
+func (s *ProbeScheduler) Snapshot(now time.Time) (ProbeSchedulerState, error) {
+	if s == nil || now.IsZero() {
+		return ProbeSchedulerState{}, errors.New("probe scheduler and current time are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now = now.UTC()
+	s.resetBudgetLocked(now)
+	s.purgeExpiredLocked(now)
+	completed := make(map[string]time.Time, len(s.lastCompleted))
+	for key, value := range s.lastCompleted {
+		completed[key] = value
+	}
+	return ProbeSchedulerState{LastCompleted: completed, BudgetDay: s.budgetDay, BudgetUsed: s.budgetUsed}, nil
+}
+
+func (s *ProbeScheduler) Restore(snapshot ProbeSchedulerState, now time.Time) error {
+	if s == nil || now.IsZero() {
+		return errors.New("probe scheduler and current time are required")
+	}
+	if len(snapshot.LastCompleted) > MaxPersistedObservations || snapshot.BudgetUsed < 0 || snapshot.BudgetUsed > s.policy.MaxDailyProbes {
+		return errors.New("persisted probe scheduler state is outside bounded limits")
+	}
+	now = now.UTC()
+	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	completed := make(map[string]time.Time, len(snapshot.LastCompleted))
+	for key, value := range snapshot.LastCompleted {
+		value = value.UTC()
+		if value.After(now) {
+			return errors.New("persisted probe completion is from the future")
+		}
+		completed[key] = value
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastCompleted = completed
+	s.inFlight = make(map[string]ScheduledProbe)
+	s.confirmations = make(map[string]confirmationState)
+	if snapshot.BudgetDay.UTC().Equal(day) {
+		s.budgetDay = day
+		s.budgetUsed = snapshot.BudgetUsed
+	} else {
+		s.budgetDay = day
+		s.budgetUsed = 0
+	}
+	return nil
 }
 
 func (s *ProbeScheduler) purgeExpiredLocked(now time.Time) {

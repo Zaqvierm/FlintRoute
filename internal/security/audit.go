@@ -31,11 +31,13 @@ type AuditCheck struct {
 }
 
 type OpenPort struct {
-	Bind       string `json:"bind"`
-	Port       int    `json:"port"`
-	Protocol   string `json:"protocol"`
-	Purpose    string `json:"purpose"`
-	WANExposed bool   `json:"wan_exposed"`
+	Bind           string `json:"bind"`
+	Port           int    `json:"port"`
+	Protocol       string `json:"protocol"`
+	Purpose        string `json:"purpose"`
+	BindClass      string `json:"bind_class"`
+	ExposureStatus string `json:"exposure_status"`
+	WANExposed     bool   `json:"wan_exposed"`
 }
 
 func Audit(cfg *config.Config) AuditReport {
@@ -46,6 +48,7 @@ func Audit(cfg *config.Config) AuditReport {
 	checks := []AuditCheck{
 		checkProcNet(portErr),
 		checkAPIBind(openPorts, portErr),
+		checkListenerTopology(openPorts, portErr),
 		checkAuthFiles(cfg),
 		checkSetupToken(cfg),
 		checkGeoLockedPolicy(cfg),
@@ -75,10 +78,22 @@ func checkAPIBind(ports []OpenPort, err error) AuditCheck {
 	}
 	for _, p := range ports {
 		if p.Port == 8787 && p.WANExposed {
-			return AuditCheck{ID: "api-bind", Level: "critical", Status: "fail", Message: fmt.Sprintf("router-policy API port is exposed on %s", p.Bind)}
+			return AuditCheck{ID: "api-bind", Level: "critical", Status: "fail", Message: fmt.Sprintf("router-policy API listener on %s is not proven LAN-only (%s)", p.Bind, p.BindClass), Requires: "ubus firewall zones and nft input rules"}
 		}
 	}
 	return AuditCheck{ID: "api-bind", Level: "critical", Status: "pass", Message: "no WAN-exposed router-policy API listener found"}
+}
+
+func checkListenerTopology(ports []OpenPort, err error) AuditCheck {
+	if err != nil {
+		return AuditCheck{ID: "listener-topology", Level: "high", Status: "unavailable", Message: "listener exposure cannot be correlated with firewall topology", Requires: "ubus network.interface, firewall4 zones and nft input rules"}
+	}
+	for _, port := range ports {
+		if port.ExposureStatus == "unresolved" {
+			return AuditCheck{ID: "listener-topology", Level: "high", Status: "requires-device", Message: "non-loopback listeners require firewall topology proof", Requires: "ubus network.interface, firewall4 zones and nft input rules"}
+		}
+	}
+	return AuditCheck{ID: "listener-topology", Level: "high", Status: "pass", Message: "all detected listeners are loopback-only"}
 }
 
 func checkAuthFiles(cfg *config.Config) AuditCheck {
@@ -151,8 +166,10 @@ func readSystemOpenPorts() ([]OpenPort, error) {
 	}{
 		{"/proc/net/tcp", false, "tcp"},
 		{"/proc/net/tcp6", true, "tcp6"},
+		{"/proc/net/udp", false, "udp"},
+		{"/proc/net/udp6", true, "udp6"},
 	} {
-		ports, err := readProcNetTCP(item.path, item.ipv6, item.proto)
+		ports, err := readProcNetSockets(item.path, item.ipv6, item.proto)
 		if err != nil {
 			errs = append(errs, item.path+": "+err.Error())
 			continue
@@ -165,7 +182,7 @@ func readSystemOpenPorts() ([]OpenPort, error) {
 	return out, nil
 }
 
-func readProcNetTCP(path string, ipv6 bool, proto string) ([]OpenPort, error) {
+func readProcNetSockets(path string, ipv6 bool, proto string) ([]OpenPort, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -181,14 +198,17 @@ func readProcNetTCP(path string, ipv6 bool, proto string) ([]OpenPort, error) {
 			continue
 		}
 		fields := strings.Fields(line)
-		if len(fields) < 4 || fields[3] != "0A" {
+		if len(fields) < 4 ||
+			(strings.HasPrefix(proto, "tcp") && fields[3] != "0A") ||
+			(strings.HasPrefix(proto, "udp") && fields[3] != "07") {
 			continue
 		}
 		host, port, err := parseProcAddress(fields[1], ipv6)
 		if err != nil {
 			continue
 		}
-		out = append(out, OpenPort{Bind: host, Port: port, Protocol: proto, Purpose: classifyPort(port), WANExposed: isWANExposed(host)})
+		bindClass, exposure, wanExposed := classifyListenerBind(host)
+		out = append(out, OpenPort{Bind: host, Port: port, Protocol: proto, Purpose: classifyPort(port), BindClass: bindClass, ExposureStatus: exposure, WANExposed: wanExposed})
 	}
 	return out, sc.Err()
 }
@@ -237,12 +257,18 @@ func parseProcIPv6(raw string) string {
 	return net.IP(b[:]).String()
 }
 
-func isWANExposed(bind string) bool {
+func classifyListenerBind(bind string) (bindClass, exposure string, wanExposed bool) {
 	ip := net.ParseIP(bind)
 	if ip == nil {
-		return true
+		return "unknown", "unresolved", true
 	}
-	return !ip.IsLoopback() && !ip.IsUnspecified()
+	if ip.IsLoopback() {
+		return "loopback", "not-exposed", false
+	}
+	if ip.IsUnspecified() {
+		return "wildcard", "unresolved", true
+	}
+	return "non-loopback", "unresolved", true
 }
 
 func classifyPort(port int) string {

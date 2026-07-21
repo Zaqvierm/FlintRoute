@@ -68,7 +68,11 @@ func (m *Manager) PrepareBundle(ctx context.Context, subscriptionPath string, ba
 	if m == nil || m.StateDir == "" || m.Runner == nil || m.Checker == nil {
 		return PreparedBundle{}, errors.New("complete Xray manager dependencies are required")
 	}
-	candidateID := "cand_" + randomHex(8)
+	randomID, err := secureRandomHex(8)
+	if err != nil {
+		return PreparedBundle{}, fmt.Errorf("generate subscription candidate ID: %w", err)
+	}
+	candidateID := "cand_" + randomID
 	candidateDir := filepath.Join(m.StateDir, "candidates", candidateID)
 	candidatePath := filepath.Join(candidateDir, "xray.json")
 	defer os.RemoveAll(candidateDir)

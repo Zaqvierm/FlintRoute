@@ -16,13 +16,17 @@ type EventBroker struct {
 	subscribers map[chan Event]struct{}
 }
 
-func NewEventBroker(maxEvents int) *EventBroker {
+func NewEventBroker(maxEvents int) (*EventBroker, error) {
 	if maxEvents <= 0 {
 		maxEvents = 512
 	}
-	b := &EventBroker{epoch: randomHex(16), maxEvents: maxEvents, maxStreams: 16, subscribers: map[chan Event]struct{}{}}
+	epoch, err := secureRandomHex(16)
+	if err != nil {
+		return nil, fmt.Errorf("generate event stream epoch: %w", err)
+	}
+	b := &EventBroker{epoch: epoch, maxEvents: maxEvents, maxStreams: 16, subscribers: map[chan Event]struct{}{}}
 	b.Publish(Event{Type: "system.start", Severity: "info", ReasonCode: "api_started", Details: map[string]any{"plane": "control"}})
-	return b
+	return b, nil
 }
 
 func (b *EventBroker) Publish(ev Event) Event {

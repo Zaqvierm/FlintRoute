@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +18,10 @@ import (
 	"golang.org/x/crypto/argon2"
 
 	"router-policy/internal/config"
+	"router-policy/internal/secureid"
 )
+
+var secureRandomHex = secureid.Hex
 
 const (
 	RoleAdministrator = "administrator"
@@ -150,7 +152,10 @@ func (s *Store) CreateSetupToken() (string, SetupToken, error) {
 	if len(users) > 0 {
 		return "", SetupToken{}, ErrSetupUnavailable
 	}
-	token := randomHex(32)
+	token, err := secureRandomHex(32)
+	if err != nil {
+		return "", SetupToken{}, fmt.Errorf("generate setup token: %w", err)
+	}
 	st := SetupToken{
 		TokenHash: hashToken(token),
 		ExpiresAt: time.Now().UTC().Add(setupTokenTTL),
@@ -238,7 +243,17 @@ func (s *Store) Login(username, password, remote string) (Session, LoginAudit, e
 	if len(s.sessions) >= s.maxSessions {
 		s.dropOldestSessionLocked()
 	}
-	session := Session{ID: randomHex(32), User: user.Username, Role: user.Role, CSRFToken: randomHex(32), ExpiresAt: time.Now().UTC().Add(s.sessionTTL)}
+	sessionID, err := secureRandomHex(32)
+	if err != nil {
+		audit.Reason = "entropy_unavailable"
+		return Session{}, audit, fmt.Errorf("generate session ID: %w", err)
+	}
+	csrfToken, err := secureRandomHex(32)
+	if err != nil {
+		audit.Reason = "entropy_unavailable"
+		return Session{}, audit, fmt.Errorf("generate CSRF token: %w", err)
+	}
+	session := Session{ID: sessionID, User: user.Username, Role: user.Role, CSRFToken: csrfToken, ExpiresAt: time.Now().UTC().Add(s.sessionTTL)}
 	s.sessions[session.ID] = session
 	audit.Success = true
 	audit.Reason = "login_success"
@@ -504,7 +519,11 @@ func writeJSON0600(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp." + randomHex(6)
+	suffix, err := secureRandomHex(6)
+	if err != nil {
+		return fmt.Errorf("generate auth temporary name: %w", err)
+	}
+	tmp := path + ".tmp." + suffix
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
@@ -546,12 +565,6 @@ func syncDir(path string) error {
 	}
 	defer dir.Close()
 	return dir.Sync()
-}
-
-func randomHex(n int) string {
-	b := make([]byte, n)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
 }
 
 func min(a, b int) int {

@@ -71,6 +71,35 @@ func TestRankerSeparatesDecisionKeysAndExpiresOldSamples(t *testing.T) {
 	}
 }
 
+func TestRankerPersistsBoundedObservationsWithoutCrossNetworkLeak(t *testing.T) {
+	ranker, key, profiles := testRanker(t)
+	now := time.Date(2026, 7, 16, 14, 30, 0, 0, time.UTC)
+	for i := 0; i < 6; i++ {
+		observeRank(t, ranker, key, profiles[0], now.Add(time.Duration(i)*time.Second), true, 100*time.Millisecond)
+	}
+	snapshot, err := ranker.Observations(now.Add(time.Minute))
+	if err != nil || len(snapshot) != 6 {
+		t.Fatalf("unexpected persistence snapshot: count=%d err=%v", len(snapshot), err)
+	}
+	restored, _, _ := testRanker(t)
+	if err := restored.Restore(snapshot, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if score, err := restored.Snapshot(key, profiles[0], now.Add(time.Minute)); err != nil || score.Attempts != 6 {
+		t.Fatalf("persisted observations were not restored: score=%+v err=%v", score, err)
+	}
+	other := key
+	other.NetworkFingerprint = Digest([]byte("new-network"))
+	if score, err := restored.Snapshot(other, profiles[0], now.Add(time.Minute)); err != nil || score.Attempts != 0 {
+		t.Fatalf("old network observations leaked into new fingerprint: score=%+v err=%v", score, err)
+	}
+	future := append([]ProbeObservation(nil), snapshot...)
+	future[0].ObservedAt = now.Add(2 * time.Hour)
+	if err := restored.Restore(future, now.Add(time.Minute)); err == nil {
+		t.Fatal("future persisted observation was accepted")
+	}
+}
+
 func TestRankerBoundsSamplesAndRejectsFalsePositiveSuccess(t *testing.T) {
 	ranker, key, profiles := testRanker(t)
 	now := time.Date(2026, 7, 16, 15, 0, 0, 0, time.UTC)
