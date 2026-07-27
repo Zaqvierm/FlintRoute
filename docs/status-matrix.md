@@ -21,11 +21,11 @@
 | P7 | 70% | Авторизация, fail-closed entropy handling и аудит listener bind |
 | P8 | 25% | Встроенный Web UI с role-aware загрузкой и счётчиками трафика |
 | P9 | 40% | Loopback и доступ к панели из LAN |
-| P10 | 75% | Clean install, upgrade и reboot исправленного пакета пройдены; rollback/downgrade/uninstall ещё требуют повторного аппаратного прогона |
+| P10 | 100% | Clean install, upgrade, rollback timer, compatible downgrade, uninstall и reinstall/reconcile пройдены на Flint 2 |
 | P11 | 85% | Автоматические тесты |
 | P12 | 100% | Adaptive Zapret привязан к OpenWrt transaction; два bundle-профиля и независимые выходы проверены на Flint 2 |
-| P13 | 80% | Маршруты, Smart DNS, recursion guard и fault tests доказаны; clean install/upgrade/reboot повторно пройдены, но power-loss, multi-client, lifecycle tail и soak остаются |
-| P14 | 90% | Ownership, provider/dataplane lifecycle, control-plane recovery и 35-minute idle write budget доказаны; остаётся rollback/downgrade/uninstall tail |
+| P13 | 80% | Маршруты, Smart DNS, recursion guard и fault tests доказаны; clean install/upgrade/reboot и lifecycle tail пройдены, но power-loss, multi-client и soak остаются |
+| P14 | 100% | Ownership, cleanup, bounded storage, provider/dataplane recovery, idle write budget и полный lifecycle tail доказаны на Flint 2 |
 
 ### P14: lifecycle и storage
 
@@ -33,12 +33,12 @@
 |---|---|---|
 | FlintRoute-managed Xray/Zapret отделены от system services | unit tests и API/CLI | active production instances прошли restart и SIGKILL recovery; system `xray` отображается отдельно |
 | Typed owner manifest и PID reuse protection | да | изолированный hardware runner PASS |
-| Stale cleanup dry-run/apply и повторный cleanup | process/file/nft table/IP rule/route/listener contracts | hardware PASS для test namespace; production cleanup не выполнялся |
+| Stale cleanup dry-run/apply и повторный cleanup | process/file/nft table/IP rule/route/listener contracts | hardware PASS для test namespace; fixed uninstall удалил production processes/nft/policy routes |
 | 100 test-runs возвращаются к baseline | локальный deterministic test | PASS: 100/100, production processes сохранены, foreign process защищён |
 | Одинаковые health cycles не пишут bbolt | да | 1000 API GET + 35 минут/35 samples: persistent transactions/bytes и persistent file identity не изменились |
 | Identical config/artifact install — no-op | Go и shell tests | unchanged TSPU entry set сохранил SHA/inode 64 MiB cache после refresh/restart/reboot |
 | Runtime telemetry в tmpfs, durable recovery journal сохранён | да | controlled reboot PASS; runtime root восстановлен в tmpfs |
-| Snapshot/backup count и size bounded | unit/shell tests | после финального upgrade сохранён 1 verified fallback, около 72 MiB < 128 MiB |
+| Snapshot/backup count и size bounded | unit/shell tests | после uninstall/reinstall сохранены 2 verified operations, 66.7 MiB < 128 MiB |
 | Watchdog maintenance lease и expiry | unit tests | controller оставался stopped >180 s, затем восстановлен; boot guard завершил bounded 120 s lease |
 
 ### P13 по подэтапам
@@ -50,7 +50,7 @@
 | P13.2 | завершён | Production health cycle собирает раздельные active/challenger probes, сохраняет scheduler/ranking в bbolt и не переносит evidence между fingerprint; transaction-bound switch, safe-fallback pin, cooldown, quarantine и возврат static baseline пройдены на Flint 2 | повторять acceptance после изменения каталога nfqws или сетевой схемы |
 | P13.3 | частично | SIGKILL managed nfqws/Xray/controller, controlled reboot, реальный 180-second rollback timer и восстановление повреждённой bbolt пройдены; committed dataplane и route proofs сохранены | физическое power loss |
 | P13.4 | начат | Bounded sampler и локальная проверка resource limits | три одновременных клиента и реальные throughput/latency/resource пределы |
-| P13.5 | частично восстановлен | После factory recovery clean install, upgrade и controlled reboot исправленного пакета прошли; предыдущий инцидент сохранён в журнале | rollback/downgrade/uninstall и active provider/dataplane lifecycle |
+| P13.5 | завершён | После factory recovery прошли clean install, upgrade, controlled reboot, rollback timer, compatible downgrade, uninstall, reinstall/reconcile и active provider/dataplane lifecycle; предыдущий инцидент сохранён в журнале | — |
 | P13.6 | не начат | — | 72-часовой soak и финальный audit |
 
 | Область | Реализовано | Проверено локально | Требуется Flint 2 |
@@ -77,7 +77,7 @@
 | OpenWrt adapter с фиксированными командами | да | модульные, mocked shell integration и Flint apply/rollback/commit | остальные типы маршрутов |
 | Общий helper lock с проверкой устаревшего владельца | да | shell-интеграция, ShellCheck и транзакции Flint | матрица перезагрузок и аварийных завершений |
 | Проверка хеша снимка и маркеров отсутствующих файлов | да | shell-интеграция и rollback на Flint | матрица перезагрузок и аварийных завершений |
-| Восстановление config/nft/dnsmasq/Xray/Zapret/active revision | да | shell-интеграция и Flint rollback с сохранением хеша рабочего Xray | реальная активация и rollback Xray |
+| Восстановление config/nft/dnsmasq/Xray/Zapret/active revision | да | shell-интеграция и Flint rollback с сохранением хеша рабочего Xray | нет |
 | Управляемый жизненный цикл Xray TPROXY через procd | да | модульные, shell-интеграция и постоянный VLESS на Flint | расширенная матрица выходов и протоколов |
 | Управляемый Zapret/nfqws, фиксированный preset и безопасный отказ NFQUEUE | да | модульные, shell-интеграция, nfqws dry-run/nft syntax на Flint и committed Zapret для `discord.com` | полная матрица |
 | Транзакционное сохранение и отключение flow offloading | да | модульные, shell integration и Flint UCI 1/1 -> 0/0 | нет |
@@ -87,7 +87,7 @@
 | TSPU cache v2: несколько источников, ETag, drop-ratio, wildcard и SHA-256 | да | модульные, httptest, race и живое обновление 2/2 источников на Flint 2 | нет |
 | GeoIP MMDB и согласование двух источников | да | модульные и живая проверка | нет |
 | Кэш решений по доменам: ограниченный LRU, привязка к revision и TTL | да | модульные тесты | нет |
-| SHA-256 пакета OpenWrt, откат установки/обновления и проверенное удаление | да | shell-проверка жизненного цикла, обновление и чистая установка на Flint 2 | аппаратные понижение версии и удаление |
+| SHA-256 пакета OpenWrt, откат установки/обновления и проверенное удаление | да | shell-проверка жизненного цикла; clean install, upgrade, compatible downgrade и uninstall на Flint 2 | нет |
 | Полный локальный набор тестов | да | `run-all.ps1` | нет |
 | Полный Go race suite | да | `go test -race ./...` | нет |
 
@@ -100,10 +100,10 @@
   `/etc/router-policy/state`, без совместимого псевдонима `/var/lib/router-policy`.
   Контроллер, Xray, nfqws, nftables и правила IPv4/IPv6 восстановились
   автоматически.
-- Ранее clean install, первая активация и controlled reboot проходили, но этот
-  результат больше не закрывает текущий installer. Последний P14 upgrade дважды
-  закончился состоянием, потребовавшим U-Boot recovery. Исправленный preflight,
-  rollback и startup no-op пока проверены только локально.
+- После двух инцидентов с U-Boot recovery исправленный preflight, rollback,
+  startup no-op и ограниченный lifecycle runner повторно проверены на Flint 2.
+  Clean install, upgrade, rollback timer, compatible downgrade, uninstall и
+  reinstall/reconcile прошли при непрерывном внешнем SSH/web monitor.
 - Последовательный SIGKILL managed nfqws, Xray и controller пройден на Flint 2.
   После каждого сбоя procd поднял новый PID, соответствующий route proof прошёл,
   а committed artifacts и active transaction binding не изменились. Timer fault,

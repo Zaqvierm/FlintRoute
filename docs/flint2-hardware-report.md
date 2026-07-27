@@ -156,9 +156,9 @@ resolver, а подставлять тестовый адрес в аппара�
   `youtube.com`. Ответы 403 у ChatGPT и Claude считаются HTTP-доступностью, а
   не доказательством пользовательской сессии.
 
-Factory clean install и первая активация теперь выполнены. Compatible downgrade
-и uninstall проверены локальным lifecycle-тестом, но их аппаратный gate остаётся
-открытым.
+Factory clean install, первая активация, compatible downgrade, uninstall и
+финальный reinstall/reconcile выполнены на Flint 2. Внешний SSH/web monitor
+оставался доступен.
 
 ## P2 — автоматическое обновление TSPU cache
 
@@ -303,13 +303,22 @@ Drop route proofs остались bound к committed dataplane; внешний 
 дали нулевой прирост persistent transactions, bytes, file create/replace/delete.
 Inode, размер и SHA persistent artifacts остались прежними.
 
+Lifecycle tail дождался expiration rollback timer и вернул исходную revision,
+после чего прошёл compatible downgrade и восстановление текущего пакета без
+смены Xray/nfqws process identity. Первый uninstall поймал readiness race сразу
+после `dnsmasq restart`; DNS был доступен через несколько секунд, а SSH/web не
+прерывались. Fixed uninstaller ждёт PID и успешный loopback DNS. Повторный
+uninstall удалил project processes, nftables, policy routes и runtime, вернул
+flow-offload UCI `1/1` и оставил 2 verified backup operations / 66.7 MiB.
+Финальный reinstall/reconcile восстановил committed revision, managed
+Xray/nfqws, nftables и три bound route proofs.
+
 ## Что НЕ доказано на железе
 
 - Smart DNS activation и bound path proof; transport preflight уже пройден.
 - `tg_ws_proxy` transport (route type определён в proof, реализации нет).
 - Power-loss recovery, timer fault injection и повреждение persistent state.
-- Multi-client, 72h soak, расширенная fault injection matrix, downgrade и
-  uninstall на железе.
+- Multi-client, 72h soak и расширенная fault injection matrix.
 
 ## Подтверждённое состояние
 
@@ -318,5 +327,4 @@ evidence до и после физического reboot. P3 и P6 закрыт
 критериям. In-place upgrade из проверяемого OpenWrt-пакета тоже пройден. Проект
 Factory clean install, control-plane upgrade/restart/crash и повторное
 post-reboot восстановление теперь доказаны после P14-исправлений. Проект
-остаётся Alpha: hard-crash/power-loss, multi-client, downgrade/uninstall и
-soak-test ещё не пройдены.
+остаётся Alpha: hard-crash/power-loss, multi-client и soak-test ещё не пройдены.

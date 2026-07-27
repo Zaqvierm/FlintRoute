@@ -62,6 +62,9 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
   `SIGKILL`, controller restart и 11 bound route proofs без потери SSH/web;
 - 1000 read-only API GET и 35 минут idle на Flint 2 дали нулевой прирост
   persistent transactions, bytes и file replacements;
+- rollback timer, compatible downgrade, restore, fixed uninstall и финальный
+  reinstall/reconcile пройдены с внешним SSH/web monitor; cleanup вернул
+  исходный flow-offload baseline и оставил bounded backup registry;
 - неизменный TSPU cache не переписывает два больших поколения: на Flint 2
   проверены 86 781 entry и отдельный freshness checkpoint размером меньше 2 KiB;
 - локальные API, авторизация, журнал изменений и встроенная консоль.
@@ -69,9 +72,7 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
 ### Реализовано, но требует проверки на железе
 
 - расширенная IPv6-матрица на реальных LAN-клиентах;
-- downgrade и uninstall на отдельном чистом OpenWrt;
 - работа под нагрузкой с несколькими клиентами;
-- полная rollback/downgrade/uninstall матрица после исправлений P14.
 
 ### Запланировано
 

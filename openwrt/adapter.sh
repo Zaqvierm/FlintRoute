@@ -12,6 +12,8 @@ recovery_artifact_manifest_hash="${6:-}"
 runtime="${RUNTIME_DIR:-/tmp/router-policy}"
 state="${STATE_DIR:-/etc/router-policy/state}"
 txroot="$state/transactions"
+ownership_dir="$state/ownership"
+flow_offload_baseline="$ownership_dir/flow-offloading.env"
 lock_dir="$runtime/transaction.lock"
 pending_file="$runtime/pending-transaction.env"
 active_file="$runtime/active-transaction.env"
@@ -381,6 +383,60 @@ snapshot_service_one() {
   echo "$snapshot_target|present|$snapshot_name|$snapshot_bytes|sha256:$snapshot_hash|project-service" >> "$snapshot_output/manifest.txt"
 }
 
+ensure_flow_offload_baseline() {
+  if [ -e "$ownership_dir" ]; then
+    [ -d "$ownership_dir" ] && [ ! -L "$ownership_dir" ] || {
+      echo "reason=flow_offloading_ownership_dir_invalid" >&2
+      return 1
+    }
+  else
+    mkdir -p "$ownership_dir"
+  fi
+  chmod 700 "$ownership_dir"
+  if [ -e "$flow_offload_baseline" ]; then
+    [ -f "$flow_offload_baseline" ] && [ ! -L "$flow_offload_baseline" ] || {
+      echo "reason=flow_offloading_baseline_not_regular" >&2
+      return 1
+    }
+    baseline_mode="$(file_mode_bits "$flow_offload_baseline")"
+    baseline_owner="$(file_owner_id "$flow_offload_baseline")"
+    ownership_owner="$(file_owner_id "$ownership_dir")"
+    [ "$baseline_mode" = 600 ] && [ -n "$baseline_owner" ] && [ "$baseline_owner" = "$ownership_owner" ] || {
+      echo "reason=flow_offloading_baseline_permissions_invalid" >&2
+      return 1
+    }
+    baseline_schema="$(sed -n 's/^schema_version=//p' "$flow_offload_baseline" | head -n 1)"
+    baseline_software="$(sed -n 's/^software=//p' "$flow_offload_baseline" | head -n 1)"
+    baseline_hardware="$(sed -n 's/^hardware=//p' "$flow_offload_baseline" | head -n 1)"
+    [ "$baseline_schema" = 1 ] || { echo "reason=flow_offloading_baseline_schema_invalid" >&2; return 1; }
+    case "$baseline_software:$baseline_hardware" in
+      0:0|0:1|0:absent|1:0|1:1|1:absent|absent:0|absent:1|absent:absent) return 0 ;;
+      *) echo "reason=flow_offloading_baseline_value_invalid" >&2; return 1 ;;
+    esac
+  fi
+  if ! baseline_software="$("$uci_bin" -q get "$flow_offload_uci_key" 2>/dev/null)"; then
+    baseline_software=absent
+  fi
+  if ! baseline_hardware="$("$uci_bin" -q get "$flow_offload_hw_uci_key" 2>/dev/null)"; then
+    baseline_hardware=absent
+  fi
+  case "$baseline_software:$baseline_hardware" in
+    0:0|0:1|0:absent|1:0|1:1|1:absent|absent:0|absent:1|absent:absent) ;;
+    *) echo "reason=flow_offloading_baseline_value_invalid" >&2; return 1 ;;
+  esac
+  rm -f "$flow_offload_baseline.tmp"
+  {
+    echo "schema_version=1"
+    echo "software=$baseline_software"
+    echo "hardware=$baseline_hardware"
+    echo "recorded_at=$(now_utc)"
+  } >"$flow_offload_baseline.tmp"
+  chmod 600 "$flow_offload_baseline.tmp"
+  mv "$flow_offload_baseline.tmp" "$flow_offload_baseline"
+  baseline_bytes="$(wc -c <"$flow_offload_baseline" | tr -d ' ')"
+  record_runtime_write_event "file_created" "$baseline_bytes" "openwrt_ownership_baseline"
+}
+
 create_snapshot() {
   create_root="$1"
   committed_active_source="${2:-}"
@@ -433,6 +489,7 @@ snapshot_current() {
     echo "reason=transaction_not_pending" >&2
     exit 3
   }
+  ensure_flow_offload_baseline
   create_snapshot "$txdir/snapshot"
   if [ -f "$generated/ip-plan.json" ]; then
     if ROUTER_POLICY_IP_BIN="$ip_bin" "$router_policy_bin" internal-snapshot-ip-state --plan "$generated/ip-plan.json" --transaction "$txid" --revision "$revision" --candidate-hash "$candidate_hash" --out "$txdir/snapshot/ip-state.json" >/dev/null 2>&1; then
@@ -462,13 +519,26 @@ validate_candidate() {
   "$xray_bin" run -test -config "$generated/xray.json" >/dev/null
   ip_plan_status="$("$router_policy_bin" internal-validate-ip-plan --plan "$generated/ip-plan.json" --transaction "$txid" --revision "$revision" --candidate-hash "$candidate_hash")"
   printf '%s\n' "$ip_plan_status"
-  plan_ready="$(printf '%s\n' "$ip_plan_status" | sed -n 's/^deployment_ready=//p' | head -n 1)"
-  plan_reason="$(printf '%s\n' "$ip_plan_status" | sed -n 's/^reason=//p' | head -n 1)"
-  plan_simulation="$(printf '%s\n' "$ip_plan_status" | sed -n 's/^simulation=//p' | head -n 1)"
-  plan_xray_enabled="$(printf '%s\n' "$ip_plan_status" | sed -n 's/^xray_enabled=//p' | head -n 1)"
-  plan_xray_managed="$(printf '%s\n' "$ip_plan_status" | sed -n 's/^xray_managed=//p' | head -n 1)"
-  plan_zapret_enabled="$(printf '%s\n' "$ip_plan_status" | sed -n 's/^zapret_enabled=//p' | head -n 1)"
-  plan_zapret_managed="$(printf '%s\n' "$ip_plan_status" | sed -n 's/^zapret_managed=//p' | head -n 1)"
+  plan_ready=
+  plan_reason=
+  plan_simulation=
+  plan_xray_enabled=
+  plan_xray_managed=
+  plan_zapret_enabled=
+  plan_zapret_managed=
+  while IFS='=' read -r plan_key plan_value; do
+    case "$plan_key" in
+      deployment_ready) plan_ready="$plan_value" ;;
+      reason) plan_reason="$plan_value" ;;
+      simulation) plan_simulation="$plan_value" ;;
+      xray_enabled) plan_xray_enabled="$plan_value" ;;
+      xray_managed) plan_xray_managed="$plan_value" ;;
+      zapret_enabled) plan_zapret_enabled="$plan_value" ;;
+      zapret_managed) plan_zapret_managed="$plan_value" ;;
+    esac
+  done <<EOF
+$ip_plan_status
+EOF
   [ "$plan_xray_enabled" = "true" ] || [ "$plan_xray_managed" = "false" ] || {
     echo "reason=invalid_xray_service_plan" >&2
     exit 3

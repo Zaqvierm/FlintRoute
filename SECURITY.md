@@ -60,6 +60,13 @@ Installer and transaction writers reject symlink targets. Replacement uses a
 temporary file on the target filesystem, file sync, atomic rename, and a best
 effort parent-directory sync. Identical content is not replaced.
 
+The installation-owned flow-offloading baseline is accepted only from a
+non-symlink ownership directory and a regular mode-0600 file with the same
+owner. Uninstall restores only the recorded UCI values and does not perform an
+unscoped firewall reload. Recursive uninstall cleanup is restricted to the
+fixed FlintRoute prefix and runtime root; environment overrides cannot redirect
+it to another tree.
+
 ## Reporting
 
 Do not include live subscription URLs, UUIDs, tokens, or full diagnostic archives in public reports.

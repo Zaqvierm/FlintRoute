@@ -52,8 +52,33 @@ adapter completed prepare, validate, apply, route verification and commit on
 factory OpenWrt. Managed Xray and nfqws then passed restart and SIGKILL recovery,
 the controller passed restart, and 11 Direct, Zapret, VLESS and Drop route
 proofs completed while external SSH and web management remained available.
-The idle write observation and rollback/downgrade/uninstall gates remain
-separate P14 checks.
+At that point the idle write observation and rollback/downgrade/uninstall gates
+remained separate P14 checks; the later P14 lifecycle tail closed them.
+
+## 2026-07-27 — uninstall DNS readiness race
+
+### What was tested
+
+The lifecycle tail expired a real rollback timer, restored the committed
+revision, performed a compatible downgrade and returned to the current package.
+It then removed FlintRoute while an external monitor checked SSH and web
+management.
+
+### What happened
+
+Project processes, nftables, policy routing and runtime files were removed, and
+the persistent flow-offloading baseline was restored. The first post-uninstall
+DNS check failed because it ran immediately after `dnsmasq restart`. DNS became
+available seconds later; SSH and web management remained continuously
+available.
+
+### Fix and verification
+
+Uninstall now waits up to 30 seconds for both the dnsmasq PID and a successful
+loopback lookup. A local lifecycle test forces two failed lookups before
+readiness. The repeated Flint 2 uninstall returned only after DNS was usable,
+kept the backup registry within 2 operations / 128 MiB, and was followed by a
+successful reinstall and committed-dataplane reconcile.
 
 ## 2026-07-22 — failed P14 upgrade left procd/ubus unavailable
 

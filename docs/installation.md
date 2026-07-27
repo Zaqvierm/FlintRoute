@@ -14,6 +14,9 @@ dataplane-транзакции.
 powershell -ExecutionPolicy Bypass -File .\scripts\build-go.ps1
 ```
 
+Скрипт использует Git Bash с GNU tar, gzip и `sha256sum` для воспроизводимой
+упаковки.
+
 На Linux или в Git Bash:
 
 ```sh
@@ -22,6 +25,8 @@ sh scripts/build-go.sh
 
 Готовый пакет находится в `dist/flintroute-openwrt-arm64.tar.gz`. Внутри есть
 `SHA256SUMS`; installer проверяет все файлы до изменения системы.
+Упаковка нормализует порядок, timestamps, owner/group и gzip header, поэтому две
+сборки из одинакового дерева дают одинаковый SHA-256 архива.
 
 ## Первая установка
 
@@ -111,8 +116,12 @@ sh uninstall.sh --uninstall
 
 Перед удалением создаётся и проверяется архив `/etc/router-policy`. Ошибка
 backup останавливает операцию до удаления файлов. Бинарник, init-скрипты,
-hotplug hooks и project-owned firewall/DNS artifacts удаляются; конфиг,
-secrets и persistent state остаются в `/etc/router-policy` и в backup.
+hotplug hooks, project-owned firewall/DNS artifacts и bound policy routes/rules
+удаляются. Исходные persistent UCI-значения flow offloading восстанавливаются
+из installation-owned manifest. Uninstaller не делает глобальный `fw4 reload`;
+runtime firewall применит эти значения при следующем отдельно контролируемом
+reload/reboot. Конфиг, secrets и persistent state остаются в
+`/etc/router-policy` и в backup.
 
 ## Граница безопасности
 

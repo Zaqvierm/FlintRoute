@@ -129,6 +129,13 @@ flow-offloading state. Manifest SHA-256 + каждый file hash/size прове
 hardcoded project-owned targets. `last-good` = full snapshot + committed
 transaction metadata.
 
+Отдельно от transaction snapshot первая transaction фиксирует исходный
+installation-owned flow-offloading baseline. Он создаётся один раз в
+mode-0600 manifest и не заменяется последующими apply. Это позволяет uninstall
+вернуть исходные UCI-значения, не принимая текущее `0/0` за пользовательский
+baseline. Factory adapter не зависит от внешнего GNU `stat`: mode/owner
+проверяются через BusyBox `ls`/`awk`.
+
 Rollback timer — transaction-bound и revision-bound, PID + process start time
 для wrapper и sleeper. Никогда не ищет process command lines.
 

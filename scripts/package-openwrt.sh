@@ -12,6 +12,11 @@ trap 'rm -rf "$STAGING"; rm -f "$FILE_LIST" "$ARCHIVE.tmp"' EXIT HUP INT TERM
 [ -f "$BINARY" ] || { echo "missing $BINARY; build the ARM64 binary first" >&2; exit 1; }
 command -v sha256sum >/dev/null 2>&1 || { echo "sha256sum is required" >&2; exit 1; }
 command -v tar >/dev/null 2>&1 || { echo "tar is required" >&2; exit 1; }
+command -v gzip >/dev/null 2>&1 || { echo "gzip is required" >&2; exit 1; }
+tar --version 2>/dev/null | grep -q 'GNU tar' || {
+  echo "GNU tar is required for reproducible OpenWrt packaging" >&2
+  exit 1
+}
 
 rm -rf "$STAGING"
 mkdir -p "$STAGING/dist"
@@ -29,7 +34,13 @@ chmod +x "$STAGING/install.sh" "$STAGING/uninstall.sh" "$STAGING/dist/router-pol
   sha256sum -c SHA256SUMS >/dev/null
 )
 
-tar -C "$STAGING" -czf "$ARCHIVE.tmp" .
+tar --sort=name \
+  --mtime='UTC 1970-01-01' \
+  --owner=0 \
+  --group=0 \
+  --numeric-owner \
+  --format=ustar \
+  -C "$STAGING" -cf - . | gzip -n >"$ARCHIVE.tmp"
 mv "$ARCHIVE.tmp" "$ARCHIVE"
 tar -tzf "$ARCHIVE" >/dev/null
 archive_hash=$(sha256sum "$ARCHIVE" | awk '{print $1}')

@@ -2,6 +2,7 @@
 set -eu
 
 ROOT=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd)
+PROJECT_ROOT="$ROOT"
 TMP="${TMPDIR:-/tmp}/router-policy-installer-lifecycle-$$"
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
@@ -107,6 +108,20 @@ sh "$ROOT/uninstall.sh" --uninstall >/dev/null
 [ -s "$BACKUP_BASE/uninstall/router-policy-etc.tar" ]
 grep -E '^sha256=[0-9a-f]{64}$' "$BACKUP_BASE/uninstall/manifest.txt" >/dev/null
 [ ! -e "$SERVICE_CONTROL_LOG" ]
+if grep -Eq '(^|[[:space:]])fw4[[:space:]]+reload' "$ROOT/uninstall.sh"; then
+  echo "uninstaller performs an unscoped global firewall reload" >&2
+  exit 1
+fi
+if ROUTER_POLICY_SYSTEM_ROOT="$SYSTEM_ROOT" PREFIX="$SYSTEM_ROOT/usr/lib/not-router-policy" \
+  sh "$ROOT/uninstall.sh" --uninstall >/dev/null 2>&1; then
+  echo "uninstaller accepted a non-standard recursive project prefix" >&2
+  exit 1
+fi
+if ROUTER_POLICY_SYSTEM_ROOT="$SYSTEM_ROOT" RUNTIME_DIR="$SYSTEM_ROOT/tmp/not-router-policy" \
+  sh "$ROOT/uninstall.sh" --uninstall >/dev/null 2>&1; then
+  echo "uninstaller accepted a non-standard recursive runtime root" >&2
+  exit 1
+fi
 
 RUNTIME_DIR="$SYSTEM_ROOT/tmp/router-policy"
 mkdir -p "$TMP/fake-bin" "$RUNTIME_DIR"
@@ -340,6 +355,127 @@ fi
 printf '%s\n' "$corrupted_output" | grep -F 'snapshot hash mismatch' >/dev/null
 [ "$(cat "$ROLLBACK_TARGET")" = "changed-again" ]
 
+UNINSTALL_DEACTIVATE_ROOT="$TMP/uninstall-deactivate"
+mkdir -p \
+  "$UNINSTALL_DEACTIVATE_ROOT/bin" \
+  "$UNINSTALL_DEACTIVATE_ROOT/etc/router-policy/config" \
+  "$UNINSTALL_DEACTIVATE_ROOT/etc/router-policy/state/ownership" \
+  "$UNINSTALL_DEACTIVATE_ROOT/etc/router-policy/state/last-good" \
+  "$UNINSTALL_DEACTIVATE_ROOT/etc/router-policy/state/transactions/rev_4_aabbccddeeff/tx_0011223344556677/generated"
+cat >"$UNINSTALL_DEACTIVATE_ROOT/bin/router-policy" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >"$UNINSTALL_DEACTIVATE_LOG"
+[ "$1" = internal-rollback-ip-state ]
+SH
+chmod +x "$UNINSTALL_DEACTIVATE_ROOT/bin/router-policy"
+cat >"$UNINSTALL_DEACTIVATE_ROOT/bin/uci" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >>"$UNINSTALL_UCI_LOG"
+SH
+chmod +x "$UNINSTALL_DEACTIVATE_ROOT/bin/uci"
+cat >"$UNINSTALL_DEACTIVATE_ROOT/etc/router-policy/state/last-good/transaction.env" <<'EOF'
+transaction_id=tx_0011223344556677
+revision_id=rev_4_aabbccddeeff
+candidate_hash=sha256:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+EOF
+cat >"$UNINSTALL_DEACTIVATE_ROOT/etc/router-policy/state/ownership/flow-offloading.env" <<'EOF'
+schema_version=1
+software=1
+hardware=1
+recorded_at=2026-07-27T00:00:00Z
+EOF
+chmod 600 "$UNINSTALL_DEACTIVATE_ROOT/etc/router-policy/state/ownership/flow-offloading.env"
+printf '{}\n' >"$UNINSTALL_DEACTIVATE_ROOT/etc/router-policy/state/transactions/rev_4_aabbccddeeff/tx_0011223344556677/generated/ip-plan.json"
+UNINSTALL_DEACTIVATE_LOG="$UNINSTALL_DEACTIVATE_ROOT/deactivate.log"
+UNINSTALL_UCI_LOG="$UNINSTALL_DEACTIVATE_ROOT/uci.log"
+export UNINSTALL_DEACTIVATE_LOG UNINSTALL_UCI_LOG
+UNINSTALL_DEACTIVATE_HELPER="$TMP/run-uninstall-deactivate.sh"
+cat >"$UNINSTALL_DEACTIVATE_HELPER" <<'SH'
+#!/bin/sh
+set -eu
+. "$PROJECT_ROOT/uninstall.sh"
+deactivate_committed_dataplane >"$RESULT_PATH"
+SH
+chmod +x "$UNINSTALL_DEACTIVATE_HELPER"
+env \
+  ROUTER_POLICY_UNINSTALL_LIB_ONLY=1 \
+  SYSTEM_ROOT="$UNINSTALL_DEACTIVATE_ROOT" \
+  ETC_DIR="$UNINSTALL_DEACTIVATE_ROOT/etc/router-policy" \
+  STATE_DIR="$UNINSTALL_DEACTIVATE_ROOT/etc/router-policy/state" \
+  RUNTIME_DIR="$UNINSTALL_DEACTIVATE_ROOT/tmp/router-policy" \
+  BIN_DIR="$UNINSTALL_DEACTIVATE_ROOT/bin" \
+  UCI_BIN="$UNINSTALL_DEACTIVATE_ROOT/bin/uci" \
+  PROJECT_ROOT="$PROJECT_ROOT" \
+  RESULT_PATH="$UNINSTALL_DEACTIVATE_ROOT/result.txt" \
+  sh "$UNINSTALL_DEACTIVATE_HELPER"
+grep -Fx 'dataplane_deactivation=verified' "$UNINSTALL_DEACTIVATE_ROOT/result.txt" >/dev/null
+grep -Fx 'flow_offloading_restore=persistent-baseline-restored' "$UNINSTALL_DEACTIVATE_ROOT/result.txt" >/dev/null
+grep -Fx 'flow_offloading_runtime_reload=deferred' "$UNINSTALL_DEACTIVATE_ROOT/result.txt" >/dev/null
+[ ! -e "$UNINSTALL_DEACTIVATE_ROOT/tmp/router-policy/uninstall-empty-ip-state.json" ]
+grep -F 'internal-rollback-ip-state --plan ' "$UNINSTALL_DEACTIVATE_LOG" >/dev/null
+grep -F -- '--transaction tx_0011223344556677' "$UNINSTALL_DEACTIVATE_LOG" >/dev/null
+grep -F -- '--revision rev_4_aabbccddeeff' "$UNINSTALL_DEACTIVATE_LOG" >/dev/null
+grep -F -- '--candidate-hash sha256:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff' "$UNINSTALL_DEACTIVATE_LOG" >/dev/null
+grep -Fx 'set firewall.@defaults[0].flow_offloading=1' "$UNINSTALL_UCI_LOG" >/dev/null
+grep -Fx 'set firewall.@defaults[0].flow_offloading_hw=1' "$UNINSTALL_UCI_LOG" >/dev/null
+grep -Fx 'commit firewall' "$UNINSTALL_UCI_LOG" >/dev/null
+
+UNINSTALL_NO_LAST_GOOD_ROOT="$TMP/uninstall-no-last-good"
+mkdir -p "$UNINSTALL_NO_LAST_GOOD_ROOT/etc/router-policy/state/ownership"
+cp "$UNINSTALL_DEACTIVATE_ROOT/etc/router-policy/state/ownership/flow-offloading.env" \
+  "$UNINSTALL_NO_LAST_GOOD_ROOT/etc/router-policy/state/ownership/flow-offloading.env"
+chmod 600 "$UNINSTALL_NO_LAST_GOOD_ROOT/etc/router-policy/state/ownership/flow-offloading.env"
+: >"$UNINSTALL_UCI_LOG"
+env \
+  ROUTER_POLICY_UNINSTALL_LIB_ONLY=1 \
+  SYSTEM_ROOT="$UNINSTALL_NO_LAST_GOOD_ROOT" \
+  ETC_DIR="$UNINSTALL_NO_LAST_GOOD_ROOT/etc/router-policy" \
+  STATE_DIR="$UNINSTALL_NO_LAST_GOOD_ROOT/etc/router-policy/state" \
+  RUNTIME_DIR="$UNINSTALL_NO_LAST_GOOD_ROOT/tmp/router-policy" \
+  BIN_DIR="$UNINSTALL_DEACTIVATE_ROOT/bin" \
+  UCI_BIN="$UNINSTALL_DEACTIVATE_ROOT/bin/uci" \
+  PROJECT_ROOT="$PROJECT_ROOT" \
+  RESULT_PATH="$UNINSTALL_NO_LAST_GOOD_ROOT/result.txt" \
+  sh "$UNINSTALL_DEACTIVATE_HELPER"
+grep -Fx 'flow_offloading_restore=persistent-baseline-restored' "$UNINSTALL_NO_LAST_GOOD_ROOT/result.txt" >/dev/null
+grep -Fx 'dataplane_deactivation=skipped-no-last-good' "$UNINSTALL_NO_LAST_GOOD_ROOT/result.txt" >/dev/null
+grep -Fx 'commit firewall' "$UNINSTALL_UCI_LOG" >/dev/null
+
+UNINSTALL_DNS_READY_ROOT="$TMP/uninstall-dns-ready"
+mkdir -p "$UNINSTALL_DNS_READY_ROOT/bin"
+cat >"$UNINSTALL_DNS_READY_ROOT/bin/pidof" <<'SH'
+#!/bin/sh
+[ "$1" = dnsmasq ]
+SH
+chmod +x "$UNINSTALL_DNS_READY_ROOT/bin/pidof"
+cat >"$UNINSTALL_DNS_READY_ROOT/bin/nslookup" <<'SH'
+#!/bin/sh
+count=0
+[ ! -f "$UNINSTALL_DNS_READY_COUNTER" ] || count="$(cat "$UNINSTALL_DNS_READY_COUNTER")"
+count=$((count + 1))
+printf '%s\n' "$count" >"$UNINSTALL_DNS_READY_COUNTER"
+[ "$count" -ge 3 ]
+SH
+chmod +x "$UNINSTALL_DNS_READY_ROOT/bin/nslookup"
+cat >"$UNINSTALL_DNS_READY_ROOT/bin/sleep" <<'SH'
+#!/bin/sh
+:
+SH
+chmod +x "$UNINSTALL_DNS_READY_ROOT/bin/sleep"
+UNINSTALL_DNS_READY_COUNTER="$UNINSTALL_DNS_READY_ROOT/attempts"
+export UNINSTALL_DNS_READY_COUNTER
+(
+  ROUTER_POLICY_UNINSTALL_LIB_ONLY=1
+  PIDOF_BIN="$UNINSTALL_DNS_READY_ROOT/bin/pidof"
+  NSLOOKUP_BIN="$UNINSTALL_DNS_READY_ROOT/bin/nslookup"
+  SLEEP_BIN="$UNINSTALL_DNS_READY_ROOT/bin/sleep"
+  export ROUTER_POLICY_UNINSTALL_LIB_ONLY PIDOF_BIN NSLOOKUP_BIN SLEEP_BIN
+  # shellcheck source=uninstall.sh
+  . "$PROJECT_ROOT/uninstall.sh"
+  wait_dnsmasq_ready
+)
+[ "$(cat "$UNINSTALL_DNS_READY_COUNTER")" = 3 ]
+
 echo "installer_clean_install=true"
 echo "installer_idempotent_upgrade=true"
 echo "installer_compatible_downgrade=true"
@@ -354,3 +490,9 @@ echo "installer_preserves_dataplane_provider_processes=true"
 echo "installer_reports_partial_rollback=true"
 echo "installer_verifies_rollback_snapshot=true"
 echo "installer_rejects_unowned_snapshot_metadata=true"
+echo "uninstaller_avoids_global_firewall_reload=true"
+echo "uninstaller_removes_bound_ip_plan=true"
+echo "uninstaller_restores_owned_flow_offloading_baseline=true"
+echo "uninstaller_restores_flow_baseline_without_last_good=true"
+echo "uninstaller_restricts_recursive_delete_roots=true"
+echo "uninstaller_waits_for_dnsmasq_readiness=true"

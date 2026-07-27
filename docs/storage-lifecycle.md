@@ -150,6 +150,7 @@ Support bundles и аппаратные отчёты создаются толь
 | content-addressed Xray bundle | subscription prepare | один файл на digest | да | hash path + byte comparison |
 | generated transaction artifacts | validate/apply | один набор на реальный transaction | да для active revision | atomic writer сравнивает bytes; no-op apply не генерирует |
 | active nft/dnsmasq/Xray/Zapret config | adapter apply | только при отличии content/mode | да | `cmp`, same-filesystem temp, fsync, rename |
+| исходный flow-offloading baseline | первая transaction перед изменением UCI | один mode-0600 manifest на installation ownership | да | создаётся один раз; последующие transaction не перезаписывают |
 | `last-good` | commit | один verified snapshot | да | новый snapshot проверяется до удаления прошлого |
 | bbolt backups | daily maintenance | максимум 7 | да | interval, hash verify, bounded pruning |
 | installer/uninstall backup registry | install lifecycle | максимум 2 verified / 128 MiB | да | manifest + hashes до удаления старого |
@@ -159,6 +160,15 @@ Support bundles и аппаратные отчёты создаются толь
 bbolt использует собственный transaction/fsync contract. Atomic files пишутся
 во временный файл на том же filesystem, синхронизируются и переименовываются;
 security-sensitive target не может быть symlink.
+
+Исходные UCI-значения software/hardware flow offloading принадлежат не
+transaction, а installation lifecycle. Первая transaction сохраняет их в
+`state/ownership/flow-offloading.env`; manifest принимается только как regular
+mode-0600 file с тем же владельцем, что и защищённый ownership directory.
+Rollback использует собственный transaction snapshot, а uninstall возвращает
+этот исходный persistent baseline даже при отсутствии `last-good`. Uninstall не
+вызывает глобальный `fw4 reload`: применение persistent flow-offload baseline к
+runtime firewall откладывается до отдельно контролируемого service transition.
 
 ## Write budget и диагностика
 
@@ -201,7 +211,7 @@ Apply переносит только legacy directories с allowlisted имен
 повторно сверяет hashes; лишь после этого удаляет точный legacy source.
 Неизвестные файлы всегда пропускаются.
 
-## Что ещё требует Flint 2
+## Результат на Flint 2
 
 Локальные tests доказывают ownership gates, PID reuse protection, bounded
 history, no-write health cycles, no-op apply и fault paths atomic install. На
@@ -223,6 +233,15 @@ bounded boot guard и reboot прошли без изменения nft/IP basel
 
 Production Xray/Zapret lifecycle с committed dataplane также повторно прошёл
 restart, `SIGKILL`, controller restart и 11 bound route proofs при непрерывном
-внешнем SSH/web monitor. P14 остаётся открытым только для полной
-rollback/downgrade/uninstall матрицы. Имитация физического отключения питания в
-этот этап не входит.
+внешнем SSH/web monitor.
+
+Финальный lifecycle tail подтвердил expiration/rollback timer, compatible
+downgrade, восстановление текущего пакета, полное удаление project-owned
+processes, nftables, policy rules/routes и runtime files, возврат исходного
+flow-offload baseline и последующий reinstall/reconcile committed dataplane.
+Uninstall registry сохранил 2 verified operations общим размером 66.7 MiB.
+Первый uninstall выявил readiness race сразу после `dnsmasq restart`; fixed
+uninstaller ждёт PID и успешный loopback DNS до возврата. Повторный hardware
+uninstall и финальный reinstall прошли при непрерывном внешнем SSH/web monitor.
+
+P14 закрыт. Имитация физического отключения питания в этот этап не входила.

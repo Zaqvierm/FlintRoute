@@ -135,6 +135,14 @@ hash_token() {
   fi
 }
 
+hash_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print "sha256:" $1}'
+  else
+    openssl dgst -sha256 "$1" | awk '{print "sha256:" $NF}'
+  fi
+}
+
 setup_transaction() {
   txid="$1"
   revision="$2"
@@ -206,6 +214,15 @@ adapter validate-candidate "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/de
 assert_status candidate_validated
 adapter snapshot-current "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 assert_status snapshotted
+flow_offload_baseline="$STATE_DIR/ownership/flow-offloading.env"
+[ -f "$flow_offload_baseline" ] && [ ! -L "$flow_offload_baseline" ] || {
+  echo "owned flow-offloading baseline was not created" >&2
+  exit 1
+}
+grep -Fx 'schema_version=1' "$flow_offload_baseline" >/dev/null
+grep -Fx 'software=1' "$flow_offload_baseline" >/dev/null
+grep -Fx 'hardware=1' "$flow_offload_baseline" >/dev/null
+flow_offload_baseline_hash="$(hash_file "$flow_offload_baseline")"
 node "$(to_native_path "$ROOT/tests/build-data-plane-evidence.mjs")" "$(to_native_path "$txdir/generated/verification-plan.json")" "$artifact_manifest_hash" "$(to_native_path "$txdir/data-plane-evidence.json")"
 adapter apply-candidate "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 assert_status applied
@@ -322,6 +339,10 @@ setup_transaction "tx_8899aabbccddeeff" "rev_3_8899aabbccdd" "8899aabbccddeeff00
 adapter prepare "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 adapter validate-candidate "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 adapter snapshot-current "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
+[ "$(hash_file "$flow_offload_baseline")" = "$flow_offload_baseline_hash" ] || {
+  echo "owned flow-offloading baseline was overwritten by a later transaction" >&2
+  exit 1
+}
 adapter apply-candidate "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 rm -f "$STATE_DIR/diagnostics/management.env"
 management_unverified=$(adapter verify-management "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision")

@@ -121,9 +121,15 @@ Verified: every Go package passed.
   restore, LAN `UNVERIFIED`, stale/duplicate rollback, transaction exclusion,
   simulated-diagnostics refusal, candidate/artifact mismatch refusal. Managed
   Zapret: nfqws `--dry-run` before apply, service start before nft load,
-  rollback active config + prior service state. Включает P6 reconcile path.
+  rollback active config + prior service state. Включает P6 reconcile path,
+  запускается с отсутствующим external `stat` и проверяет, что первоначальный
+  flow-offloading ownership baseline не перезаписывается поздней transaction.
 - `tests/installer-backup.sh` — empty archive останавливает install/uninstall до удаления файлов и не пишет `last-backup-path`;
-- `tests/installer-lifecycle.sh` — clean install, повторный upgrade, compatible downgrade, rollback невалидной версии, verified uninstall и запрет service-manager side effects в sandbox;
+- `tests/installer-lifecycle.sh` — clean install, повторный upgrade, compatible
+  downgrade, rollback невалидной версии, verified uninstall, запрет
+  service-manager side effects в sandbox, удаление только bound IP plan и
+  возврат исходного persistent flow-offloading baseline с `last-good` и без
+  него, отказ от нестандартного recursive-delete root;
 - `tests/content-aware-install.sh` — identical content не заменяет target,
   changed content проходит через same-filesystem atomic rename, symlink
   отклоняется, ошибка перед rename сохраняет прежний target и удаляет temp;
@@ -145,7 +151,9 @@ Verified: every Go package passed.
   сохранение scheduler/ranking после restart, catalog-bound fingerprint
   isolation, transaction-bound switch, cooldown, pin, quarantine и возврат
   static baseline;
-- `tests/package-openwrt.sh` — состав, SHA-256 manifest и отказ при повреждении OpenWrt-пакета.
+- `tests/package-openwrt.sh` — состав, SHA-256 manifest, отказ при повреждении и
+  одинаковый archive hash для двух последовательных упаковок без изменения
+  исходников.
 
 ## Четыре уровня covered
 
@@ -166,8 +174,7 @@ protocol-specific packet proof и bound route evidence; один HTTPS PASS не
 ## Оставшиеся аппаратные проверки
 
 - физическое power-loss recovery;
-- multi-client, повторный hardware install/upgrade/rollback/downgrade/uninstall
-  исправленного пакета и 72h soak (P13).
+- multi-client и 72h soak (P13).
 - Linux namespace/container behavior (нет локального Linux runtime; shell
   integration cross-platform, готов для Linux CI).
 - P14 isolated lifecycle: 100 test-run, expired lease, SIGKILL, SSH disconnect,
@@ -175,4 +182,5 @@ protocol-specific packet proof и bound route evidence; один HTTPS PASS не
   На factory OpenWrt также пройдены clean install/upgrade, controller
   restart/SIGKILL, watchdog inhibit, bounded boot guard, reboot, active
   Xray/Zapret/dataplane lifecycle, 1000 read-only API GET и 35-minute idle
-  write observation. Остаётся rollback/downgrade/uninstall tail.
+  write observation. Rollback timer, compatible downgrade, fixed uninstall,
+  внешний management proof и финальный reinstall/reconcile также PASS.

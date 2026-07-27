@@ -312,5 +312,14 @@ reboot вернул 0 runs и 0 ambiguous resources.
 Первый idle gate поймал durable write на каждом стабильном unhealthy health
 cycle из-за скользящего `HoldUntil`. После исправления 1000 read-only API GET и
 35 минут наблюдения дали zero persistent transaction/byte/file delta; inode,
-размер и SHA persistent artifacts не изменились. P14 остаётся открытым для
-полной rollback/downgrade/uninstall матрицы.
+размер и SHA persistent artifacts не изменились.
+
+Финальный tail дождался expiration rollback timer и подтвердил исходную
+revision, затем прошёл compatible binary downgrade и возврат текущего пакета без
+смены provider process identity. Первый uninstall обнаружил readiness race:
+`dnsmasq` уже перезапускался, но loopback DNS проверялся до готовности. После
+добавления bounded wait повторный uninstall вернулся только при рабочем DNS,
+удалил project processes/nft/policy routes/runtime, восстановил исходные
+flow-offload UCI `1/1` и оставил 2 verified backup operations / 66.7 MiB.
+Внешний SSH/web оставался доступен. Финальный reinstall восстановил committed
+revision, managed Xray/nfqws, nftables и три bound route proofs. P14 закрыт.
