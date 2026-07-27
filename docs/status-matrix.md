@@ -21,25 +21,25 @@
 | P7 | 70% | Авторизация, fail-closed entropy handling и аудит listener bind |
 | P8 | 25% | Встроенный Web UI с role-aware загрузкой и счётчиками трафика |
 | P9 | 40% | Loopback и доступ к панели из LAN |
-| P10 | 60% | Пакет и rollback локально проверяются; аппаратный upgrade после P14-изменений провалился и требует полного повторного прогона |
+| P10 | 75% | Clean install, upgrade и reboot исправленного пакета пройдены; rollback/downgrade/uninstall ещё требуют повторного аппаратного прогона |
 | P11 | 85% | Автоматические тесты |
 | P12 | 100% | Adaptive Zapret привязан к OpenWrt transaction; два bundle-профиля и независимые выходы проверены на Flint 2 |
-| P13 | 75% | Маршруты, Smart DNS, recursion guard и fault tests доказаны, но P13.5 переоткрыт после неудачного upgrade; power-loss, multi-client и soak остаются |
-| P14 | 60% | Локальные lifecycle/storage tests и 100 изолированных test-run на Flint 2 пройдены; production install/restart/reboot gate провален и блокирует завершение |
+| P13 | 80% | Маршруты, Smart DNS, recursion guard и fault tests доказаны; clean install/upgrade/reboot повторно пройдены, но power-loss, multi-client, lifecycle tail и soak остаются |
+| P14 | 80% | Ownership, control-plane restart/crash/reboot, watchdog inhibit, bounded backups и TSPU no-write доказаны; provider/dataplane lifecycle и idle observation остаются |
 
 ### P14: lifecycle и storage
 
 | Критерий | Локально | Flint 2 |
 |---|---|---|
-| FlintRoute-managed Xray/Zapret отделены от system services | unit tests и API/CLI | предыдущий baseline подтвердил procd ownership; после factory recovery нужна повторная фиксация |
+| FlintRoute-managed Xray/Zapret отделены от system services | unit tests и API/CLI | factory pass честно показал providers stopped и system services absent; active provider lifecycle требует повторного dataplane run |
 | Typed owner manifest и PID reuse protection | да | изолированный hardware runner PASS |
 | Stale cleanup dry-run/apply и повторный cleanup | process/file/nft table/IP rule/route/listener contracts | hardware PASS для test namespace; production cleanup не выполнялся |
 | 100 test-runs возвращаются к baseline | локальный deterministic test | PASS: 100/100, production processes сохранены, foreign process защищён |
-| Одинаковые health cycles не пишут bbolt | да | требуется idle write observation |
-| Identical config/artifact install — no-op | Go и shell tests | требуется проверка active files/services/fw4 на устройстве |
-| Runtime telemetry в tmpfs, durable recovery journal сохранён | да | требуется reboot validation после migration |
-| Snapshot/backup count и size bounded | unit/shell tests | требуется inventory до/после install/upgrade/uninstall |
-| Watchdog maintenance lease и expiry | unit tests | upgrade/rollback matrix провалена; исправления ещё не перепроверены на Flint 2 |
+| Одинаковые health cycles не пишут bbolt | да | short hardware pass не показал idle DB growth; длительное observation остаётся |
+| Identical config/artifact install — no-op | Go и shell tests | unchanged TSPU entry set сохранил SHA/inode 64 MiB cache после refresh/restart/reboot |
+| Runtime telemetry в tmpfs, durable recovery journal сохранён | да | controlled reboot PASS; runtime root восстановлен в tmpfs |
+| Snapshot/backup count и size bounded | unit/shell tests | после финального upgrade сохранён 1 verified fallback, около 72 MiB < 128 MiB |
+| Watchdog maintenance lease и expiry | unit tests | controller оставался stopped >180 s, затем восстановлен; boot guard завершил bounded 120 s lease |
 
 ### P13 по подэтапам
 
@@ -50,7 +50,7 @@
 | P13.2 | завершён | Production health cycle собирает раздельные active/challenger probes, сохраняет scheduler/ranking в bbolt и не переносит evidence между fingerprint; transaction-bound switch, safe-fallback pin, cooldown, quarantine и возврат static baseline пройдены на Flint 2 | повторять acceptance после изменения каталога nfqws или сетевой схемы |
 | P13.3 | частично | SIGKILL managed nfqws/Xray/controller, controlled reboot, реальный 180-second rollback timer и восстановление повреждённой bbolt пройдены; committed dataplane и route proofs сохранены | физическое power loss |
 | P13.4 | начат | Bounded sampler и локальная проверка resource limits | три одновременных клиента и реальные throughput/latency/resource пределы |
-| P13.5 | переоткрыт после FAIL | Ранее проходили clean install и post-reboot recovery; P14 upgrade выявил потерю procd/ubus и ложный успешный rollback, после чего потребовался U-Boot recovery | повторные install/upgrade/rollback/downgrade/uninstall на исправленном пакете |
+| P13.5 | частично восстановлен | После factory recovery clean install, upgrade и controlled reboot исправленного пакета прошли; предыдущий инцидент сохранён в журнале | rollback/downgrade/uninstall и active provider/dataplane lifecycle |
 | P13.6 | не начат | — | 72-часовой soak и финальный audit |
 
 | Область | Реализовано | Проверено локально | Требуется Flint 2 |

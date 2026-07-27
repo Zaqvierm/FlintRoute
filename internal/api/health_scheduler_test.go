@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -169,6 +170,26 @@ func TestTSPUDelayUsesStartupJitterAndBoundedFailureBackoff(t *testing.T) {
 	base := time.Hour
 	if low, high := jitterTSPUDelay(base, 0), jitterTSPUDelay(base, ^uint16(0)); low != 54*time.Minute || high != 66*time.Minute {
 		t.Fatalf("jitter bounds low=%s high=%s", low, high)
+	}
+}
+
+func TestTSPUInitialDelayUsesPersistedFreshness(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Storage.StateDir = t.TempDir()
+	now := time.Date(2026, 7, 27, 2, 0, 0, 0, time.UTC)
+	cache := tspu.BuildCache(now, time.Hour,
+		[]tspu.SourceReport{{Name: "fixture", Accepted: true, Fresh: true, Confidence: 0.9}},
+		map[string][]string{"fixture": {"one.example"}})
+	if err := tspu.Save(filepath.Join(cfg.Storage.StateDir, "tspu-cache.json"), cache); err != nil {
+		t.Fatal(err)
+	}
+
+	fallback := 30 * time.Second
+	if got, want := tspuInitialDelay(cfg, 6*time.Hour, now, fallback), 55*time.Minute; got != want {
+		t.Fatalf("fresh cache initial delay=%s want=%s", got, want)
+	}
+	if got := tspuInitialDelay(cfg, 6*time.Hour, cache.ExpiresAt.Add(time.Second), fallback); got != fallback {
+		t.Fatalf("expired cache initial delay=%s want fallback=%s", got, fallback)
 	}
 }
 

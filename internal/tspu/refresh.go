@@ -40,5 +40,9 @@ func RefreshFile(ctx context.Context, client *http.Client, cfg *config.Config, p
 	if err := Save(path, cache); err != nil {
 		return Cache{}, fmt.Errorf("save TSPU cache: %w", err)
 	}
-	return cache, nil
+	persisted, err := Load(path)
+	if err != nil {
+		return Cache{}, fmt.Errorf("reload TSPU cache: %w", err)
+	}
+	return persisted, nil
 }

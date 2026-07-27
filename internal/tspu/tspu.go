@@ -27,8 +27,10 @@ import (
 )
 
 const (
-	CacheVersion  = 2
-	maxCacheBytes = 32 << 20
+	CacheVersion          = 2
+	FreshnessVersion      = 1
+	maxCacheBytes         = 32 << 20
+	maxFreshnessFileBytes = 64 << 10
 )
 
 type Cache struct {
@@ -40,6 +42,16 @@ type Cache struct {
 	FreshSources   int              `json:"fresh_sources"`
 	Sources        []SourceReport   `json:"sources"`
 	Entries        map[string]Entry `json:"entries"`
+}
+
+type Freshness struct {
+	Version      int                  `json:"version"`
+	CacheSHA256  string               `json:"cache_sha256"`
+	ValidatedAt  time.Time            `json:"validated_at"`
+	ExpiresAt    time.Time            `json:"expires_at"`
+	FreshSources int                  `json:"fresh_sources"`
+	SourceExpiry map[string]time.Time `json:"source_expiry"`
+	Sources      []SourceReport       `json:"sources"`
 }
 
 type Entry struct {
@@ -107,6 +119,19 @@ func Load(path string) (Cache, error) {
 	if err != nil {
 		return Cache{}, err
 	}
+	if freshness, freshnessErr := loadFreshness(path, cache.SHA256); freshnessErr == nil {
+		cache.ExpiresAt = freshness.ExpiresAt
+		cache.FreshSources = freshness.FreshSources
+		cache.Sources = freshness.Sources
+		for pattern, entry := range cache.Entries {
+			for _, source := range entry.Provenance {
+				if expires := freshness.SourceExpiry[source]; expires.After(entry.ExpiresAt) {
+					entry.ExpiresAt = expires
+				}
+			}
+			cache.Entries[pattern] = entry
+		}
+	}
 	return cache, nil
 }
 
@@ -121,11 +146,15 @@ func Save(path string, cache Cache) error {
 		return err
 	}
 	if current, err := readBoundedRegular(path, maxCacheBytes); err == nil {
-		if _, decodeErr := decodeCache(current); decodeErr != nil {
+		currentCache, decodeErr := decodeCache(current)
+		if decodeErr != nil {
 			return fmt.Errorf("existing TSPU cache is invalid: %w", decodeErr)
 		}
+		if equivalentEntrySet(currentCache, cache) {
+			return saveFreshness(path, currentCache.SHA256, cache)
+		}
 		if bytes.Equal(current, raw) {
-			return nil
+			return saveFreshness(path, cache.SHA256, cache)
 		}
 		if err := writeAtomic(previousPath(path), current, 0o600); err != nil {
 			return fmt.Errorf("write previous TSPU cache: %w", err)
@@ -133,10 +162,14 @@ func Save(path string, cache Cache) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return writeAtomic(path, raw, 0o600)
+	if err := writeAtomic(path, raw, 0o600); err != nil {
+		return err
+	}
+	return saveFreshness(path, cache.SHA256, cache)
 }
 
-func PreviousPath(path string) string { return previousPath(path) }
+func PreviousPath(path string) string  { return previousPath(path) }
+func FreshnessPath(path string) string { return freshnessPath(path) }
 
 func ParseDomains(r io.Reader) ([]string, error) {
 	scanner := bufio.NewScanner(r)
@@ -636,6 +669,103 @@ func readBoundedRegular(path string, maxBytes int64) ([]byte, error) {
 func previousPath(path string) string {
 	extension := filepath.Ext(path)
 	return strings.TrimSuffix(path, extension) + ".previous" + extension
+}
+
+func freshnessPath(path string) string {
+	extension := filepath.Ext(path)
+	return strings.TrimSuffix(path, extension) + ".freshness" + extension
+}
+
+func equivalentEntrySet(current, candidate Cache) bool {
+	if len(current.Entries) != len(candidate.Entries) {
+		return false
+	}
+	for pattern, currentEntry := range current.Entries {
+		candidateEntry, ok := candidate.Entries[pattern]
+		if !ok ||
+			currentEntry.Domain != candidateEntry.Domain ||
+			currentEntry.MatchType != candidateEntry.MatchType ||
+			currentEntry.Source != candidateEntry.Source ||
+			currentEntry.Confidence != candidateEntry.Confidence ||
+			!equalStrings(currentEntry.Provenance, candidateEntry.Provenance) {
+			return false
+		}
+	}
+	return true
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func saveFreshness(path, cacheSHA256 string, cache Cache) error {
+	sourceExpiry := make(map[string]time.Time, cache.FreshSources)
+	for _, report := range cache.Sources {
+		if report.Accepted && report.Fresh {
+			sourceExpiry[report.Name] = cache.ExpiresAt.UTC()
+		}
+	}
+	value := Freshness{
+		Version:      FreshnessVersion,
+		CacheSHA256:  cacheSHA256,
+		ValidatedAt:  cache.GeneratedAt.UTC(),
+		ExpiresAt:    cache.ExpiresAt.UTC(),
+		FreshSources: cache.FreshSources,
+		SourceExpiry: sourceExpiry,
+		Sources:      append([]SourceReport(nil), cache.Sources...),
+	}
+	raw, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	raw = append(raw, '\n')
+	target := freshnessPath(path)
+	if current, readErr := readBoundedRegular(target, maxFreshnessFileBytes); readErr == nil {
+		if bytes.Equal(current, raw) {
+			return nil
+		}
+	} else if !errors.Is(readErr, os.ErrNotExist) {
+		return readErr
+	}
+	return writeAtomic(target, raw, 0o600)
+}
+
+func loadFreshness(path, cacheSHA256 string) (Freshness, error) {
+	raw, err := readBoundedRegular(freshnessPath(path), maxFreshnessFileBytes)
+	if err != nil {
+		return Freshness{}, err
+	}
+	var value Freshness
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if err := decoder.Decode(&value); err != nil {
+		return Freshness{}, err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return Freshness{}, errors.New("trailing data in TSPU freshness file")
+	}
+	if value.Version != FreshnessVersion ||
+		value.CacheSHA256 == "" ||
+		value.CacheSHA256 != cacheSHA256 ||
+		value.ValidatedAt.IsZero() ||
+		value.ExpiresAt.IsZero() ||
+		len(value.SourceExpiry) > len(value.Sources) ||
+		!value.ExpiresAt.After(value.ValidatedAt) {
+		return Freshness{}, errors.New("invalid TSPU freshness file")
+	}
+	for source, expires := range value.SourceExpiry {
+		if !validSourceName(source) || expires.IsZero() || expires.After(value.ExpiresAt) {
+			return Freshness{}, errors.New("invalid TSPU freshness source expiry")
+		}
+	}
+	return value, nil
 }
 
 func validSourceName(value string) bool {

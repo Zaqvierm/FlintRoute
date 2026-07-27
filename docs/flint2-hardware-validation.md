@@ -289,13 +289,24 @@ reboot recovery и повторного cleanup.
 повторный stale cleanup, SIGKILL, SSH disconnect, защиту foreign process и
 сравнение baseline. Production процессы при этом не затрагивались.
 
-Production install/restart/reboot gate, напротив, провален. Во время P14 upgrade
-`ubus`/procd стали недоступны; installer продолжил работу, а rollback подавил
-ошибки service recovery и сообщил ложный успех. После reboot устройство не
-вернулось и потребовало U-Boot recovery. Повторный проход закончился тем же
-операционным результатом. Точный kernel/procd trigger потерян вместе с volatile
-logs, поэтому он не объявляется доказанной root cause.
+Предыдущий production upgrade закончился потерей `ubus`/procd и потребовал
+U-Boot recovery; точный kernel/procd trigger не был сохранён и не объявляется
+доказанной root cause. После factory recovery выполнен новый проход с
+off-router backup и независимым rollback timer.
 
-До следующего аппаратного изменения обязательны локально зелёные preflight,
-truthful rollback, bounded boot guard и startup reconcile no-op. После этого
-нужен новый пользовательский допуск и полный baseline. P14 остаётся открытым.
+В повторном проходе пройдены clean install, upgrade, controlled restart,
+controller `SIGKILL`, watchdog maintenance inhibit более трёх интервалов и
+controlled reboot. Новый boot ID, key-only SSH, procd instances, health,
+bounded 120-second boot guard и неизменный nft/IP baseline подтверждены.
+Provider services оставались остановленными, active revision была пустой.
+
+Проверка storage выявила 86 781 неизменный TSPU entry и замену двух JSON-файлов
+общим объёмом около 64 MiB после restart. После исправления unchanged refresh
+создал только 1840-byte freshness checkpoint; SHA и inode тяжёлых cache-файлов
+не изменились после refresh, restart и reboot. Backup registry сохранил один
+verified fallback размером около 72 MiB, в пределах 128 MiB; stale cleanup после
+reboot вернул 0 runs и 0 ambiguous resources.
+
+P14 остаётся открытым для production Xray/Zapret lifecycle с committed
+dataplane, длительного idle write observation и полной
+rollback/downgrade/uninstall матрицы.

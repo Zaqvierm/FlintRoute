@@ -56,17 +56,20 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
 - production adaptive Zapret calibration, profile switch, cooldown, pin и
   quarantine проверены на Flint 2;
 - persistent state в `/etc/router-policy/state` без зависимости от volatile `/var`;
+- clean install, upgrade, restart, `SIGKILL`, watchdog maintenance lease и
+  controlled reboot control plane повторно пройдены на factory OpenWrt;
+- неизменный TSPU cache не переписывает два больших поколения: на Flint 2
+  проверены 86 781 entry и отдельный freshness checkpoint размером меньше 2 KiB;
 - локальные API, авторизация, журнал изменений и встроенная консоль.
 
 ### Реализовано, но требует проверки на железе
 
 - расширенная IPv6-матрица на реальных LAN-клиентах;
 - downgrade и uninstall на отдельном чистом OpenWrt;
-- работа под нагрузкой с несколькими клиентами.
-- install/upgrade/rollback после усиления preflight и service ordering: последний
-  аппаратный upgrade закончился потерей procd/ubus и потребовал U-Boot recovery;
-- P14 ownership cleanup прошёл 100 изолированных test-run на Flint 2, но
-  production restart/reboot и idle write budget требуют повторной проверки.
+- работа под нагрузкой с несколькими клиентами;
+- полный повтор lifecycle с production Xray/Zapret и committed dataplane;
+- длительное idle-наблюдение write budget и полная rollback/downgrade/uninstall
+  матрица после исправлений P14.
 
 ### Запланировано
 

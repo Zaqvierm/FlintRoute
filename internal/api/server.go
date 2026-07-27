@@ -279,6 +279,9 @@ func (s *Server) runTSPUScheduler(ctx context.Context) {
 		}
 
 		delay := s.tspuDelay(interval, failures, initial)
+		if initial {
+			delay = tspuInitialDelay(active, interval, time.Now().UTC(), delay)
+		}
 		initial = false
 		if !waitForScheduler(ctx, delay) {
 			return
@@ -289,6 +292,28 @@ func (s *Server) runTSPUScheduler(ctx context.Context) {
 			failures = 0
 		}
 	}
+}
+
+func tspuInitialDelay(active *config.Config, interval time.Duration, now time.Time, fallback time.Duration) time.Duration {
+	if active == nil || interval <= 0 {
+		return fallback
+	}
+	cache, err := tspu.Load(filepath.Join(active.Storage.StateDir, "tspu-cache.json"))
+	if err != nil || !cache.ExpiresAt.After(now) {
+		return fallback
+	}
+	lead := interval / 10
+	if lead > 5*time.Minute {
+		lead = 5 * time.Minute
+	}
+	if lead < time.Second {
+		lead = time.Second
+	}
+	delay := cache.ExpiresAt.Sub(now) - lead
+	if delay < fallback {
+		return fallback
+	}
+	return delay
 }
 
 func (s *Server) runTSPURefresh(ctx context.Context) error {

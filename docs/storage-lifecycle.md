@@ -145,7 +145,8 @@ Support bundles и аппаратные отчёты создаются толь
 | `zapret_switch` | adaptive controller | transition и checkpoint не чаще 15 минут | да | exact bytes + coalescing |
 | adaptive probe checkpoint | health scheduler | не чаще 15 минут | да | live observations в RAM |
 | `domain_decisions` | planner | bounded LRU; checkpoint не чаще 15 минут | да | lookup/last_used не пишет |
-| TSPU cache + previous | scheduled refresh | только при изменении canonical bytes | да | identical cache не заменяется |
+| TSPU cache + previous | scheduled refresh | только при изменении entry set | да | identical list не заменяет большие файлы; freshness хранится отдельно |
+| TSPU freshness checkpoint | успешная revalidation | один bounded JSON на текущий cache hash | да | content-aware replace; TTL продлевается только для fresh sources |
 | content-addressed Xray bundle | subscription prepare | один файл на digest | да | hash path + byte comparison |
 | generated transaction artifacts | validate/apply | один набор на реальный transaction | да для active revision | atomic writer сравнивает bytes; no-op apply не генерирует |
 | active nft/dnsmasq/Xray/Zapret config | adapter apply | только при отличии content/mode | да | `cmp`, same-filesystem temp, fsync, rename |
@@ -185,6 +186,8 @@ router-policy storage migrate --apply
 ```
 
 Dry-run классифицирует runtime, durable journal, backup и неизвестные файлы.
+`tspu-cache.json`, единственный `tspu-cache.previous.json` и проверяемый
+`tspu-cache.freshness.json` относятся к bounded operational cache.
 Apply переносит только legacy directories с allowlisted именем: сначала делает
 проверенную копию в `/root/router-policy-backups`, создаёт typed manifest и
 повторно сверяет hashes; лишь после этого удаляет точный legacy source.
@@ -197,8 +200,20 @@ history, no-write health cycles, no-op apply и fault paths atomic install. На
 Flint 2 отдельно прошли 100 изолированных test-run, stale cleanup, SIGKILL, SSH
 disconnect, foreign-process protection и возврат к baseline.
 
-Аппаратный P14 пока не закрыт: production upgrade/restart/reboot gate завершился
-потерей procd/ubus и U-Boot recovery. Исправленный installer и startup reconcile
-нужно заново проверить после read-only baseline; также остаются idle write
-observation и bounded backup inventory. Имитация физического отключения питания
+Повторный проход после factory recovery закрыл control-plane часть аппаратного
+gate: clean install, upgrade, controlled restart, `SIGKILL`, maintenance inhibit,
+bounded boot guard и reboot прошли без изменения nft/IP baseline. Stale cleanup
+после reboot вернул 0 runs и 0 ambiguous resources; backup registry сохранил
+один verified fallback размером около 72 MiB и уложился в лимит 128 MiB.
+
+На этом же проходе обнаружена write amplification: два поколения TSPU cache
+общим размером около 64 MiB заменялись после каждого старта controller, хотя
+набор из 86 781 entry не менялся. Теперь entry set хранится в тяжёлом cache,
+а успешная revalidation обновляет маленький hash-bound freshness checkpoint.
+На Flint 2 SHA и inode обоих тяжёлых файлов сохранились после refresh, restart
+и reboot; checkpoint занял 1840 байт.
+
+P14 остаётся открытым для длительного idle write observation, повторного
+production Xray/Zapret lifecycle с committed dataplane и полной
+rollback/downgrade/uninstall матрицы. Имитация физического отключения питания
 в этот этап не входит.

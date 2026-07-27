@@ -180,6 +180,10 @@ reload, не перезапускает dnsmasq и не трогает Xray/Zapr
 только после проверки recovery binding и только когда действительно требуется
 восстановление data plane.
 
+На factory OpenWrt с пустой active revision это подтверждено controlled reboot:
+boot guard держал bounded 120-second lease, не создал nft table и завершился;
+controller/watchdog поднялись через procd, IP rules остались factory baseline.
+
 ## Аппаратная проверка
 
 P0/P0.5 flow integration-tested с production adapter fixtures. На Flint 2

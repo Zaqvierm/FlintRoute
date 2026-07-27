@@ -1,6 +1,7 @@
 package tspu
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -217,6 +218,116 @@ func TestSaveIdenticalCacheDoesNotReplaceFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(PreviousPath(path)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("identical cache created a fallback: %v", err)
+	}
+}
+
+func TestSaveEquivalentEntriesOnlyAdvancesFreshness(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "tspu-cache.json")
+	now := time.Date(2026, 7, 27, 2, 0, 0, 0, time.UTC)
+	first := BuildCache(now, time.Hour,
+		[]SourceReport{{Name: "fixture", Accepted: true, Fresh: true, Confidence: 0.9, RetrievedAt: now}},
+		map[string][]string{"fixture": {"one.example"}})
+	if err := Save(path, first); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixed := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	if err := os.Chtimes(path, fixed, fixed); err != nil {
+		t.Fatal(err)
+	}
+
+	secondNow := now.Add(20 * time.Minute)
+	second := BuildCache(secondNow, time.Hour,
+		[]SourceReport{{Name: "fixture", Accepted: true, Fresh: true, Confidence: 0.9, RetrievedAt: secondNow}},
+		map[string][]string{"fixture": {"one.example"}})
+	if err := Save(path, second); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("unchanged entry set rewrote the durable TSPU cache")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.ModTime().Equal(fixed) {
+		t.Fatalf("unchanged entry set replaced the durable cache: modtime=%s", info.ModTime())
+	}
+	if _, err := os.Stat(PreviousPath(path)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unchanged entry set created a heavy fallback: %v", err)
+	}
+	freshnessInfo, err := os.Stat(FreshnessPath(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if freshnessInfo.Size() >= int64(len(after)) {
+		t.Fatalf("freshness checkpoint is not smaller than the durable cache: freshness=%d cache=%d", freshnessInfo.Size(), len(after))
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.ExpiresAt.Equal(second.ExpiresAt) {
+		t.Fatalf("freshness checkpoint was not applied: got=%s want=%s", loaded.ExpiresAt, second.ExpiresAt)
+	}
+	match, ok := Find(loaded, "one.example", first.ExpiresAt.Add(time.Minute))
+	if !ok || match.Expired {
+		t.Fatalf("freshness checkpoint did not extend entry validity: match=%+v ok=%t", match, ok)
+	}
+}
+
+func TestFreshnessCheckpointDoesNotExtendRetainedSource(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "tspu-cache.json")
+	now := time.Date(2026, 7, 27, 2, 0, 0, 0, time.UTC)
+	firstReports := []SourceReport{
+		{Name: "fresh", Accepted: true, Fresh: true, Confidence: 0.9, RetrievedAt: now},
+		{Name: "retained", Accepted: true, Fresh: true, Confidence: 0.9, RetrievedAt: now},
+	}
+	patterns := map[string][]string{
+		"fresh":    {"fresh.example"},
+		"retained": {"retained.example"},
+	}
+	first := BuildCache(now, time.Hour, firstReports, patterns)
+	if err := Save(path, first); err != nil {
+		t.Fatal(err)
+	}
+
+	secondNow := now.Add(20 * time.Minute)
+	secondReports := []SourceReport{
+		{Name: "fresh", Accepted: true, Fresh: true, Confidence: 0.9, RetrievedAt: secondNow},
+		{Name: "retained", RetainedPrevious: true, Confidence: 0.9},
+	}
+	second := BuildCache(secondNow, time.Hour, secondReports, patterns)
+	retained := second.Entries["retained.example"]
+	retained.ExpiresAt = first.ExpiresAt
+	second.Entries["retained.example"] = retained
+	if err := Save(path, second); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := first.ExpiresAt.Add(time.Minute)
+	freshMatch, freshOK := Find(loaded, "fresh.example", at)
+	retainedMatch, retainedOK := Find(loaded, "retained.example", at)
+	if !freshOK || freshMatch.Expired {
+		t.Fatalf("fresh source was not extended: match=%+v ok=%t", freshMatch, freshOK)
+	}
+	if !retainedOK || !retainedMatch.Expired {
+		t.Fatalf("retained source was incorrectly extended: match=%+v ok=%t", retainedMatch, retainedOK)
 	}
 }
 

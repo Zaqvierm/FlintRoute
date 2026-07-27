@@ -204,11 +204,10 @@ Factory clean install и первая активация теперь выпол
 5. второй ChangeSet вернул тестовый `route_hold_seconds` с 601 на штатные 600;
 6. controlled reboot подтвердил восстановление последней committed revision.
 
-На чистой прошивке отсутствовал `stat`, необходимый для проверки владельца и
-режима rollback capability. Первая prepare/rollback попытка завершилась с кодом
-127 до изменения dataplane. Установлен официальный пакет `coreutils-stat`, а
-installer теперь останавливается на preflight с явной диагностикой, не начиная
-транзакцию.
+На чистой прошивке отсутствовал отдельный `stat`. Первая prepare/rollback
+попытка завершилась с кодом 127 до изменения dataplane. Installer больше не
+требует `coreutils-stat`: проверка mode использует доступные на factory OpenWrt
+`ls`/`awk`, а targeted lifecycle test фиксирует этот compatibility contract.
 
 После исправления обе транзакции завершились commit. Активная ревизия
 `rev_3_273ec005840e` пережила физическую перезагрузку. Controller, watchdog,
@@ -266,6 +265,33 @@ rules присутствуют в prerouting и output chains, а live VLESS pro
 bypass вырос с 731 до 841 пакета. Защита от повторного захвата трафика к proxy
 endpoint подтверждена на железе.
 
+## P14 — control-plane lifecycle и storage endurance
+
+После factory recovery выполнен новый проход без активной revision и без
+dataplane. Off-router backup проверен до install. Clean install сначала оставил
+все сервисы выключенными; затем `--enable-services` поднял только controller и
+watchdog. Xray/Zapret оставались stopped, nft tables отсутствовали, IPv4/IPv6
+rules совпадали с factory baseline.
+
+Controlled restart сменил только PID controller. Отдельный `SIGKILL` controller
+восстановлен procd, watchdog сохранил свой PID. Maintenance inhibit удерживал
+controller остановленным более 180 секунд — больше трёх watchdog-интервалов —
+после чего controller штатно запущен, а inhibit удалён. Controlled reboot дал
+новый boot ID; key-only SSH, controller/watchdog, health и persistent hashes
+восстановились. Boot guard завершил bounded 120-second lease и не оставил nft
+table.
+
+Storage baseline выявил два TSPU cache поколения общим размером около 64 MiB.
+Между ними было 0 добавленных и 0 удалённых ключей, но startup refresh заменял
+оба файла из-за временных полей. После исправления refresh 86 781 entry сохранил
+SHA и inode current/previous; появился только hash-bound freshness checkpoint
+размером 1840 байт. Те же три SHA сохранились после restart и reboot.
+
+Backup registry после финального upgrade содержит один verified fallback:
+около 72 MiB по файловой системе, ниже лимита 128 MiB. Post-reboot stale cleanup
+вернул 0 runs/0 ambiguous resources. Migration dry-run классифицирует current,
+previous и freshness как bounded operational cache.
+
 ## Что НЕ доказано на железе
 
 - Smart DNS activation и bound path proof; transport preflight уже пройден.
@@ -273,13 +299,16 @@ endpoint подтверждена на железе.
 - Power-loss recovery, timer fault injection и повреждение persistent state.
 - Multi-client, 72h soak, расширенная fault injection matrix, downgrade и
   uninstall на железе.
-- Full route × protocol × AF матрица.
+- Повтор active Xray/Zapret/dataplane lifecycle после последних P14 storage
+  изменений и длительное idle write observation.
 
 ## Подтверждённое состояние
 
 Direct, fail-closed Drop, Zapret и VLESS/Xray подтверждены на Flint 2 с bound
 evidence до и после физического reboot. P3 и P6 закрыты по своим аппаратным
 критериям. In-place upgrade из проверяемого OpenWrt-пакета тоже пройден. Проект
-Factory clean install и повторное post-reboot восстановление теперь доказаны.
-Проект остаётся Alpha: Smart DNS path, hard-crash/power-loss, multi-client,
-downgrade/uninstall и soak-test ещё не пройдены.
+Factory clean install, control-plane upgrade/restart/crash и повторное
+post-reboot восстановление теперь доказаны после P14-исправлений. Проект
+остаётся Alpha: active provider/dataplane lifecycle нужно повторить, а Smart DNS
+path, hard-crash/power-loss, multi-client, downgrade/uninstall и soak-test ещё
+не пройдены.

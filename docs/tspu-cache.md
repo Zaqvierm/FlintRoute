@@ -118,11 +118,19 @@ domain -> service lookup -> TSPU evidence -> candidate queue -> probe_route
 ## Persist (`Save` / `Load`)
 
 - `Save` атомарен: `writeAtomic` (tmp + fsync + rename, mode 0600). Перед
-  записью текущий валидный кеш копируется в `<name>.previous.<ext>`. Если
-  существующий файл невалиден — отказ.
+  заменой изменившегося entry set текущий валидный кеш копируется в
+  `<name>.previous.<ext>`. Если существующий файл невалиден — отказ.
+- Если domain/match/source/provenance/confidence не изменились, большой current
+  и previous cache не заменяются. Новые validators, source reports и TTL
+  записываются в `<name>.freshness.<ext>`, привязанный к SHA current cache.
+- Freshness checkpoint продлевает TTL только для источников с
+  `Accepted=true && Fresh=true`; retained source не получает ложную свежесть.
 - `Load` → `readBoundedRegular` (regular, размер в лимите) → `decodeCache`
-  (no trailing data, hash verify, pattern integrity).
-- `PreviousPath` экспортируется для rollback/inspect.
+  (no trailing data, hash verify, pattern integrity), затем применяет только
+  валидный freshness checkpoint с совпадающим cache SHA.
+- При старте scheduler использует persisted expiry и не выполняет тяжёлый
+  refresh через 30 секунд, пока cache ещё свежий.
+- `PreviousPath` и `FreshnessPath` экспортируются для rollback/inspect.
 
 ## CLI
 
@@ -137,8 +145,7 @@ domain -> service lookup -> TSPU evidence -> candidate queue -> probe_route
 
 ## Проверенное состояние
 
-Updater покрыт тестами с `httptest`. Качество live-источников требует
-drop-ratio/history-проверок перед
-автоматическим production-использованием. Cache v2 даёт для этого инструмент
-(`SourceReport.DropRatio`, `Fresh`, `RetainedPrevious`), но автоматическое
-применение остаётся частью bounded policy P12/P13.
+Updater покрыт тестами с `httptest`, включая no-replace для одинакового entry
+set и запрет продления TTL retained source. На Flint 2 unchanged refresh для
+86 781 entry сохранил SHA и inode двух cache-файлов общим объёмом около 64 MiB;
+freshness checkpoint занял 1840 байт и пережил restart/reboot без перезаписи.

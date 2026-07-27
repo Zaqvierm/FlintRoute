@@ -22,6 +22,10 @@ func TestMigrationPlanPreservesUnknownFilesAndClassifiesLegacyBackups(t *testing
 	if err := os.WriteFile(unknown, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	freshness := filepath.Join(stateDir, "tspu-cache.freshness.json")
+	if err := os.WriteFile(freshness, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	plan, err := PlanMigration(stateDir, runtimeDir, legacyRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -30,14 +34,19 @@ func TestMigrationPlanPreservesUnknownFilesAndClassifiesLegacyBackups(t *testing
 		t.Fatalf("unexpected migration plan: %+v", plan)
 	}
 	foundLegacy := false
+	foundFreshness := false
 	for _, item := range plan.Items {
 		if item.Path == unknown && item.Action != "skip" {
 			t.Fatal("unknown user file was selected for mutation")
 		}
 		foundLegacy = foundLegacy || item.Class == "legacy-backup" && item.Action == "validate-and-register"
+		foundFreshness = foundFreshness || item.Path == freshness && item.Class == "bounded-operational-cache" && item.Action == "preserve"
 	}
 	if !foundLegacy {
 		t.Fatal("legacy backup was not classified")
+	}
+	if !foundFreshness {
+		t.Fatal("TSPU freshness checkpoint was not classified")
 	}
 }
 

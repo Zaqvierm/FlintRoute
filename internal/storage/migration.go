@@ -272,7 +272,7 @@ func PlanMigration(stateDir, runtimeDir, legacyRoot string) (MigrationPlan, erro
 			plan.Items = append(plan.Items, MigrationItem{Path: path, Class: "durable-committed", Action: "preserve", Reason: "required committed control-plane state", Bytes: bytes})
 			continue
 		}
-		if !entry.IsDir() && (entry.Name() == "tspu-cache.json" || entry.Name() == "tspu-cache.previous.json") {
+		if !entry.IsDir() && (entry.Name() == "tspu-cache.json" || entry.Name() == "tspu-cache.previous.json" || entry.Name() == "tspu-cache.freshness.json") {
 			plan.Items = append(plan.Items, MigrationItem{Path: path, Class: "bounded-operational-cache", Action: "preserve", Reason: "current and single fallback TSPU cache are bounded", Bytes: bytes})
 			continue
 		}

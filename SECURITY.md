@@ -68,3 +68,7 @@ The lifecycle and storage diagnostics expose hashes, sizes, process identity,
 bounded logical write counters, and cleanup results. They do not expose raw
 configuration payloads, subscription URLs, rollback capabilities, setup
 tokens, authentication cookies, or private keys.
+
+TSPU freshness metadata is accepted only from a regular bounded file whose
+cache hash matches the verified current cache. It cannot extend retained-source
+entries that were not successfully revalidated.

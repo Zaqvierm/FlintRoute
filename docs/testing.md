@@ -105,7 +105,11 @@ Verified: every Go package passed.
   stale cleanup и 100 последовательных test-runs;
 - watchdog: startup grace, failure threshold, bounded inhibit lease и expiry;
 - backup/storage migration: count/size retention, corrupt fallback protection,
-  verified-copy-before-delete и сохранение неизвестных файлов.
+  verified-copy-before-delete, TSPU freshness classification и сохранение
+  неизвестных файлов;
+- TSPU write budget: одинаковый entry set не заменяет current/previous cache,
+  freshness checkpoint hash-bound, retained source не получает новый TTL,
+  startup scheduler откладывает refresh до persisted expiry.
 
 ## Shell behavior tests
 
@@ -168,5 +172,7 @@ protocol-specific packet proof и bound route evidence; один HTTPS PASS не
   integration cross-platform, готов для Linux CI).
 - P14 isolated lifecycle: 100 test-run, expired lease, SIGKILL, SSH disconnect,
   repeated cleanup, foreign-process protection и baseline comparison пройдены.
-  Остаются production service crash/restart, reboot recovery, idle write
-  observation и повторная installer matrix после инцидента с procd/ubus.
+  На factory OpenWrt также пройдены clean install/upgrade, controller
+  restart/SIGKILL, watchdog inhibit, bounded boot guard и reboot. Остаются
+  active Xray/Zapret/dataplane lifecycle, длительное idle write observation и
+  rollback/downgrade/uninstall.
