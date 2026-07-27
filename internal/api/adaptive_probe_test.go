@@ -73,6 +73,13 @@ func TestProductionAdaptiveCycleCollectsActiveAndCandidateEvidence(t *testing.T)
 	}
 
 	srv.runAdaptiveZapretCycle(context.Background(), cfg, engine, now.Add(time.Minute))
+	var coalesced persistedAdaptiveProbeRuntime
+	if err := srv.store.LoadJSON(adaptiveProbeBucket, adaptiveProbeKey, &coalesced); err != nil {
+		t.Fatal(err)
+	}
+	if len(coalesced.Observations) != 1 {
+		t.Fatalf("adaptive observations were checkpointed too frequently: %+v", coalesced)
+	}
 	candidate, err := runtime.ranker.Snapshot(key, "profile-b", now.Add(2*time.Minute))
 	if err != nil || candidate.Attempts != 1 || candidate.Successes != 1 {
 		t.Fatalf("candidate calibration observation missing: score=%+v err=%v events=%+v", candidate, err, srv.broker.Recent(0, 50))
@@ -81,6 +88,9 @@ func TestProductionAdaptiveCycleCollectsActiveAndCandidateEvidence(t *testing.T)
 		t.Fatalf("calibration changed the committed profile: %s", got)
 	}
 
+	if err := persistAdaptiveProbeRuntime(runtime, now.Add(adaptiveProbeCheckpointInterval)); err != nil {
+		t.Fatal(err)
+	}
 	var persisted persistedAdaptiveProbeRuntime
 	if err := srv.store.LoadJSON(adaptiveProbeBucket, adaptiveProbeKey, &persisted); err != nil {
 		t.Fatal(err)

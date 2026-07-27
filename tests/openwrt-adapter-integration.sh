@@ -240,6 +240,19 @@ grep -q 'rule replace' "$TMP/openwrt-calls.log" && {
 assert_order '^fw4 reload$' '^dnsmasq-init restart$'
 assert_order '^pidof router-policy$' '^wget '
 
+# Restart reconciliation is a true no-op while committed artifacts and runtime
+# routing state still match. Read-only checks are allowed; mutations are not.
+: > "$TMP/openwrt-calls.log"
+noop_reconcile=$(adapter reconcile "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" "$candidate_hash" "$artifact_manifest_hash")
+printf '%s\n' "$noop_reconcile" | grep -F 'reconcile=noop' >/dev/null
+printf '%s\n' "$noop_reconcile" | grep -F 'noop=true' >/dev/null
+for forbidden_call in 'fw4 reload' 'dnsmasq-init restart' 'xray-init restart' 'xray-init stop' 'zapret-init restart' 'zapret-init stop' 'route replace' 'rule del' 'rule add' "nft -f $RUNTIME_DIR/boot-guard.nft"; do
+  ! grep -F "$forbidden_call" "$TMP/openwrt-calls.log" >/dev/null || {
+    echo "no-op reconcile performed mutation: $forbidden_call" >&2
+    exit 1
+  }
+done
+
 # Firewall/dnsmasq/Xray/IP damage is reconciled from the hash-verified, revision-bound last-good snapshot.
 printf 'damaged-nft\n' > "$ACTIVE_NFT"
 printf 'damaged-dnsmasq\n' > "$ACTIVE_DNSMASQ"
@@ -256,8 +269,8 @@ wrong_reconcile_rc=$?
 set -e
 [ "$wrong_reconcile_rc" -ne 0 ] || { echo "reconcile accepted the wrong committed candidate hash" >&2; exit 1; }
 printf '%s\n' "$wrong_reconcile" | grep -F 'reason=recovery_binding_mismatch' >/dev/null
-grep -F "nft -f $RUNTIME_DIR/boot-guard.nft" "$TMP/openwrt-calls.log" >/dev/null || {
-  echo "reconcile failure did not arm the forwarding boot guard" >&2
+! grep -F "nft -f $RUNTIME_DIR/boot-guard.nft" "$TMP/openwrt-calls.log" >/dev/null || {
+  echo "invalid recovery binding armed the forwarding boot guard before validation" >&2
   exit 1
 }
 

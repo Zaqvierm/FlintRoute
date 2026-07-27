@@ -2,6 +2,7 @@ package tspu
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -188,6 +189,34 @@ func TestSaveKeepsPreviousAndLoadRejectsCorruption(t *testing.T) {
 	}
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "hash mismatch") {
 		t.Fatalf("corrupted cache was accepted: %v", err)
+	}
+}
+
+func TestSaveIdenticalCacheDoesNotReplaceFiles(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "tspu-cache.json")
+	cache := BuildCache(time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC), time.Hour,
+		[]SourceReport{{Name: "fixture", Accepted: true, Fresh: true, Confidence: 0.9}},
+		map[string][]string{"fixture": {"one.example"}})
+	if err := Save(path, cache); err != nil {
+		t.Fatal(err)
+	}
+	fixed := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	if err := os.Chtimes(path, fixed, fixed); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(path, cache); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.ModTime().Equal(fixed) {
+		t.Fatalf("identical cache was replaced: modtime=%s", info.ModTime())
+	}
+	if _, err := os.Stat(PreviousPath(path)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("identical cache created a fallback: %v", err)
 	}
 }
 

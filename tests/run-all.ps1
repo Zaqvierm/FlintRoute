@@ -107,6 +107,18 @@ if ($LASTEXITCODE -ne 0) {
   throw "installer lifecycle test failed"
 }
 
+Write-Host "== content-aware install =="
+& $gitSh tests/content-aware-install.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "content-aware install test failed"
+}
+
+Write-Host "== bounded boot guard service =="
+& $gitSh tests/boot-guard-service.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "boot guard service test failed"
+}
+
 Write-Host "== adapter rollback integrity =="
 & $gitSh tests/adapter-rollback.sh
 if ($LASTEXITCODE -ne 0) {

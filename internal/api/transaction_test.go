@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -573,6 +574,34 @@ func TestExpiryAndManualRollbackCallAdapterOnce(t *testing.T) {
 	t.Fatal("neither expiry nor manual rollback reached the adapter")
 }
 
+func TestServerCloseWaitsForExpiryCallbackBeforeClosingState(t *testing.T) {
+	for attempt := 0; attempt < 20; attempt++ {
+		fake := newFakeAdapter()
+		srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+		cs := createValidatedChange(t, client, csrf, ts.URL, "GEO_LOCKED")
+		cs, _ = postAction(t, client, csrf, ts.URL, cs.ID, "apply", `{}`)
+		if cs.State != "awaiting_confirmation" {
+			ts.Close()
+			_ = srv.Close()
+			t.Fatalf("test precondition failed: %+v", cs)
+		}
+		expiring := cs
+		expiring.ExpiresAt = time.Now().Add(-time.Second).UTC().Format(time.RFC3339)
+		srv.scheduleExpiry(expiring)
+		ts.Close()
+		done := make(chan error, 1)
+		go func() { done <- srv.Close() }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("server close deadlocked with an expiry callback")
+		}
+	}
+}
+
 func TestRestartRecoversAwaitingConfirmation(t *testing.T) {
 	cfg := testAPIConfig(t)
 	fake := newFakeAdapter()
@@ -838,6 +867,43 @@ func TestRestartKeepsManagementAvailableWhenCommittedReconcileFails(t *testing.T
 
 func newTransactionHTTP(t *testing.T, cfg *config.Config, productionAdapter adapter.Interface) (*Server, *httptest.Server, *http.Client, string, *auth.Store) {
 	return newTransactionHTTPMode(t, cfg, productionAdapter, true)
+}
+
+func TestIdenticalApplyIsNoopWithoutNewDeploymentWork(t *testing.T) {
+	cfg := testAPIConfig(t)
+	fake := newFakeAdapter()
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, cfg, fake)
+	defer srv.Close()
+	defer ts.Close()
+
+	first := createValidatedChange(t, client, csrf, ts.URL, "GEO_LOCKED")
+	first, status := postAction(t, client, csrf, ts.URL, first.ID, "apply", `{}`)
+	if status != http.StatusOK || first.State != "awaiting_confirmation" {
+		t.Fatalf("first apply failed: status=%d change=%+v", status, first)
+	}
+	first, status = postAction(t, client, csrf, ts.URL, first.ID, "confirm", `{}`)
+	if status != http.StatusOK || first.State != "committed" {
+		t.Fatalf("first commit failed: status=%d change=%+v", status, first)
+	}
+
+	beforePrepare := fake.callCount("prepare")
+	beforeApply := fake.callCount("apply_candidate")
+	beforeCommit := fake.callCount("commit")
+	change, err := srv.createDraftChange("No-op apply", "same config", first.CandidateVersion, []ChangeOp{{Type: "set", Path: "/services/github/category", Value: "GEO_LOCKED"}}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	change, failure := srv.validateChangeSet(change)
+	if failure != nil || !change.Noop || change.State != "validated" || change.RevisionID != first.RevisionID {
+		t.Fatalf("identical config was not recognized as no-op: change=%+v failure=%+v", change, failure)
+	}
+	change, failure = srv.applyChangeSet(context.Background(), change)
+	if failure != nil || !change.Noop || change.State != "committed" || change.AdapterStatus != "NOOP" {
+		t.Fatalf("no-op apply failed: change=%+v failure=%+v", change, failure)
+	}
+	if fake.callCount("prepare") != beforePrepare || fake.callCount("apply_candidate") != beforeApply || fake.callCount("commit") != beforeCommit {
+		t.Fatalf("no-op invoked deployment steps: calls=%v", fake.calls)
+	}
 }
 
 func newTransactionHTTPMode(t *testing.T, cfg *config.Config, productionAdapter adapter.Interface, development bool) (*Server, *httptest.Server, *http.Client, string, *auth.Store) {

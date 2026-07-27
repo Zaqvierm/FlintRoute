@@ -15,6 +15,8 @@ sh scripts/build-go.sh
 sh tests/package-openwrt.sh
 sh tests/installer-backup.sh
 sh tests/installer-lifecycle.sh
+sh tests/content-aware-install.sh
+sh tests/boot-guard-service.sh
 sh tests/adapter-rollback.sh
 sh tests/openwrt-adapter-integration.sh
 if command -v shellcheck >/dev/null 2>&1; then

@@ -269,6 +269,29 @@ func samplePlan() artifact.IPPlan {
 	}
 }
 
+func TestVerifyAppliedIPPlanDetectsExactStateAndDrift(t *testing.T) {
+	st := newStateRunner()
+	plan := samplePlan()
+	if err := ApplyIPPlanWithUCI(context.Background(), applyRunner{st}, "ip", "", plan); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if err := VerifyAppliedIPPlan(context.Background(), st, "ip", plan); err != nil {
+		t.Fatalf("verify exact applied plan: %v", err)
+	}
+
+	original := st.rules["ipv4"][10010]
+	st.rules["ipv4"][10010] = stateRule{mark: "0x99", table: 99}
+	if err := VerifyAppliedIPPlan(context.Background(), st, "ip", plan); err == nil {
+		t.Fatal("verify accepted a foreign rule at the project-owned priority")
+	}
+	st.rules["ipv4"][10010] = original
+
+	delete(st.routes["ipv4"][100], "default")
+	if err := VerifyAppliedIPPlan(context.Background(), st, "ip", plan); err == nil {
+		t.Fatal("verify accepted a missing committed route")
+	}
+}
+
 func TestRollbackRemovesCreatedRulesAndRoutesFromEmptyPreState(t *testing.T) {
 	st := newStateRunner()
 	plan := samplePlan()

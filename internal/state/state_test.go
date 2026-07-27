@@ -1,6 +1,7 @@
 package state
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,7 +106,7 @@ func TestSchemaRetentionAndCompactBackup(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	rows, err := store.ListRaw("probes")
+	rows, err := store.ListProbeResults(10)
 	if err != nil || len(rows) != 2 {
 		t.Fatalf("probe retention len=%d err=%v", len(rows), err)
 	}
@@ -135,6 +136,88 @@ func TestSchemaRetentionAndCompactBackup(t *testing.T) {
 	}
 }
 
+func TestIdenticalSaveJSONDoesNotOpenPersistentWrite(t *testing.T) {
+	store, err := Open(&config.Config{Storage: config.Storage{StateDir: t.TempDir()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	value := map[string]any{"state": "committed", "version": 7}
+	if err := store.SaveJSON("changes", "same", value); err != nil {
+		t.Fatal(err)
+	}
+	before := store.WriteMetrics()
+	for i := 0; i < 100; i++ {
+		if err := store.SaveJSON("changes", "same", value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after := store.WriteMetrics()
+	if after.PersistentTransactions != before.PersistentTransactions {
+		t.Fatalf("identical values created persistent writes: before=%+v after=%+v", before, after)
+	}
+	if after.NoopWrites-before.NoopWrites != 100 {
+		t.Fatalf("expected 100 no-op writes, got %+v", after)
+	}
+}
+
+func TestUnchangedRouteHealthAndRuntimeProbesDoNotWritePersistentDB(t *testing.T) {
+	store, err := Open(&config.Config{Storage: config.Storage{StateDir: t.TempDir(), MaxProbeResults: 8}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	health := probe.RouteHealth{RouteTag: "proxy-4", RouteType: "vless", State: "healthy", Role: "selected", UpdatedAt: time.Now().UTC()}
+	if err := store.SaveRouteHealth(health); err != nil {
+		t.Fatal(err)
+	}
+	before := store.WriteMetrics()
+	for i := 0; i < 100; i++ {
+		health.Checks++
+		health.LastCheckedAt = health.LastCheckedAt.Add(time.Minute)
+		health.UpdatedAt = health.UpdatedAt.Add(time.Minute)
+		if err := store.SaveRouteHealth(health); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.StoreProbeResult(probe.RouteResult{Route: "proxy-4", CheckedAt: health.UpdatedAt.Format(time.RFC3339)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after := store.WriteMetrics()
+	if after.PersistentTransactions != before.PersistentTransactions {
+		t.Fatalf("idle health cycles wrote persistent DB: before=%+v after=%+v", before, after)
+	}
+	if after.RuntimeProbeWrites-before.RuntimeProbeWrites != 100 {
+		t.Fatalf("runtime probe counter mismatch: %+v", after)
+	}
+	items, err := store.ListProbeResults(100)
+	if err != nil || len(items) != 8 {
+		t.Fatalf("runtime probe ring is not bounded: len=%d err=%v", len(items), err)
+	}
+}
+
+func TestRouteHealthTransitionCreatesOnePersistentWrite(t *testing.T) {
+	store, err := Open(&config.Config{Storage: config.Storage{StateDir: t.TempDir()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	health := probe.RouteHealth{RouteTag: "proxy-4", RouteType: "vless", State: "healthy", Role: "selected", UpdatedAt: time.Now().UTC()}
+	if err := store.SaveRouteHealth(health); err != nil {
+		t.Fatal(err)
+	}
+	before := store.WriteMetrics()
+	health.State = "unhealthy"
+	health.LastReason = "probe_failed"
+	if err := store.SaveRouteHealth(health); err != nil {
+		t.Fatal(err)
+	}
+	after := store.WriteMetrics()
+	if after.PersistentTransactions-before.PersistentTransactions != 1 {
+		t.Fatalf("route transition did not create exactly one write: before=%+v after=%+v", before, after)
+	}
+}
+
 func TestListProbeResultsReturnsNewestFirstAndHonorsLimit(t *testing.T) {
 	store, err := Open(&config.Config{Storage: config.Storage{StateDir: t.TempDir(), MaxProbeResults: 10}})
 	if err != nil {
@@ -153,6 +236,41 @@ func TestListProbeResultsReturnsNewestFirstAndHonorsLimit(t *testing.T) {
 	}
 	if len(items) != 2 || items[0].Route != "vless" || items[1].Route != "smart" {
 		t.Fatalf("probe history is not newest-first and bounded: %+v", items)
+	}
+}
+
+func TestDurableEventsAreBoundedAndIdleCleanupDoesNotWrite(t *testing.T) {
+	store, err := Open(&config.Config{Storage: config.Storage{StateDir: t.TempDir()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	entries := make([]Entry, 0, 4200)
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	for index := 0; index < 4200; index++ {
+		entries = append(entries, Entry{Bucket: "events", Key: fmt.Sprintf("%08d", index), Value: map[string]any{"time": now, "kind": "security"}})
+	}
+	if err := store.SaveBatch(entries...); err != nil {
+		t.Fatal(err)
+	}
+	before := store.WriteMetrics().PersistentTransactions
+	stats, err := store.Cleanup(now)
+	if err != nil || stats.Events != 104 {
+		t.Fatalf("event retention failed: stats=%+v err=%v", stats, err)
+	}
+	rows, err := store.ListRaw("events")
+	if err != nil || len(rows) != 4096 {
+		t.Fatalf("durable event history is not bounded: rows=%d err=%v", len(rows), err)
+	}
+	afterCleanup := store.WriteMetrics().PersistentTransactions
+	if afterCleanup != before+1 {
+		t.Fatalf("retention used unexpected write transactions: before=%d after=%d", before, afterCleanup)
+	}
+	if _, err := store.Cleanup(now); err != nil {
+		t.Fatal(err)
+	}
+	if store.WriteMetrics().PersistentTransactions != afterCleanup {
+		t.Fatal("idle retention cleanup opened a persistent write transaction")
 	}
 }
 

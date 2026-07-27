@@ -2,11 +2,13 @@ package artifact
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +40,35 @@ func TestGenerateVerifyAndRejectTamper(t *testing.T) {
 	}
 	if _, err := Verify(root, binding, manifestHash); err == nil {
 		t.Fatal("tampered artifact was accepted")
+	}
+}
+
+func TestWriteAtomicSkipsIdenticalContentAndRejectsSymlink(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "artifact.json")
+	raw := []byte("same\n")
+	if err := writeAtomic(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixed := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	if err := os.Chtimes(path, fixed, fixed); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAtomic(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(path); err != nil || !info.ModTime().Equal(fixed) {
+		t.Fatalf("identical artifact was replaced: info=%v err=%v", info, err)
+	}
+	symlink := filepath.Join(root, "symlink.json")
+	if err := os.Symlink(path, symlink); err != nil {
+		if errors.Is(err, os.ErrPermission) || runtime.GOOS == "windows" {
+			t.Skip("symlink creation is unavailable")
+		}
+		t.Fatal(err)
+	}
+	if err := writeAtomic(symlink, []byte("changed"), 0o600); err == nil {
+		t.Fatal("artifact writer followed a symlink target")
 	}
 }
 

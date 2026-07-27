@@ -189,6 +189,32 @@ func TestFailedReplacementRestoresInMemoryDecision(t *testing.T) {
 	}
 }
 
+func TestUnchangedDecisionIsCheckpointedInsteadOfWrittenEveryProbe(t *testing.T) {
+	store := &failingStore{entries: map[string][]byte{}}
+	manager, err := New(store, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	if _, err := manager.Save("example.com", testDecision(now, "direct", "direct")); err != nil {
+		t.Fatal(err)
+	}
+	for index := 1; index <= 100; index++ {
+		if _, err := manager.Save("example.com", testDecision(now.Add(time.Duration(index)*time.Second), "direct", "direct")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if store.saves != 1 {
+		t.Fatalf("unchanged probes caused persistent domain writes: %d", store.saves)
+	}
+	if _, err := manager.Save("example.com", testDecision(now.Add(domainCheckpointInterval), "direct", "direct")); err != nil {
+		t.Fatal(err)
+	}
+	if store.saves != 2 {
+		t.Fatalf("bounded checkpoint was not persisted: %d", store.saves)
+	}
+}
+
 func openTestStore(t *testing.T) *state.Store {
 	t.Helper()
 	store, err := state.Open(testConfig(t.TempDir()))
@@ -227,6 +253,7 @@ func testDecision(now time.Time, route, routeType string) Decision {
 type failingStore struct {
 	entries  map[string][]byte
 	failSave bool
+	saves    int
 }
 
 func (s *failingStore) SaveJSON(bucket, key string, value any) error {
@@ -238,6 +265,7 @@ func (s *failingStore) SaveJSON(bucket, key string, value any) error {
 		return err
 	}
 	s.entries[bucket+"/"+key] = data
+	s.saves++
 	return nil
 }
 

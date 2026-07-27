@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"router-policy/internal/config"
 )
@@ -35,6 +36,33 @@ func TestStoreLoadAndValidateRoutes(t *testing.T) {
 	routes := []config.Route{{Type: "vless", Tag: "server-a", SOCKS5: "127.0.0.1:12000"}}
 	if err := ValidateRoutes(bundle, routes); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStoreIdenticalBundleDoesNotReplaceContentAddressedFile(t *testing.T) {
+	root := t.TempDir()
+	raw := validBundle()
+	source := filepath.Join(root, "source.json")
+	if err := os.WriteFile(source, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path, err := Store(root, source, Hash(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixed := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	if err := os.Chtimes(path, fixed, fixed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Store(root, source, Hash(raw)); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.ModTime().Equal(fixed) {
+		t.Fatal("identical content-addressed Xray bundle was replaced")
 	}
 }
 

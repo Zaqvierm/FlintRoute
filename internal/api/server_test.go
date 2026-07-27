@@ -65,6 +65,48 @@ func TestEventBrokerUsesNewEpochAfterRestart(t *testing.T) {
 	}
 }
 
+func TestUIPollingAndSSESubscriptionsDoNotWritePersistentState(t *testing.T) {
+	cfg := testAPIConfig(t)
+	srv, ts, client, _, _ := newTransactionHTTP(t, cfg, newFakeAdapter())
+	defer srv.Close()
+	defer ts.Close()
+	before := srv.store.WriteMetrics()
+	for i := 0; i < 1000; i++ {
+		response, err := client.Get(ts.URL + "/api/v1/overview")
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("overview status %d", response.StatusCode)
+		}
+		stream, ok := srv.broker.Subscribe()
+		if !ok {
+			t.Fatal("event subscription limit leaked")
+		}
+		srv.broker.Unsubscribe(stream)
+	}
+	after := srv.store.WriteMetrics()
+	if after.PersistentTransactions != before.PersistentTransactions || after.PersistentBytes != before.PersistentBytes {
+		t.Fatalf("read-only UI traffic wrote persistent state: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestRuntimeWriteCountersAreBoundedAndParsedWithoutPayloadData(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "write-events.log")
+	raw := "2026-07-22T12:00:00Z\tfile_created\t10\tactive_artifact_install\n" +
+		"2026-07-22T12:00:01Z\tfile_replaced\t20\tactive_artifact_install\n" +
+		"2026-07-22T12:00:02Z\tfsync\t4\tactive_artifact_install\n" +
+		"2026-07-22T12:00:03Z\tsnapshot\t0\ttransaction_snapshot\n"
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	metrics := readRuntimeWriteEvents(path)
+	if metrics.FilesCreated != 1 || metrics.FilesReplaced != 1 || metrics.BytesWritten != 30 || metrics.Fsyncs != 4 || metrics.Snapshots != 1 || metrics.Events != 4 {
+		t.Fatalf("unexpected runtime write counters: %+v", metrics)
+	}
+}
+
 func TestEventsEndpointMergesPersistedHistoryAcrossRestart(t *testing.T) {
 	cfg := testAPIConfig(t)
 	authStore, err := auth.Open(cfg)
@@ -83,7 +125,7 @@ func TestEventsEndpointMergesPersistedHistoryAcrossRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldEpoch := first.broker.Epoch()
-	first.publishEvent(Event{Type: "test.persisted", Severity: "info", ReasonCode: "persisted_before_restart", Details: map[string]any{"remote": "192.0.2.44"}})
+	first.publishEvent(Event{Type: "test.persisted", Severity: "info", ReasonCode: "persisted_before_restart", Durable: true, Details: map[string]any{"remote": "192.0.2.44"}})
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
