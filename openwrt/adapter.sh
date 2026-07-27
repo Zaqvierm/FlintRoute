@@ -199,14 +199,41 @@ sha_file() {
   fi
 }
 
+file_mode_bits() {
+  target="$1"
+  # Transaction paths are fixed and allowlisted. BusyBox ls is available on
+  # factory OpenWrt while a standalone stat binary is not guaranteed.
+  # shellcheck disable=SC2012
+  permissions="$(LC_ALL=C ls -ld "$target" 2>/dev/null | awk '{print substr($1, 1, 10)}')"
+  case "$permissions" in
+    -rw-------) echo 600 ;;
+    -rw-r--r--) echo 644 ;;
+    -rwx------) echo 700 ;;
+    -rwxr-xr-x) echo 755 ;;
+    drwx------) echo 700 ;;
+    drwxr-xr-x) echo 755 ;;
+    *) return 1 ;;
+  esac
+}
+
+file_owner_id() {
+  target="$1"
+  # shellcheck disable=SC2012
+  LC_ALL=C ls -ldn "$target" 2>/dev/null | awk '{print $3}'
+}
+
 verify_token() {
   [ -f "$binding_file" ] && [ -f "$capability_file" ] && [ ! -L "$capability_file" ] || {
     echo "reason=transaction_metadata_missing" >&2
     return 1
   }
-  capability_mode="$(stat -c '%a' "$capability_file")"
-  capability_owner="$(stat -c '%u' "$capability_file")"
-  tx_owner="$(stat -c '%u' "$txdir")"
+  capability_mode="$(file_mode_bits "$capability_file")"
+  capability_owner="$(file_owner_id "$capability_file")"
+  tx_owner="$(file_owner_id "$txdir")"
+  [ -n "$capability_owner" ] && [ -n "$tx_owner" ] || {
+    echo "reason=rollback_capability_owner_unavailable" >&2
+    return 1
+  }
   [ "$capability_mode" = "600" ] && [ "$capability_owner" = "$tx_owner" ] || {
     echo "reason=rollback_capability_permissions_invalid" >&2
     return 1
@@ -587,11 +614,11 @@ atomic_install() {
   install_source="$1"
   install_target="$2"
   [ ! -L "$install_target" ] || { echo "reason=refusing_symlink_install_target" >&2; return 1; }
-  install_mode="$(stat -c '%a' "$install_source")"
+  install_mode="$(file_mode_bits "$install_source")"
   install_event="file_created"
   [ ! -f "$install_target" ] || install_event="file_replaced"
   if [ -f "$install_target" ] && cmp -s "$install_source" "$install_target"; then
-    target_mode="$(stat -c '%a' "$install_target")"
+    target_mode="$(file_mode_bits "$install_target")"
     if [ "$target_mode" = "$install_mode" ]; then
       return 0
     fi

@@ -4,6 +4,57 @@ This log records failures that affected hardware validation or could have made a
 release claim unreliable. It contains no credentials, private endpoints or raw
 device dumps.
 
+## 2026-07-27 — factory adapter dependency and recovery lost management
+
+### What was tested
+
+A clean Flint 2 baseline had no active revision, provider process or FlintRoute
+nft/IP resource. The next test attempted to restore the previously verified
+production configuration and activate Xray, Zapret and the committed dataplane
+through the normal ChangeSet transaction. A verified off-router recovery
+archive and an independent 30-minute rollback process were prepared first.
+
+### What happened
+
+Candidate validation completed, but adapter `prepare` returned exit code 127.
+Automatic rollback returned the same code. The adapter still used external GNU
+`stat` to verify its rollback capability and file modes; factory OpenWrt does
+not provide that binary. The failure happened before `apply-candidate`, and the
+captured baseline confirmed that FlintRoute nftables, policy rules and provider
+services had not been activated.
+
+The independent recovery script then restored the captured project files and
+service state. It also removed the temporarily installed Xray package, reloaded
+the global firewall and restarted dnsmasq. The script completed, but new SSH,
+web and ICMP checks to the WAN-side management address stopped succeeding.
+After a physical power cycle the router did not return Wi-Fi, DHCP or management
+access and appeared to restart repeatedly. Recovery therefore required another
+factory reflash through U-Boot.
+
+The failed adapter dependency is proven. The recovery procedure also exceeded a
+safe project-owned rollback boundary: it performed package and global firewall
+operations without a separately proven management path. The exact persistent
+cause of the later restart loop is not proven because kernel, procd and overlay
+evidence became unavailable with the device. The pre-test archive contains the
+same factory firewall and DHCP hashes as the earlier recovery baseline, no
+`last-good` snapshot and no unfinished transaction, so those files alone do not
+explain the restart loop.
+
+### Fix and release impact
+
+The adapter now obtains regular-file mode and owner data with factory BusyBox
+`ls`/`awk`; an integration fixture makes any external `stat` invocation fail
+with code 127.
+
+After the factory reflash, a fresh read-only baseline and off-router recovery
+archive were captured before retrying the same transaction path. The corrected
+adapter completed prepare, validate, apply, route verification and commit on
+factory OpenWrt. Managed Xray and nfqws then passed restart and SIGKILL recovery,
+the controller passed restart, and 11 Direct, Zapret, VLESS and Drop route
+proofs completed while external SSH and web management remained available.
+The idle write observation and rollback/downgrade/uninstall gates remain
+separate P14 checks.
+
 ## 2026-07-22 — failed P14 upgrade left procd/ubus unavailable
 
 ### What was tested

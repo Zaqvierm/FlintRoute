@@ -62,6 +62,14 @@ MOCK_OPENWRT_LOG="$TMP_NATIVE/openwrt-calls.log"
 for command_name in nft fw4 dnsmasq dnsmasq-init xray xray-init nfqws zapret-init ip uci wget nslookup pidof; do
   cp "$TMP/bin/mock-openwrt$EXE" "$TMP/bin/$command_name$EXE"
 done
+cat > "$TMP/bin/stat" <<'SH'
+#!/bin/sh
+echo "adapter must not require external stat" >&2
+exit 127
+SH
+chmod +x "$TMP/bin/stat"
+PATH="$TMP/bin:$PATH"
+export PATH
 
 NFT_BIN="$TMP_NATIVE/bin/nft$EXE"
 FW4_BIN="$TMP_NATIVE/bin/fw4$EXE"
