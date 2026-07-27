@@ -257,3 +257,45 @@ FlintRoute остаётся Alpha, даже если UI выглядит оху�
 | P13.4 | multi-client/performance | пределы Flint 2 |
 | P13.5 | install/upgrade/downgrade | жизненный цикл релиза |
 | P13.6 | 72-hour soak и финальный audit | решение о выходе из Alpha |
+
+## P14: lifecycle и storage endurance
+
+P14 запускается отдельным проходом после локальных тестов. Первый контакт с
+Flint 2 — только read-only:
+
+1. `mount`, `df` и `du` только для `/etc/router-policy`,
+   `/tmp/router-policy` и `/root/router-policy-backups`;
+2. `ubus call service list` для authoritative FlintRoute services;
+3. PID/start time/executable/config для control plane, Xray и nfqws;
+4. listeners, nft table names, FlintRoute IP rules/routes;
+5. hashes active artifacts, bbolt size, transaction/snapshot/backup count;
+6. `router-policy lifecycle status --json`, `storage migrate --dry-run` и
+   `cleanup stale --dry-run --json`.
+
+Перед любым изменением сети сохраняется baseline, проверяется backup и
+management path, включается bounded rollback timer. Test-run использует только
+`router_policy_test_<run-id>`, loopback listeners и routing range
+`30000..30999`. После cleanup hashes/counts baseline должны совпасть;
+production `router-policy-xray`, `router-policy-zapret` и committed dataplane
+должны остаться активными.
+
+Разрешён controlled restart только FlintRoute services. Factory reset и
+имитация физического отключения питания в P14 не выполняются. Hardware pass
+требует отдельного evidence bundle для 100 test-runs, SIGTERM/SIGKILL, SSH
+disconnect, expired lease, controller/Xray/nfqws crash, watchdog restart,
+reboot recovery и повторного cleanup.
+
+Изолированный hardware lifecycle runner прошёл 100 последовательных test-run,
+повторный stale cleanup, SIGKILL, SSH disconnect, защиту foreign process и
+сравнение baseline. Production процессы при этом не затрагивались.
+
+Production install/restart/reboot gate, напротив, провален. Во время P14 upgrade
+`ubus`/procd стали недоступны; installer продолжил работу, а rollback подавил
+ошибки service recovery и сообщил ложный успех. После reboot устройство не
+вернулось и потребовало U-Boot recovery. Повторный проход закончился тем же
+операционным результатом. Точный kernel/procd trigger потерян вместе с volatile
+logs, поэтому он не объявляется доказанной root cause.
+
+До следующего аппаратного изменения обязательны локально зелёные preflight,
+truthful rollback, bounded boot guard и startup reconcile no-op. После этого
+нужен новый пользовательский допуск и полный baseline. P14 остаётся открытым.

@@ -61,9 +61,24 @@ hooks. `router-policy`, boot guard и watchdog включаются для сл�
 control plane и watchdog запускаются сразу. Xray и nfqws не включаются вслепую:
 ими управляет подтверждённая dataplane-транзакция.
 
+Перед первым изменением installer требует доступные `ubus` и procd, отсутствие
+активного forwarding boot guard и, для уже запущенного control plane, рабочий
+loopback health endpoint. Каждый вызов ubus/init ограничен timeout. Провал
+preflight останавливает установку до snapshot и записи файлов.
+In-place upgrade работающего controller также требует поддержку maintenance
+lease установленной версией. Старый controller без этого контракта нужно заранее
+явно остановить вместе с watchdog; installer не будет автоматически оживлять
+неизвестную legacy-версию.
+
 Installer сохраняет backup и печатает его путь. Если проверка конфига, запуск
 сервиса, ожидание `/api/v1/health` или другой шаг завершается ошибкой,
-предыдущие файлы и состояния сервисов восстанавливаются автоматически.
+предыдущие файлы и состояния сервисов восстанавливаются автоматически. Строка
+`install_rollback=restored` печатается только после подтверждённого service
+recovery; частичный откат возвращает ненулевой код и
+`files-restored-services-unverified`.
+Перед остановкой сервисов или удалением старых targets rollback проверяет hash
+архива и требует, чтобы manifest содержал ровно allowlisted файлы и сервисы
+FlintRoute. Неизвестная или повреждённая запись блокирует откат без изменений.
 
 ## Обновление
 
@@ -75,8 +90,16 @@ sh install.sh --install --enable-services
 
 Пользовательский `config/default.json`, secrets и persistent state не
 перезаписываются. Новый штатный конфиг сохраняется как
-`config/factory-default.json`. Уже работающие сервисы перезапускаются после
-проверки новой версии; при ошибке возвращаются предыдущие файлы.
+`config/factory-default.json`. Обновление перезапускает control plane, ждёт его
+health и только после этого возвращает watchdog. Production Xray и Zapret не
+перезапускаются; installer проверяет, что их исходное running/stopped состояние
+не изменилось.
+
+Текущий Alpha package после этих изменений ещё не прошёл повторный аппаратный
+upgrade. Предыдущая попытка потеряла procd/ubus и закончилась U-Boot recovery;
+подробности и ограничения записаны в [`incidents.md`](incidents.md). До нового
+hardware pass команды выше считаются процедурой проверки, а не рекомендацией
+для unattended production upgrade.
 
 ## Удаление
 

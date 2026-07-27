@@ -97,6 +97,15 @@ Verified: every Go package passed.
 - `TestCreateChangeSetRejectsEmptyOperations`, `TestWildcardAPIListenerFailsClosed`
 - `TestParseProcNetDev`, `TestParseProcNetDevRejectsTruncatedCounters`
 - `TestStorePersistsJSONAcrossReopen`, `TestMigratesLegacyDatabaseWithoutSchemaVersion`
+- storage/write budget: 100 одинаковых health cycles не увеличивают persistent
+  transaction counter; один route transition создаёт одну запись; probe ring и
+  durable events ограничены; 1000 overview/SSE reads дают zero persistent writes;
+- lifecycle: exact PID/start-time/executable/config/run identity, PID reuse,
+  foreign `xray`, corrupt owner manifest, network namespace gates, idempotent
+  stale cleanup и 100 последовательных test-runs;
+- watchdog: startup grace, failure threshold, bounded inhibit lease и expiry;
+- backup/storage migration: count/size retention, corrupt fallback protection,
+  verified-copy-before-delete и сохранение неизвестных файлов.
 
 ## Shell behavior tests
 
@@ -111,6 +120,9 @@ Verified: every Go package passed.
   rollback active config + prior service state. Включает P6 reconcile path.
 - `tests/installer-backup.sh` — empty archive останавливает install/uninstall до удаления файлов и не пишет `last-backup-path`;
 - `tests/installer-lifecycle.sh` — clean install, повторный upgrade, compatible downgrade, rollback невалидной версии, verified uninstall и запрет service-manager side effects в sandbox;
+- `tests/content-aware-install.sh` — identical content не заменяет target,
+  changed content проходит через same-filesystem atomic rename, symlink
+  отклоняется, ошибка перед rename сохраняет прежний target и удаляет temp;
 - `tests/hardware/run-p13.ps1` — recovery baseline, UDP/TCP-проверка двух
   production Smart DNS resolvers, route matrix и обязательный proxy-recursion
   gate: установленный Xray config должен маркировать outbounds, nft bypass
@@ -150,6 +162,11 @@ protocol-specific packet proof и bound route evidence; один HTTPS PASS не
 ## Оставшиеся аппаратные проверки
 
 - физическое power-loss recovery;
-- multi-client, hardware install/upgrade/downgrade/uninstall и 72h soak (P13).
+- multi-client, повторный hardware install/upgrade/rollback/downgrade/uninstall
+  исправленного пакета и 72h soak (P13).
 - Linux namespace/container behavior (нет локального Linux runtime; shell
   integration cross-platform, готов для Linux CI).
+- P14 isolated lifecycle: 100 test-run, expired lease, SIGKILL, SSH disconnect,
+  repeated cleanup, foreign-process protection и baseline comparison пройдены.
+  Остаются production service crash/restart, reboot recovery, idle write
+  observation и повторная installer matrix после инцидента с procd/ubus.

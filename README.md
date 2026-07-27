@@ -27,7 +27,7 @@ probe_route(domain, service, route)
 
 - **Go CLI / ядро** `router-policy` — конфиг, пробы, планировщик, state machine, API
 - **Preact/Vite UI** — встроен в Go-бинарник, без внешних зависимостей на роутере
-- **bbolt** — ChangeSets, ревизии, транзакции, пробы, события, recovery status
+- **bbolt** — ChangeSets, ревизии, транзакции, committed health transitions и recovery status; подробные пробы остаются в bounded RAM ring
 - **OpenWrt adapter** — транзакционный apply: snapshot → apply → verify → commit/rollback; post-reboot `Reconcile`
 - **Artifact generator** — nft, dnsmasq, Xray, nfqws, IPv4/IPv6 route/rule из одного конфига (manifest v6)
 - **Auth** — Argon2id, setup token, CSRF, rate limit
@@ -51,8 +51,10 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
   PASS, без FAIL и непроверенных клеток;
 - восстановление committed dataplane после физической перезагрузки: controller,
   Xray, nfqws, nftables и policy rules;
-- чистая установка на factory OpenWrt 24.10.4, первая транзакционная активация
-  и повторное восстановление dataplane после reboot;
+- production Xray и Zapret работают как отдельные procd-сервисы FlintRoute;
+  состояние штатного сервиса `xray` показывается отдельно;
+- production adaptive Zapret calibration, profile switch, cooldown, pin и
+  quarantine проверены на Flint 2;
 - persistent state в `/etc/router-policy/state` без зависимости от volatile `/var`;
 - локальные API, авторизация, журнал изменений и встроенная консоль.
 
@@ -61,10 +63,13 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
 - расширенная IPv6-матрица на реальных LAN-клиентах;
 - downgrade и uninstall на отдельном чистом OpenWrt;
 - работа под нагрузкой с несколькими клиентами.
+- install/upgrade/rollback после усиления preflight и service ordering: последний
+  аппаратный upgrade закончился потерей procd/ubus и потребовал U-Boot recovery;
+- P14 ownership cleanup прошёл 100 изолированных test-run на Flint 2, но
+  production restart/reboot и idle write budget требуют повторной проверки.
 
 ### Запланировано
 
-- аппаратное доказательство автоматической деградации и смены Zapret-профиля;
 - физический power-loss test;
 - длительный soak-test;
 - безопасный доступ к панели из LAN.
@@ -133,6 +138,9 @@ router-policy check-domain github.com github
 router-policy subscription-normalize subscription.json
 router-policy tspu-update --out tspu-cache.json
 router-policy security audit
+router-policy lifecycle status --json
+router-policy cleanup stale --dry-run --json
+router-policy storage migrate --dry-run
 ```
 
 ## Документация
@@ -147,6 +155,7 @@ router-policy security audit
 - `docs/vpn-subscription.md` — VPN-провайдер, подписка, Xray генерация
 - `docs/headless-dataplane.md` — managed Xray TPROXY и Zapret/nfqws lifecycle
 - `docs/tspu-cache.md` — TSPU cache v2
+- `docs/storage-lifecycle.md` — ownership, cleanup, retention и write budget
 - `docs/flint2-hardware-report.md` — обезличенный отчёт по железу
 - `docs/incidents.md` — аппаратные инциденты и найденные ошибки проверок
 - `docs/status-matrix.md` — матрица готовности

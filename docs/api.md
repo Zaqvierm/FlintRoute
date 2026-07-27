@@ -48,6 +48,8 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/route-health` | VLESS health matrix, selected/standby/quarantine roles |
 | `/api/v1/proxies` | proxy/VLESS server status |
 | `/api/v1/diagnostics` | network diagnostics provenance (source/hash/expiry/simulation) |
+| `/api/v1/lifecycle` | procd ownership, PID/start time/executable/config и test-run manifests |
+| `/api/v1/storage` | storage sizes, rollback state и логические write counters |
 | `/api/v1/smart-dns` | smart DNS state |
 | `/api/v1/zapret` | managed Zapret/nfqws plan state |
 | `/api/v1/zapret/adaptive/runtime` | production scheduler budget, fingerprint and live ranking |
@@ -66,6 +68,16 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/security` `/api/v1/security/audit` | security audit |
 | `/api/v1/system` | system/provider status |
 | `/api/v1/telegram` | telegram notification config (secrets in files) |
+
+`/api/v1/lifecycle` различает `router-policy-xray` и штатный OpenWrt-сервис
+`xray`. `inactive` у системного сервиса не считается ошибкой, если production
+процесс принадлежит FlintRoute procd instance и его полная identity совпадает.
+То же правило применяется к `router-policy-zapret` и системным Zapret/nfqws.
+
+Lifecycle/storage endpoints доступны роли diagnostician и выше. Они не
+изменяют persistent state. Возвращаются только hashes, размеры, счётчики и
+allowlisted metadata; subscription URL, VLESS UUID, rollback capability и auth
+tokens не включаются.
 
 ## ChangeSet
 

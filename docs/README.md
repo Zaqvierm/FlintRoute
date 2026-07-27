@@ -18,6 +18,7 @@ FlintRoute не привязан к конкретному поставщику 
 | `vpn-subscription.md` | безопасная обработка подписки и Xray bundle |
 | `headless-dataplane.md` | managed Xray TPROXY и Zapret/nfqws lifecycle |
 | `tspu-cache.md` | формат и lifecycle локального TSPU cache |
+| `storage-lifecycle.md` | ownership manifests, stale cleanup, retention и write budget |
 | `tspu-sources.md` | источники, валидация и применение списков |
 | `adaptive-zapret-strategy.md` | bounded catalog, ranking, hysteresis и quarantine |
 | `flint2-diagnostics.md` | read-only диагностика GL-MT6000 |
@@ -35,9 +36,10 @@ FlintRoute не привязан к конкретному поставщику 
 1. `architecture.md` — границы системы и основные инварианты.
 2. `algorithm-flow.md` + `probe-route.md` — алгоритм и четыре уровня proof.
 3. `adapter-transaction.md` — транзакция, rollback и recovery.
-4. `flint2-hardware-report.md` — подтверждённое состояние на железе.
-5. `api.md` — контрольная плоскость.
-6. `vpn-subscription.md` — VPN-провайдер и Xray.
+4. `storage-lifecycle.md` — владение ресурсами и ресурс записи.
+5. `flint2-hardware-report.md` — подтверждённое состояние на железе.
+6. `api.md` — контрольная плоскость.
+7. `vpn-subscription.md` — VPN-провайдер и Xray.
 
 ## Правило правды
 

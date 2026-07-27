@@ -97,9 +97,11 @@ candidate hash и adapter revision/transaction. Вызывает `Adapter.Commit
 
 ## Durable state
 
-Buckets: `changes`, `candidates`, `revisions`, `transactions`, `probes`,
-`events`, `meta`. Schema version и migration state — в `meta`. Retention по
-bounded probe count и time-based event/ChangeSet/transaction policies.
+Buckets: `changes`, `candidates`, `revisions`, `transactions`, `route_health`,
+`events`, `domain_decisions`, adaptive state и `meta`. Подробные probe results
+находятся в bounded RAM ring и не создают bbolt transaction на каждом health
+cycle. Schema version и migration state — в `meta`. Retention ограничивает
+events, ChangeSets, transactions, domain decisions и backup.
 Maintenance: daily backups, `max_state_backups`, compact backup не чаще compact
 interval, active compaction только если размер > `max_database_bytes`.
 Compaction валидирует новый bbolt файл до atomic swap, хранит `.precompact` до
@@ -130,6 +132,24 @@ transaction metadata.
 Rollback timer — transaction-bound и revision-bound, PID + process start time
 для wrapper и sleeper. Никогда не ищет process command lines.
 
+## No-op apply и cleanup после commit
+
+Перед apply сравниваются canonical config hash, active revision binding и hash
+всего deployment manifest. При полном совпадении adapter выполняет только
+read-only status verification и возвращает `noop=true`: snapshot, generated
+files, service restart, fw4 reload, dnsmasq restart, IP rules и новая revision
+не создаются.
+
+После реального commit новый `last-good` сначала проверяется по manifest/hash.
+Только затем удаляются rollback capability и тяжёлый pre-apply snapshot.
+Candidate и generated artifacts активной revision остаются минимальным durable
+journal для boot recovery. Предыдущий transaction root удаляется после
+успешной фиксации нового known-good. После rollback точный transaction root
+удаляется только после подтверждённого восстановления.
+
+Test-run ресурсы не смешиваются с production transaction. Их owner manifest и
+cleanup contract описаны в [`storage-lifecycle.md`](storage-lifecycle.md).
+
 ## Post-reboot recovery (P6)
 
 `api.recoverCommittedDataplane` при старте сервера:
@@ -152,6 +172,13 @@ Rollback timer — transaction-bound и revision-bound, PID + process start time
 Любое расхождение → `failedRecovery` с явным `reason_code`, persisted в bbolt
 `meta/recovery_status`. Ни одна частичная ревизия не активируется. Boot guard:
 `openwrt/init.d/router-policy-boot-guard`.
+
+Если runtime binding, active files, provider states, flow-offload UCI, nft table
+и точные project-owned IP routes/rules уже совпадают с committed last-good,
+`Reconcile` возвращает `noop=true` и не включает boot guard, не делает fw4
+reload, не перезапускает dnsmasq и не трогает Xray/Zapret. Boot guard включается
+только после проверки recovery binding и только когда действительно требуется
+восстановление data plane.
 
 ## Аппаратная проверка
 

@@ -1,0 +1,204 @@
+# Lifecycle и ресурс записи
+
+Этот документ задаёт границы владения процессами, сетевыми объектами и
+постоянным состоянием FlintRoute. Главный принцип простой: удалить или
+остановить можно только ресурс, чья принадлежность доказана. Совпадения имени
+процесса или одного PID недостаточно.
+
+## Кто запускает production-процессы
+
+Production supervisor — `procd`. FlintRoute не поднимает второй универсальный
+supervisor поверх него.
+
+| Компонент | Сервис FlintRoute | Ожидаемая конфигурация |
+|---|---|---|
+| control plane | `router-policy` | `/etc/router-policy/config/default.json` |
+| Xray | `router-policy-xray` | `/etc/router-policy/xray/active.json` |
+| Zapret/nfqws | `router-policy-zapret` | `/etc/router-policy/zapret/nfqws.conf` |
+| watchdog | `router-policy-watchdog` | Go watchdog внутри `router-policy` |
+| boot recovery | `router-policy-boot-guard` | committed `last-good` и transaction binding |
+
+Штатный `/etc/init.d/xray status` может показывать `inactive`, пока
+`router-policy-xray` работает нормально. Это разные procd instances.
+Диагностика поэтому выводит FlintRoute-managed и system service отдельно и
+проверяет PID, `/proc/<pid>/stat` start time, executable, command line и config
+path. Для Zapret действует тот же контракт.
+
+## Владельцы
+
+Typed manifest schema v1 поддерживает пять классов:
+
+- `production`;
+- `transaction:<id>`;
+- `test-run:<id>`;
+- `installer:<id>`;
+- `recovery:<id>`.
+
+Manifest test-run хранит lease, baseline, процессы, файлы, listeners,
+nftables/IP resources, состояние cleanup и итог теста. Процесс разрешено
+завершить только после совпадения PID, start time, executable, run ID и
+ожидаемого config path. Поэтому PID reuse и чужой процесс с именем `xray` не
+проходят ownership gate.
+
+Network cleanup ограничен отдельным test namespace:
+
+- nft table: `router_policy_test_<run-id>`;
+- IPv4/IPv6 route table и rule priority: диапазон `30000..30999`;
+- route удаляется по точному family/table/CIDR;
+- listener разрешён только на loopback и после остановки его owned process;
+- production table `router_policy` и обычные routing priorities не подходят
+  под cleanup contract.
+
+Неоднозначный ресурс остаётся на месте и попадает в отчёт. Глобальные
+`pkill`, `killall` и wildcard cleanup не используются.
+
+## Production и test-run
+
+`router-policy lifecycle begin` снимает read-only baseline до теста. В manifest
+попадают только hashes и количество строк результатов `ubus`, `ss`, `nft` и
+`ip`; содержимое сетевой конфигурации в manifest не копируется.
+
+```sh
+router-policy lifecycle begin --id hardware-001 --lease 45m
+router-policy lifecycle add-process --id hardware-001 --resource xray-test \
+  --pid PID --executable /usr/bin/xray \
+  --config /tmp/router-policy/test-runs/hardware-001/xray.json
+router-policy lifecycle add-network --id hardware-001 --resource nft-test \
+  --kind nft-table --family inet --table router_policy_test_hardware_001
+router-policy lifecycle finish --id hardware-001 --result passed
+router-policy cleanup stale --dry-run --json
+router-policy cleanup stale --apply --json
+```
+
+`cleanup stale` по умолчанию ничего не меняет. Apply идемпотентен: уже
+отсутствующий owned resource считается очищенным. Test-run получает состояние
+`complete` только после удаления зарегистрированных ресурсов и совпадения
+post-cleanup baseline. Production procd instances в этот cleanup не входят.
+
+## Watchdog
+
+`router-policy-watchdog` запускает Go controller через procd. Он учитывает
+startup grace и требует несколько последовательных ошибок health endpoint до
+restart. Бесконечного shell-цикла с `wget`, `sleep` и безусловным restart больше
+нет.
+
+На install, uninstall, upgrade, intentional shutdown и rollback ставится
+maintenance inhibit с owner, причиной и сроком. Максимальная lease — два часа;
+просроченный inhibit не отключает watchdog навсегда. Watchdog управляет только
+`/etc/init.d/router-policy`.
+
+## Размещение данных
+
+### Immutable installed
+
+`/usr/bin/router-policy`, init scripts, schema и factory defaults. Installer
+сравнивает content и mode до замены.
+
+### Durable committed/recovery
+
+- `/etc/router-policy/config` — active и factory config;
+- `/etc/router-policy/state/router-policy.bbolt` — committed control state;
+- `/etc/router-policy/state/last-good` — одна проверенная рабочая копия;
+- `/etc/router-policy/state/transactions/<revision>/<transaction>` —
+  минимальный journal текущей committed revision;
+- `/etc/router-policy/secrets` — ссылки и authentication material.
+
+Candidate и generated manifest активной revision пока сохраняются рядом с
+journal: boot recovery повторно проверяет их hashes. Pre-apply snapshot и
+rollback capability удаляются после успешного commit.
+
+### Bounded operational history
+
+- terminal ChangeSets — 90 дней по умолчанию;
+- terminal transactions — 30 дней;
+- durable security/config events — 30 дней и максимум 4096 записей;
+- domain decisions — bounded LRU, максимум из `max_auto_domains`;
+- adaptive observations — checkpoint не чаще одного раза в 15 минут;
+- bbolt backups — по умолчанию максимум 7;
+- test-run manifests — максимум 32 завершённых;
+- installer fallbacks — максимум два verified backup и 128 MiB.
+
+### Runtime tmpfs
+
+`/tmp/router-policy` содержит locks, rollback timers, heartbeat, текущие probe
+results, SSE buffers, adaptive live observations, test-run files и bounded
+`write-events.log`. Потеря этого каталога после reboot допустима. Durable
+journal остаётся достаточным для fail-closed recovery.
+
+### Exported diagnostics
+
+Support bundles и аппаратные отчёты создаются только явно. Они не являются
+частью автоматической истории и перед публикацией должны быть обезличены.
+
+## Аудит постоянных записей
+
+| Путь или bucket | Инициатор | Частота и верхняя граница | Переживает reboot | Защита от лишней записи |
+|---|---|---|---:|---|
+| bbolt `meta` | config/recovery/maintenance | только transition или редкое обслуживание | да | exact encoded bytes перед `Update` |
+| `changes` | ChangeSet API | bounded terminal retention 90 дней | да | batch compare-before-write |
+| `candidates` | validate | один candidate на ChangeSet; orphan cleanup | да, пока нужен transaction | canonical config hash и no-op gate |
+| `revisions` | commit | одна запись на реальный commit | да | identical apply не создаёт revision |
+| `transactions` | apply/commit/recovery | один активный, terminal retention 30 дней | да | batch compare-before-write |
+| `route_health` | health transition | state transition или редкий checkpoint | да | heartbeat/checked_at не считаются transition |
+| probe details | health/probe engine | RAM ring, `max_probe_results` | нет | bbolt не открывается |
+| `events` | security/config audit | 4096 и 30 дней | только durable audit | operational events остаются в RAM broker |
+| `zapret_switch` | adaptive controller | transition и checkpoint не чаще 15 минут | да | exact bytes + coalescing |
+| adaptive probe checkpoint | health scheduler | не чаще 15 минут | да | live observations в RAM |
+| `domain_decisions` | planner | bounded LRU; checkpoint не чаще 15 минут | да | lookup/last_used не пишет |
+| TSPU cache + previous | scheduled refresh | только при изменении canonical bytes | да | identical cache не заменяется |
+| content-addressed Xray bundle | subscription prepare | один файл на digest | да | hash path + byte comparison |
+| generated transaction artifacts | validate/apply | один набор на реальный transaction | да для active revision | atomic writer сравнивает bytes; no-op apply не генерирует |
+| active nft/dnsmasq/Xray/Zapret config | adapter apply | только при отличии content/mode | да | `cmp`, same-filesystem temp, fsync, rename |
+| `last-good` | commit | один verified snapshot | да | новый snapshot проверяется до удаления прошлого |
+| bbolt backups | daily maintenance | максимум 7 | да | interval, hash verify, bounded pruning |
+| installer/uninstall backup registry | install lifecycle | максимум 2 verified / 128 MiB | да | manifest + hashes до удаления старого |
+| rollback timers, locks, heartbeat | transaction/watchdog | bounded runtime | нет | `/tmp/router-policy` |
+| hardware reports | явный harness | один bounded bundle на run | экспорт | не создаются health cycle |
+
+bbolt использует собственный transaction/fsync contract. Atomic files пишутся
+во временный файл на том же filesystem, синхронизируются и переименовываются;
+security-sensitive target не может быть symlink.
+
+## Write budget и диагностика
+
+`GET /api/v1/storage` возвращает:
+
+- размер bbolt, runtime, transactions, snapshots и backup roots;
+- bbolt write transactions, encoded bytes и no-op count;
+- Go file create/replace/delete, bytes и fsync count за время процесса;
+- adapter events из bounded tmpfs-журнала;
+- active transaction и pending rollback без capability/token;
+- last cleanup и last recovery result.
+
+`GET /api/v1/lifecycle` показывает managed/system services, точную process
+identity, test-runs и повреждённые manifests. Оба endpoint read-only: UI polling
+и SSE subscribe не открывают persistent write transaction.
+
+Счётчики отражают логические операции, а не физические NAND writes. После
+reboot runtime counters обнуляются — это ожидаемо.
+
+## Backup migration
+
+```sh
+router-policy storage migrate --dry-run
+router-policy storage migrate --apply
+```
+
+Dry-run классифицирует runtime, durable journal, backup и неизвестные файлы.
+Apply переносит только legacy directories с allowlisted именем: сначала делает
+проверенную копию в `/root/router-policy-backups`, создаёт typed manifest и
+повторно сверяет hashes; лишь после этого удаляет точный legacy source.
+Неизвестные файлы всегда пропускаются.
+
+## Что ещё требует Flint 2
+
+Локальные tests доказывают ownership gates, PID reuse protection, bounded
+history, no-write health cycles, no-op apply и fault paths atomic install. На
+Flint 2 отдельно прошли 100 изолированных test-run, stale cleanup, SIGKILL, SSH
+disconnect, foreign-process protection и возврат к baseline.
+
+Аппаратный P14 пока не закрыт: production upgrade/restart/reboot gate завершился
+потерей procd/ubus и U-Boot recovery. Исправленный installer и startup reconcile
+нужно заново проверить после read-only baseline; также остаются idle write
+observation и bounded backup inventory. Имитация физического отключения питания
+в этот этап не входит.

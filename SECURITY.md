@@ -44,6 +44,27 @@ router-policy security audit
 
 The audit is non-destructive and checks configuration gates, known unsafe defaults, and device-dependent unresolved items.
 
+## Process And Resource Ownership
+
+Production Xray and Zapret are supervised by the dedicated
+`router-policy-xray` and `router-policy-zapret` procd services. The status of a
+separate system `xray`, `zapret`, or `nfqws` service is reported independently.
+
+Cleanup never relies on a process name or PID alone. A test process must match
+its owner manifest, PID, `/proc` start time, executable, run identity, and
+expected config path. Network cleanup is restricted to the FlintRoute test
+namespace and reserved routing range. Ambiguous resources are reported and
+left untouched; production resources are not candidates for test cleanup.
+
+Installer and transaction writers reject symlink targets. Replacement uses a
+temporary file on the target filesystem, file sync, atomic rename, and a best
+effort parent-directory sync. Identical content is not replaced.
+
 ## Reporting
 
 Do not include live subscription URLs, UUIDs, tokens, or full diagnostic archives in public reports.
+
+The lifecycle and storage diagnostics expose hashes, sizes, process identity,
+bounded logical write counters, and cleanup results. They do not expose raw
+configuration payloads, subscription URLs, rollback capabilities, setup
+tokens, authentication cookies, or private keys.

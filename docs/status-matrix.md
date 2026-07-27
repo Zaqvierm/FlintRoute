@@ -21,10 +21,25 @@
 | P7 | 70% | Авторизация, fail-closed entropy handling и аудит listener bind |
 | P8 | 25% | Встроенный Web UI с role-aware загрузкой и счётчиками трафика |
 | P9 | 40% | Loopback и доступ к панели из LAN |
-| P10 | 85% | Проверяемый OpenWrt-пакет, обновление и чистая установка доказаны на Flint 2; downgrade/uninstall остаются |
+| P10 | 60% | Пакет и rollback локально проверяются; аппаратный upgrade после P14-изменений провалился и требует полного повторного прогона |
 | P11 | 85% | Автоматические тесты |
 | P12 | 100% | Adaptive Zapret привязан к OpenWrt transaction; два bundle-профиля и независимые выходы проверены на Flint 2 |
-| P13 | 85% | Полная применимая protocol/AF-матрица, production Smart DNS, recursion guard, rollback timer, controlled reboot, SIGKILL managed-процессов, восстановление state и production adaptive calibration доказаны; power-loss, multi-client, lifecycle и soak остаются |
+| P13 | 75% | Маршруты, Smart DNS, recursion guard и fault tests доказаны, но P13.5 переоткрыт после неудачного upgrade; power-loss, multi-client и soak остаются |
+| P14 | 60% | Локальные lifecycle/storage tests и 100 изолированных test-run на Flint 2 пройдены; production install/restart/reboot gate провален и блокирует завершение |
+
+### P14: lifecycle и storage
+
+| Критерий | Локально | Flint 2 |
+|---|---|---|
+| FlintRoute-managed Xray/Zapret отделены от system services | unit tests и API/CLI | предыдущий baseline подтвердил procd ownership; после factory recovery нужна повторная фиксация |
+| Typed owner manifest и PID reuse protection | да | изолированный hardware runner PASS |
+| Stale cleanup dry-run/apply и повторный cleanup | process/file/nft table/IP rule/route/listener contracts | hardware PASS для test namespace; production cleanup не выполнялся |
+| 100 test-runs возвращаются к baseline | локальный deterministic test | PASS: 100/100, production processes сохранены, foreign process защищён |
+| Одинаковые health cycles не пишут bbolt | да | требуется idle write observation |
+| Identical config/artifact install — no-op | Go и shell tests | требуется проверка active files/services/fw4 на устройстве |
+| Runtime telemetry в tmpfs, durable recovery journal сохранён | да | требуется reboot validation после migration |
+| Snapshot/backup count и size bounded | unit/shell tests | требуется inventory до/после install/upgrade/uninstall |
+| Watchdog maintenance lease и expiry | unit tests | upgrade/rollback matrix провалена; исправления ещё не перепроверены на Flint 2 |
 
 ### P13 по подэтапам
 
@@ -35,7 +50,7 @@
 | P13.2 | завершён | Production health cycle собирает раздельные active/challenger probes, сохраняет scheduler/ranking в bbolt и не переносит evidence между fingerprint; transaction-bound switch, safe-fallback pin, cooldown, quarantine и возврат static baseline пройдены на Flint 2 | повторять acceptance после изменения каталога nfqws или сетевой схемы |
 | P13.3 | частично | SIGKILL managed nfqws/Xray/controller, controlled reboot, реальный 180-second rollback timer и восстановление повреждённой bbolt пройдены; committed dataplane и route proofs сохранены | физическое power loss |
 | P13.4 | начат | Bounded sampler и локальная проверка resource limits | три одновременных клиента и реальные throughput/latency/resource пределы |
-| P13.5 | частично | In-place upgrade, factory clean install, первая активация и post-reboot recovery | аппаратные downgrade, rollback upgrade и uninstall |
+| P13.5 | переоткрыт после FAIL | Ранее проходили clean install и post-reboot recovery; P14 upgrade выявил потерю procd/ubus и ложный успешный rollback, после чего потребовался U-Boot recovery | повторные install/upgrade/rollback/downgrade/uninstall на исправленном пакете |
 | P13.6 | не начат | — | 72-часовой soak и финальный audit |
 
 | Область | Реализовано | Проверено локально | Требуется Flint 2 |
@@ -85,9 +100,10 @@
   `/etc/router-policy/state`, без совместимого псевдонима `/var/lib/router-policy`.
   Контроллер, Xray, nfqws, nftables и правила IPv4/IPv6 восстановились
   автоматически.
-- Factory clean install, первая транзакционная активация и controlled reboot
-  доказаны. Реальный 180-second timer rollback также пройден; power-loss, несколько
-  клиентов, понижение версии и удаление ещё требуют аппаратного прогона.
+- Ранее clean install, первая активация и controlled reboot проходили, но этот
+  результат больше не закрывает текущий installer. Последний P14 upgrade дважды
+  закончился состоянием, потребовавшим U-Boot recovery. Исправленный preflight,
+  rollback и startup no-op пока проверены только локально.
 - Последовательный SIGKILL managed nfqws, Xray и controller пройден на Flint 2.
   После каждого сбоя procd поднял новый PID, соответствующий route proof прошёл,
   а committed artifacts и active transaction binding не изменились. Timer fault,
@@ -103,3 +119,7 @@
   Все 15 неблокирующих Xray outbound имеют configured bypass mark, активные nft
   rules стоят до policy classification, bound VLESS probe подтверждён, а live
   bypass counter вырос во время проверки. Этот release blocker закрыт.
+- Изолированный P14 lifecycle runner выполнил 100 последовательных test-run:
+  baseline восстановлен, stale cleanup идемпотентен, SIGKILL и SSH disconnect
+  пережиты, foreign process и production processes сохранены. Это не заменяет
+  проваленный production install/restart/reboot gate.

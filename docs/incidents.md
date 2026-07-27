@@ -4,6 +4,44 @@ This log records failures that affected hardware validation or could have made a
 release claim unreliable. It contains no credentials, private endpoints or raw
 device dumps.
 
+## 2026-07-22 — failed P14 upgrade left procd/ubus unavailable
+
+### What was tested
+
+An in-place P14 package upgrade was attempted over the previously verified
+FlintRoute installation. No candidate configuration or new dataplane revision
+was applied. A verified external recovery archive and a bounded file-rollback
+timer were prepared before the upgrade.
+
+### What happened
+
+The first package revision called a maintenance command that the installed
+older binary did not support. The installer entered its automatic file and
+service rollback path and printed `install_rollback=restored`.
+
+Before the second attempt changed any files, its diagnostic step already
+reported that `ubus` was unavailable. The installer treated that failure as
+non-fatal and continued. Subsequent procd service operations failed, while the
+rollback path suppressed service restoration errors and again printed a
+successful restoration message. A file-only recovery snapshot was restored and
+the device was rebooted, but it did not return to the network. Recovery required
+reflashing the factory image through U-Boot.
+
+The pre-upgrade baseline showed about 5.3 GiB free on the overlay, so storage
+exhaustion is ruled out. The confirmed defects are the missing procd/ubus
+preflight gate, a rollback result that did not reflect service restoration
+failures, unsafe restoration order around the legacy watchdog, and a boot-guard
+stop action that did not remove its forwarding guard. The final on-device cause
+of the ubus failure cannot be proven because management access and volatile logs
+were lost.
+
+### Release impact
+
+Hardware install, upgrade, rollback, reboot recovery and P14 lifecycle claims
+are blocked. No further production-device mutation is allowed until the local
+fault tests cover an unavailable ubus socket, partial service restoration,
+legacy watchdog startup, boot-guard cleanup and repeated rollback.
+
 ## 2026-07-18 — lifecycle sandbox controlled real services
 
 ### What was tested
