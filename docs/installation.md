@@ -65,6 +65,8 @@ control plane и watchdog запускаются сразу. Xray и nfqws не 
 активного forwarding boot guard и, для уже запущенного control plane, рабочий
 loopback health endpoint. Каждый вызов ubus/init ограничен timeout. Провал
 preflight останавливает установку до snapshot и записи файлов.
+Factory OpenWrt не требует отдельного `coreutils-stat`: режим существующего
+regular file проверяется переносимо штатными `ls` и `awk`.
 In-place upgrade работающего controller также требует поддержку maintenance
 lease установленной версией. Старый controller без этого контракта нужно заранее
 явно остановить вместе с watchdog; installer не будет автоматически оживлять

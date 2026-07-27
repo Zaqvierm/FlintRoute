@@ -130,12 +130,18 @@ export HEALTH_COUNTER PATH ROUTER_POLICY_INSTALL_LIB_ONLY RUNTIME_DIR
 wait_control_health >/dev/null
 [ "$(cat "$HEALTH_COUNTER")" = "3" ]
 
-mkdir -p "$TMP/path-without-stat"
-if PATH="$TMP/path-without-stat" preflight_install >"$TMP/preflight-no-stat.out" 2>&1; then
-  echo "installer accepted a system without stat" >&2
+MODE_TARGET="$TMP/mode-target"
+printf 'mode-check\n' > "$MODE_TARGET"
+chmod 600 "$MODE_TARGET"
+stat() {
+  echo "external stat must not be called" >&2
+  return 99
+}
+regular_file_mode_matches "$MODE_TARGET" 600
+if regular_file_mode_matches "$MODE_TARGET" 755; then
+  echo "portable mode check accepted the wrong mode" >&2
   exit 1
 fi
-grep -F 'install the OpenWrt coreutils-stat package' "$TMP/preflight-no-stat.out" >/dev/null
 
 LEGACY_ROOT="$TMP/legacy-maintenance"
 mkdir -p "$LEGACY_ROOT/etc/router-policy/config" "$LEGACY_ROOT/etc/init.d"
@@ -341,6 +347,7 @@ echo "installer_failed_upgrade_rollback=true"
 echo "installer_verified_uninstall=true"
 echo "installer_waits_for_control_health=true"
 echo "installer_checks_transaction_dependencies=true"
+echo "installer_uses_portable_mode_check=true"
 echo "installer_blocks_running_legacy_controller=true"
 echo "installer_blocks_unavailable_ubus=true"
 echo "installer_preserves_dataplane_provider_processes=true"

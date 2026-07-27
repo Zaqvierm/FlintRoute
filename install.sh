@@ -58,10 +58,6 @@ need_root_for_apply() {
 }
 
 preflight_install() {
-  command -v stat >/dev/null 2>&1 || {
-    echo "stat is required by the transactional adapter; install the OpenWrt coreutils-stat package" >&2
-    return 1
-  }
   [ -f "$SOURCE_BINARY" ] || { echo "missing $SOURCE_BINARY; run scripts/build-go.sh before install" >&2; return 1; }
   for p in "$ROOT/scripts" "$ROOT/openwrt" "$ROOT/config/default.json" "$ROOT/config/schema.json"; do
     [ -e "$p" ] || { echo "missing install source: $p" >&2; return 1; }
@@ -70,6 +66,18 @@ preflight_install() {
     command -v sha256sum >/dev/null 2>&1 || { echo "sha256sum is required to verify this install bundle" >&2; return 1; }
     (cd "$ROOT" && sha256sum -c SHA256SUMS >/dev/null) || { echo "install bundle checksum verification failed" >&2; return 1; }
   fi
+}
+
+regular_file_mode_matches() {
+  target="$1"
+  mode_bits="$2"
+  # Targets are fixed allowlisted paths; only the leading permission field is read.
+  # shellcheck disable=SC2012
+  permissions="$(LC_ALL=C ls -ld "$target" 2>/dev/null | awk '{print substr($1, 1, 10)}')"
+  case "$mode_bits:$permissions" in
+    600:-rw-------|644:-rw-r--r--|700:-rwx------|755:-rwxr-xr-x) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 hash_file() {
@@ -452,11 +460,8 @@ atomic_copy() {
   mode_bits="$3"
   mkdir -p "$(dirname "$target")"
   [ ! -L "$target" ] || { echo "refusing symlink install target: $target" >&2; return 1; }
-  if [ -f "$target" ] && cmp -s "$source" "$target"; then
-    current_mode="$(stat -c '%a' "$target")"
-    if [ "$current_mode" = "$mode_bits" ]; then
-      return 0
-    fi
+  if [ -f "$target" ] && cmp -s "$source" "$target" && regular_file_mode_matches "$target" "$mode_bits"; then
+    return 0
   fi
   tmp="$(mktemp "$target.install.XXXXXX")"
   if ! cp "$source" "$tmp" || ! chmod "$mode_bits" "$tmp"; then
