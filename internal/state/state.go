@@ -237,7 +237,6 @@ type persistentRouteHealth struct {
 	RouteType            string
 	State                string
 	Role                 string
-	HoldUntil            time.Time
 	RoleHoldUntil        time.Time
 	LastStatus           string
 	LastReason           string
@@ -251,8 +250,8 @@ type persistentRouteHealth struct {
 func routeHealthPersistentView(health probe.RouteHealth) persistentRouteHealth {
 	return persistentRouteHealth{
 		RouteTag: health.RouteTag, RouteType: health.RouteType, State: health.State, Role: health.Role,
-		HoldUntil: health.HoldUntil, RoleHoldUntil: health.RoleHoldUntil,
-		LastStatus: health.LastStatus, LastReason: health.LastReason,
+		RoleHoldUntil: health.RoleHoldUntil,
+		LastStatus:    health.LastStatus, LastReason: health.LastReason,
 		AdapterRevision: health.AdapterRevision, CandidateHash: health.CandidateHash,
 		ArtifactManifestHash: health.ArtifactManifestHash, ExternalIPHash: health.ExternalIPHash,
 		ExternalCountry: health.ExternalCountry,

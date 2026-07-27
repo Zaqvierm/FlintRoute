@@ -292,6 +292,17 @@ Backup registry после финального upgrade содержит оди�
 вернул 0 runs/0 ambiguous resources. Migration dry-run классифицирует current,
 previous и freshness как bounded operational cache.
 
+После восстановления production revision managed Xray и nfqws прошли restart и
+`SIGKILL` recovery, controller — restart. Одиннадцать Direct, Zapret, VLESS и
+Drop route proofs остались bound к committed dataplane; внешний SSH/web monitor
+не зафиксировал потери управления.
+
+Первое длительное наблюдение обнаружило запись route health каждые пять минут:
+стабильный unhealthy route продлевал quarantine deadline. После исключения
+скользящего deadline из durable comparison 1000 API GET и 35 минут/35 samples
+дали нулевой прирост persistent transactions, bytes, file create/replace/delete.
+Inode, размер и SHA persistent artifacts остались прежними.
+
 ## Что НЕ доказано на железе
 
 - Smart DNS activation и bound path proof; transport preflight уже пройден.
@@ -299,8 +310,6 @@ previous и freshness как bounded operational cache.
 - Power-loss recovery, timer fault injection и повреждение persistent state.
 - Multi-client, 72h soak, расширенная fault injection matrix, downgrade и
   uninstall на железе.
-- Повтор active Xray/Zapret/dataplane lifecycle после последних P14 storage
-  изменений и длительное idle write observation.
 
 ## Подтверждённое состояние
 
@@ -309,6 +318,5 @@ evidence до и после физического reboot. P3 и P6 закрыт
 критериям. In-place upgrade из проверяемого OpenWrt-пакета тоже пройден. Проект
 Factory clean install, control-plane upgrade/restart/crash и повторное
 post-reboot восстановление теперь доказаны после P14-исправлений. Проект
-остаётся Alpha: active provider/dataplane lifecycle нужно повторить, а Smart DNS
-path, hard-crash/power-loss, multi-client, downgrade/uninstall и soak-test ещё
-не пройдены.
+остаётся Alpha: hard-crash/power-loss, multi-client, downgrade/uninstall и
+soak-test ещё не пройдены.

@@ -25,17 +25,17 @@
 | P11 | 85% | Автоматические тесты |
 | P12 | 100% | Adaptive Zapret привязан к OpenWrt transaction; два bundle-профиля и независимые выходы проверены на Flint 2 |
 | P13 | 80% | Маршруты, Smart DNS, recursion guard и fault tests доказаны; clean install/upgrade/reboot повторно пройдены, но power-loss, multi-client, lifecycle tail и soak остаются |
-| P14 | 80% | Ownership, control-plane restart/crash/reboot, watchdog inhibit, bounded backups и TSPU no-write доказаны; provider/dataplane lifecycle и idle observation остаются |
+| P14 | 90% | Ownership, provider/dataplane lifecycle, control-plane recovery и 35-minute idle write budget доказаны; остаётся rollback/downgrade/uninstall tail |
 
 ### P14: lifecycle и storage
 
 | Критерий | Локально | Flint 2 |
 |---|---|---|
-| FlintRoute-managed Xray/Zapret отделены от system services | unit tests и API/CLI | factory pass честно показал providers stopped и system services absent; active provider lifecycle требует повторного dataplane run |
+| FlintRoute-managed Xray/Zapret отделены от system services | unit tests и API/CLI | active production instances прошли restart и SIGKILL recovery; system `xray` отображается отдельно |
 | Typed owner manifest и PID reuse protection | да | изолированный hardware runner PASS |
 | Stale cleanup dry-run/apply и повторный cleanup | process/file/nft table/IP rule/route/listener contracts | hardware PASS для test namespace; production cleanup не выполнялся |
 | 100 test-runs возвращаются к baseline | локальный deterministic test | PASS: 100/100, production processes сохранены, foreign process защищён |
-| Одинаковые health cycles не пишут bbolt | да | short hardware pass не показал idle DB growth; длительное observation остаётся |
+| Одинаковые health cycles не пишут bbolt | да | 1000 API GET + 35 минут/35 samples: persistent transactions/bytes и persistent file identity не изменились |
 | Identical config/artifact install — no-op | Go и shell tests | unchanged TSPU entry set сохранил SHA/inode 64 MiB cache после refresh/restart/reboot |
 | Runtime telemetry в tmpfs, durable recovery journal сохранён | да | controlled reboot PASS; runtime root восстановлен в tmpfs |
 | Snapshot/backup count и size bounded | unit/shell tests | после финального upgrade сохранён 1 verified fallback, около 72 MiB < 128 MiB |

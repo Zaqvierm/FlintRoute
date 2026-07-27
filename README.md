@@ -58,6 +58,10 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
 - persistent state в `/etc/router-policy/state` без зависимости от volatile `/var`;
 - clean install, upgrade, restart, `SIGKILL`, watchdog maintenance lease и
   controlled reboot control plane повторно пройдены на factory OpenWrt;
+- production Xray/Zapret и committed dataplane повторно прошли restart,
+  `SIGKILL`, controller restart и 11 bound route proofs без потери SSH/web;
+- 1000 read-only API GET и 35 минут idle на Flint 2 дали нулевой прирост
+  persistent transactions, bytes и file replacements;
 - неизменный TSPU cache не переписывает два больших поколения: на Flint 2
   проверены 86 781 entry и отдельный freshness checkpoint размером меньше 2 KiB;
 - локальные API, авторизация, журнал изменений и встроенная консоль.
@@ -67,9 +71,7 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
 - расширенная IPv6-матрица на реальных LAN-клиентах;
 - downgrade и uninstall на отдельном чистом OpenWrt;
 - работа под нагрузкой с несколькими клиентами;
-- полный повтор lifecycle с production Xray/Zapret и committed dataplane;
-- длительное idle-наблюдение write budget и полная rollback/downgrade/uninstall
-  матрица после исправлений P14.
+- полная rollback/downgrade/uninstall матрица после исправлений P14.
 
 ### Запланировано
 

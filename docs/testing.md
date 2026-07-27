@@ -173,6 +173,6 @@ protocol-specific packet proof и bound route evidence; один HTTPS PASS не
 - P14 isolated lifecycle: 100 test-run, expired lease, SIGKILL, SSH disconnect,
   repeated cleanup, foreign-process protection и baseline comparison пройдены.
   На factory OpenWrt также пройдены clean install/upgrade, controller
-  restart/SIGKILL, watchdog inhibit, bounded boot guard и reboot. Остаются
-  active Xray/Zapret/dataplane lifecycle, длительное idle write observation и
-  rollback/downgrade/uninstall.
+  restart/SIGKILL, watchdog inhibit, bounded boot guard, reboot, active
+  Xray/Zapret/dataplane lifecycle, 1000 read-only API GET и 35-minute idle
+  write observation. Остаётся rollback/downgrade/uninstall tail.

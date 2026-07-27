@@ -298,7 +298,9 @@ off-router backup и независимым rollback timer.
 controller `SIGKILL`, watchdog maintenance inhibit более трёх интервалов и
 controlled reboot. Новый boot ID, key-only SSH, procd instances, health,
 bounded 120-second boot guard и неизменный nft/IP baseline подтверждены.
-Provider services оставались остановленными, active revision была пустой.
+После восстановления production revision managed Xray и nfqws прошли restart и
+`SIGKILL` recovery, controller — restart, а 11 Direct/Zapret/VLESS/Drop proofs
+остались bound к committed dataplane при доступных SSH и web.
 
 Проверка storage выявила 86 781 неизменный TSPU entry и замену двух JSON-файлов
 общим объёмом около 64 MiB после restart. После исправления unchanged refresh
@@ -307,6 +309,8 @@ Provider services оставались остановленными, active revi
 verified fallback размером около 72 MiB, в пределах 128 MiB; stale cleanup после
 reboot вернул 0 runs и 0 ambiguous resources.
 
-P14 остаётся открытым для production Xray/Zapret lifecycle с committed
-dataplane, длительного idle write observation и полной
-rollback/downgrade/uninstall матрицы.
+Первый idle gate поймал durable write на каждом стабильном unhealthy health
+cycle из-за скользящего `HoldUntil`. После исправления 1000 read-only API GET и
+35 минут наблюдения дали zero persistent transaction/byte/file delta; inode,
+размер и SHA persistent artifacts не изменились. P14 остаётся открытым для
+полной rollback/downgrade/uninstall матрицы.

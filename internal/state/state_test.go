@@ -167,13 +167,17 @@ func TestUnchangedRouteHealthAndRuntimeProbesDoNotWritePersistentDB(t *testing.T
 		t.Fatal(err)
 	}
 	defer store.Close()
-	health := probe.RouteHealth{RouteTag: "proxy-4", RouteType: "vless", State: "healthy", Role: "selected", UpdatedAt: time.Now().UTC()}
+	health := probe.RouteHealth{
+		RouteTag: "proxy-4", RouteType: "vless", State: "unhealthy", Role: "quarantined",
+		HoldUntil: time.Now().UTC().Add(10 * time.Minute), UpdatedAt: time.Now().UTC(),
+	}
 	if err := store.SaveRouteHealth(health); err != nil {
 		t.Fatal(err)
 	}
 	before := store.WriteMetrics()
 	for i := 0; i < 100; i++ {
 		health.Checks++
+		health.HoldUntil = health.HoldUntil.Add(time.Minute)
 		health.LastCheckedAt = health.LastCheckedAt.Add(time.Minute)
 		health.UpdatedAt = health.UpdatedAt.Add(time.Minute)
 		if err := store.SaveRouteHealth(health); err != nil {

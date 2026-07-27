@@ -175,6 +175,14 @@ security-sensitive target не может быть symlink.
 identity, test-runs и повреждённые manifests. Оба endpoint read-only: UI polling
 и SSE subscribe не открывают persistent write transaction.
 
+Аппаратный idle gate сначала обнаружил, что стабильный `unhealthy` route каждые
+пять минут продлевал `HoldUntil`, а сравнение принимало это за durable
+изменение. В persistent comparison теперь входят state, role, reason и
+deployment identity, но не скользящий quarantine deadline. Реальный переход
+по-прежнему сохраняет полный health record. После исправления 1000 API GET и
+35 минут фоновых health cycles дали нулевой прирост bbolt transactions/bytes и
+не изменили inode, size или SHA persistent artifacts.
+
 Счётчики отражают логические операции, а не физические NAND writes. После
 reboot runtime counters обнуляются — это ожидаемо.
 
@@ -213,7 +221,8 @@ bounded boot guard и reboot прошли без изменения nft/IP basel
 На Flint 2 SHA и inode обоих тяжёлых файлов сохранились после refresh, restart
 и reboot; checkpoint занял 1840 байт.
 
-P14 остаётся открытым для длительного idle write observation, повторного
-production Xray/Zapret lifecycle с committed dataplane и полной
-rollback/downgrade/uninstall матрицы. Имитация физического отключения питания
-в этот этап не входит.
+Production Xray/Zapret lifecycle с committed dataplane также повторно прошёл
+restart, `SIGKILL`, controller restart и 11 bound route proofs при непрерывном
+внешнем SSH/web monitor. P14 остаётся открытым только для полной
+rollback/downgrade/uninstall матрицы. Имитация физического отключения питания в
+этот этап не входит.
