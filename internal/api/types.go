@@ -33,6 +33,7 @@ type Event struct {
 	Route       string         `json:"route,omitempty"`
 	ReasonCode  string         `json:"reason_code"`
 	Details     map[string]any `json:"details"`
+	Durable     bool           `json:"durable,omitempty"`
 }
 
 type ChangeSet struct {
@@ -52,6 +53,7 @@ type ChangeSet struct {
 	RevisionID           string               `json:"revision_id,omitempty"`
 	TransactionID        string               `json:"transaction_id,omitempty"`
 	AdapterStatus        string               `json:"adapter_status,omitempty"`
+	Noop                 bool                 `json:"noop,omitempty"`
 	Operations           []ChangeOp           `json:"operations"`
 	Validation           []Validation         `json:"validation"`
 	Diff                 []ChangeOp           `json:"diff"`

@@ -47,6 +47,19 @@ now_utc() {
   date -u +%Y-%m-%dT%H:%M:%SZ
 }
 
+record_runtime_write_event() {
+  event_kind="$1"
+  event_bytes="${2:-0}"
+  event_reason="$3"
+  event_file="$runtime/write-events.log"
+  printf '%s\t%s\t%s\t%s\n' "$(now_utc)" "$event_kind" "$event_bytes" "$event_reason" >> "$event_file"
+  event_lines="$(wc -l < "$event_file" | tr -d ' ')"
+  if [ "$event_lines" -gt 1024 ]; then
+    tail -n 1024 "$event_file" > "$event_file.tmp"
+    mv "$event_file.tmp" "$event_file"
+  fi
+}
+
 process_start() {
   pid_value="$1"
   [ -r "/proc/$pid_value/stat" ] || return 1
@@ -370,8 +383,20 @@ create_snapshot() {
     cp -R "$recovery_artifact_source" "$create_root.tmp/generated"
   fi
   sha_file "$create_root.tmp/manifest.txt" > "$create_root.tmp/manifest.sha256"
-  rm -rf "$create_root"
-  mv "$create_root.tmp" "$create_root"
+  verify_snapshot "$create_root.tmp" || { echo "reason=new_snapshot_integrity_failed" >&2; return 1; }
+  previous="$create_root.previous"
+  rm -rf "$previous"
+  if [ -d "$create_root" ] && [ ! -L "$create_root" ]; then
+    mv "$create_root" "$previous"
+  fi
+  if ! mv "$create_root.tmp" "$create_root" || ! verify_snapshot "$create_root"; then
+    rm -rf "$create_root"
+    [ ! -d "$previous" ] || mv "$previous" "$create_root"
+    echo "reason=snapshot_activation_failed" >&2
+    return 1
+  fi
+  rm -rf "$previous"
+  record_runtime_write_event "snapshot" "0" "transaction_snapshot"
 }
 
 snapshot_current() {
@@ -561,9 +586,29 @@ cancel_timer() {
 atomic_install() {
   install_source="$1"
   install_target="$2"
-  install_tmp="$install_target.tmp.$txid"
-  cp "$install_source" "$install_tmp"
-  mv "$install_tmp" "$install_target"
+  [ ! -L "$install_target" ] || { echo "reason=refusing_symlink_install_target" >&2; return 1; }
+  install_mode="$(stat -c '%a' "$install_source")"
+  install_event="file_created"
+  [ ! -f "$install_target" ] || install_event="file_replaced"
+  if [ -f "$install_target" ] && cmp -s "$install_source" "$install_target"; then
+    target_mode="$(stat -c '%a' "$install_target")"
+    if [ "$target_mode" = "$install_mode" ]; then
+      return 0
+    fi
+  fi
+  install_tmp="$(mktemp "$install_target.tmp.$txid.XXXXXX")"
+  if ! cp "$install_source" "$install_tmp" || ! chmod "$install_mode" "$install_tmp"; then
+    rm -f "$install_tmp"
+    return 1
+  fi
+  if ! { sync -f "$install_tmp" 2>/dev/null || sync "$install_tmp" 2>/dev/null || sync; } || ! mv "$install_tmp" "$install_target"; then
+    rm -f "$install_tmp"
+    return 1
+  fi
+  sync -f "$(dirname "$install_target")" 2>/dev/null || true
+  install_bytes="$(wc -c < "$install_source" | tr -d ' ')"
+  record_runtime_write_event "$install_event" "$install_bytes" "active_artifact_install"
+  record_runtime_write_event "fsync" "2" "active_artifact_install"
 }
 
 nft_identity() {
@@ -940,6 +985,62 @@ restore_service_state() {
   fi
 }
 
+service_state_matches() {
+  state_name="$1"
+  service_init="$2"
+  [ -f "$state/last-good/$state_name" ] || return 1
+  desired_state="$(cat "$state/last-good/$state_name")"
+  current_state=stopped
+  "$service_init" running >/dev/null 2>&1 && current_state=running
+  [ "$current_state" = "$desired_state" ]
+}
+
+uci_state_matches() {
+  state_name="$1"
+  uci_key="$2"
+  if [ -f "$state/last-good/$state_name" ]; then
+    desired_uci="$(cat "$state/last-good/$state_name")"
+    current_uci="$("$uci_bin" -q get "$uci_key" 2>/dev/null)" || return 1
+    [ "$current_uci" = "$desired_uci" ]
+    return
+  fi
+  [ -f "$state/last-good/$state_name.absent" ] || return 1
+  ! "$uci_bin" -q get "$uci_key" >/dev/null 2>&1
+}
+
+recovery_active_matches() {
+  [ -f "$active_file" ] || return 1
+  [ "$(sed -n 's/^transaction_id=//p' "$active_file" | head -n 1)" = "$txid" ] &&
+    [ "$(sed -n 's/^revision_id=//p' "$active_file" | head -n 1)" = "$revision" ] &&
+    [ "$(sed -n 's/^candidate_hash=//p' "$active_file" | head -n 1)" = "$recovery_candidate_hash" ] &&
+    [ "$(sed -n 's/^artifact_manifest_hash=//p' "$active_file" | head -n 1)" = "$recovery_artifact_manifest_hash" ] &&
+    [ "$(sed -n 's/^transaction_state=//p' "$active_file" | head -n 1)" = "committed" ]
+}
+
+committed_deployment_matches() {
+  recovery_generated="$1"
+  recovery_active_matches || return 1
+  [ ! -f "$boot_guard_file" ] || return 1
+  cmp -s "$state/last-good/router-policy-config.json" "$config" || return 1
+  cmp -s "$recovery_generated/router-policy.nft" "$active_nft" || return 1
+  cmp -s "$recovery_generated/router-policy-dnsmasq.conf" "$active_dnsmasq" || return 1
+  cmp -s "$recovery_generated/xray.json" "$active_xray" || return 1
+  plan_status="$("$router_policy_bin" internal-validate-ip-plan --plan "$recovery_generated/ip-plan.json" --transaction "$txid" --revision "$revision" --candidate-hash "$recovery_candidate_hash")" || return 1
+  plan_zapret_enabled="$(printf '%s\n' "$plan_status" | sed -n 's/^zapret_enabled=//p' | head -n 1)"
+  if [ "$plan_zapret_enabled" = "true" ]; then
+    cmp -s "$recovery_generated/nfqws.conf" "$active_zapret" || return 1
+  else
+    [ ! -e "$active_zapret" ] || return 1
+  fi
+  service_state_matches "xray-service.state" "$xray_init" || return 1
+  service_state_matches "zapret-service.state" "$zapret_init" || return 1
+  "$dnsmasq_init" running >/dev/null 2>&1 || return 1
+  uci_state_matches "flow-offloading.uci" "$flow_offload_uci_key" || return 1
+  uci_state_matches "flow-offloading-hw.uci" "$flow_offload_hw_uci_key" || return 1
+  "$nft_bin" list table inet router_policy >/dev/null 2>&1 || return 1
+  ROUTER_POLICY_IP_BIN="$ip_bin" "$router_policy_bin" internal-verify-applied-ip-plan --plan "$recovery_generated/ip-plan.json" --transaction "$txid" --revision "$revision" --candidate-hash "$recovery_candidate_hash" >/dev/null || return 1
+}
+
 reload_restored_state() {
   snapshot_dir="$1"
   reload_project_firewall
@@ -1007,7 +1108,6 @@ reconcile_tx() {
     return 0
   }
   load_recovery_args
-  install_boot_guard
   require_recovery_args
   take_lock
   recovery_binding="$state/last-good/active-transaction.env"
@@ -1031,6 +1131,18 @@ reconcile_tx() {
   "$router_policy_bin" internal-verify-candidate --candidate "$state/last-good/router-policy-config.json" --candidate-hash "$recovery_candidate_hash" >/dev/null
   "$router_policy_bin" internal-verify-artifacts --root "$recovery_generated" --transaction "$txid" --revision "$revision" --candidate-hash "$recovery_candidate_hash" --manifest-hash "$recovery_artifact_manifest_hash" >/dev/null
   "$router_policy_bin" internal-validate-ip-plan --plan "$recovery_generated/ip-plan.json" --transaction "$txid" --revision "$revision" --candidate-hash "$recovery_candidate_hash" >/dev/null
+  if committed_deployment_matches "$recovery_generated"; then
+    echo "reconcile=noop"
+    echo "noop=true"
+    echo "network_changed=false"
+    echo "active_transaction=$txid"
+    echo "active_revision=$revision"
+    echo "active_candidate_hash=$recovery_candidate_hash"
+    echo "active_artifact_manifest_hash=$recovery_artifact_manifest_hash"
+    echo "transaction_state=committed"
+    return 0
+  fi
+  install_boot_guard
   restore_snapshot "$state/last-good"
   restore_service_state "$state/last-good" "xray-service.state" "$xray_init" "xray"
   restore_service_state "$state/last-good" "zapret-service.state" "$zapret_init" "zapret"

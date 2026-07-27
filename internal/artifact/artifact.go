@@ -1,6 +1,7 @@
 package artifact
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,6 +19,7 @@ import (
 	"router-policy/internal/config"
 	"router-policy/internal/platform"
 	policyengine "router-policy/internal/policy"
+	"router-policy/internal/writebudget"
 	"router-policy/internal/xraybundle"
 )
 
@@ -1498,12 +1500,34 @@ func splitProxy(value string) (string, int, error) {
 }
 
 func writeAtomic(path string, content []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	created := true
+	if info, err := os.Lstat(path); err == nil {
+		created = false
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing non-regular artifact target")
+		}
+		current, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if bytes.Equal(current, content) {
+			return nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".artifact-*")
 	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	if err := f.Chmod(mode); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
 		return err
 	}
 	if _, err := f.Write(content); err != nil {
@@ -1524,6 +1548,14 @@ func writeAtomic(path string, content []byte, mode os.FileMode) error {
 		_ = os.Remove(tmp)
 		return err
 	}
+	fsyncCount := uint64(1)
+	if parent, err := os.Open(dir); err == nil {
+		if parent.Sync() == nil {
+			fsyncCount++
+		}
+		_ = parent.Close()
+	}
+	writebudget.RecordFileWrite(created, uint64(len(content)), fsyncCount, "transaction artifact")
 	return nil
 }
 

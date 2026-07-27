@@ -14,7 +14,10 @@ import (
 	"router-policy/internal/tspu"
 )
 
-const bucket = "domain_decisions"
+const (
+	bucket                   = "domain_decisions"
+	domainCheckpointInterval = 15 * time.Minute
+)
 
 type Store interface {
 	SaveJSON(string, string, any) error
@@ -43,10 +46,11 @@ type Decision struct {
 }
 
 type Manager struct {
-	mu        sync.Mutex
-	store     Store
-	max       int
-	decisions map[string]Decision
+	mu          sync.Mutex
+	store       Store
+	max         int
+	decisions   map[string]Decision
+	checkpoints map[string]time.Time
 }
 
 func New(store Store, maxEntries int) (*Manager, error) {
@@ -59,7 +63,7 @@ func New(store Store, maxEntries int) (*Manager, error) {
 	if maxEntries > 100000 {
 		maxEntries = 100000
 	}
-	manager := &Manager{store: store, max: maxEntries, decisions: map[string]Decision{}}
+	manager := &Manager{store: store, max: maxEntries, decisions: map[string]Decision{}, checkpoints: map[string]time.Time{}}
 	rawEntries, err := store.ListRaw(bucket)
 	if err != nil && !errors.Is(err, state.ErrNotFound) {
 		return nil, err
@@ -70,6 +74,7 @@ func New(store Store, maxEntries int) (*Manager, error) {
 			return nil, errors.New("invalid persisted domain decision")
 		}
 		manager.decisions[decision.Key] = decision
+		manager.checkpoints[decision.Key] = decision.CheckedAt
 	}
 	if err := manager.pruneLocked(time.Now().UTC()); err != nil {
 		return nil, err
@@ -104,6 +109,7 @@ func (m *Manager) Lookup(domain, activeRevision string, now time.Time) (Decision
 				return Decision{}, false, err
 			}
 			delete(m.decisions, key)
+			delete(m.checkpoints, key)
 			if key == exact {
 				return Decision{}, false, nil
 			}
@@ -118,9 +124,6 @@ func (m *Manager) Lookup(domain, activeRevision string, now time.Time) (Decision
 		if decision.LastUsedAt.IsZero() || now.Sub(decision.LastUsedAt) >= time.Hour {
 			decision.LastUsedAt = now
 			m.decisions[key] = decision
-			if err := m.store.SaveJSON(bucket, key, decision); err != nil {
-				return Decision{}, false, err
-			}
 		}
 		return cloneDecision(decision), true, nil
 	}
@@ -165,6 +168,11 @@ func (m *Manager) Save(domain string, decision Decision) (Decision, error) {
 	decision = cloneDecision(decision)
 	previous, replaced := m.decisions[key]
 	m.decisions[key] = decision
+	checkpoint := m.checkpoints[key]
+	if replaced && persistentDecisionIdentity(previous) == persistentDecisionIdentity(decision) && !checkpoint.IsZero() &&
+		!decision.CheckedAt.Before(checkpoint) && decision.CheckedAt.Sub(checkpoint) < domainCheckpointInterval {
+		return cloneDecision(decision), nil
+	}
 	if err := m.store.SaveJSON(bucket, key, decision); err != nil {
 		if replaced {
 			m.decisions[key] = previous
@@ -173,6 +181,7 @@ func (m *Manager) Save(domain string, decision Decision) (Decision, error) {
 		}
 		return Decision{}, err
 	}
+	m.checkpoints[key] = decision.CheckedAt
 	if err := m.pruneLocked(decision.CheckedAt); err != nil {
 		return Decision{}, err
 	}
@@ -202,6 +211,7 @@ func (m *Manager) pruneLocked(now time.Time) error {
 			return err
 		}
 		delete(m.decisions, key)
+		delete(m.checkpoints, key)
 	}
 	if len(m.decisions) <= m.max {
 		return nil
@@ -224,6 +234,7 @@ func (m *Manager) pruneLocked(now time.Time) error {
 			return err
 		}
 		delete(m.decisions, items[i].Key)
+		delete(m.checkpoints, items[i].Key)
 	}
 	return nil
 }
@@ -251,6 +262,10 @@ func validateDecision(decision Decision) error {
 
 func decisionRouteIdentity(decision Decision) string {
 	return strings.Join([]string{decision.Status, decision.Category, decision.TSPUStatus, decision.SelectedType, decision.SelectedRoute}, "|")
+}
+
+func persistentDecisionIdentity(decision Decision) string {
+	return strings.Join([]string{decisionRouteIdentity(decision), decision.Service, decision.AdapterRevision}, "|")
 }
 
 func exactKey(domain string) string { return "exact:" + domain }

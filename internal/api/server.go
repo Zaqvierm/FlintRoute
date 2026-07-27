@@ -78,6 +78,8 @@ type Server struct {
 	transactionMu        sync.Mutex
 	subscriptionMu       sync.Mutex
 	timers               map[string]*time.Timer
+	timerWG              sync.WaitGroup
+	closing              bool
 	activeConfig         *config.Config
 	activeRevision       string
 	configVersion        int64
@@ -179,12 +181,6 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		_ = stateStore.Close()
 		return nil, fmt.Errorf("initialize adaptive Zapret: %w", err)
 	}
-	if initial := s.broker.Recent(0, 1); len(initial) == 1 {
-		if err := s.persistEvent(initial[0]); err != nil {
-			_ = stateStore.Close()
-			return nil, fmt.Errorf("persist initial event: %w", err)
-		}
-	}
 	s.routes()
 	if err := s.recoverTransactions(context.Background()); err != nil {
 		_ = stateStore.Close()
@@ -206,16 +202,17 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) Close() error {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
+		s.closing = true
 		cancelScheduler := s.schedulerCancel
-		for id, timer := range s.timers {
-			timer.Stop()
-			delete(s.timers, id)
+		for id := range s.timers {
+			s.cancelExpiryLocked(id)
 		}
 		s.mu.Unlock()
 		if cancelScheduler != nil {
 			cancelScheduler()
 		}
 		s.schedulerWG.Wait()
+		s.timerWG.Wait()
 		if s.store != nil {
 			s.closeErr = s.store.Close()
 		}
@@ -445,6 +442,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/zapret/adaptive/unpin", s.requireRole(auth.RoleAdministrator, s.handleAdaptiveZapretUnpin))
 	s.mux.HandleFunc("/api/v1/telegram", s.requireRole(auth.RoleViewer, s.handleTelegram))
 	s.mux.HandleFunc("/api/v1/diagnostics", s.requireRole(auth.RoleDiagnostician, s.handleDiagnostics))
+	s.mux.HandleFunc("/api/v1/lifecycle", s.requireRole(auth.RoleDiagnostician, s.handleLifecycle))
+	s.mux.HandleFunc("/api/v1/storage", s.requireRole(auth.RoleDiagnostician, s.handleStorage))
 	s.mux.HandleFunc("/api/v1/probes", s.requireRole(auth.RoleDiagnostician, s.handleProbes))
 	s.mux.HandleFunc("/api/v1/events", s.requireRole(auth.RoleViewer, s.handleEvents))
 	s.mux.HandleFunc("/api/v1/events/stream", s.requireRole(auth.RoleViewer, s.handleEventStream))

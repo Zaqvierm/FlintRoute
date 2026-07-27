@@ -17,14 +17,15 @@ import (
 )
 
 type adaptiveRuntime struct {
-	profiles      *zapret.Catalog
-	bundles       *zapret.BundleCatalog
-	controller    *zapret.SwitchController
-	ranker        *zapret.Ranker
-	scheduler     *zapret.ProbeScheduler
-	store         *state.Store
-	catalogDigest string
-	probeMu       sync.Mutex
+	profiles            *zapret.Catalog
+	bundles             *zapret.BundleCatalog
+	controller          *zapret.SwitchController
+	ranker              *zapret.Ranker
+	scheduler           *zapret.ProbeScheduler
+	store               *state.Store
+	catalogDigest       string
+	probeMu             sync.Mutex
+	lastProbeCheckpoint time.Time
 }
 
 type adaptiveEvaluateRequest struct {

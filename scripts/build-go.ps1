@@ -40,13 +40,22 @@ try {
 }
 
 & $go test ./...
+if ($LASTEXITCODE -ne 0) {
+  throw "go test ./... failed with exit code $LASTEXITCODE"
+}
 
 & $go build -o (Join-Path $dist "router-policy.exe") ./cmd/router-policy
+if ($LASTEXITCODE -ne 0) {
+  throw "Windows build failed with exit code $LASTEXITCODE"
+}
 
 $env:GOOS = "linux"
 $env:GOARCH = "arm64"
 $env:CGO_ENABLED = "0"
 & $go build -trimpath -ldflags="-s -w" -o (Join-Path $dist "router-policy-linux-arm64") ./cmd/router-policy
+if ($LASTEXITCODE -ne 0) {
+  throw "Linux ARM64 build failed with exit code $LASTEXITCODE"
+}
 
 $bashPath = $null
 $gitBash = "C:\Program Files\Git\bin\bash.exe"

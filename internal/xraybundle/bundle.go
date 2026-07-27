@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"router-policy/internal/config"
+	"router-policy/internal/writebudget"
 )
 
 const MaxBytes = 4 << 20
@@ -231,6 +232,23 @@ func writeAtomic(path string, raw []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
+	created := true
+	if info, err := os.Lstat(path); err == nil {
+		created = false
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return errors.New("refusing non-regular Xray bundle target")
+		}
+		current, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		modeMatches := info.Mode().Perm() == 0o600 || runtime.GOOS == "windows"
+		if bytes.Equal(current, raw) && modeMatches {
+			return nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	random := make([]byte, 8)
 	if _, err := rand.Read(random); err != nil {
 		return err
@@ -263,5 +281,13 @@ func writeAtomic(path string, raw []byte) error {
 		return err
 	}
 	remove = false
+	fsyncCount := uint64(1)
+	if parent, err := os.Open(filepath.Dir(path)); err == nil {
+		if parent.Sync() == nil {
+			fsyncCount++
+		}
+		_ = parent.Close()
+	}
+	writebudget.RecordFileWrite(created, uint64(len(raw)), fsyncCount, "content-addressed Xray bundle")
 	return nil
 }

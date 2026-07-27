@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -102,8 +103,18 @@ func (b *EventBroker) Unsubscribe(ch chan Event) {
 
 func (s *Server) publishEvent(event Event) Event {
 	published := s.broker.Publish(event)
-	_ = s.persistEvent(published)
+	if published.Durable || durableEventType(published.Type) {
+		_ = s.persistEvent(published)
+	}
 	return published
+}
+
+func durableEventType(eventType string) bool {
+	return strings.HasPrefix(eventType, "auth.") ||
+		strings.HasPrefix(eventType, "admin.") ||
+		strings.HasPrefix(eventType, "change.") ||
+		strings.HasPrefix(eventType, "recovery.") ||
+		strings.HasPrefix(eventType, "security.")
 }
 
 func (s *Server) persistEvent(event Event) error {

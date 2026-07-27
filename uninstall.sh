@@ -12,7 +12,9 @@ HOTPLUG_IFACE_DIR="${HOTPLUG_IFACE_DIR:-$SYSTEM_ROOT/etc/hotplug.d/iface}"
 HOTPLUG_FIREWALL_DIR="${HOTPLUG_FIREWALL_DIR:-$SYSTEM_ROOT/etc/hotplug.d/firewall}"
 DNSMASQ_DIR="${DNSMASQ_DIR:-$SYSTEM_ROOT/etc/dnsmasq.d}"
 NFTABLES_DIR="${NFTABLES_DIR:-$SYSTEM_ROOT/etc/nftables.d}"
-BACKUP_DIR="${BACKUP_DIR:-$SYSTEM_ROOT/root/router-policy-uninstall-backup-$(date -u +%Y%m%dT%H%M%SZ)}"
+BACKUP_ROOT="${BACKUP_ROOT:-$SYSTEM_ROOT/root/router-policy-backups}"
+BACKUP_DIR="${BACKUP_DIR:-$BACKUP_ROOT/uninstall-$(date -u +%Y%m%dT%H%M%SZ)}"
+ROUTER_POLICY_VERSION="${ROUTER_POLICY_VERSION:-unknown}"
 TAR_BIN="${TAR_BIN:-tar}"
 SERVICES="router-policy-boot-guard router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
 mode="${1:---dry-run}"
@@ -26,6 +28,10 @@ fi
 
 [ "$mode" = "--uninstall" ] || { echo "usage: uninstall.sh --dry-run|--uninstall" >&2; exit 2; }
 [ -n "$SYSTEM_ROOT" ] || [ "$(id -u)" = "0" ] || { echo "must run as root" >&2; exit 1; }
+
+if [ -z "$SYSTEM_ROOT" ] && [ -x "$BIN_DIR/router-policy" ]; then
+  ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$BIN_DIR/router-policy" maintenance begin --owner "installer:uninstall-$$" --reason uninstall --lease 30m >/dev/null
+fi
 
 mkdir -p "$BACKUP_DIR"
 manifest="$BACKUP_DIR/manifest.txt"
@@ -54,6 +60,11 @@ else
 fi
 echo "verified_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$manifest"
 
+if [ -x "$BIN_DIR/router-policy" ]; then
+  "$BIN_DIR/router-policy" backup register --root "$BACKUP_DIR" --operation "$(basename "$BACKUP_DIR")" --version "$ROUTER_POLICY_VERSION" --reason uninstall --retention-class uninstall-fallback >/dev/null
+  "$BIN_DIR/router-policy" backup prune --root "$BACKUP_ROOT" --max 2 --max-bytes 134217728 --apply >/dev/null
+fi
+
 if [ -z "$SYSTEM_ROOT" ]; then
   for service in $SERVICES; do
     init="$INIT_DIR/$service"
@@ -67,6 +78,7 @@ rm -f "$HOTPLUG_IFACE_DIR/95-router-policy" "$HOTPLUG_FIREWALL_DIR/95-router-pol
 rm -f "$ETC_DIR/firewall/router-policy.nft" "$NFTABLES_DIR/router-policy.nft" "$DNSMASQ_DIR/router-policy.conf"
 rm -f "$BIN_DIR/router-policy"
 rm -rf "$PREFIX"
+rm -f "$SYSTEM_ROOT/tmp/router-policy/watchdog-inhibit.json"
 
 if [ -z "$SYSTEM_ROOT" ] && command -v fw4 >/dev/null 2>&1; then
   fw4 reload || true

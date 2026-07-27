@@ -124,6 +124,9 @@ func Save(path string, cache Cache) error {
 		if _, decodeErr := decodeCache(current); decodeErr != nil {
 			return fmt.Errorf("existing TSPU cache is invalid: %w", decodeErr)
 		}
+		if bytes.Equal(current, raw) {
+			return nil
+		}
 		if err := writeAtomic(previousPath(path), current, 0o600); err != nil {
 			return fmt.Errorf("write previous TSPU cache: %w", err)
 		}

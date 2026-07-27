@@ -12,7 +12,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -30,13 +32,16 @@ import (
 	"router-policy/internal/domaincache"
 	"router-policy/internal/evidence"
 	"router-policy/internal/geoip"
+	"router-policy/internal/lifecycle"
 	"router-policy/internal/planner"
 	"router-policy/internal/platform"
 	"router-policy/internal/probe"
 	"router-policy/internal/security"
 	"router-policy/internal/state"
+	storagepolicy "router-policy/internal/storage"
 	"router-policy/internal/tspu"
 	"router-policy/internal/vpnsub"
+	"router-policy/internal/watchdog"
 	"router-policy/internal/zapret"
 )
 
@@ -100,6 +105,303 @@ func run(args []string) error {
 			return err
 		}
 		return printJSON(map[string]any{"setup_required": true, "setup_token": token, "expires_at": meta.ExpiresAt, "uses_left": meta.UsesLeft})
+	case "lifecycle":
+		if len(args) < 2 {
+			return errors.New("usage: router-policy lifecycle status|begin|add-process|add-file|add-network|finish")
+		}
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			return err
+		}
+		baselineVerifier := lifecycle.OpenWrtBaselineVerifier{}
+		manager := lifecycle.Manager{StateDir: cfg.Storage.StateDir, RuntimeDir: cfg.Storage.RuntimeDir, Inspector: lifecycle.LinuxProcessInspector{}, Executor: lifecycle.OpenWrtResourceExecutor{}, Verifier: baselineVerifier}
+		switch args[1] {
+		case "status":
+			fs := flag.NewFlagSet("lifecycle status", flag.ContinueOnError)
+			jsonOutput := fs.Bool("json", false, "print JSON")
+			if err := fs.Parse(args[2:]); err != nil {
+				return err
+			}
+			manifests, manifestIssues, err := manager.ListWithIssues()
+			if err != nil {
+				return err
+			}
+			diagnosticCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			services := lifecycle.DiagnoseServices(diagnosticCtx, lifecycle.ExecRunner{}, lifecycle.LinuxProcessInspector{}, []lifecycle.ServiceSpec{
+				{Component: "xray", Service: "router-policy-xray", Instance: "router-policy-xray", Executable: cfg.Xray.Binary, ConfigPath: cfg.Xray.ActiveConfig, SystemServices: []string{"xray"}},
+				{Component: "zapret", Service: "router-policy-zapret", Instance: "router-policy-zapret", Executable: cfg.Zapret.Binary, ConfigPath: cfg.Zapret.ActiveConfig, SystemServices: []string{"zapret", "nfqws"}},
+			})
+			result := map[string]any{"schema_version": lifecycle.ManifestSchemaVersion, "test_runs": manifests, "manifest_issues": manifestIssues, "services": services, "persistent_root": cfg.Storage.StateDir, "runtime_root": cfg.Storage.RuntimeDir}
+			if *jsonOutput {
+				return printJSON(result)
+			}
+			fmt.Printf("test runs: %d\npersistent root: %s\nruntime root: %s\n", len(manifests), cfg.Storage.StateDir, cfg.Storage.RuntimeDir)
+			return nil
+		case "begin":
+			fs := flag.NewFlagSet("lifecycle begin", flag.ContinueOnError)
+			runID := fs.String("id", "", "test-run ID")
+			lease := fs.Duration("lease", time.Hour, "bounded test-run lease")
+			if err := fs.Parse(args[2:]); err != nil {
+				return err
+			}
+			manifest, err := manager.BeginTestRun(*runID, *lease, baselineVerifier.Capture())
+			if err != nil {
+				return err
+			}
+			return printJSON(manifest)
+		case "add-process":
+			fs := flag.NewFlagSet("lifecycle add-process", flag.ContinueOnError)
+			runID := fs.String("id", "", "test-run ID")
+			resourceID := fs.String("resource", "", "resource ID")
+			pid := fs.Int("pid", 0, "process PID")
+			executable := fs.String("executable", "", "expected executable")
+			configPath := fs.String("config", "", "expected test config path")
+			service := fs.String("service", "", "managed service")
+			instance := fs.String("instance", "", "managed instance")
+			if err := fs.Parse(args[2:]); err != nil {
+				return err
+			}
+			identity, err := (lifecycle.LinuxProcessInspector{}).Inspect(*pid)
+			if err != nil {
+				return err
+			}
+			if *executable == "" || filepath.Clean(identity.Executable) != filepath.Clean(*executable) || *configPath == "" || !strings.Contains(strings.Join(identity.CommandLine, "\x00"), *configPath) || !strings.Contains(strings.Join(identity.CommandLine, "\x00"), *runID) {
+				return errors.New("process identity does not prove executable, config path and test-run ID")
+			}
+			identity.Executable, identity.ConfigPath, identity.Service, identity.Instance = *executable, *configPath, *service, *instance
+			manifest, err := manager.AddResource(*runID, lifecycle.Resource{ID: *resourceID, Kind: lifecycle.ResourceProcess, Process: &identity, AllowCleanup: true})
+			if err != nil {
+				return err
+			}
+			return printJSON(manifest)
+		case "add-file":
+			fs := flag.NewFlagSet("lifecycle add-file", flag.ContinueOnError)
+			runID := fs.String("id", "", "test-run ID")
+			resourceID := fs.String("resource", "", "resource ID")
+			path := fs.String("path", "", "owned runtime file")
+			if err := fs.Parse(args[2:]); err != nil {
+				return err
+			}
+			manifest, err := manager.AddResource(*runID, lifecycle.Resource{ID: *resourceID, Kind: lifecycle.ResourceFile, Path: *path, AllowCleanup: true})
+			if err != nil {
+				return err
+			}
+			return printJSON(manifest)
+		case "add-network":
+			fs := flag.NewFlagSet("lifecycle add-network", flag.ContinueOnError)
+			runID := fs.String("id", "", "test-run ID")
+			resourceID := fs.String("resource", "", "resource ID")
+			kind := fs.String("kind", "", "nft-table, ip-rule, route or listener")
+			family := fs.String("family", "", "inet, ipv4 or ipv6")
+			table := fs.String("table", "", "nft or IP routing table")
+			address := fs.String("address", "", "route prefix or loopback listener")
+			priority := fs.String("priority", "", "IP rule priority")
+			if err := fs.Parse(args[2:]); err != nil {
+				return err
+			}
+			resource := lifecycle.Resource{ID: *resourceID, Kind: lifecycle.ResourceKind(*kind), Family: *family, Table: *table, Address: *address, AllowCleanup: true}
+			if *priority != "" {
+				resource.Metadata = map[string]string{"priority": *priority}
+			}
+			switch resource.Kind {
+			case lifecycle.ResourceNFTTable, lifecycle.ResourceIPRule, lifecycle.ResourceRoute, lifecycle.ResourceListener:
+			default:
+				return errors.New("network resource kind is not allowlisted")
+			}
+			manifest, err := manager.Load(*runID)
+			if err != nil {
+				return err
+			}
+			resource.Owner = manifest.Owner
+			if resource.Kind != lifecycle.ResourceListener {
+				if _, _, _, err := (lifecycle.OpenWrtResourceExecutor{}).Cleanup(manifest, resource, false); err != nil {
+					return fmt.Errorf("network resource ownership is not provable: %w", err)
+				}
+			} else {
+				host, port, splitErr := net.SplitHostPort(resource.Address)
+				if splitErr != nil || (host != "127.0.0.1" && host != "::1") {
+					return errors.New("only loopback test listeners may be registered")
+				}
+				if _, parseErr := strconv.ParseUint(port, 10, 16); parseErr != nil {
+					return errors.New("listener port is invalid")
+				}
+			}
+			manifest, err = manager.AddResource(*runID, resource)
+			if err != nil {
+				return err
+			}
+			return printJSON(manifest)
+		case "finish":
+			fs := flag.NewFlagSet("lifecycle finish", flag.ContinueOnError)
+			runID := fs.String("id", "", "test-run ID")
+			result := fs.String("result", "completed", "test result")
+			if err := fs.Parse(args[2:]); err != nil {
+				return err
+			}
+			manifest, err := manager.FinishTestRun(*runID, *result)
+			if err != nil {
+				return err
+			}
+			return printJSON(manifest)
+		default:
+			return errors.New("usage: router-policy lifecycle status|begin|add-process|add-file|add-network|finish")
+		}
+	case "cleanup":
+		if len(args) < 2 || args[1] != "stale" {
+			return errors.New("usage: router-policy cleanup stale [--dry-run|--apply] [--json]")
+		}
+		fs := flag.NewFlagSet("cleanup stale", flag.ContinueOnError)
+		dryRun := fs.Bool("dry-run", false, "show cleanup actions without changing resources")
+		apply := fs.Bool("apply", false, "apply ownership-verified cleanup")
+		jsonOutput := fs.Bool("json", false, "print JSON")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		if *dryRun && *apply {
+			return errors.New("--dry-run and --apply are mutually exclusive")
+		}
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			return err
+		}
+		manager := lifecycle.Manager{StateDir: cfg.Storage.StateDir, RuntimeDir: cfg.Storage.RuntimeDir, Inspector: lifecycle.LinuxProcessInspector{}, Executor: lifecycle.OpenWrtResourceExecutor{}, Verifier: lifecycle.OpenWrtBaselineVerifier{}}
+		report, err := manager.CleanupStale(*apply)
+		if err != nil {
+			return err
+		}
+		if *jsonOutput {
+			return printJSON(report)
+		}
+		fmt.Printf("dry-run: %t\nstale runs: %d\nactions: %d\nambiguous skipped: %d\n", report.DryRun, report.StaleRuns, len(report.Actions), report.AmbiguousSkipped)
+		return nil
+	case "maintenance":
+		if len(args) < 2 {
+			return errors.New("usage: router-policy maintenance begin|end|status")
+		}
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			return err
+		}
+		path := filepath.Join(cfg.Storage.RuntimeDir, "watchdog-inhibit.json")
+		switch args[1] {
+		case "begin":
+			fs := flag.NewFlagSet("maintenance begin", flag.ContinueOnError)
+			owner := fs.String("owner", "", "operation owner")
+			reason := fs.String("reason", "", "maintenance reason")
+			lease := fs.Duration("lease", 15*time.Minute, "bounded inhibit lease")
+			if err := fs.Parse(args[2:]); err != nil {
+				return err
+			}
+			value, err := watchdog.WriteInhibit(path, *owner, *reason, time.Now().UTC(), *lease)
+			if err != nil {
+				return err
+			}
+			return printJSON(value)
+		case "end":
+			if len(args) != 2 {
+				return errors.New("usage: router-policy maintenance end")
+			}
+			if info, err := os.Lstat(path); err == nil {
+				if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+					return errors.New("refusing non-regular watchdog inhibit target")
+				}
+				return os.Remove(path)
+			} else if errors.Is(err, os.ErrNotExist) {
+				return nil
+			} else {
+				return err
+			}
+		case "status":
+			value, active, err := watchdog.ReadInhibit(path, time.Now().UTC())
+			if err != nil {
+				return err
+			}
+			return printJSON(map[string]any{"active": active, "inhibit": value})
+		default:
+			return errors.New("usage: router-policy maintenance begin|end|status")
+		}
+	case "watchdog":
+		fs := flag.NewFlagSet("watchdog", flag.ContinueOnError)
+		healthURL := fs.String("health-url", "http://127.0.0.1:8787/api/v1/health", "local health URL")
+		interval := fs.Duration("interval", time.Minute, "health interval")
+		startupGrace := fs.Duration("startup-grace", 90*time.Second, "startup grace")
+		failureThreshold := fs.Int("failure-threshold", 3, "consecutive failures before restart")
+		inhibitPath := fs.String("inhibit-file", "/tmp/router-policy/watchdog-inhibit.json", "maintenance inhibit file")
+		serviceScript := fs.String("service-script", "/etc/init.d/router-policy", "managed control-plane service")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		return runWatchdog(*healthURL, *interval, *startupGrace, *failureThreshold, *inhibitPath, *serviceScript)
+	case "backup":
+		if len(args) < 2 {
+			return errors.New("usage: router-policy backup register|prune")
+		}
+		switch args[1] {
+		case "register":
+			fs := flag.NewFlagSet("backup register", flag.ContinueOnError)
+			root := fs.String("root", "", "operation backup directory")
+			operation := fs.String("operation", "", "operation ID")
+			version := fs.String("version", "unknown", "installed version")
+			reason := fs.String("reason", "", "backup reason")
+			retentionClass := fs.String("retention-class", "installer-fallback", "retention class")
+			if err := fs.Parse(args[2:]); err != nil {
+				return err
+			}
+			manifest, err := storagepolicy.RegisterDirectory(*root, *operation, *version, *reason, *retentionClass, time.Now().UTC())
+			if err != nil {
+				return err
+			}
+			return printJSON(manifest)
+		case "prune":
+			fs := flag.NewFlagSet("backup prune", flag.ContinueOnError)
+			root := fs.String("root", "/root/router-policy-backups", "project backup registry root")
+			apply := fs.Bool("apply", false, "delete older verified backups")
+			dryRun := fs.Bool("dry-run", false, "show retention actions")
+			maxBackups := fs.Int("max", 2, "maximum verified fallbacks")
+			maxBytes := fs.Int64("max-bytes", 128*1024*1024, "maximum total verified bytes")
+			if err := fs.Parse(args[2:]); err != nil {
+				return err
+			}
+			if *apply && *dryRun {
+				return errors.New("--dry-run and --apply are mutually exclusive")
+			}
+			plan, err := storagepolicy.PlanRetention(*root, *maxBackups, *maxBytes, *apply)
+			if err != nil {
+				return err
+			}
+			return printJSON(plan)
+		default:
+			return errors.New("usage: router-policy backup register|prune")
+		}
+	case "storage":
+		if len(args) < 2 || args[1] != "migrate" {
+			return errors.New("usage: router-policy storage migrate --dry-run [--legacy-root /root]")
+		}
+		fs := flag.NewFlagSet("storage migrate", flag.ContinueOnError)
+		dryRun := fs.Bool("dry-run", false, "plan migration without changing files")
+		apply := fs.Bool("apply", false, "migrate only validated legacy backups")
+		legacyRoot := fs.String("legacy-root", "/root", "root containing legacy backup directories")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		if *dryRun && *apply {
+			return errors.New("--dry-run and --apply are mutually exclusive")
+		}
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			return err
+		}
+		var plan storagepolicy.MigrationPlan
+		if *apply {
+			plan, err = storagepolicy.ApplyMigration(cfg.Storage.StateDir, cfg.Storage.RuntimeDir, *legacyRoot, time.Now().UTC())
+		} else {
+			plan, err = storagepolicy.PlanMigration(cfg.Storage.StateDir, cfg.Storage.RuntimeDir, *legacyRoot)
+		}
+		if err != nil {
+			return err
+		}
+		return printJSON(plan)
 	case "internal-verify-rollback-token":
 		if len(args) != 2 {
 			return errors.New("rollback token hash is required")
@@ -222,7 +524,7 @@ func run(args []string) error {
 			return err
 		}
 		return printJSON(map[string]any{"candidate_hash": candidateHash, "artifact_manifest_hash": manifestHash, "deployment_ready": manifest.DeploymentReady, "block_reason": manifest.BlockReason, "simulation": manifest.Simulation})
-	case "internal-validate-ip-plan", "internal-apply-ip-plan":
+	case "internal-validate-ip-plan", "internal-apply-ip-plan", "internal-verify-applied-ip-plan":
 		fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 		planPath := fs.String("plan", "", "ip plan")
 		txID := fs.String("transaction", "", "transaction id")
@@ -248,6 +550,17 @@ func run(args []string) error {
 			if plan.BlockReason != "" {
 				fmt.Printf("reason=%s\n", plan.BlockReason)
 			}
+			return nil
+		}
+		if args[0] == "internal-verify-applied-ip-plan" {
+			ipBinary := os.Getenv("ROUTER_POLICY_IP_BIN")
+			if ipBinary == "" {
+				ipBinary = "ip"
+			}
+			if err := dataplane.VerifyAppliedIPPlan(context.Background(), dataplane.ExecCommandRunner{}, ipBinary, plan); err != nil {
+				return err
+			}
+			fmt.Println("ip_plan_active=true")
 			return nil
 		}
 		if plan.Simulation && os.Getenv("ROUTER_POLICY_ALLOW_SIMULATED_DIAGNOSTICS") != "1" {
@@ -757,6 +1070,19 @@ func usage() {
   serve [--listen 127.0.0.1:8787]
   serve-dev [--listen 127.0.0.1:8787]
   auth setup-token [--if-needed]
+  lifecycle status [--json]
+  lifecycle begin --id RUN_ID [--lease 1h]
+  lifecycle add-process --id RUN_ID --resource ID --pid PID --executable PATH --config PATH
+  lifecycle add-file --id RUN_ID --resource ID --path PATH
+  lifecycle add-network --id RUN_ID --resource ID --kind KIND [--family FAMILY --table TABLE --address VALUE]
+  lifecycle finish --id RUN_ID [--result RESULT]
+  cleanup stale [--dry-run|--apply] [--json]
+  maintenance begin --owner OWNER --reason REASON [--lease 15m]
+  maintenance end|status
+  watchdog [--health-url URL] [--interval 1m] [--startup-grace 90s]
+  backup register --root DIR --operation ID --reason REASON
+  backup prune [--root DIR] [--dry-run|--apply]
+  storage migrate [--dry-run|--apply] [--legacy-root /root]
   status
   validate-config
   routes
@@ -777,6 +1103,53 @@ func usage() {
   install-dry-run
   security audit
   version`)
+}
+
+func runWatchdog(healthURL string, interval, startupGrace time.Duration, failureThreshold int, inhibitPath, serviceScript string) error {
+	parsed, err := url.Parse(healthURL)
+	if err != nil || parsed.Scheme != "http" || parsed.Hostname() != "127.0.0.1" {
+		return fmt.Errorf("watchdog health URL must use loopback HTTP")
+	}
+	if interval < time.Second || startupGrace < 0 || failureThreshold < 1 || failureThreshold > 20 {
+		return fmt.Errorf("invalid watchdog timing")
+	}
+	if serviceScript == "" || filepath.Clean(serviceScript) != "/etc/init.d/router-policy" {
+		return fmt.Errorf("watchdog may only restart the authoritative router-policy service")
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	client := &http.Client{Timeout: min(interval/2, 5*time.Second)}
+	controller := watchdog.Controller{StartedAt: time.Now().UTC(), StartupGrace: startupGrace, FailureThreshold: failureThreshold}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		now := time.Now().UTC()
+		_, inhibited, inhibitErr := watchdog.ReadInhibit(inhibitPath, now)
+		if inhibitErr != nil {
+			inhibited = false
+		}
+		healthy := false
+		request, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		if response, requestErr := client.Do(request); requestErr == nil {
+			healthy = response.StatusCode >= 200 && response.StatusCode < 300
+			_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+			response.Body.Close()
+		}
+		decision := controller.Observe(now, healthy, inhibited)
+		if decision.Action == "restart" {
+			commandCtx, commandCancel := context.WithTimeout(ctx, 30*time.Second)
+			restartErr := exec.CommandContext(commandCtx, serviceScript, "restart").Run()
+			commandCancel()
+			if restartErr != nil {
+				fmt.Fprintln(os.Stderr, "watchdog restart failed:", restartErr)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
 }
 
 func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) error {

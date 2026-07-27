@@ -282,6 +282,34 @@ func VerifyIPState(ctx context.Context, runner CommandRunner, ipBinary string, p
 	return nil
 }
 
+// VerifyAppliedIPPlan proves that every route and policy-rule key owned by the
+// plan currently has the exact deployed value. It is read-only and is used to
+// avoid mutating an already healthy data plane during control-plane restart.
+func VerifyAppliedIPPlan(ctx context.Context, runner CommandRunner, ipBinary string, plan artifact.IPPlan) error {
+	cur, err := SnapshotIPState(ctx, runner, ipBinary, plan)
+	if err != nil {
+		return fmt.Errorf("verify applied ip plan: %w", err)
+	}
+	expected := IPStateSnapshot{Rules: touchedRules(plan)}
+	for _, route := range plan.Routes {
+		expected.Routes = append(expected.Routes, IPStateRoute{
+			Family:      route.Family,
+			Table:       route.Table,
+			Destination: canonicalRouteDestination(route.Family, route.Destination),
+			Type:        route.Type,
+			Via:         route.Via,
+			Device:      route.Device,
+		})
+	}
+	if !routesEqual(restrictRoutes(cur.Routes, plan), restrictRoutes(expected.Routes, plan)) {
+		return errors.New("ip_plan_not_active: routes differ from committed plan")
+	}
+	if !rulesEqual(restrictRules(cur.Rules, plan), restrictRules(expected.Rules, plan)) {
+		return errors.New("ip_plan_not_active: rules differ from committed plan")
+	}
+	return nil
+}
+
 func routeKey(family string, table int, dest string) string {
 	dest = canonicalRouteDestination(family, dest)
 	return family + ":" + strconv.Itoa(table) + ":" + dest

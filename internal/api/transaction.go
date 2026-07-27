@@ -145,12 +145,47 @@ func (s *Server) validateChangeSet(cs ChangeSet) (ChangeSet, *actionFailure) {
 		return cs, conflict("base_version_conflict", "base_version does not match current revision")
 	}
 	candidate, canonical, diff, validations := buildCandidate(active, cs.Operations)
+	if len(diff) == 0 {
+		for index := range validations {
+			if validations[index].Code == "candidate_noop" {
+				validations[index].Level = "info"
+				validations[index].Message = "candidate matches the active configuration"
+			}
+		}
+	}
 	cs.Validation = validations
 	if hasValidationError(validations) {
 		if err := s.saveChange(&cs, "draft"); err != nil {
 			return cs, internalFailure(err)
 		}
 		return cs, &actionFailure{Status: 422, Code: "candidate_invalid", Message: "candidate config validation failed"}
+	}
+	if len(diff) == 0 {
+		var activeRevision revisionRecord
+		s.mu.Lock()
+		activeRevisionID := s.activeRevision
+		s.mu.Unlock()
+		candidateHash := sha256.Sum256(canonical)
+		if activeRevisionID != "" && s.store.LoadJSON("revisions", activeRevisionID, &activeRevision) == nil &&
+			activeRevision.State == "committed" && activeRevision.CandidateHash == "sha256:"+hex.EncodeToString(candidateHash[:]) {
+			cs.State = "validated"
+			cs.Noop = true
+			cs.CandidateVersion = currentVersion
+			cs.CandidateHash = activeRevision.CandidateHash
+			cs.ArtifactManifestHash = activeRevision.ArtifactManifestHash
+			cs.RevisionID = activeRevision.RevisionID
+			cs.TransactionID = activeRevision.TransactionID
+			cs.Diff = diff
+			cs.AdapterStatus = "NOOP_PENDING"
+			cs.Version++
+			cs.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+			if err := s.store.SaveJSON("changes", cs.ID, cs); err != nil {
+				return cs, internalFailure(err)
+			}
+			s.setChange(cs)
+			s.publishChangeEvent(cs, "candidate_matches_active_revision")
+			return cs, nil
+		}
 	}
 	candidateVersion := currentVersion + 1
 	randomRevision, err := secureRandomHex(6)
@@ -239,6 +274,9 @@ func (s *Server) applyChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet, *
 	}
 	if !s.baseVersionCurrent(cs) {
 		return cs, conflict("base_version_conflict", "candidate was built from a stale config version")
+	}
+	if cs.Noop {
+		return s.applyNoopChangeSet(ctx, cs)
 	}
 	tx, failure := s.loadVerifiedTransaction(cs)
 	if failure != nil {
@@ -333,6 +371,34 @@ func (s *Server) applyChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet, *
 	return cs, nil
 }
 
+func (s *Server) applyNoopChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet, *actionFailure) {
+	var revision revisionRecord
+	if cs.RevisionID == "" || s.store.LoadJSON("revisions", cs.RevisionID, &revision) != nil || revision.State != "committed" {
+		return cs, conflict("noop_revision_missing", "active committed revision is unavailable; validate again")
+	}
+	status := s.adapter.Status(ctx)
+	if !stepOK(status) ||
+		evidenceString(status, "active_revision") != revision.RevisionID ||
+		evidenceString(status, "active_transaction") != revision.TransactionID ||
+		evidenceString(status, "active_candidate_hash") != revision.CandidateHash ||
+		evidenceString(status, "active_artifact_manifest_hash") != revision.ArtifactManifestHash {
+		return cs, conflict("noop_deployment_drift", "active deployment no longer matches the committed revision")
+	}
+	cs.State = "committed"
+	cs.AdapterStatus = "NOOP"
+	cs.ManagementVerified = true
+	cs.DataPlaneVerified = true
+	cs.Steps = append(cs.Steps, status)
+	cs.Version++
+	cs.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := s.store.SaveJSON("changes", cs.ID, cs); err != nil {
+		return cs, internalFailure(err)
+	}
+	s.setChange(cs)
+	s.publishChangeEvent(cs, "identical_configuration_noop")
+	return cs, nil
+}
+
 func (s *Server) confirmChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet, *actionFailure) {
 	if cs.State != "awaiting_confirmation" {
 		return cs, conflict("invalid_transition", "change cannot be confirmed from "+cs.State)
@@ -342,6 +408,11 @@ func (s *Server) confirmChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet,
 	}
 	s.transactionMu.Lock()
 	defer s.transactionMu.Unlock()
+	s.mu.Lock()
+	previousRevisionID := s.activeRevision
+	s.mu.Unlock()
+	var previousRevision revisionRecord
+	_ = s.store.LoadJSON("revisions", previousRevisionID, &previousRevision)
 	tx, failure := s.loadVerifiedTransaction(cs)
 	if failure != nil {
 		return cs, failure
@@ -400,8 +471,28 @@ func (s *Server) confirmChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet,
 	s.cancelExpiryLocked(cs.ID)
 	s.mu.Unlock()
 	_ = adapter.RetireCapability(tx)
+	s.cleanupCommittedResources(tx, previousRevision)
 	s.publishChangeEvent(cs, "adapter_commit_succeeded")
 	return cs, nil
+}
+
+func (s *Server) cleanupCommittedResources(tx adapter.Transaction, previous revisionRecord) {
+	result := map[string]any{"transaction_id": tx.ID, "revision_id": tx.RevisionID, "status": "complete", "cleaned_at": time.Now().UTC()}
+	var failures []string
+	if err := adapter.CleanupCommitted(s.cfg, tx); err != nil {
+		failures = append(failures, "current transaction: "+err.Error())
+	}
+	if previous.RevisionID != "" && previous.TransactionID != "" && previous.TransactionID != tx.ID {
+		if err := adapter.CleanupObsoleteTransaction(s.cfg, previous.RevisionID, previous.TransactionID); err != nil {
+			failures = append(failures, "previous transaction: "+err.Error())
+		}
+	}
+	if len(failures) > 0 {
+		result["status"] = "partial"
+		result["errors"] = failures
+		s.publishEvent(Event{Type: "storage.cleanup_failed", Severity: "warning", ReasonCode: "committed_transaction_cleanup_partial", Details: map[string]any{"revision_id": tx.RevisionID}})
+	}
+	_ = s.store.SaveJSON("meta", "last_cleanup_result", result)
 }
 
 func (s *Server) rollbackChangeSet(ctx context.Context, cs ChangeSet, expired bool) (ChangeSet, *actionFailure) {
@@ -455,6 +546,13 @@ func (s *Server) rollbackLocked(ctx context.Context, cs ChangeSet, tx adapter.Tr
 	s.cancelExpiryLocked(cs.ID)
 	s.mu.Unlock()
 	_ = adapter.RetireCapability(tx)
+	cleanupStatus := map[string]any{"transaction_id": tx.ID, "revision_id": tx.RevisionID, "status": "complete", "cleaned_at": time.Now().UTC()}
+	if err := adapter.CleanupObsoleteTransaction(s.cfg, tx.RevisionID, tx.ID); err != nil {
+		cleanupStatus["status"] = "partial"
+		cleanupStatus["error"] = err.Error()
+		s.publishEvent(Event{Type: "storage.cleanup_failed", Severity: "warning", ReasonCode: "rollback_transaction_cleanup_partial", Details: map[string]any{"revision_id": tx.RevisionID}})
+	}
+	_ = s.store.SaveJSON("meta", "last_cleanup_result", cleanupStatus)
 	return cs, nil
 }
 
@@ -634,11 +732,28 @@ func (s *Server) scheduleExpiry(cs ChangeSet) {
 		delay = 0
 	}
 	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return
+	}
 	s.cancelExpiryLocked(cs.ID)
+	s.timerWG.Add(1)
 	s.timers[cs.ID] = time.AfterFunc(delay, func() {
+		defer s.timerWG.Done()
+		s.mu.Lock()
+		delete(s.timers, cs.ID)
+		if s.closing {
+			s.mu.Unlock()
+			return
+		}
+		s.mu.Unlock()
 		release := s.acquireChangeActionLock(cs.ID)
 		defer release()
 		s.mu.Lock()
+		if s.closing {
+			s.mu.Unlock()
+			return
+		}
 		current, ok := s.changes[cs.ID]
 		s.mu.Unlock()
 		if !ok || current.State != "awaiting_confirmation" || current.TransactionID != cs.TransactionID || current.RevisionID != cs.RevisionID {
@@ -651,7 +766,9 @@ func (s *Server) scheduleExpiry(cs ChangeSet) {
 
 func (s *Server) cancelExpiryLocked(changeID string) {
 	if timer := s.timers[changeID]; timer != nil {
-		timer.Stop()
+		if timer.Stop() {
+			s.timerWG.Done()
+		}
 		delete(s.timers, changeID)
 	}
 }
@@ -710,6 +827,11 @@ func (s *Server) recoverTransactions(ctx context.Context) error {
 }
 
 func (s *Server) finalizeRecoveredCommit(cs *ChangeSet, tx adapter.Transaction) error {
+	s.mu.Lock()
+	previousRevisionID := s.activeRevision
+	s.mu.Unlock()
+	var previousRevision revisionRecord
+	_ = s.store.LoadJSON("revisions", previousRevisionID, &previousRevision)
 	candidate, failure := s.loadVerifiedCandidate(*cs, tx)
 	if failure != nil {
 		return errors.New(failure.Message)
@@ -738,6 +860,7 @@ func (s *Server) finalizeRecoveredCommit(cs *ChangeSet, tx adapter.Transaction) 
 	s.cancelExpiryLocked(cs.ID)
 	s.mu.Unlock()
 	_ = adapter.RetireCapability(tx)
+	s.cleanupCommittedResources(tx, previousRevision)
 	return nil
 }
 
@@ -805,7 +928,7 @@ func buildCandidate(active *config.Config, operations []ChangeOp) (*config.Confi
 	_ = json.Unmarshal(canonical, &canonicalMap)
 	diff := diffJSON(activeMap, canonicalMap, "")
 	if len(diff) == 0 {
-		return nil, nil, nil, append(validations, Validation{Level: "error", Code: "candidate_noop", Message: "operations produced no config change"})
+		return &typed, canonical, nil, append(validations, Validation{Level: "error", Code: "candidate_noop", Message: "operations produced no config change"})
 	}
 	validations = append(validations, Validation{Level: "info", Code: "candidate_semantic_ok", Message: "all operations were applied and the full typed candidate validates"})
 	return &typed, canonical, diff, validations

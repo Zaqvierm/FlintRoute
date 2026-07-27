@@ -21,17 +21,19 @@ import (
 )
 
 const (
-	adaptiveProbeBucket = "zapret_probe"
-	adaptiveProbeKey    = "runtime_v1"
+	adaptiveProbeBucket             = "zapret_probe"
+	adaptiveProbeKey                = "runtime_v1"
+	adaptiveProbeCheckpointInterval = 15 * time.Minute
 )
 
 var errAdaptiveProbeBusy = errors.New("adaptive probe skipped because another transaction is active")
 
 type persistedAdaptiveProbeRuntime struct {
-	Version       int                        `json:"version"`
-	CatalogDigest string                     `json:"catalog_digest"`
-	Observations  []zapret.ProbeObservation  `json:"observations"`
-	Scheduler     zapret.ProbeSchedulerState `json:"scheduler"`
+	Version        int                        `json:"version"`
+	CatalogDigest  string                     `json:"catalog_digest"`
+	Observations   []zapret.ProbeObservation  `json:"observations"`
+	Scheduler      zapret.ProbeSchedulerState `json:"scheduler"`
+	CheckpointedAt time.Time                  `json:"checkpointed_at,omitempty"`
 }
 
 type adaptiveFamilyProbeEngine interface {
@@ -113,7 +115,7 @@ func restoreAdaptiveProbeRuntime(runtime *adaptiveRuntime, now time.Time) error 
 		}
 		return fmt.Errorf("load adaptive probe runtime: %w", err)
 	}
-	if persisted.Version != 1 || persisted.CatalogDigest != runtime.catalogDigest {
+	if (persisted.Version != 1 && persisted.Version != 2) || persisted.CatalogDigest != runtime.catalogDigest {
 		return nil
 	}
 	if err := runtime.ranker.Restore(persisted.Observations, now); err != nil {
@@ -122,10 +124,14 @@ func restoreAdaptiveProbeRuntime(runtime *adaptiveRuntime, now time.Time) error 
 	if err := runtime.scheduler.Restore(persisted.Scheduler, now); err != nil {
 		return fmt.Errorf("restore adaptive scheduler: %w", err)
 	}
+	runtime.lastProbeCheckpoint = persisted.CheckpointedAt
 	return nil
 }
 
 func persistAdaptiveProbeRuntime(runtime *adaptiveRuntime, now time.Time) error {
+	if !runtime.lastProbeCheckpoint.IsZero() && now.Before(runtime.lastProbeCheckpoint.Add(adaptiveProbeCheckpointInterval)) {
+		return nil
+	}
 	observations, err := runtime.ranker.Observations(now)
 	if err != nil {
 		return err
@@ -134,9 +140,14 @@ func persistAdaptiveProbeRuntime(runtime *adaptiveRuntime, now time.Time) error 
 	if err != nil {
 		return err
 	}
-	return runtime.store.SaveJSON(adaptiveProbeBucket, adaptiveProbeKey, persistedAdaptiveProbeRuntime{
-		Version: 1, CatalogDigest: runtime.catalogDigest, Observations: observations, Scheduler: scheduler,
-	})
+	checkpoint := persistedAdaptiveProbeRuntime{
+		Version: 2, CatalogDigest: runtime.catalogDigest, Observations: observations, Scheduler: scheduler, CheckpointedAt: now.UTC(),
+	}
+	if err := runtime.store.SaveJSON(adaptiveProbeBucket, adaptiveProbeKey, checkpoint); err != nil {
+		return err
+	}
+	runtime.lastProbeCheckpoint = now.UTC()
+	return nil
 }
 
 func (s *Server) handleAdaptiveZapretRuntime(w http.ResponseWriter, r *http.Request) {

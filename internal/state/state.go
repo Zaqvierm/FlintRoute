@@ -1,6 +1,7 @@
 package state
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -25,6 +26,7 @@ const CurrentSchemaVersion = 3
 
 type retentionPolicy struct {
 	maxProbeResults      int
+	maxEvents            int
 	eventRetention       time.Duration
 	changeSetRetention   time.Duration
 	transactionRetention time.Duration
@@ -41,6 +43,17 @@ type Store struct {
 	retention retentionPolicy
 	mu        sync.Mutex
 	db        *bolt.DB
+	probes    []probe.RouteResult
+	metrics   WriteMetrics
+}
+
+type WriteMetrics struct {
+	PersistentTransactions uint64    `json:"persistent_transactions"`
+	PersistentBytes        uint64    `json:"persistent_bytes"`
+	NoopWrites             uint64    `json:"noop_writes"`
+	RuntimeProbeWrites     uint64    `json:"runtime_probe_writes"`
+	LastPersistentReason   string    `json:"last_persistent_write_reason,omitempty"`
+	LastPersistentAt       time.Time `json:"last_persistent_write_at,omitempty"`
 }
 
 type Entry struct {
@@ -67,6 +80,7 @@ func Open(cfg *config.Config) (*Store, error) {
 	}
 	policy := retentionPolicy{
 		maxProbeResults:      positiveOr(cfg.Storage.MaxProbeResults, 5000),
+		maxEvents:            4096,
 		eventRetention:       days(positiveOr(cfg.Storage.EventRetentionDays, 30)),
 		changeSetRetention:   days(positiveOr(cfg.Storage.ChangeSetRetentionDays, 90)),
 		transactionRetention: days(positiveOr(cfg.Storage.TransactionRetentionDays, 30)),
@@ -90,6 +104,29 @@ func Open(cfg *config.Config) (*Store, error) {
 }
 
 func (s *Store) init() error {
+	ready := false
+	if err := s.db.View(func(tx *bolt.Tx) error {
+		meta := tx.Bucket([]byte("meta"))
+		if meta == nil {
+			return nil
+		}
+		version := 0
+		if raw := meta.Get([]byte("schema_version")); raw != nil {
+			if err := json.Unmarshal(raw, &version); err != nil {
+				return fmt.Errorf("invalid schema version: %w", err)
+			}
+		}
+		ready = version == CurrentSchemaVersion
+		for _, name := range []string{"probes", "changes", "events", "revisions", "transactions", "candidates", "meta", "route_health", "backups"} {
+			ready = ready && tx.Bucket([]byte(name)) != nil
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if ready {
+		return nil
+	}
 	return s.db.Update(func(tx *bolt.Tx) error {
 		meta, err := tx.CreateBucketIfNotExists([]byte("meta"))
 		if err != nil {
@@ -143,21 +180,22 @@ func (s *Store) Close() error {
 func (s *Store) Mode() string { return s.mode }
 func (s *Store) Path() string { return s.path }
 
-func (s *Store) StoreProbeResult(result probe.RouteResult) error {
-	key := fmt.Sprintf("%s:%s:%d", result.CheckedAt, result.Route, time.Now().UnixNano())
-	raw, err := json.Marshal(result)
-	if err != nil {
-		return err
-	}
+func (s *Store) WriteMetrics() WriteMetrics {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.db.Update(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket([]byte("probes"))
-		if err := bucket.Put([]byte(key), raw); err != nil {
-			return err
-		}
-		return trimBucket(bucket, s.retention.maxProbeResults)
-	})
+	return s.metrics
+}
+
+func (s *Store) StoreProbeResult(result probe.RouteResult) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.probes = append(s.probes, result)
+	if excess := len(s.probes) - s.retention.maxProbeResults; excess > 0 {
+		copy(s.probes, s.probes[excess:])
+		s.probes = s.probes[:s.retention.maxProbeResults]
+	}
+	s.metrics.RuntimeProbeWrites++
+	return nil
 }
 
 func (s *Store) ListProbeResults(limit int) ([]probe.RouteResult, error) {
@@ -166,30 +204,59 @@ func (s *Store) ListProbeResults(limit int) ([]probe.RouteResult, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if limit > len(s.probes) {
+		limit = len(s.probes)
+	}
 	out := make([]probe.RouteResult, 0, limit)
-	err := s.db.View(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket([]byte("probes"))
-		if bucket == nil {
-			return nil
-		}
-		cursor := bucket.Cursor()
-		for _, raw := cursor.Last(); raw != nil && len(out) < limit; _, raw = cursor.Prev() {
-			var result probe.RouteResult
-			if err := json.Unmarshal(raw, &result); err != nil {
-				return fmt.Errorf("invalid persisted probe result: %w", err)
-			}
-			out = append(out, result)
-		}
-		return nil
-	})
-	return out, err
+	for i := len(s.probes) - 1; i >= 0 && len(out) < limit; i-- {
+		out = append(out, s.probes[i])
+	}
+	return out, nil
 }
 
 func (s *Store) SaveRouteHealth(health probe.RouteHealth) error {
 	if health.RouteTag == "" {
 		return fmt.Errorf("route health tag is required")
 	}
+	var previous probe.RouteHealth
+	if err := s.LoadJSON("route_health", health.RouteTag, &previous); err == nil {
+		if routeHealthPersistentView(previous) == routeHealthPersistentView(health) {
+			s.mu.Lock()
+			s.metrics.NoopWrites++
+			s.mu.Unlock()
+			return nil
+		}
+	} else if !errors.Is(err, ErrNotFound) {
+		return err
+	}
 	return s.SaveJSON("route_health", health.RouteTag, health)
+}
+
+type persistentRouteHealth struct {
+	RouteTag             string
+	RouteType            string
+	State                string
+	Role                 string
+	HoldUntil            time.Time
+	RoleHoldUntil        time.Time
+	LastStatus           string
+	LastReason           string
+	AdapterRevision      string
+	CandidateHash        string
+	ArtifactManifestHash string
+	ExternalIPHash       string
+	ExternalCountry      string
+}
+
+func routeHealthPersistentView(health probe.RouteHealth) persistentRouteHealth {
+	return persistentRouteHealth{
+		RouteTag: health.RouteTag, RouteType: health.RouteType, State: health.State, Role: health.Role,
+		HoldUntil: health.HoldUntil, RoleHoldUntil: health.RoleHoldUntil,
+		LastStatus: health.LastStatus, LastReason: health.LastReason,
+		AdapterRevision: health.AdapterRevision, CandidateHash: health.CandidateHash,
+		ArtifactManifestHash: health.ArtifactManifestHash, ExternalIPHash: health.ExternalIPHash,
+		ExternalCountry: health.ExternalCountry,
+	}
 }
 
 func (s *Store) ListRouteHealth() ([]probe.RouteHealth, error) {
@@ -222,13 +289,29 @@ func (s *Store) SaveJSON(bucket, key string, value any) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.db.Update(func(tx *bolt.Tx) error {
+	identical := false
+	if err := s.db.View(func(tx *bolt.Tx) error {
+		bkt := tx.Bucket([]byte(bucket))
+		identical = bkt != nil && bytes.Equal(bkt.Get([]byte(key)), b)
+		return nil
+	}); err != nil {
+		return err
+	}
+	if identical {
+		s.metrics.NoopWrites++
+		return nil
+	}
+	err = s.db.Update(func(tx *bolt.Tx) error {
 		bkt, err := tx.CreateBucketIfNotExists([]byte(bucket))
 		if err != nil {
 			return err
 		}
 		return bkt.Put([]byte(key), b)
 	})
+	if err == nil {
+		s.recordPersistentWriteLocked("save_json:"+bucket, len(b))
+	}
+	return err
 }
 
 func (s *Store) SaveBatch(entries ...Entry) error {
@@ -245,7 +328,24 @@ func (s *Store) SaveBatch(entries ...Entry) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.db.Update(func(tx *bolt.Tx) error {
+	identical := true
+	if err := s.db.View(func(tx *bolt.Tx) error {
+		for i, entry := range entries {
+			bucket := tx.Bucket([]byte(entry.Bucket))
+			if bucket == nil || !bytes.Equal(bucket.Get([]byte(entry.Key)), encoded[i]) {
+				identical = false
+				break
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if identical {
+		s.metrics.NoopWrites++
+		return nil
+	}
+	err := s.db.Update(func(tx *bolt.Tx) error {
 		for i, entry := range entries {
 			bucket, err := tx.CreateBucketIfNotExists([]byte(entry.Bucket))
 			if err != nil {
@@ -257,6 +357,21 @@ func (s *Store) SaveBatch(entries ...Entry) error {
 		}
 		return nil
 	})
+	if err == nil {
+		written := 0
+		for _, raw := range encoded {
+			written += len(raw)
+		}
+		s.recordPersistentWriteLocked("save_batch", written)
+	}
+	return err
+}
+
+func (s *Store) recordPersistentWriteLocked(reason string, bytesWritten int) {
+	s.metrics.PersistentTransactions++
+	s.metrics.PersistentBytes += uint64(bytesWritten)
+	s.metrics.LastPersistentReason = reason
+	s.metrics.LastPersistentAt = time.Now().UTC()
 }
 
 func (s *Store) LoadJSON(bucket, key string, out any) error {
@@ -315,13 +430,29 @@ func (s *Store) Delete(bucket, key string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.db.Update(func(tx *bolt.Tx) error {
+	exists := false
+	if err := s.db.View(func(tx *bolt.Tx) error {
+		bkt := tx.Bucket([]byte(bucket))
+		exists = bkt != nil && bkt.Get([]byte(key)) != nil
+		return nil
+	}); err != nil {
+		return err
+	}
+	if !exists {
+		s.metrics.NoopWrites++
+		return nil
+	}
+	err := s.db.Update(func(tx *bolt.Tx) error {
 		bkt := tx.Bucket([]byte(bucket))
 		if bkt == nil {
 			return nil
 		}
 		return bkt.Delete([]byte(key))
 	})
+	if err == nil {
+		s.recordPersistentWriteLocked("delete:"+bucket, 0)
+	}
+	return err
 }
 
 func (s *Store) PutInt64(key string, value int64) error {
@@ -407,6 +538,23 @@ func (s *Store) Cleanup(now time.Time) (CleanupStats, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	stats := CleanupStats{}
+	needed := false
+	if err := s.db.View(func(tx *bolt.Tx) error {
+		needed = bucketCount(tx.Bucket([]byte("probes"))) > s.retention.maxProbeResults ||
+			bucketCount(tx.Bucket([]byte("events"))) > s.retention.maxEvents ||
+			hasExpired(tx.Bucket([]byte("events")), now.Add(-s.retention.eventRetention), []string{"time"}, nil)
+		terminal := map[string]bool{"committed": true, "rolled_back": true, "failed": true, "rollback_failed": true, "expired": true, "requires_device": true}
+		needed = needed || hasExpired(tx.Bucket([]byte("changes")), now.Add(-s.retention.changeSetRetention), []string{"updated_at"}, terminal) ||
+			hasExpired(tx.Bucket([]byte("transactions")), now.Add(-s.retention.transactionRetention), []string{"completed_at", "updated_at"}, terminal) ||
+			hasOrphanCandidates(tx.Bucket([]byte("candidates")), tx.Bucket([]byte("changes")))
+		return nil
+	}); err != nil {
+		return stats, err
+	}
+	if !needed {
+		s.metrics.NoopWrites++
+		return stats, nil
+	}
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		probes := tx.Bucket([]byte("probes"))
 		before := bucketCount(probes)
@@ -419,6 +567,11 @@ func (s *Store) Cleanup(now time.Time) (CleanupStats, error) {
 		if err != nil {
 			return err
 		}
+		beforeEvents := bucketCount(tx.Bucket([]byte("events")))
+		if err := trimBucket(tx.Bucket([]byte("events")), s.retention.maxEvents); err != nil {
+			return err
+		}
+		stats.Events += beforeEvents - bucketCount(tx.Bucket([]byte("events")))
 		terminal := map[string]bool{"committed": true, "rolled_back": true, "failed": true, "rollback_failed": true, "expired": true, "requires_device": true}
 		changes := tx.Bucket([]byte("changes"))
 		candidates := tx.Bucket([]byte("candidates"))
@@ -439,7 +592,50 @@ func (s *Store) Cleanup(now time.Time) (CleanupStats, error) {
 		stats.Transactions, err = deleteExpired(tx.Bucket([]byte("transactions")), now.Add(-s.retention.transactionRetention), []string{"completed_at", "updated_at"}, terminal)
 		return err
 	})
+	if err == nil {
+		s.recordPersistentWriteLocked("retention_cleanup", 0)
+	}
 	return stats, err
+}
+
+func hasExpired(bucket *bolt.Bucket, cutoff time.Time, fields []string, terminal map[string]bool) bool {
+	if bucket == nil {
+		return false
+	}
+	cursor := bucket.Cursor()
+	for _, value := cursor.First(); value != nil; _, value = cursor.Next() {
+		var item map[string]any
+		if json.Unmarshal(value, &item) != nil {
+			continue
+		}
+		if terminal != nil {
+			stateValue, _ := item["state"].(string)
+			if !terminal[stateValue] {
+				continue
+			}
+		}
+		for _, field := range fields {
+			if raw, ok := item[field].(string); ok {
+				if timestamp, err := time.Parse(time.RFC3339, raw); err == nil && timestamp.Before(cutoff) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func hasOrphanCandidates(candidates, changes *bolt.Bucket) bool {
+	if candidates == nil || changes == nil {
+		return false
+	}
+	cursor := candidates.Cursor()
+	for key, _ := cursor.First(); key != nil; key, _ = cursor.Next() {
+		if changes.Get(key) == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) Backup(path string, compact bool) error {
