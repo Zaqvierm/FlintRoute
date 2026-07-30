@@ -20,11 +20,11 @@
 | P6 | 100% | Постоянное состояние и восстановление после перезагрузки доказаны на Flint 2 |
 | P7 | 70% | Авторизация, fail-closed entropy handling и аудит listener bind |
 | P8 | 25% | Встроенный Web UI с role-aware загрузкой и счётчиками трафика |
-| P9 | 40% | Loopback и доступ к панели из LAN |
+| P9 | 60% | Loopback по умолчанию и source-restricted доступ к панели из отдельной upstream-сети проверены; TLS ещё не встроен |
 | P10 | 100% | Clean install, upgrade, rollback timer, compatible downgrade, uninstall и reinstall/reconcile пройдены на Flint 2 |
 | P11 | 85% | Автоматические тесты |
 | P12 | 100% | Adaptive Zapret привязан к OpenWrt transaction; два bundle-профиля и независимые выходы проверены на Flint 2 |
-| P13 | 80% | Маршруты, Smart DNS, recursion guard и fault tests доказаны; clean install/upgrade/reboot и lifecycle tail пройдены, но power-loss, multi-client и soak остаются |
+| P13 | 85% | Маршруты, Smart DNS, recursion guard, crash/reboot и physical power-loss доказаны; multi-client и soak остаются |
 | P14 | 100% | Ownership, cleanup, bounded storage, provider/dataplane recovery, idle write budget и полный lifecycle tail доказаны на Flint 2 |
 
 ### P14: lifecycle и storage
@@ -48,7 +48,7 @@
 | P13.0 | завершён | Harness, metadata, route cases, evidence parsing и bounded result bundle | финальный публичный redacted bundle после soak |
 | P13.1 | завершён | Полный 50-cell manifest `route × protocol × AF`: 23 PASS, 0 FAIL, 0 NOT_TESTED, 27 NOT_APPLICABLE; каждая применимая клетка имеет protocol-specific packet proof и bound route evidence | 25 IPv6-клеток требуют отсутствующий WAN6; Zapret × DNS UDP/TCP неприменимы, потому что LAN DNS перехватывается до route classification |
 | P13.2 | завершён | Production health cycle собирает раздельные active/challenger probes, сохраняет scheduler/ranking в bbolt и не переносит evidence между fingerprint; transaction-bound switch, safe-fallback pin, cooldown, quarantine и возврат static baseline пройдены на Flint 2 | повторять acceptance после изменения каталога nfqws или сетевой схемы |
-| P13.3 | частично | SIGKILL managed nfqws/Xray/controller, controlled reboot, реальный 180-second rollback timer и восстановление повреждённой bbolt пройдены; committed dataplane и route proofs сохранены | физическое power loss |
+| P13.3 | завершён | SIGKILL managed nfqws/Xray/controller, controlled reboot, реальный 180-second rollback timer, восстановление повреждённой bbolt и физическое отключение питания пройдены; после загрузки восстановились committed revision, managed providers, nftables, policy routing и Web API | повторять после изменения boot/recovery logic |
 | P13.4 | начат | Bounded sampler и локальная проверка resource limits | три одновременных клиента и реальные throughput/latency/resource пределы |
 | P13.5 | завершён | После factory recovery прошли clean install, upgrade, controlled reboot, rollback timer, compatible downgrade, uninstall, reinstall/reconcile и active provider/dataplane lifecycle; предыдущий инцидент сохранён в журнале | — |
 | P13.6 | не начат | — | 72-часовой soak и финальный audit |
@@ -107,8 +107,9 @@
 - Последовательный SIGKILL managed nfqws, Xray и controller пройден на Flint 2.
   После каждого сбоя procd поднял новый PID, соответствующий route proof прошёл,
   а committed artifacts и active transaction binding не изменились. Timer fault,
-  Повреждение bbolt также пройдено с автономным восстановлением проверенной копии.
-  Физическое power-loss остаётся в P13.
+  повреждение bbolt и физическое отключение питания также пройдены. После
+  power-loss внешний монитор увидел возврат SSH/router UI, затем FlintRoute Web;
+  та же committed revision и owned dataplane восстановились без ручного ремонта.
 - Production Smart DNS resolver выбран; оба endpoint дали безопасные A/AAAA
   через UDP/53 и TCP/53 непосредственно на Flint 2. Два route транзакционно
   committed; оба bound path proof и соседние Direct/Zapret/VLESS proofs прошли.

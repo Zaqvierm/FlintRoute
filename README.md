@@ -65,6 +65,10 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
 - rollback timer, compatible downgrade, restore, fixed uninstall и финальный
   reinstall/reconcile пройдены с внешним SSH/web monitor; cleanup вернул
   исходный flow-offload baseline и оставил bounded backup registry;
+- физическое отключение питания пройдено: после загрузки восстановились та же
+  committed revision, managed Xray/Zapret, nftables, policy routing и Web API;
+- панель доступна из отдельной upstream-сети через явный non-loopback bind и
+  source-restricted firewall rule; по умолчанию listener остаётся loopback-only;
 - неизменный TSPU cache не переписывает два больших поколения: на Flint 2
   проверены 86 781 entry и отдельный freshness checkpoint размером меньше 2 KiB;
 - локальные API, авторизация, журнал изменений и встроенная консоль.
@@ -76,9 +80,7 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
 
 ### Запланировано
 
-- физический power-loss test;
 - длительный soak-test;
-- безопасный доступ к панели из LAN.
 
 Точные фазы, проценты и критерии приёмки находятся в
 [`docs/status-matrix.md`](docs/status-matrix.md). Аппаратные результаты — в

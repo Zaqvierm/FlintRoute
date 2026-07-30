@@ -61,13 +61,16 @@ run_install "$BACKUP_BASE/first" >/dev/null
 [ -x "$SYSTEM_ROOT/usr/bin/router-policy" ]
 [ -f "$SYSTEM_ROOT/usr/lib/router-policy/openwrt/adapter.sh" ]
 [ -f "$SYSTEM_ROOT/etc/init.d/router-policy" ]
+[ "$(cat "$SYSTEM_ROOT/etc/router-policy/config/listener.conf")" = "$(cat "$ROOT/config/listener.conf")" ]
 grep -F 'v1:auth setup-token --if-needed' "$FAKE_CALL_LOG" >/dev/null
 install_service_sentinels
 
 printf '{"local":"preserved"}\n' > "$SYSTEM_ROOT/etc/router-policy/config/default.json"
+printf 'listen_address=192.0.2.1:8787\nallow_firewalled_bind=1\n' > "$SYSTEM_ROOT/etc/router-policy/config/listener.conf"
 write_fake_binary v2 0
 run_install "$BACKUP_BASE/upgrade" >/dev/null
 grep -F '"local":"preserved"' "$SYSTEM_ROOT/etc/router-policy/config/default.json" >/dev/null
+grep -F 'listen_address=192.0.2.1:8787' "$SYSTEM_ROOT/etc/router-policy/config/listener.conf" >/dev/null
 grep -F 'v2:validate-config' "$FAKE_CALL_LOG" >/dev/null
 grep -F 'v2:auth setup-token --if-needed' "$FAKE_CALL_LOG" >/dev/null
 [ -f "$SYSTEM_ROOT/etc/router-policy/config/factory-default.json" ]

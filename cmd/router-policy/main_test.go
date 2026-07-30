@@ -92,7 +92,7 @@ func TestSafeListenAddress(t *testing.T) {
 			t.Fatalf("expected %s to be safe", addr)
 		}
 	}
-	bad := []string{"0.0.0.0:8787", ":8787", "192.168.8.1:8787", "bad"}
+	bad := []string{"0.0.0.0:8787", ":8787", "192.168.8.1:8787", "127.0.0.1:0", "127.0.0.1:bad", "bad"}
 	for _, addr := range bad {
 		if safeListenAddress(addr) {
 			t.Fatalf("expected %s to be unsafe", addr)
@@ -101,10 +101,24 @@ func TestSafeListenAddress(t *testing.T) {
 }
 
 func TestServeRefusesUnsafeBind(t *testing.T) {
-	t.Setenv("ROUTER_POLICY_ALLOW_UNSAFE_LAN_BIND", "")
+	t.Setenv("ROUTER_POLICY_ALLOW_FIREWALLED_BIND", "")
 	err := run([]string{"serve", "--listen", "0.0.0.0:8787"})
 	if err == nil || !strings.Contains(err.Error(), "refusing non-loopback") {
 		t.Fatalf("expected unsafe bind refusal, got %v", err)
+	}
+}
+
+func TestFirewalledBindRequiresExplicitOptIn(t *testing.T) {
+	t.Setenv("ROUTER_POLICY_ALLOW_FIREWALLED_BIND", "1")
+	for _, addr := range []string{"0.0.0.0:8787", "192.168.8.1:8787", "[::]:8787"} {
+		if !allowedListenAddress(addr) {
+			t.Fatalf("expected explicit firewalled bind %s to be allowed", addr)
+		}
+	}
+	for _, addr := range []string{":8787", "0.0.0.0:0", "0.0.0.0:bad", "bad"} {
+		if allowedListenAddress(addr) {
+			t.Fatalf("expected invalid bind %s to be rejected", addr)
+		}
 	}
 }
 

@@ -313,18 +313,34 @@ flow-offload UCI `1/1` и оставил 2 verified backup operations / 66.7 MiB
 Финальный reinstall/reconcile восстановил committed revision, managed
 Xray/nfqws, nftables и три bound route proofs.
 
+### Physical power-loss recovery
+
+Перед отключением внешний монитор видел SSH, штатную панель роутера и FlintRoute
+Web API. После снятия питания все три проверки стали недоступны. SSH и штатная
+панель вернулись через 13 секунд после первого offline sample; FlintRoute Web API
+вернулся через 3 минуты 47 секунд. Новый boot ID подтвердил фактическую загрузку.
+
+После загрузки controller, watchdog, `router-policy-xray` и
+`router-policy-zapret` имели статус `running`. Lifecycle diagnostics подтвердили
+production ownership, executable/config identity и отсутствие stale test-runs.
+Active revision осталась `rev_3_9eb58e0be3b0`, recovery status — `ok`; nftables,
+policy rules/tables, listener config и source-restricted firewall rules
+восстановились. Binary, listener и firewall SHA-256 совпали с pre-power-loss
+baseline. Полный authenticated route-matrix повторно не запускался, поэтому этот
+результат закрывает recovery P13.3, но не заменяет multi-client/soak gate.
+
 ## Что НЕ доказано на железе
 
 - Smart DNS activation и bound path proof; transport preflight уже пройден.
 - `tg_ws_proxy` transport (route type определён в proof, реализации нет).
-- Power-loss recovery, timer fault injection и повреждение persistent state.
+- Timer fault injection beyond the verified rollback expiry cases.
 - Multi-client, 72h soak и расширенная fault injection matrix.
 
 ## Подтверждённое состояние
 
 Direct, fail-closed Drop, Zapret и VLESS/Xray подтверждены на Flint 2 с bound
 evidence до и после физического reboot. P3 и P6 закрыты по своим аппаратным
-критериям. In-place upgrade из проверяемого OpenWrt-пакета тоже пройден. Проект
-Factory clean install, control-plane upgrade/restart/crash и повторное
-post-reboot восстановление теперь доказаны после P14-исправлений. Проект
-остаётся Alpha: hard-crash/power-loss, multi-client и soak-test ещё не пройдены.
+критериям. In-place upgrade из проверяемого OpenWrt-пакета тоже пройден.
+Factory clean install, control-plane upgrade/restart/crash, controlled reboot и
+physical power-loss recovery доказаны после P14-исправлений. Проект остаётся
+Alpha: multi-client и soak-test ещё не пройдены.

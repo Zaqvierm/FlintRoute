@@ -25,7 +25,7 @@ UBUS_BIN="${UBUS_BIN:-ubus}"
 TIMEOUT_BIN="${TIMEOUT_BIN:-timeout}"
 SERVICES="router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
 ENABLE_SERVICES="router-policy-boot-guard $SERVICES"
-INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $INIT_DIR/router-policy $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/secrets/vpn-subscription-url $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
+INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $INIT_DIR/router-policy $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/config/listener.conf $ETC_DIR/secrets/vpn-subscription-url $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
 
 mode=""
 enable_services=0
@@ -500,6 +500,13 @@ install_files() {
     atomic_copy "$ROOT/config/default.json" "$ETC_DIR/config/factory-default.json" 600
   fi
   atomic_copy "$ROOT/config/schema.json" "$ETC_DIR/config/schema.json" 600
+  if [ -L "$ETC_DIR/config/listener.conf" ]; then
+    echo "refusing symlink listener config: $ETC_DIR/config/listener.conf" >&2
+    return 1
+  fi
+  if [ ! -f "$ETC_DIR/config/listener.conf" ]; then
+    atomic_copy "$ROOT/config/listener.conf" "$ETC_DIR/config/listener.conf" 600
+  fi
   if [ ! -f "$ETC_DIR/secrets/vpn-subscription-url" ]; then
     : > "$ETC_DIR/secrets/vpn-subscription-url"
   fi

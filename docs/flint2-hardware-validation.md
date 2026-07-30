@@ -185,6 +185,9 @@ Baseline снимается без управляемого обхода, зат
 PASS требует ноль unsafe Direct leaks, ноль неизвестных transaction states,
 ноль необъяснимых switches и отсутствие устойчивого роста RAM/cache.
 
+Операционный порядок, preflight и структура evidence вынесены в
+[`soak-test.md`](soak-test.md).
+
 ## Install, upgrade, downgrade
 
 На чистом Flint 2 проверяются:

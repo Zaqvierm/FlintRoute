@@ -24,6 +24,20 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-go.ps1
 
 Открыть `http://127.0.0.1:8787/`.
 
+На OpenWrt listener настраивается отдельно от основного JSON:
+
+```text
+# /etc/router-policy/config/listener.conf
+listen_address=0.0.0.0:8787
+allow_firewalled_bind=1
+```
+
+После изменения перезапустите только `router-policy`. Этот opt-in не открывает
+порт сам: firewall4 rule должен разрешать TCP/8787 только из доверенной
+management subnet. Default-файл остаётся `127.0.0.1:8787` и
+`allow_firewalled_bind=0`; installer не перезаписывает локальную настройку при
+upgrade.
+
 ## Экраны (`Content` в `ui/src/main.tsx`)
 
 - вход (`LoginScreen`);
@@ -60,6 +74,11 @@ stale/unavailable состояния. После загрузки UI вызыв�
 overview/topology/devices/services/routes/traffic/events/system/revisions + SSE.
 `security/audit` загружается только для diagnostician/admin, а `changes` — только
 для admin; 403 на дополнительном экране не валит общий dashboard.
+
+Default admin и default password отсутствуют. Installer печатает one-time setup
+token только пока администратор ещё не создан. После setup используются данные
+созданного владельцем аккаунта; FlintRoute не хранит и не показывает исходный
+пароль.
 
 Development simulation — только отдельной командой:
 

@@ -28,6 +28,10 @@ sh scripts/build-go.sh
 Упаковка нормализует порядок, timestamps, owner/group и gzip header, поэтому две
 сборки из одинакового дерева дают одинаковый SHA-256 архива.
 
+Listener по умолчанию устанавливается как loopback-only в
+`/etc/router-policy/config/listener.conf`. При upgrade существующий regular file
+сохраняется; symlink вместо listener config отклоняется.
+
 ## Первая установка
 
 Скопируйте архив на роутер и распакуйте его во временный каталог:

@@ -173,7 +173,6 @@ protocol-specific packet proof и bound route evidence; один HTTPS PASS не
 
 ## Оставшиеся аппаратные проверки
 
-- физическое power-loss recovery;
 - multi-client и 72h soak (P13).
 - Linux namespace/container behavior (нет локального Linux runtime; shell
   integration cross-platform, готов для Linux CI).
@@ -184,3 +183,10 @@ protocol-specific packet proof и bound route evidence; один HTTPS PASS не
   Xray/Zapret/dataplane lifecycle, 1000 read-only API GET и 35-minute idle
   write observation. Rollback timer, compatible downgrade, fixed uninstall,
   внешний management proof и финальный reinstall/reconcile также PASS.
+- Физическое отключение питания пройдено с внешним монитором: boot ID сменился,
+  committed revision, managed Xray/nfqws, nftables, policy rules и Web API
+  восстановились. Control plane стал доступен примерно через 3 минуты 47 секунд
+  после первого зафиксированного offline sample.
+
+Подготовка и критерии 72-часового прогона описаны в
+[`soak-test.md`](soak-test.md).

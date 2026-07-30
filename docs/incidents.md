@@ -4,6 +4,31 @@ This log records failures that affected hardware validation or could have made a
 release claim unreliable. It contains no credentials, private endpoints or raw
 device dumps.
 
+## 2026-07-27 — external listener rollback was not armed
+
+### What was tested
+
+The Web API listener was moved from loopback to an explicitly enabled wildcard
+bind, protected by a source-restricted firewall rule. A verified off-router
+backup and external SSH/web monitoring were available before the change.
+
+### What happened
+
+The helper attempted to arm its bounded rollback with `nohup`. Factory OpenWrt
+does not ship that command, so the rollback process never started. The listener
+and firewall change itself succeeded, SSH remained available and the following
+physical power-loss test recovered the same committed revision, but the planned
+rollback guarantee was absent during the apply window.
+
+### Fix and release impact
+
+The public service keeps loopback as its default and requires an explicit
+`allow_firewalled_bind=1` opt-in for non-loopback addresses. The supported
+recovery procedure starts a redirected background shell available in BusyBox
+and verifies its PID before applying a network change; missing rollback
+capability is a failed preflight, not a warning. The successful listener result
+is retained, but the failed helper invocation is not counted as rollback proof.
+
 ## 2026-07-27 — factory adapter dependency and recovery lost management
 
 ### What was tested

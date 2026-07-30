@@ -1153,8 +1153,8 @@ func runWatchdog(healthURL string, interval, startupGrace time.Duration, failure
 }
 
 func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) error {
-	if !safeListenAddress(listen) {
-		return fmt.Errorf("refusing non-loopback listen address %q; LAN listener needs TLS, firewall and WAN-deny verification first", listen)
+	if !allowedListenAddress(listen) {
+		return fmt.Errorf("refusing non-loopback listen address %q; set ROUTER_POLICY_ALLOW_FIREWALLED_BIND=1 only with a source-restricted firewall rule", listen)
 	}
 	cfg, err := loadRuntimeConfig(cfgPath)
 	if err != nil {
@@ -1340,8 +1340,12 @@ func tspuMatchForDomain(cfg *config.Config, domain string, forced bool, now time
 }
 
 func safeListenAddress(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
+	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
+		return false
+	}
+	portNumber, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || portNumber == 0 {
 		return false
 	}
 	if host == "localhost" {
@@ -1349,6 +1353,21 @@ func safeListenAddress(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func allowedListenAddress(addr string) bool {
+	if safeListenAddress(addr) {
+		return true
+	}
+	if os.Getenv("ROUTER_POLICY_ALLOW_FIREWALLED_BIND") != "1" {
+		return false
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	portNumber, err := strconv.ParseUint(port, 10, 16)
+	return err == nil && portNumber > 0 && net.ParseIP(host) != nil
 }
 
 func splitZapretValues(raw string) []string {

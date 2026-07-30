@@ -16,7 +16,8 @@ state-changing операция идёт через API и ChangeSet.
 ## Auth
 
 - Default listener `127.0.0.1:8787`. Non-loopback bind требует
-  `ROUTER_POLICY_ALLOW_UNSAFE_LAN_BIND=...` (bootstrap guard).
+  `ROUTER_POLICY_ALLOW_FIREWALLED_BIND=1`; на OpenWrt его включает только
+  `/etc/router-policy/config/listener.conf` с `allow_firewalled_bind=1`.
 - Нет default admin password. Первый admin — через one-time setup token.
 - Пароли — Argon2id hashes, bounded params, concurrency-limited.
 - User/setup файлы — atomic (temp + fsync + rename).
@@ -27,8 +28,8 @@ state-changing операция идёт через API и ChangeSet.
   temp-файлов создаются только через проверенный `crypto/rand`; ошибка entropy
   source останавливает операцию.
 - Security audit различает loopback, wildcard и non-loopback listeners.
-  Wildcard bind не считается безопасным без firewall topology proof; API на
-  таком bind даёт critical failure.
+  Opt-in разрешает bind, но не создаёт firewall rule: доступ обязан быть
+  ограничен management subnet отдельным правилом firewall4.
 
 ## Endpoints
 
@@ -152,5 +153,6 @@ DNS resolution, классификация, фактический egress, до�
 - Zapret/Xray `NOT_CONFIGURED` на устройстве без бинарника.
 - Direct/Zapret/Drop/VLESS доказаны на Flint 2 до и после reboot; Smart DNS
   требует отдельной проверки с production resolver.
-- API external LAN binding — refused до TLS/firewall LAN-only/WAN-deny checks.
+- External bind проверен за source-restricted firewall rule. TLS termination
+  пока не встроен; для недоверенной сети нужен reverse proxy/VPN.
 - Роли кроме admin.
