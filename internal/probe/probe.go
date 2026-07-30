@@ -378,7 +378,7 @@ func resolveForRoute(ctx context.Context, cfg *config.Config, route config.Route
 		}
 		resolver := normalizeDNSServer(route.DNSServer)
 		addrs, err := queryDNSTCPViaSOCKS(ctx, cfg, route.SOCKS5, resolver, host)
-		return addrs, "socks5:" + resolver, "socks5_tcp", err
+		return preferIPv4(addrs), "socks5:" + resolver, "socks5_tcp", err
 	}
 	if route.Type == "smart_dns" {
 		if route.DNSServer == "" || strings.Contains(route.DNSServer, "PLACEHOLDER") {
@@ -388,13 +388,28 @@ func resolveForRoute(ctx context.Context, cfg *config.Config, route config.Route
 			return nil, "", "", errors.New("smart_dns_connect_to_answer_required")
 		}
 		addrs, protocol, err := queryDNS(ctx, route.DNSServer, host)
-		return addrs, normalizeDNSServer(route.DNSServer), protocol, err
+		return preferIPv4(addrs), normalizeDNSServer(route.DNSServer), protocol, err
 	}
 	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 	if err != nil {
 		return nil, "system", "system", err
 	}
-	return addrs, "system", "system", nil
+	return preferIPv4(addrs), "system", "system", nil
+}
+
+func preferIPv4(addrs []netip.Addr) []netip.Addr {
+	ordered := make([]netip.Addr, 0, len(addrs))
+	for _, addr := range addrs {
+		if addr.Is4() {
+			ordered = append(ordered, addr)
+		}
+	}
+	for _, addr := range addrs {
+		if !addr.Is4() {
+			ordered = append(ordered, addr)
+		}
+	}
+	return ordered
 }
 
 func queryDNSTCPViaSOCKS(ctx context.Context, cfg *config.Config, proxyAddr, server, host string) ([]netip.Addr, error) {

@@ -75,6 +75,26 @@ overview/topology/devices/services/routes/traffic/events/system/revisions + SSE.
 `security/audit` загружается только для diagnostician/admin, а `changes` — только
 для admin; 403 на дополнительном экране не валит общий dashboard.
 
+Service board строится из текущего конфига и bounded decision cache. Заводского
+списка сайтов нет. Карточку можно перетащить между GEO, TSPU и Direct; UI
+создаёт, проверяет, применяет и подтверждает ChangeSet.
+
+Статические правила не активируются сами. Администратор выбирает необязательный
+шаблон или вводит домен вручную, затем задаёт класс и порядок `direct`,
+`zapret`, `smart_dns`, `vless`, `drop`. Тем же редактором меняется автоматически
+обнаруженное правило. Порядок сохраняется как `allowed_paths`; небезопасные для
+GEO комбинации отклоняются API до apply.
+
+Отключённый IPv6 показывается как необязательное состояние, а не как
+предупреждение: отсутствие WAN6 само по себе не означает поломку IPv4 data
+plane.
+
+Экран Smart DNS принимает публичные `IP:port`, не показывает resolver как
+готовый до route health proof и явно отображает порядок:
+`Zapret → Smart DNS → VLESS → Direct` для TSPU и
+`Smart DNS → VLESS → DROP` для GEO. Экран VPN содержит пять независимых слотов
+подписок и показывает результат проверки каждого объединённого outbound.
+
 Default admin и default password отсутствуют. Installer печатает one-time setup
 token только пока администратор ещё не создан. После setup используются данные
 созданного владельцем аккаунта; FlintRoute не хранит и не показывает исходный
@@ -104,8 +124,8 @@ topology за реальные данные.
 
 ```text
 index.html  ~0.40 kB
-CSS         ~5–6 kB
-JS          ~34 kB (gzip ~13 kB)
+CSS         ~10 kB (gzip ~2.8 kB)
+JS          ~45 kB (gzip ~16 kB)
 ```
 
 Нормально для роутера: статические файлы внутри Go binary.

@@ -278,6 +278,12 @@ func buildCandidates(cfg *config.Config, profile serviceProfile, opts Options) C
 	order := orderForService(profile.service.Category, tspuStatus, cfg.Policy.TSPUStalePolicy)
 	var candidates []config.Route
 	seen := map[string]bool{}
+	selectedRoute, selectedRouteOK := cfg.RouteByTag(profile.service.SelectedRouteTag)
+	if profile.service.SelectedRouteTag != "" {
+		if !selectedRouteOK || !config.PathAllowed(profile.service, selectedRoute, cfg.Policy) {
+			selectedRouteOK = false
+		}
+	}
 	for _, routeType := range order {
 		routes := cfg.RoutesByType(routeType)
 		if routeType == "drop" && len(routes) == 0 {
@@ -288,6 +294,10 @@ func buildCandidates(cfg *config.Config, profile serviceProfile, opts Options) C
 		}
 		if routeType == "vless" && opts.HealthTracker != nil {
 			routes = opts.HealthTracker.OrderVLESS(routes)
+		}
+		if selectedRouteOK && selectedRoute.Type == routeType && selectedRoute.Enabled() {
+			candidates = append(candidates, selectedRoute)
+			seen[selectedRoute.Tag] = true
 		}
 		for _, route := range routes {
 			if seen[route.Tag] || !config.PathAllowed(profile.service, route, cfg.Policy) {
@@ -347,12 +357,12 @@ func orderForService(category, tspuStatus, stalePolicy string) []string {
 	case "TELEGRAM":
 		return []string{"tg_ws_proxy", "vless", "drop"}
 	case "TSPU_RESTRICTED":
-		return []string{"zapret", "smart_dns", "vless", "drop"}
+		return []string{"zapret", "smart_dns", "vless", "direct", "drop"}
 	case "BLOCKED":
 		return []string{"drop"}
 	case "DIRECT_PREFERRED", "":
 		if tspuStatus == "MATCH" || tspuStatus == "STALE_MATCH" && stalePolicy == "zapret_first" {
-			return []string{"zapret", "smart_dns", "vless", "drop"}
+			return []string{"zapret", "smart_dns", "vless", "direct", "drop"}
 		}
 		if tspuStatus == "STALE_MATCH" && stalePolicy == "fail_closed" {
 			return []string{"drop"}

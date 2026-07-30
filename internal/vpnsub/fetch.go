@@ -2,6 +2,7 @@ package vpnsub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"time"
 )
+
+const maxSubscriptionSources = 5
 
 type FetchOptions struct {
 	MaxBytes     int64
@@ -27,19 +30,56 @@ type FetchSummary struct {
 }
 
 func ReadSubscriptionURLFile(path string) (string, error) {
+	values, err := ReadSubscriptionURLFiles(path)
+	if err != nil {
+		return "", err
+	}
+	if len(values) != 1 {
+		return "", errors.New("subscription URL file contains multiple sources")
+	}
+	return values[0], nil
+}
+
+func ReadSubscriptionURLFiles(path string) ([]string, error) {
 	raw, err := readSecretFile(path, 16<<10)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	value := strings.TrimSpace(string(raw))
-	if value == "" || strings.ContainsAny(value, "\r\n\x00") {
-		return "", errors.New("subscription URL file must contain one URL")
+	if value == "" || strings.ContainsRune(value, '\x00') {
+		return nil, errors.New("subscription URL file is empty or invalid")
 	}
-	parsed, err := validateSubscriptionURL(value)
-	if err != nil {
-		return "", err
+	values := []string{value}
+	if strings.HasPrefix(value, "[") {
+		if err := json.Unmarshal(raw, &values); err != nil {
+			return nil, errors.New("subscription URL file contains invalid JSON")
+		}
 	}
-	return parsed.String(), nil
+	if len(values) == 0 || len(values) > maxSubscriptionSources {
+		return nil, fmt.Errorf("subscription URL file must contain 1..%d sources", maxSubscriptionSources)
+	}
+	normalized := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, candidate := range values {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || strings.ContainsAny(candidate, "\r\n\x00") {
+			return nil, errors.New("subscription URL must be one line")
+		}
+		parsed, err := validateSubscriptionURL(candidate)
+		if err != nil {
+			return nil, err
+		}
+		canonical := parsed.String()
+		if seen[canonical] {
+			continue
+		}
+		seen[canonical] = true
+		normalized = append(normalized, canonical)
+	}
+	if len(normalized) == 0 {
+		return nil, errors.New("subscription URL file contains no unique sources")
+	}
+	return normalized, nil
 }
 
 func FetchSubscription(ctx context.Context, client *http.Client, subscriptionURL, outputPath string, opts FetchOptions) (FetchSummary, error) {

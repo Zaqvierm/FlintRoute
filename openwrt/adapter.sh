@@ -37,7 +37,7 @@ nslookup_bin="${NSLOOKUP_BIN:-nslookup}"
 pidof_bin="${PIDOF_BIN:-pidof}"
 
 active_nft="${ACTIVE_NFT:-/etc/router-policy/firewall/router-policy.nft}"
-active_dnsmasq="${ACTIVE_DNSMASQ:-/etc/dnsmasq.d/router-policy.conf}"
+active_dnsmasq="${ACTIVE_DNSMASQ:-/tmp/dnsmasq.d/router-policy.conf}"
 active_xray="${ACTIVE_XRAY:-/etc/router-policy/xray/active.json}"
 active_zapret="${ACTIVE_ZAPRET:-/etc/router-policy/zapret/nfqws.conf}"
 flow_offload_uci_key='firewall.@defaults[0].flow_offloading'
@@ -515,6 +515,7 @@ validate_candidate() {
   ROUTER_POLICY_CONFIG="$candidate" "$router_policy_bin" validate-config >/dev/null
   "$router_policy_bin" internal-verify-artifacts --root "$generated" --transaction "$txid" --revision "$revision" --candidate-hash "$candidate_hash" --manifest-hash "$artifact_manifest_hash" >/dev/null
   "$nft_bin" -c -f "$generated/router-policy.nft"
+  verify_dnsmasq_include_target
   "$dnsmasq_bin" --test --conf-file="$generated/router-policy-dnsmasq.conf" >/dev/null
   "$xray_bin" run -test -config "$generated/xray.json" >/dev/null
   ip_plan_status="$("$router_policy_bin" internal-validate-ip-plan --plan "$generated/ip-plan.json" --transaction "$txid" --revision "$revision" --candidate-hash "$candidate_hash")"
@@ -754,6 +755,19 @@ wait_dnsmasq_ready() {
     fi
     sleep 1
   done
+}
+
+verify_dnsmasq_include_target() {
+  configured_confdir="$("$uci_bin" -q get 'dhcp.@dnsmasq[0].confdir' 2>/dev/null || true)"
+  active_confdir="${active_dnsmasq%/*}"
+  [ -n "$configured_confdir" ] || {
+    echo "reason=dnsmasq_confdir_unknown" >&2
+    return 1
+  }
+  [ "$configured_confdir" = "$active_confdir" ] || {
+    echo "reason=dnsmasq_include_not_loaded configured_confdir=$configured_confdir active_confdir=$active_confdir" >&2
+    return 1
+  }
 }
 
 start_managed_service() {

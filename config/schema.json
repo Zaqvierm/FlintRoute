@@ -5,6 +5,15 @@
   "required": ["version", "policy", "routes", "services"],
   "properties": {
     "version": { "type": "integer", "minimum": 2 },
+    "platform": {
+      "type": "object",
+      "properties": {
+        "target": { "type": "string" },
+        "ipv6_enabled": { "type": "boolean" },
+        "require_confirmed_diagnostics": { "type": "boolean" },
+        "unsupported_apply_policy": { "type": "string" }
+      }
+    },
     "storage": {
       "type": "object",
       "properties": {

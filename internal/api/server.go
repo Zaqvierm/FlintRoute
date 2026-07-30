@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -20,7 +21,10 @@ import (
 	"router-policy/internal/adapter"
 	"router-policy/internal/auth"
 	"router-policy/internal/config"
+	"router-policy/internal/discovery"
+	"router-policy/internal/domaincache"
 	"router-policy/internal/health"
+	"router-policy/internal/planner"
 	"router-policy/internal/platform"
 	"router-policy/internal/probe"
 	"router-policy/internal/secureid"
@@ -42,6 +46,7 @@ type Options struct {
 	SubscriptionPreparer SubscriptionPreparer
 	ProbeEngineFactory   func(*config.Config) health.ProbeEngine
 	TSPURefresh          TSPURefreshFunc
+	DNSObservationPath   string
 	Development          bool
 }
 
@@ -69,6 +74,8 @@ type Server struct {
 	tspuRefresh          TSPURefreshFunc
 	tspuDelay            tspuDelayFunc
 	healthTracker        *probe.HealthTracker
+	domainDecisions      *domaincache.Manager
+	dnsObservationPath   string
 	development          bool
 	broker               *EventBroker
 	mux                  *http.ServeMux
@@ -135,6 +142,10 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	domainDecisions, err := domaincache.New(stateStore, activeConfig.Storage.MaxAutoDomains)
+	if err != nil {
+		return nil, err
+	}
 	probeEngineFactory := opts.ProbeEngineFactory
 	if probeEngineFactory == nil {
 		allowSimulation := opts.Development
@@ -148,6 +159,10 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 			path := filepath.Join(active.Storage.StateDir, "tspu-cache.json")
 			return tspu.RefreshFile(ctx, nil, active, path, now)
 		}
+	}
+	dnsObservationPath := opts.DNSObservationPath
+	if dnsObservationPath == "" {
+		dnsObservationPath = filepath.Join(activeConfig.Storage.RuntimeDir, "dns-observations.log")
 	}
 	broker, err := NewEventBroker(512)
 	if err != nil {
@@ -165,6 +180,8 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		tspuRefresh:          tspuRefresh,
 		tspuDelay:            randomTSPUDelay,
 		healthTracker:        probe.NewHealthTracker(persistedHealth),
+		domainDecisions:      domainDecisions,
+		dnsObservationPath:   dnsObservationPath,
 		development:          opts.Development,
 		broker:               broker,
 		mux:                  http.NewServeMux(),
@@ -253,6 +270,7 @@ func (s *Server) StartScheduler(ctx context.Context) {
 			}
 		}()
 		s.startTSPUScheduler(schedulerCtx)
+		s.startDNSDiscovery(schedulerCtx)
 	})
 }
 
@@ -262,6 +280,161 @@ func (s *Server) startTSPUScheduler(ctx context.Context) {
 		defer s.schedulerWG.Done()
 		s.runTSPUScheduler(ctx)
 	}()
+}
+
+func (s *Server) startDNSDiscovery(ctx context.Context) {
+	if !s.currentConfig().Policy.UnknownDomainBackgroundCheck || s.dnsObservationPath == "" {
+		return
+	}
+	s.schedulerWG.Add(1)
+	go func() {
+		defer s.schedulerWG.Done()
+		watcher := discovery.Watcher{
+			Path: s.dnsObservationPath,
+			Emit: func(observationContext context.Context, observation discovery.Observation) {
+				s.discoverDomain(observationContext, observation)
+			},
+		}
+		if err := watcher.Run(ctx); err != nil && ctx.Err() == nil {
+			s.publishEvent(Event{Type: "domain.discovery", Severity: "error", ReasonCode: "dns_observation_failed", Details: map[string]any{"error": err.Error()}})
+		}
+	}()
+}
+
+func (s *Server) discoverDomain(ctx context.Context, observation discovery.Observation) {
+	active := s.currentConfig()
+	if active == nil || active.ServiceForDomain(observation.Domain) != "" {
+		return
+	}
+	s.mu.Lock()
+	revision := s.activeRevision
+	s.mu.Unlock()
+	if revision == "" {
+		return
+	}
+	now := time.Now().UTC()
+	match := tspu.Match{Domain: observation.Domain, Status: "UNAVAILABLE"}
+	cache, err := tspu.Load(filepath.Join(active.Storage.StateDir, "tspu-cache.json"))
+	if err == nil {
+		if found, ok := tspu.Find(cache, observation.Domain, now); ok {
+			match = found
+		} else {
+			match = tspu.Match{Domain: observation.Domain, Status: "NO_MATCH"}
+		}
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, time.Duration(maxInt(active.Policy.MaxProbeSeconds, 15))*time.Second)
+	defer cancel()
+	check, err := planner.CheckDomain(checkCtx, active, observation.Domain, "", planner.Options{
+		TSPUResult: match, RouteProber: s.probeEngineFactory(active), HealthTracker: s.healthTracker,
+		DecisionCache: s.domainDecisions, ActiveRevision: revision,
+	})
+	if err != nil {
+		s.publishEvent(Event{Type: "route.decision", Severity: "warning", ReasonCode: "automatic_domain_check_failed", Details: map[string]any{"domain": observation.Domain, "error": err.Error()}})
+		return
+	}
+	details := map[string]any{
+		"domain": check.Domain, "category": check.Category, "status": check.Status,
+		"confidence": check.Confidence, "tspu_status": check.TSPUStatus, "query_type": observation.QueryType,
+	}
+	if check.Selected != nil {
+		details["route"] = check.Selected.Route
+		details["route_type"] = check.Selected.RouteType
+	}
+	s.publishEvent(Event{Type: "route.decision", Severity: "info", ReasonCode: "automatic_domain_classified", Details: details})
+	if check.Selected == nil || check.Selected.RouteType == "direct" || check.Selected.RouteType == "drop" {
+		return
+	}
+	if err := s.commitAutomaticDomain(ctx, check); err != nil {
+		s.publishEvent(Event{Type: "domain.discovery", Severity: "warning", ReasonCode: "automatic_policy_commit_failed", Details: map[string]any{"domain": check.Domain, "error": err.Error()}})
+	}
+}
+
+func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.DomainCheck) error {
+	service, id, ok := automaticServiceForDecision(check)
+	if !ok {
+		return nil
+	}
+	active := s.currentConfig()
+	if active.ServiceForDomain(check.Domain) != "" {
+		return nil
+	}
+	s.mu.Lock()
+	baseVersion := s.configVersion
+	s.mu.Unlock()
+	change, err := s.createDraftChange("Add discovered domain policy", "Apply verified automatic route decision", baseVersion, []ChangeOp{{
+		Type: "set", Path: "/services/" + escapeJSONPointer(id), Value: service,
+	}}, "domain-discovery")
+	if err != nil {
+		if errors.Is(err, errBaseVersionConflict) {
+			return nil
+		}
+		return err
+	}
+	change, failure := s.validateChangeSet(change)
+	if failure == nil {
+		change, failure = s.applyChangeSet(ctx, change)
+	}
+	if failure == nil && change.State != "awaiting_confirmation" {
+		failure = conflict("automatic_apply_unverified", "automatic domain policy did not reach confirmation")
+	}
+	if failure == nil {
+		change, failure = s.confirmChangeSet(ctx, change)
+	}
+	if failure != nil {
+		if change.TransactionID != "" && change.State != "rolled_back" && change.State != "expired" {
+			_, _ = s.rollbackChangeSet(context.WithoutCancel(ctx), change, false)
+		}
+		return errors.New(failure.Code)
+	}
+	return nil
+}
+
+func automaticServiceForDecision(check planner.DomainCheck) (config.Service, string, bool) {
+	if check.Selected == nil || check.ETLDPlusOne == "" {
+		return config.Service{}, "", false
+	}
+	category := check.Category
+	if category != "GEO_LOCKED" && (check.TSPUStatus == "MATCH" || check.TSPUStatus == "STALE_MATCH" || check.Selected.RouteType == "zapret" || domainCheckSuspectsTSPU(check)) {
+		category = "TSPU_RESTRICTED"
+	}
+	var allowed, forbidden []string
+	requireNonRU := false
+	switch category {
+	case "GEO_LOCKED":
+		allowed = []string{"smart_dns", "vless", "drop"}
+		forbidden = []string{"direct", "zapret"}
+		requireNonRU = true
+	case "TSPU_RESTRICTED":
+		allowed = []string{"zapret", "smart_dns", "vless", "direct", "drop"}
+	default:
+		return config.Service{}, "", false
+	}
+	id := "auto_" + strings.NewReplacer(".", "_", "-", "_").Replace(check.ETLDPlusOne)
+	return config.Service{
+		Category: category, Domains: []string{check.ETLDPlusOne},
+		AllowedPaths: allowed, ForbiddenPaths: forbidden, SelectedRouteTag: check.Selected.Route,
+		RequireNonRUEgress: requireNonRU,
+		ProbeURLs: []config.ProbeCheck{{
+			Name: "automatic-web", URL: "https://" + check.Domain + "/", Required: true,
+			ExpectedCodes: []int{200, 204, 301, 302, 303, 307, 308, 401, 403}, BodyMode: "optional",
+		}},
+	}, id, true
+}
+
+func domainCheckSuspectsTSPU(check planner.DomainCheck) bool {
+	for _, result := range check.Results {
+		if result.SuspectedTSPU {
+			return true
+		}
+	}
+	return false
+}
+
+func maxInt(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func (s *Server) runTSPUScheduler(ctx context.Context) {
@@ -451,14 +624,17 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/topology", s.requireRole(auth.RoleViewer, s.handleTopology))
 	s.mux.HandleFunc("/api/v1/devices", s.requireRole(auth.RoleViewer, s.handleDevices))
 	s.mux.HandleFunc("/api/v1/services", s.requireRole(auth.RoleViewer, s.handleServices))
+	s.mux.HandleFunc("/api/v1/services/classify", s.requireRole(auth.RoleAdministrator, s.handleServiceClassify))
 	s.mux.HandleFunc("/api/v1/domains", s.requireRole(auth.RoleViewer, s.handleDomains))
 	s.mux.HandleFunc("/api/v1/policies", s.requireRole(auth.RoleViewer, s.handlePolicies))
 	s.mux.HandleFunc("/api/v1/routes", s.requireRole(auth.RoleViewer, s.handleRoutes))
 	s.mux.HandleFunc("/api/v1/traffic", s.requireRole(auth.RoleViewer, s.handleTraffic))
 	s.mux.HandleFunc("/api/v1/route-health", s.requireRole(auth.RoleViewer, s.handleRouteHealth))
 	s.mux.HandleFunc("/api/v1/proxies", s.requireRole(auth.RoleViewer, s.handleProxies))
+	s.mux.HandleFunc("/api/v1/xray/subscription/secret", s.requireRole(auth.RoleAdministrator, s.handleXraySubscriptionSecret))
 	s.mux.HandleFunc("/api/v1/xray/subscription/prepare", s.requireRole(auth.RoleAdministrator, s.handleXraySubscriptionPrepare))
 	s.mux.HandleFunc("/api/v1/smart-dns", s.requireRole(auth.RoleViewer, s.handleSmartDNS))
+	s.mux.HandleFunc("/api/v1/smart-dns/configure", s.requireRole(auth.RoleAdministrator, s.handleSmartDNSConfigure))
 	s.mux.HandleFunc("/api/v1/zapret", s.requireRole(auth.RoleViewer, s.handleZapret))
 	s.mux.HandleFunc("/api/v1/zapret/adaptive/runtime", s.requireRole(auth.RoleViewer, s.handleAdaptiveZapretRuntime))
 	s.mux.HandleFunc("/api/v1/zapret/adaptive/evaluate", s.requireRole(auth.RoleAdministrator, s.handleAdaptiveZapretEvaluate))
@@ -639,6 +815,10 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
+		return
+	}
 	items := []map[string]any{}
 	cfg := s.currentConfig()
 	ids := make([]string, 0, len(cfg.Services))
@@ -651,10 +831,140 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 		items = append(items, map[string]any{
 			"id": id, "category": svc.Category, "domains": svc.Domains,
 			"allowed_paths": svc.AllowedPaths, "forbidden_paths": svc.ForbiddenPaths,
-			"probe_count": len(svc.ProbeURLs), "require_non_ru_egress": svc.RequireNonRUEgress,
+			"selected_route_tag": svc.SelectedRouteTag,
+			"probe_count":        len(svc.ProbeURLs), "require_non_ru_egress": svc.RequireNonRUEgress,
+			"source": "configured",
 		})
 	}
+	if s.domainDecisions != nil {
+		for _, decision := range s.domainDecisions.Snapshot() {
+			category := decision.Category
+			if category != "GEO_LOCKED" && (decision.TSPUStatus == "MATCH" || decision.TSPUStatus == "STALE_MATCH" || decision.SelectedType == "zapret") {
+				category = "TSPU_RESTRICTED"
+			}
+			allowedPaths := []string{}
+			forbiddenPaths := []string{}
+			if _, fallback, err := serviceForClassifyRequest(serviceClassifyRequest{
+				Domain: decision.Domain, Category: category,
+			}); err == nil {
+				allowedPaths = fallback.AllowedPaths
+				forbiddenPaths = fallback.ForbiddenPaths
+			}
+			items = append(items, map[string]any{
+				"id":                  decision.Service,
+				"category":            category,
+				"domains":             []string{decision.Domain},
+				"allowed_paths":       allowedPaths,
+				"forbidden_paths":     forbiddenPaths,
+				"selected_route_tag":  decision.SelectedRoute,
+				"selected_route_type": decision.SelectedType,
+				"status":              decision.Status,
+				"confidence":          decision.Confidence,
+				"checked_at":          decision.CheckedAt,
+				"expires_at":          decision.ExpiresAt,
+				"source":              "automatic",
+			})
+		}
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		left, _ := items[i]["checked_at"].(time.Time)
+		right, _ := items[j]["checked_at"].(time.Time)
+		if !left.Equal(right) {
+			return left.After(right)
+		}
+		return fmt.Sprint(items[i]["id"]) < fmt.Sprint(items[j]["id"])
+	})
 	writeData(w, r, items)
+}
+
+type serviceClassifyRequest struct {
+	Domain       string   `json:"domain"`
+	Category     string   `json:"category"`
+	AllowedPaths []string `json:"allowed_paths,omitempty"`
+	BaseVersion  int64    `json:"base_version"`
+}
+
+func serviceForClassifyRequest(request serviceClassifyRequest) (string, config.Service, error) {
+	domain, err := tspu.NormalizeDomain(request.Domain)
+	if err != nil {
+		return "", config.Service{}, err
+	}
+	category := strings.ToUpper(strings.TrimSpace(request.Category))
+	service := config.Service{Domains: []string{domain}}
+	switch category {
+	case "GEO_LOCKED":
+		service.Category = category
+		service.AllowedPaths = []string{"smart_dns", "vless", "drop"}
+		service.ForbiddenPaths = []string{"direct", "zapret"}
+		service.RequireNonRUEgress = true
+	case "TSPU_RESTRICTED":
+		service.Category = category
+		service.AllowedPaths = []string{"zapret", "smart_dns", "vless", "direct", "drop"}
+	case "DIRECT_PREFERRED":
+		service.Category = category
+		service.AllowedPaths = []string{"direct", "zapret", "smart_dns", "vless", "drop"}
+	default:
+		return "", config.Service{}, fmt.Errorf("category must be GEO_LOCKED, TSPU_RESTRICTED or DIRECT_PREFERRED")
+	}
+	if len(request.AllowedPaths) > 0 {
+		if len(request.AllowedPaths) > 5 {
+			return "", config.Service{}, fmt.Errorf("allowed_paths may contain at most five routes")
+		}
+		seen := map[string]bool{}
+		service.AllowedPaths = make([]string, 0, len(request.AllowedPaths))
+		for _, raw := range request.AllowedPaths {
+			path := strings.ToLower(strings.TrimSpace(raw))
+			switch path {
+			case "direct", "zapret", "smart_dns", "vless", "drop":
+			default:
+				return "", config.Service{}, fmt.Errorf("unsupported route path %q", raw)
+			}
+			if seen[path] {
+				return "", config.Service{}, fmt.Errorf("route path %q is duplicated", path)
+			}
+			if category == "GEO_LOCKED" && (path == "direct" || path == "zapret") {
+				return "", config.Service{}, fmt.Errorf("GEO_LOCKED cannot use %s unless the global policy explicitly permits it", path)
+			}
+			seen[path] = true
+			service.AllowedPaths = append(service.AllowedPaths, path)
+		}
+	}
+	return category, service, nil
+}
+
+func (s *Server) handleServiceClassify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	var request serviceClassifyRequest
+	if err := readJSON(r, &request); err != nil {
+		writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	category, service, err := serviceForClassifyRequest(request)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_service_rule", err.Error())
+		return
+	}
+	domain := service.Domains[0]
+	id := "user_" + strings.NewReplacer(".", "_", "-", "_").Replace(tspu.ETLDPlusOne(domain))
+	change, err := s.createDraftChange(
+		"Change route class for "+domain,
+		"Persist the selected route class for an observed domain",
+		request.BaseVersion,
+		[]ChangeOp{{Type: "set", Path: "/services/" + id, Value: service}},
+		currentSession(r).User,
+	)
+	if err != nil {
+		if errors.Is(err, errBaseVersionConflict) {
+			writeError(w, r, http.StatusConflict, "base_version_conflict", "active revision changed")
+			return
+		}
+		writeError(w, r, http.StatusInternalServerError, "state_store_failed", err.Error())
+		return
+	}
+	writeData(w, r, map[string]any{"change": change, "domain": domain, "category": category})
 }
 
 func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
@@ -708,7 +1018,145 @@ func (s *Server) handleProxies(w http.ResponseWriter, r *http.Request) {
 	writeData(w, r, map[string]any{"xray": "configured", "subscription": "secret-masked", "vless_routes": countRoutes(s.currentConfig(), "vless")})
 }
 func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
-	writeData(w, r, filterRoutes(s.currentConfig(), "smart_dns"))
+	if r.Method != http.MethodGet {
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
+		return
+	}
+	routes := filterRoutes(s.currentConfig(), "smart_dns")
+	healthByTag := map[string]probe.RouteHealth{}
+	for _, item := range s.healthTracker.Snapshot() {
+		if item.RouteType == "smart_dns" {
+			healthByTag[item.RouteTag] = item
+		}
+	}
+	items := make([]map[string]any, 0, len(routes))
+	ready := 0
+	configured := 0
+	for _, route := range routes {
+		health, observed := healthByTag[route.Tag]
+		status := route.Status
+		if observed {
+			status = health.State
+			if health.State == "healthy" {
+				ready++
+			}
+		}
+		resolverConfigured := route.DNSServer != "" && !strings.Contains(route.DNSServer, "PLACEHOLDER")
+		if !route.Disabled && resolverConfigured {
+			configured++
+		}
+		items = append(items, map[string]any{
+			"tag": route.Tag, "status": status, "enabled": !route.Disabled,
+			"resolver_configured":    resolverConfigured,
+			"connect_to_resolved_ip": route.ConnectToResolvedIP,
+			"health":                 health,
+		})
+	}
+	writeData(w, r, map[string]any{
+		"configured":       configured > 0,
+		"configured_count": configured,
+		"ready":            ready,
+		"routes":           items,
+		"fallback_order": map[string][]string{
+			"geo":  {"smart_dns", "vless", "drop"},
+			"tspu": {"zapret", "smart_dns", "vless", "direct", "drop"},
+		},
+		"success_contract": []string{"safe DNS answer", "connection to returned address", "content check", "egress check when required"},
+	})
+}
+
+type smartDNSConfigureRequest struct {
+	BaseVersion int64    `json:"base_version"`
+	Endpoints   []string `json:"endpoints"`
+}
+
+func (s *Server) handleSmartDNSConfigure(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	var request smartDNSConfigureRequest
+	if err := readJSON(r, &request); err != nil {
+		writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	active := s.currentConfig()
+	routeIndexes := make([]int, 0, 2)
+	for index, route := range active.Routes {
+		if route.Type == "smart_dns" {
+			routeIndexes = append(routeIndexes, index)
+		}
+	}
+	if len(routeIndexes) == 0 {
+		writeError(w, r, http.StatusConflict, "smart_dns_routes_missing", "configuration has no Smart DNS route slots")
+		return
+	}
+	if request.BaseVersion <= 0 {
+		writeError(w, r, http.StatusBadRequest, "invalid_base_version", "base_version must be positive")
+		return
+	}
+	endpoints := make([]string, 0, len(request.Endpoints))
+	seen := map[string]bool{}
+	for _, raw := range request.Endpoints {
+		endpoint, err := normalizeSmartDNSEndpoint(raw)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_smart_dns_endpoint", err.Error())
+			return
+		}
+		if !seen[endpoint] {
+			seen[endpoint] = true
+			endpoints = append(endpoints, endpoint)
+		}
+	}
+	if len(endpoints) == 0 || len(endpoints) > len(routeIndexes) {
+		writeError(w, r, http.StatusBadRequest, "invalid_smart_dns_endpoint_count", fmt.Sprintf("provide 1..%d unique Smart DNS endpoints", len(routeIndexes)))
+		return
+	}
+	operations := make([]ChangeOp, 0, len(routeIndexes)*4)
+	for slot, routeIndex := range routeIndexes {
+		prefix := fmt.Sprintf("/routes/%d", routeIndex)
+		if slot < len(endpoints) {
+			operations = append(operations,
+				ChangeOp{Type: "set", Path: prefix + "/dns_server", Value: endpoints[slot]},
+				ChangeOp{Type: "set", Path: prefix + "/connect_to_resolved_ip", Value: true},
+				ChangeOp{Type: "set", Path: prefix + "/disabled", Value: false},
+				ChangeOp{Type: "set", Path: prefix + "/status", Value: "UNVERIFIED"},
+			)
+			continue
+		}
+		operations = append(operations,
+			ChangeOp{Type: "set", Path: prefix + "/disabled", Value: true},
+			ChangeOp{Type: "set", Path: prefix + "/status", Value: "NOT_CONFIGURED"},
+		)
+	}
+	session := currentSession(r)
+	change, err := s.createDraftChange("Configure Smart DNS resolvers", "Validate resolvers before using VPN fallback", request.BaseVersion, operations, session.User)
+	if err != nil {
+		if errors.Is(err, errBaseVersionConflict) {
+			writeError(w, r, http.StatusConflict, "base_version_conflict", "base_version does not match current revision")
+			return
+		}
+		writeError(w, r, http.StatusInternalServerError, "smart_dns_change_failed", err.Error())
+		return
+	}
+	writeData(w, r, map[string]any{"change": change, "endpoint_count": len(endpoints)})
+}
+
+func normalizeSmartDNSEndpoint(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	host, port, err := net.SplitHostPort(value)
+	if err != nil {
+		return "", errors.New("Smart DNS endpoint must use host:port form")
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsMulticast() {
+		return "", errors.New("Smart DNS endpoint must use a public unicast IP address")
+	}
+	parsedPort, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || parsedPort == 0 {
+		return "", errors.New("Smart DNS endpoint port must be between 1 and 65535")
+	}
+	return net.JoinHostPort(ip.String(), strconv.FormatUint(parsedPort, 10)), nil
 }
 func (s *Server) handleZapret(w http.ResponseWriter, r *http.Request) {
 	writeData(w, r, map[string]any{"status": "requires-flint2-diagnostics", "route": filterRoutes(s.currentConfig(), "zapret")})

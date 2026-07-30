@@ -200,7 +200,7 @@ func (v *OpenWrtPathVerifier) Verify(ctx context.Context, request PathProofReque
 		actual.IPv6Verified = actual.IPv6Verified && err == nil && routeOK
 	}
 	if request.Route.Type != "vless" {
-		actual.ConntrackMark, err = v.commands.ConntrackMark(request.Observation.LocalIP, request.Observation.ConnectedIP)
+		actual.ConntrackMark, err = conntrackMarkWithRetry(ctx, v.commands, request.Observation.LocalIP, request.Observation.ConnectedIP)
 		if err != nil {
 			return evidence.RouteResult{}, fmt.Errorf("conntrack_proof_failed: %w", err)
 		}
@@ -263,6 +263,27 @@ func (v *OpenWrtPathVerifier) Verify(ctx context.Context, request PathProofReque
 		return evidence.RouteResult{}, err
 	}
 	return actual, nil
+}
+
+func conntrackMarkWithRetry(ctx context.Context, commands OpenWrtCommands, localIP, remoteIP string) (string, error) {
+	var lastErr error
+	for attempt, delay := range []time.Duration{0, 25 * time.Millisecond, 50 * time.Millisecond, 100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond} {
+		if attempt > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return "", ctx.Err()
+			case <-timer.C:
+			}
+		}
+		mark, err := commands.ConntrackMark(localIP, remoteIP)
+		if err == nil {
+			return mark, nil
+		}
+		lastErr = err
+	}
+	return "", lastErr
 }
 
 func (v *OpenWrtPathVerifier) requiredProof(tag, routeType string) (artifact.RouteProof, bool) {

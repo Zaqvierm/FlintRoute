@@ -62,6 +62,14 @@ hooks. `router-policy`, boot guard и watchdog включаются для сл�
 control plane и watchdog запускаются сразу. Xray и nfqws не включаются вслепую:
 ими управляет подтверждённая dataplane-транзакция.
 
+Установщик также ставит `scripts/calibrate-zapret.sh`. Заводского домена для
+`blockcheck` нет: после установки калибровка имеет состояние
+`pending-observed-domain`. Runner принимает только фактически замеченный
+TSPU-домен, по умолчанию работает как dry-run, хранит максимум три
+allowlisted-кандидата и не активирует их в обход ChangeSet. Если managed
+`router-policy-zapret` уже работает, его остановка требует явного
+`--allow-managed-restart`.
+
 Перед первым изменением installer требует доступные `ubus` и procd, отсутствие
 активного forwarding boot guard и, для уже запущенного control plane, рабочий
 loopback health endpoint. Каждый вызов ubus/init ограничен timeout. Провал

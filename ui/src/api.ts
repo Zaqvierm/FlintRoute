@@ -62,6 +62,25 @@ export type TrafficSnapshot = {
   interfaces: TrafficInterface[];
   reason?: string;
 };
+export type SubscriptionSecretStatus = {
+  configured: boolean;
+  present: boolean;
+  count: number;
+  capacity: number;
+  slots: Array<{ slot: number; configured: boolean }>;
+  changed?: boolean;
+};
+export type SubscriptionPreparation = {
+  change: ChangeSet;
+  preparation: {
+    ready: boolean;
+    selected_tag: string;
+    servers: unknown[];
+    routes: unknown[];
+    checks: unknown[];
+    secrets_printed: boolean;
+  };
+};
 
 export class APIError extends Error {
   status: number;
@@ -127,13 +146,40 @@ export async function getOverview(): Promise<Overview> { return request<Overview
 export async function getTopology(): Promise<any> { return request('/topology'); }
 export async function getDevices(): Promise<any[]> { return request('/devices'); }
 export async function getServices(): Promise<any[]> { return request('/services'); }
+export async function classifyService(
+  domain: string,
+  category: string,
+  baseVersion: number,
+  allowedPaths?: string[]
+): Promise<{ change: ChangeSet }> {
+  return request('/services/classify', {
+    method: 'POST',
+    body: JSON.stringify({ domain, category, allowed_paths: allowedPaths, base_version: baseVersion })
+  });
+}
 export async function getRoutes(): Promise<any[]> { return request('/routes'); }
+export async function getSmartDNS(): Promise<any> { return request('/smart-dns'); }
+export async function configureSmartDNS(endpoints: string[], baseVersion: number): Promise<{ change: ChangeSet; endpoint_count: number }> {
+  return request('/smart-dns/configure', {
+    method: 'POST',
+    body: JSON.stringify({ endpoints, base_version: baseVersion })
+  });
+}
 export async function getTraffic(): Promise<TrafficSnapshot> { return request('/traffic'); }
 export async function getEvents(): Promise<EventItem[]> { return request('/events'); }
 export async function getSecurity(): Promise<any> { return request('/security/audit'); }
 export async function getSystem(): Promise<any> { return request('/system'); }
 export async function getChanges(): Promise<ChangeSet[]> { return request('/changes'); }
 export async function getRevisions(): Promise<RevisionSummary> { return request('/revisions'); }
+export async function getSubscriptionSecretStatus(): Promise<SubscriptionSecretStatus> {
+  return request('/xray/subscription/secret');
+}
+export async function saveSubscriptionSecrets(urls: string[]): Promise<SubscriptionSecretStatus> {
+  return request('/xray/subscription/secret', { method: 'PUT', body: JSON.stringify({ urls }) });
+}
+export async function prepareSubscription(baseVersion: number): Promise<SubscriptionPreparation> {
+  return request('/xray/subscription/prepare', { method: 'POST', body: JSON.stringify({ base_version: baseVersion }) });
+}
 export async function createChange(title: string, baseVersion: number, operations: ChangeOp[]): Promise<ChangeSet> {
   if (!Number.isSafeInteger(baseVersion) || baseVersion < 1) throw new Error('Некорректная версия конфигурации');
   if (operations.length === 0) throw new Error('ChangeSet должен содержать хотя бы одну операцию');

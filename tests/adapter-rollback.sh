@@ -13,6 +13,10 @@ ROUTER_POLICY_BIN="$ROOT/dist/router-policy.exe"
 ROUTER_POLICY_ADAPTER_LIB_ONLY=1
 mock_uci() {
   if [ "${1:-}" = "-q" ] && [ "${2:-}" = "get" ]; then
+    if [ "${3:-}" = "dhcp.@dnsmasq[0].confdir" ] && [ -n "${MOCK_DNSMASQ_CONFDIR:-}" ]; then
+      printf '%s\n' "$MOCK_DNSMASQ_CONFDIR"
+      return 0
+    fi
     return 1
   fi
   return 0
@@ -26,6 +30,13 @@ config="$TMP/etc/config.json"
 active_nft="$TMP/etc/router-policy.nft"
 active_dnsmasq="$TMP/etc/router-policy-dnsmasq.conf"
 active_xray="$TMP/xray/active.json"
+MOCK_DNSMASQ_CONFDIR="$TMP/not-loaded"
+if verify_dnsmasq_include_target >/dev/null 2>&1; then
+  echo "dnsmasq include outside the configured confdir was accepted" >&2
+  exit 1
+fi
+MOCK_DNSMASQ_CONFDIR="${active_dnsmasq%/*}"
+verify_dnsmasq_include_target
 printf 'config-old\n' > "$config"
 printf 'nft-old\n' > "$active_nft"
 printf 'dns-old\n' > "$active_dnsmasq"

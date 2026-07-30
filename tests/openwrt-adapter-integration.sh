@@ -96,7 +96,8 @@ export ROUTER_POLICY_ALLOW_SIMULATED_DIAGNOSTICS ROUTER_POLICY_AUTO_COLLECT_EVID
 
 printf '%s\n' \
   'firewall.@defaults[0].flow_offloading=1' \
-  'firewall.@defaults[0].flow_offloading_hw=1' > "$TMP/uci-state.env"
+  'firewall.@defaults[0].flow_offloading_hw=1' \
+  "dhcp.@dnsmasq[0].confdir=${ACTIVE_DNSMASQ%/*}" > "$TMP/uci-state.env"
 
 rm -f "$MOCK_IP_STATE"
 printf 'lan_management_path=true\nglinet_uhttpd_path=true\n' > "$TMP/state/diagnostics/management.env"
@@ -252,7 +253,10 @@ assert_order '^uci set firewall.@defaults\[0\].flow_offloading=0$' '^ip -4 route
 assert_order '^uci commit firewall$' '^fw4 reload$'
 assert_order '^dnsmasq-init restart$' '^nslookup localhost 127.0.0.1$'
 assert_order '^ip -4 route replace ' '^ip -4 rule del '
-assert_order '^ip -6 route replace ' '^ip -6 rule del '
+if grep -Eq '^ip -6 (route|rule) ' "$TMP/openwrt-calls.log"; then
+  echo "IPv6 mutation was emitted while platform.ipv6_enabled=false" >&2
+  exit 1
+fi
 assert_order '^ip -4 rule del ' '^fw4 reload$'
 grep -Eq '^ip -4 rule del priority [0-9]+$' "$TMP/openwrt-calls.log" || {
   echo "apply did not replace the project-owned IPv4 priority" >&2
@@ -284,7 +288,8 @@ printf 'damaged-dnsmasq\n' > "$ACTIVE_DNSMASQ"
 printf 'damaged-xray\n' > "$ACTIVE_XRAY"
 printf '%s\n' \
   'firewall.@defaults[0].flow_offloading=1' \
-  'firewall.@defaults[0].flow_offloading_hw=1' > "$TMP/uci-state.env"
+  'firewall.@defaults[0].flow_offloading_hw=1' \
+  "dhcp.@dnsmasq[0].confdir=${ACTIVE_DNSMASQ%/*}" > "$TMP/uci-state.env"
 xray_restarts_before=$(grep -c '^xray-init restart$' "$TMP/openwrt-calls.log" || true)
 rm -f "$MOCK_IP_STATE"
 : > "$TMP/openwrt-calls.log"
@@ -332,7 +337,8 @@ printf 'rollback-dnsmasq\n' > "$ACTIVE_DNSMASQ"
 printf 'rollback-xray\n' > "$ACTIVE_XRAY"
 printf '%s\n' \
   'firewall.@defaults[0].flow_offloading=1' \
-  'firewall.@defaults[0].flow_offloading_hw=1' > "$TMP/uci-state.env"
+  'firewall.@defaults[0].flow_offloading_hw=1' \
+  "dhcp.@dnsmasq[0].confdir=${ACTIVE_DNSMASQ%/*}" > "$TMP/uci-state.env"
 printf 'transaction_id=tx_aaaaaaaaaaaaaaaa\nrevision_id=rev_1_aaaaaaaaaaaa\ncandidate_hash=sha256:old\nartifact_manifest_hash=sha256:old\ntransaction_state=committed\n' > "$RUNTIME_DIR/active-transaction.env"
 
 setup_transaction "tx_8899aabbccddeeff" "rev_3_8899aabbccdd" "8899aabbccddeeff00112233445566778899aabbccddeeff0011223344556677"
@@ -354,7 +360,8 @@ unverified=$(adapter verify-data-plane "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$re
 printf '%s\n' "$unverified" | grep -F 'verification_status=UNVERIFIED' >/dev/null
 printf '%s\n' \
   'firewall.@defaults[0].flow_offloading=1' \
-  'firewall.@defaults[0].flow_offloading_hw=0' > "$TMP/uci-state.env"
+  'firewall.@defaults[0].flow_offloading_hw=0' \
+  "dhcp.@dnsmasq[0].confdir=${ACTIVE_DNSMASQ%/*}" > "$TMP/uci-state.env"
 set +e
 flow_failure=$(adapter verify-data-plane "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" 2>&1)
 flow_failure_rc=$?

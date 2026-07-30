@@ -31,6 +31,7 @@ type Options struct {
 	Prober       RouteProber
 	Now          func() time.Time
 	Parallelism  int
+	RouteTimeout time.Duration
 }
 
 type collectedRoute struct {
@@ -66,15 +67,7 @@ func Collect(ctx context.Context, opts Options) (evidence.Report, error) {
 	if parallelism <= 0 {
 		parallelism = opts.Config.Policy.ParallelServerChecks
 	}
-	if parallelism <= 0 {
-		parallelism = 1
-	}
-	if parallelism > 4 {
-		parallelism = 4
-	}
-	if parallelism > len(plan.RequiredRouteProof) {
-		parallelism = len(plan.RequiredRouteProof)
-	}
+	parallelism = routeProofParallelism(opts.Config, parallelism, len(plan.RequiredRouteProof))
 	collected, err := collectRoutes(ctx, opts, plan.RequiredRouteProof, parallelism)
 	if err != nil {
 		return evidence.Report{}, err
@@ -99,6 +92,25 @@ func Collect(ctx context.Context, opts Options) (evidence.Report, error) {
 		return evidence.Report{}, err
 	}
 	return report, nil
+}
+
+func routeProofParallelism(cfg *config.Config, requested, routes int) int {
+	if routes <= 0 {
+		return 1
+	}
+	if cfg == nil || cfg.Platform.Target != "test" {
+		return 1
+	}
+	if requested <= 0 {
+		requested = 1
+	}
+	if requested > 4 {
+		requested = 4
+	}
+	if requested > routes {
+		requested = routes
+	}
+	return requested
 }
 
 func collectRoutes(ctx context.Context, opts Options, required []artifact.RouteProof, parallelism int) ([]collectedRoute, error) {
@@ -170,9 +182,16 @@ func collectRoute(ctx context.Context, opts Options, index int, required artifac
 		item.err = err
 		return item
 	}
-	result := opts.Prober.ProbeRoute(ctx, opts.Config, domain, serviceName, service, route)
-	if result.Status != "OK" || !result.PathVerified || result.PathEvidence == nil {
-		item.err = fmt.Errorf("route %s probe is not verified: status=%s reason=%s", route.Tag, result.Status, result.ReasonCode)
+	timeout := routeProbeTimeout(opts)
+	routeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	result := opts.Prober.ProbeRoute(routeCtx, opts.Config, domain, serviceName, service, route)
+	if errors.Is(routeCtx.Err(), context.DeadlineExceeded) {
+		item.err = fmt.Errorf("route %s probe exceeded overall timeout %s", route.Tag, timeout)
+		return item
+	}
+	if !result.PathVerified || result.PathEvidence == nil {
+		item.err = fmt.Errorf("route %s path proof is unavailable: service_status=%s reason=%s", route.Tag, result.Status, result.ReasonCode)
 		return item
 	}
 	item.proof = *result.PathEvidence
@@ -180,6 +199,23 @@ func collectRoute(ctx context.Context, opts Options, index int, required artifac
 		item.err = err
 	}
 	return item
+}
+
+func routeProbeTimeout(opts Options) time.Duration {
+	if opts.RouteTimeout > 0 {
+		return opts.RouteTimeout
+	}
+	timeout := time.Duration(opts.Config.OpenWrt.ProbeTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 20 * time.Second
+	}
+	// Hardware probes execute the service checks and route-bound egress checks
+	// sequentially. A single HTTP timeout is not a valid budget for the whole
+	// proof and caused healthy candidates to be rolled back mid-collection.
+	if opts.Config.Platform.Target != "test" && timeout < time.Minute {
+		timeout = time.Minute
+	}
+	return timeout
 }
 
 type probeTarget struct {
@@ -199,6 +235,9 @@ func selectProbeTarget(cfg *config.Config, route config.Route) (string, string, 
 			continue
 		}
 		score := 0
+		if route.Type == "zapret" && adaptiveBundleAssigned(cfg, name) {
+			score += 200
+		}
 		if route.Type == "vless" && service.RequireNonRUEgress {
 			score += 100
 		}
@@ -221,6 +260,18 @@ func selectProbeTarget(cfg *config.Config, route config.Route) (string, string, 
 	})
 	target := candidates[0]
 	return target.name, target.domain, target.service, nil
+}
+
+func adaptiveBundleAssigned(cfg *config.Config, serviceName string) bool {
+	if cfg == nil || !cfg.Zapret.AdaptiveEnabled {
+		return false
+	}
+	for _, assignment := range cfg.Zapret.AdaptiveAssignments {
+		if assignment.BundleID == serviceName {
+			return true
+		}
+	}
+	return false
 }
 
 func writeAtomicJSON(path string, value any) error {

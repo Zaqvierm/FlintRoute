@@ -242,3 +242,17 @@ func TestNeighborStateAcceptsIPRouteArrayAndFailsClosed(t *testing.T) {
 		t.Fatal("lowercase/untrusted neighbor state was accepted")
 	}
 }
+
+func TestDefaultRouteIgnoresPolicyFailClosedTables(t *testing.T) {
+	routes := []routeInfo{
+		{Dst: "default", Dev: "lo", Type: "unreachable", Table: float64(100)},
+		{Dst: "default", Dev: "lo", Type: "local", Table: float64(102)},
+	}
+	if hasDefaultRoute(routes) {
+		t.Fatal("policy fail-closed routes were mistaken for WAN IPv6")
+	}
+	routes = append(routes, routeInfo{Dst: "default", Gateway: "192.0.2.1", Dev: "wan", Table: float64(254)})
+	if !hasDefaultRoute(routes) {
+		t.Fatal("main unicast default route was not detected")
+	}
+}

@@ -134,10 +134,16 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "== cli validate =="
 .\dist\router-policy.exe validate-config | ConvertFrom-Json | Out-Null
 
-Write-Host "== cli candidates =="
-$candidates = .\dist\router-policy.exe candidates chatgpt.com openai | ConvertFrom-Json
-if (($candidates.candidates | Where-Object { $_.type -eq "direct" -or $_.type -eq "zapret" }).Count -ne 0) {
-  throw "GEO_LOCKED candidates contain direct/zapret"
+Write-Host "== cli dynamic candidates =="
+$candidates = .\dist\router-policy.exe candidates observed.example automatic | ConvertFrom-Json
+if (!$candidates.unknown -or $candidates.candidates[0].type -ne "direct") {
+  throw "unknown domain did not start from dynamic Direct classification"
+}
+
+Write-Host "== Zapret calibration dry-run =="
+& $gitSh scripts/calibrate-zapret.sh --dry-run --domain observed.example --bundle-id auto-observed --network-fingerprint ("sha256:" + ("a" * 64)) --blockcheck /opt/zapret/blockcheck.sh | Out-Null
+if ($LASTEXITCODE -ne 0) {
+  throw "Zapret calibration dry-run failed"
 }
 
 Write-Host "== VPN subscription fixtures =="

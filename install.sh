@@ -13,7 +13,7 @@ INIT_DIR="${INIT_DIR:-$SYSTEM_ROOT/etc/init.d}"
 RC_DIR="${RC_DIR:-$SYSTEM_ROOT/etc/rc.d}"
 HOTPLUG_IFACE_DIR="${HOTPLUG_IFACE_DIR:-$SYSTEM_ROOT/etc/hotplug.d/iface}"
 HOTPLUG_FIREWALL_DIR="${HOTPLUG_FIREWALL_DIR:-$SYSTEM_ROOT/etc/hotplug.d/firewall}"
-DNSMASQ_DIR="${DNSMASQ_DIR:-$SYSTEM_ROOT/etc/dnsmasq.d}"
+DNSMASQ_DIR="${DNSMASQ_DIR:-$SYSTEM_ROOT/tmp/dnsmasq.d}"
 ROUTER_POLICY_BIN="${ROUTER_POLICY_BIN:-$BIN_DIR/router-policy}"
 SOURCE_BINARY="${SOURCE_BINARY:-$ROOT/dist/router-policy-linux-arm64}"
 BACKUP_ROOT="${BACKUP_ROOT:-$SYSTEM_ROOT/root/router-policy-backups}"
@@ -489,6 +489,7 @@ install_files() {
   mkdir -p "$staged_prefix"
   cp -R "$ROOT/scripts" "$staged_prefix/"
   cp -R "$ROOT/openwrt" "$staged_prefix/"
+  chmod +x "$staged_prefix/scripts/"*.sh
   chmod +x "$staged_prefix/openwrt/adapter.sh"
   [ ! -e "$PREFIX" ] || mv "$PREFIX" "$old_prefix"
   mv "$staged_prefix" "$PREFIX"
@@ -531,6 +532,7 @@ dry_run() {
   echo "would_install_services=router-policy-boot-guard router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
   echo "would_not_enable_services_without=--enable-services"
   echo "would_not_activate_without=--activate --yes"
+  echo "would_install_zapret_calibration_runner=$PREFIX/scripts/calibrate-zapret.sh"
 }
 
 if [ "${ROUTER_POLICY_INSTALL_LIB_ONLY:-0}" = "1" ]; then
@@ -581,6 +583,7 @@ case "$mode" in
     trap - EXIT INT HUP TERM
     echo "installed=true"
     echo "backup=$BACKUP_DIR"
+    echo "zapret_calibration=pending-observed-domain"
     echo "activate_with=install.sh --activate --yes"
     ;;
   --test-apply)

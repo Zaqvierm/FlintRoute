@@ -37,6 +37,7 @@ type Config struct {
 
 type Platform struct {
 	Target                      string `json:"target"`
+	IPv6Enabled                 bool   `json:"ipv6_enabled"`
 	RequireConfirmedDiagnostics bool   `json:"require_confirmed_diagnostics"`
 	UnsupportedApplyPolicy      string `json:"unsupported_apply_policy"`
 }
@@ -170,6 +171,7 @@ type Service struct {
 	Domains            []string     `json:"domains"`
 	AllowedPaths       []string     `json:"allowed_paths"`
 	ForbiddenPaths     []string     `json:"forbidden_paths"`
+	SelectedRouteTag   string       `json:"selected_route_tag,omitempty"`
 	RequireNonRUEgress bool         `json:"require_non_ru_egress"`
 	ProbeURLs          []ProbeCheck `json:"probe_urls"`
 }
@@ -512,6 +514,12 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("service %s path %s is both allowed and forbidden", name, path)
 			}
 			seenPaths["forbidden:"+path] = true
+		}
+		if svc.SelectedRouteTag != "" {
+			route, ok := routesByTag[svc.SelectedRouteTag]
+			if !ok || !route.Enabled() || !PathAllowed(svc, route, c.Policy) {
+				return fmt.Errorf("service %s selects an unavailable or forbidden route", name)
+			}
 		}
 		if svc.Category == "DIRECT_ONLY" && (len(svc.AllowedPaths) != 1 || svc.AllowedPaths[0] != "direct") {
 			return fmt.Errorf("DIRECT_ONLY service %s must allow only direct", name)

@@ -159,6 +159,7 @@ func TestXrayArtifactRejectsRouteBundleMismatch(t *testing.T) {
 func TestTransparentXrayCandidateIsLoopbackBoundMarkedAndFailClosed(t *testing.T) {
 	root := t.TempDir()
 	cfg := testConfig(t, root)
+	cfg.Platform.IPv6Enabled = true
 	binding := Binding{TransactionID: "tx_0011223344556677", RevisionID: "rev_2_001122334455", CandidateHash: "sha256:candidate"}
 	generated := filepath.Join(root, "generated")
 	manifest, _, err := Generate(cfg, generated, binding, time.Unix(1, 0))
@@ -326,6 +327,7 @@ func TestDirectOnlyArtifactsRemainDeploymentReady(t *testing.T) {
 func TestUnavailableWANIPv6ProducesFailClosedRoute(t *testing.T) {
 	root := t.TempDir()
 	cfg := testConfig(t, root)
+	cfg.Platform.IPv6Enabled = true
 	cfg.Xray.OutboundBundleSHA256 = ""
 	cfg.Routes = []config.Route{cfg.Routes[0], cfg.Routes[2]}
 	if _, err := WriteNetworkDiagnostics(cfg, NetworkDiagnostics{
@@ -369,6 +371,7 @@ func TestUnavailableWANIPv6ProducesFailClosedRoute(t *testing.T) {
 func TestLoadIPPlanRejectsInvalidUnreachableRoute(t *testing.T) {
 	root := t.TempDir()
 	cfg := testConfig(t, root)
+	cfg.Platform.IPv6Enabled = true
 	cfg.Xray.OutboundBundleSHA256 = ""
 	cfg.Routes = []config.Route{cfg.Routes[0], cfg.Routes[2]}
 	if _, err := WriteNetworkDiagnostics(cfg, NetworkDiagnostics{
@@ -416,6 +419,7 @@ func TestLoadIPPlanRejectsInvalidUnreachableRoute(t *testing.T) {
 func TestGeneratedNFTEnforcesDNSCollisionAndXrayFailClosed(t *testing.T) {
 	root := t.TempDir()
 	cfg := testConfig(t, root)
+	cfg.Platform.IPv6Enabled = true
 	cfg.Services["geo"] = config.Service{
 		Category: "GEO_LOCKED", Domains: []string{"geo.example"}, AllowedPaths: []string{"vless", "drop"}, RequireNonRUEgress: true,
 		ProbeURLs: []config.ProbeCheck{{Name: "web", URL: "https://geo.example/", Required: true, ExpectedCodes: []int{200}, BodyMode: "optional"}},
@@ -473,6 +477,8 @@ func TestGeneratedNFTEnforcesDNSCollisionAndXrayFailClosed(t *testing.T) {
 func TestGeneratedDNSMasqBindsDomainsToRouteSetsAndFormatsResolver(t *testing.T) {
 	root := t.TempDir()
 	cfg := testConfig(t, root)
+	cfg.Policy.UnknownDomainBackgroundCheck = true
+	cfg.Storage.RuntimeDir = filepath.Join(root, "runtime")
 	cfg.Routes = append(cfg.Routes, config.Route{
 		Type: "smart_dns", Tag: "smart-primary", Priority: 15, DNSServer: "203.0.113.53:5353", ConnectToResolvedIP: true,
 	})
@@ -490,7 +496,7 @@ func TestGeneratedDNSMasqBindsDomainsToRouteSetsAndFormatsResolver(t *testing.T)
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, fragment := range []string{"stop-dns-rebind", "svc_", "route_", "4#inet#router_policy#", "6#inet#router_policy#", "server=/smart.example/203.0.113.53#5353"} {
+	for _, fragment := range []string{"stop-dns-rebind", "log-queries=extra", "log-async=25", "dns-observations.log", "svc_", "route_", "4#inet#router_policy#", "6#inet#router_policy#", "server=/smart.example/203.0.113.53#5353"} {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("generated dnsmasq config lacks %q:\n%s", fragment, text)
 		}
@@ -778,6 +784,23 @@ func TestProofPlanUsesTheInstalledRuleForSharedMarks(t *testing.T) {
 	}
 	if proofs[4].RulePriority != proofs[0].RulePriority {
 		t.Fatalf("Smart DNS and direct routes with one mark/table must share a rule priority: %+v", proofs)
+	}
+}
+
+func TestProofPlanDoesNotRequireDisabledIPv6(t *testing.T) {
+	cfg := &config.Config{
+		Platform: config.Platform{IPv6Enabled: false},
+		OpenWrt:  config.OpenWrt{DirectMark: "0x41", WANRouteTable: 100},
+	}
+	routes := []config.Route{{Type: "direct", Tag: "direct", Mark: "0x41", RequiresAdapter: true}}
+	proofs := buildProofPlan(cfg, routes)
+	if len(proofs) != 1 || !proofs[0].RequiresIPv4 || proofs[0].RequiresIPv6 {
+		t.Fatalf("unexpected IPv4-only proof plan: %+v", proofs)
+	}
+	cfg.Platform.IPv6Enabled = true
+	proofs = buildProofPlan(cfg, routes)
+	if len(proofs) != 1 || !proofs[0].RequiresIPv6 {
+		t.Fatalf("enabled IPv6 was not required: %+v", proofs)
 	}
 }
 

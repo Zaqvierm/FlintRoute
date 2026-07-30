@@ -567,6 +567,15 @@ func renderDNSMasq(cfg *config.Config, binding Binding, plan IPPlan, domainPolic
 	b.WriteString("# Domain answers populate timeout-bound service and route sets.\n")
 	b.WriteString("# DROP domains use local NXDOMAIN and are never forwarded upstream.\n")
 	b.WriteString("stop-dns-rebind\n")
+	if cfg.Policy.UnknownDomainBackgroundCheck {
+		observationLog := filepath.Join(cfg.Storage.RuntimeDir, "dns-observations.log")
+		if !filepath.IsAbs(observationLog) || strings.ContainsAny(observationLog, "\r\n\t #") {
+			return "", errors.New("DNS observation log path is unsafe")
+		}
+		b.WriteString("log-queries=extra\n")
+		b.WriteString("log-async=25\n")
+		fmt.Fprintf(&b, "log-facility=%s\n", observationLog)
+	}
 	for _, policy := range domainPolicies {
 		refs := []string{
 			fmt.Sprintf("4#%s#%s#route_%s_v4", family, table, routeID(policy.Route.Tag)),
@@ -924,7 +933,7 @@ func buildProofPlan(cfg *config.Config, routes []config.Route) []RouteProof {
 		proofs = append(proofs, RouteProof{
 			Tag: route.Tag, Type: route.Type, Mark: mark,
 			Table: table, RulePriority: priority,
-			RequiresDNS: route.Type != "drop", RequiresIPv4: route.Type != "drop", RequiresIPv6: route.Type != "drop",
+			RequiresDNS: route.Type != "drop", RequiresIPv4: route.Type != "drop", RequiresIPv6: cfg.Platform.IPv6Enabled && route.Type != "drop",
 			RequiresEgress: requiresEgress, RequiresXrayOutbound: route.Type == "vless",
 			RequiresZapretFlow: route.Type == "zapret", RequiresDropProof: route.Type == "drop",
 			RequiresAdapter: route.RequiresAdapter, Status: firstNonEmpty(route.Status, "CONFIGURED"),
@@ -1217,7 +1226,11 @@ func buildIPRules(cfg *config.Config, proofs []RouteProof) []IPRule {
 			return
 		}
 		seen[ruleKey{mark: mark, table: table}] = true
-		for _, family := range []string{"ipv4", "ipv6"} {
+		families := []string{"ipv4"}
+		if cfg.Platform.IPv6Enabled {
+			families = append(families, "ipv6")
+		}
+		for _, family := range families {
 			rules = append(rules, IPRule{Family: family, Priority: priority, Mark: mark, Mask: "0xffffffff", Table: table, Purpose: purpose})
 		}
 	}
@@ -1291,6 +1304,13 @@ func enabledRoutes(cfg *config.Config) []config.Route {
 }
 
 func selectRoute(cfg *config.Config, svc config.Service, routes []config.Route) config.Route {
+	if svc.SelectedRouteTag != "" {
+		for _, route := range routes {
+			if route.Tag == svc.SelectedRouteTag && config.PathAllowed(svc, route, cfg.Policy) {
+				return route
+			}
+		}
+	}
 	for _, allowed := range svc.AllowedPaths {
 		for _, route := range routes {
 			if route.Type == allowed && config.PathAllowed(svc, route, cfg.Policy) {

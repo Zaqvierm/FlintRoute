@@ -63,6 +63,53 @@ func TestAdaptiveEvaluationCommitsThroughChangeSet(t *testing.T) {
 	}
 }
 
+func TestAdaptiveEvaluationCommitsConfiguredRouteFallback(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Routes = append(cfg.Routes, config.Route{Type: "zapret", Tag: "zapret"})
+	cfg.Services["discord"] = config.Service{
+		Category: "TSPU_RESTRICTED", Domains: []string{"discord.com"},
+		AllowedPaths: []string{"zapret", "direct", "drop"},
+		ProbeURLs:    []config.ProbeCheck{{Name: "web", URL: "https://discord.com/", Required: true, ExpectedCodes: []int{200}, BodyMode: "optional"}},
+	}
+	cfg.Zapret = config.Zapret{
+		Binary: "/usr/bin/nfqws", InitScript: "/etc/init.d/router-policy-zapret",
+		ActiveConfig: "/etc/router-policy/zapret/nfqws.conf", ActivationMode: "managed",
+		Strategy: "tls-fake-ttl3-v1", QueueNum: 200, AdaptiveEnabled: true,
+		AdaptiveCatalogFile: filepath.Join(cfg.Storage.StateDir, "catalog.json"),
+		AdaptiveAssignments: []config.ZapretProfileAssignment{{BundleID: "discord", ProfileID: "profile-a"}},
+	}
+	writeAdaptiveCatalog(t, cfg.Zapret.AdaptiveCatalogFile)
+	rewriteAdaptiveBundleFallback(t, cfg.Zapret.AdaptiveCatalogFile, "direct", false)
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewServerWithOptions(cfg, Options{ProductionAdapter: newFakeAdapter(), Provider: artifactDiagnosticsTestProvider{diagnostics: testArtifactNetworkDiagnostics(false)}, Development: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	now := time.Date(2026, 7, 30, 4, 0, 0, 0, time.UTC)
+	key := zapret.DecisionKey{BundleID: "discord", Transport: "tcp", Port: 443, IPFamily: "ipv4", NetworkFingerprint: "sha256:" + strings.Repeat("c", 64)}
+	ranking := []zapret.CandidateScore{
+		{Key: key, ProfileID: "profile-b", SafetyGate: false, RequiredChecksPassed: false, RecentHardFailure: true},
+		{Key: key, ProfileID: "profile-a", RecentHardFailure: true, FailureStreak: 3, FailedWindows: 2, WilsonUpperBound: 0.2},
+	}
+	response, failure := srv.evaluateAdaptiveZapret(context.Background(), adaptiveEvaluateRequest{Key: key, Ranking: ranking}, now)
+	if failure != nil {
+		t.Fatalf("adaptive fallback failed: %+v", failure)
+	}
+	if response.Decision.Action != zapret.SwitchFallback || response.Change == nil || response.Change.State != "committed" {
+		t.Fatalf("unexpected adaptive fallback response: %+v", response)
+	}
+	if got := srv.currentConfig().Services["discord"].SelectedRouteTag; got != "direct" {
+		t.Fatalf("fallback route was not committed: %q", got)
+	}
+	repeated, failure := srv.evaluateAdaptiveZapret(context.Background(), adaptiveEvaluateRequest{Key: key, Ranking: ranking}, now.Add(time.Second))
+	if failure != nil || repeated.Change != nil {
+		t.Fatalf("repeated fallback was not idempotent: response=%+v failure=%+v", repeated, failure)
+	}
+}
+
 func TestAdaptivePinAPIValidatesCatalogAndPersistsState(t *testing.T) {
 	cfg := testAPIConfig(t)
 	cfg.Routes = append(cfg.Routes, config.Route{Type: "zapret", Tag: "zapret"})
@@ -159,6 +206,27 @@ func writeAdaptiveCatalog(t *testing.T, path string) {
 		Bundles: []zapret.BundleSpec{{ID: "discord", Category: "TSPU_RESTRICTED", RequiredDomains: []string{"discord.com"}, Protocols: []zapret.Protocol{{Transport: "tcp", Port: 80}, {Transport: "tcp", Port: 443}}, IPFamilies: []string{"ipv4"}, AllowedProfiles: []string{"profile-a", "profile-b"}, FailureRoute: "drop"}},
 	}
 	raw, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func rewriteAdaptiveBundleFallback(t *testing.T, path, routeTag string, direct bool) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document zapret.CatalogFile
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	document.Bundles[0].FailureRoute = routeTag
+	document.Bundles[0].DirectFallback = direct
+	raw, err = json.Marshal(document)
 	if err != nil {
 		t.Fatal(err)
 	}

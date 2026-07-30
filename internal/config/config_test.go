@@ -77,6 +77,23 @@ func TestValidateRejectsPathThatIsAllowedAndForbidden(t *testing.T) {
 	}
 }
 
+func TestValidateBindsSelectedServiceRouteToAllowedTag(t *testing.T) {
+	cfg := validConfig()
+	service := cfg.Services["site"]
+	service.SelectedRouteTag = "direct"
+	cfg.Services["site"] = service
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("allowed selected route was rejected: %v", err)
+	}
+	cfg = validConfig()
+	service = cfg.Services["site"]
+	service.SelectedRouteTag = "missing"
+	cfg.Services["site"] = service
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "unavailable or forbidden") {
+		t.Fatalf("unknown selected route was accepted: %v", err)
+	}
+}
+
 func TestValidateRejectsDuplicateForbiddenPath(t *testing.T) {
 	cfg := validConfig()
 	service := cfg.Services["site"]

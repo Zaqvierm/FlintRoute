@@ -24,7 +24,8 @@ var (
 	allowedOptions   = map[string]bool{
 		"--qnum": true, "--filter-tcp": true, "--filter-udp": true,
 		"--dpi-desync": true, "--dpi-desync-split-pos": true,
-		"--dpi-desync-fooling": true, "--dpi-desync-ttl": true,
+		"--dpi-desync-split-seqovl": true, "--dpi-desync-fooling": true,
+		"--dpi-desync-repeats": true, "--dpi-desync-ttl": true,
 		"--orig-ttl": true, "--orig-mod-start": true, "--orig-mod-cutoff": true,
 	}
 )
@@ -199,6 +200,18 @@ func validateStrategy(raw []byte, queue uint16, transports []string, ports []uin
 					return fmt.Errorf("invalid %s filter port %q", transport, rawPort)
 				}
 				filterPorts[uint16(parsed)] = true
+			}
+		}
+		if key == "--dpi-desync-repeats" {
+			parsed, err := strconv.ParseUint(value, 10, 8)
+			if err != nil || parsed == 0 || parsed > 20 {
+				return errors.New("desync repeats must be between 1 and 20")
+			}
+		}
+		if key == "--dpi-desync-split-seqovl" {
+			parsed, err := strconv.ParseUint(value, 10, 16)
+			if err != nil || parsed == 0 || parsed > 4096 {
+				return errors.New("desync sequence overlap must be between 1 and 4096")
 			}
 		}
 	}

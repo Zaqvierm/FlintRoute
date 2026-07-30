@@ -26,7 +26,10 @@ else
   echo "shellcheck_missing=true"
 fi
 ./dist/router-policy validate-config >/tmp/router-policy-validate.json
-./dist/router-policy candidates chatgpt.com openai >/tmp/router-policy-candidates.json
+./dist/router-policy candidates observed.example automatic >/tmp/router-policy-candidates.json
+sh scripts/calibrate-zapret.sh --dry-run --domain observed.example --bundle-id auto-observed \
+  --network-fingerprint "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+  --blockcheck /opt/zapret/blockcheck.sh >/tmp/router-policy-zapret-calibration.json
 ./dist/router-policy subscription-normalize tests/sample-subscription-array.json >/tmp/router-policy-subscription-summary.json
 ./dist/router-policy subscription-routes tests/sample-subscription-array.json >/tmp/router-policy-subscription-routes.json
 ./dist/router-policy subscription-xray --out /tmp/router-policy-xray-test.json tests/sample-subscription-array.json >/tmp/router-policy-xray-summary.json

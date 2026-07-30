@@ -40,7 +40,8 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/overview` | provider overview |
 | `/api/v1/topology` | topology |
 | `/api/v1/devices` | LAN/guest/remote clients |
-| `/api/v1/services` | configured services |
+| `/api/v1/services` | configured and dynamically observed services |
+| `/api/v1/services/classify` | create or edit a domain rule through a draft ChangeSet; optional `allowed_paths` preserves the user-defined fallback order |
 | `/api/v1/domains` | domain policy / decision cache |
 | `/api/v1/policies` | policy + overrides |
 | `/api/v1/routes` | route descriptors, including disabled |
@@ -51,14 +52,16 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/diagnostics` | network diagnostics provenance (source/hash/expiry/simulation) |
 | `/api/v1/lifecycle` | procd ownership, PID/start time/executable/config и test-run manifests |
 | `/api/v1/storage` | storage sizes, rollback state и логические write counters |
-| `/api/v1/smart-dns` | smart DNS state |
+| `/api/v1/smart-dns` | redacted Smart DNS state and fallback order |
+| `/api/v1/smart-dns/configure` | validate public resolver endpoints through a draft ChangeSet |
 | `/api/v1/zapret` | managed Zapret/nfqws plan state |
 | `/api/v1/zapret/adaptive/runtime` | production scheduler budget, fingerprint and live ranking |
 | `/api/v1/zapret/adaptive/evaluate` | bounded profile evaluation and transactional bundle switch |
 | `/api/v1/zapret/adaptive/state` | persisted active profile, cooldown, pin and quarantine state |
 | `/api/v1/zapret/adaptive/pin` | set a validated bundle-local manual pin and allowed fallbacks |
 | `/api/v1/zapret/adaptive/unpin` | clear the manual pin without changing unrelated bundles |
-| `/api/v1/xray/subscription/prepare` | authenticated VPN-подписка → draft ChangeSet |
+| `/api/v1/xray/subscription/secret` | store up to five subscription sources without returning their URLs |
+| `/api/v1/xray/subscription/prepare` | merge and verify VPN subscriptions → draft ChangeSet |
 | `/api/v1/events` | persisted history merged with live epoch |
 | `/api/v1/events/stream` | SSE stream |
 | `/api/v1/changes` `GET/POST` | list/create ChangeSet |

@@ -33,9 +33,10 @@ func TestSubscriptionServiceDownloadsChecksAndStagesBundle(t *testing.T) {
 		Version: 2, Storage: config.Storage{StateDir: filepath.Join(root, "state")},
 		Policy: config.Policy{MaxSubscriptionBytes: 1 << 20, MaxProbeSeconds: 10},
 		Xray:   config.Xray{SubscriptionSecretFile: secretFile, ProbeSocksBasePort: 12000},
-		Services: map[string]config.Service{
-			"control": {Domains: []string{"example.com"}, ProbeURLs: []config.ProbeCheck{{Name: "web", URL: "https://example.com/", Required: true, ExpectedCodes: []int{200}, BodyMode: "optional"}}, RequireNonRUEgress: true},
-		},
+		GeoIP: config.GeoIP{Endpoints: []config.GeoIPEndpoint{{
+			Name: "country-is", Provider: "country_is", URL: "https://api.country.is/",
+		}}},
+		Services: map[string]config.Service{},
 	}
 	result, err := service.Prepare(context.Background(), cfg)
 	if err != nil {
@@ -56,7 +57,7 @@ func TestSubscriptionServiceDownloadsChecksAndStagesBundle(t *testing.T) {
 	}
 }
 
-func TestSubscriptionServiceRequiresProbeServiceBeforeDownload(t *testing.T) {
+func TestSubscriptionServiceRequiresVerificationTargetBeforeDownload(t *testing.T) {
 	root := t.TempDir()
 	secretFile := filepath.Join(root, "subscription-url.secret")
 	if err := os.WriteFile(secretFile, []byte("https://example.invalid/private\n"), 0o600); err != nil {
@@ -67,8 +68,27 @@ func TestSubscriptionServiceRequiresProbeServiceBeforeDownload(t *testing.T) {
 		Storage: config.Storage{StateDir: filepath.Join(root, "state")},
 		Xray:    config.Xray{SubscriptionSecretFile: secretFile, ProbeSocksBasePort: 12000},
 	})
-	if err == nil || err.Error() != "no service is configured for VLESS verification" {
-		t.Fatalf("missing probe service was not rejected before network access: %v", err)
+	if err == nil || err.Error() != "VPN subscription verification target is not configured" {
+		t.Fatalf("missing verification target was not rejected before network access: %v", err)
+	}
+}
+
+func TestSubscriptionProbeServiceDoesNotDependOnConfiguredServices(t *testing.T) {
+	cfg := &config.Config{
+		GeoIP: config.GeoIP{Endpoints: []config.GeoIPEndpoint{{
+			Name: "country-is", Provider: "country_is", URL: "https://api.country.is/",
+		}}},
+		Services: map[string]config.Service{},
+	}
+	service, err := subscriptionProbeService(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(service.Domains) != 1 || service.Domains[0] != "api.country.is" {
+		t.Fatalf("unexpected verification domain: %#v", service.Domains)
+	}
+	if !service.RequireNonRUEgress || len(service.ProbeURLs) != 1 {
+		t.Fatalf("verification service is incomplete: %#v", service)
 	}
 }
 

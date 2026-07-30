@@ -2,11 +2,14 @@ package vpnsub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
+	"strings"
 	"time"
 
 	"router-policy/internal/config"
@@ -29,7 +32,7 @@ func (s *SubscriptionService) Prepare(ctx context.Context, cfg *config.Config) (
 	if cfg.Storage.StateDir == "" || cfg.Xray.SubscriptionSecretFile == "" {
 		return PreparedBundle{}, errors.New("VPN subscription paths are not configured")
 	}
-	probeService, err := selectProbeService(cfg.Services)
+	probeService, err := subscriptionProbeService(cfg)
 	if err != nil {
 		return PreparedBundle{}, err
 	}
@@ -57,11 +60,10 @@ func (s *SubscriptionService) Prepare(ctx context.Context, cfg *config.Config) (
 		return PreparedBundle{}, err
 	}
 
-	subscriptionURL, err := ReadSubscriptionURLFile(cfg.Xray.SubscriptionSecretFile)
+	subscriptionURLs, err := ReadSubscriptionURLFiles(cfg.Xray.SubscriptionSecretFile)
 	if err != nil {
 		return PreparedBundle{}, errors.New("VPN subscription secret file is invalid")
 	}
-	downloadPath := filepath.Join(temporaryDir, "subscription.json")
 	maxBytes := cfg.Policy.MaxSubscriptionBytes
 	if maxBytes <= 0 || maxBytes > maxSubscriptionFileBytes {
 		maxBytes = maxSubscriptionFileBytes
@@ -70,7 +72,19 @@ func (s *SubscriptionService) Prepare(ctx context.Context, cfg *config.Config) (
 	if timeout <= 0 || timeout > time.Minute {
 		timeout = 30 * time.Second
 	}
-	fetched, err := FetchSubscription(ctx, s.HTTPClient, subscriptionURL, downloadPath, FetchOptions{MaxBytes: maxBytes, MaxRedirects: 3, Timeout: timeout})
+	downloadPaths := make([]string, 0, len(subscriptionURLs))
+	totalBytes := 0
+	for index, subscriptionURL := range subscriptionURLs {
+		downloadPath := filepath.Join(temporaryDir, fmt.Sprintf("subscription-%d.json", index+1))
+		fetched, err := FetchSubscription(ctx, s.HTTPClient, subscriptionURL, downloadPath, FetchOptions{MaxBytes: maxBytes, MaxRedirects: 3, Timeout: timeout})
+		if err != nil {
+			return PreparedBundle{}, fmt.Errorf("VPN subscription source %d failed: %w", index+1, err)
+		}
+		totalBytes += fetched.Bytes
+		downloadPaths = append(downloadPaths, downloadPath)
+	}
+	mergedPath := filepath.Join(temporaryDir, "subscription-merged.json")
+	mergedHash, err := mergeSubscriptionFiles(downloadPaths, mergedPath)
 	if err != nil {
 		return PreparedBundle{}, err
 	}
@@ -78,37 +92,67 @@ func (s *SubscriptionService) Prepare(ctx context.Context, cfg *config.Config) (
 		StateDir: cfg.Storage.StateDir, Runner: s.Runner, Checker: checker,
 		Parallelism: s.Parallelism, CheckAttempts: s.CheckAttempts,
 	}
-	result, err := manager.PrepareBundle(ctx, downloadPath, cfg.Xray.ProbeSocksBasePort)
+	result, err := manager.PrepareBundle(ctx, mergedPath, cfg.Xray.ProbeSocksBasePort)
 	if err != nil {
 		return result, err
 	}
-	result.SubscriptionHash = fetched.SHA256
-	result.SubscriptionBytes = fetched.Bytes
+	result.SubscriptionHash = mergedHash
+	result.SubscriptionBytes = totalBytes
 	return result, nil
 }
 
-func selectProbeService(services map[string]config.Service) (config.Service, error) {
-	names := make([]string, 0, len(services))
-	for name := range services {
-		names = append(names, name)
+func mergeSubscriptionFiles(paths []string, outputPath string) (string, error) {
+	if len(paths) == 0 {
+		return "", errors.New("no VPN subscription sources were downloaded")
 	}
-	sort.Strings(names)
-	var fallback *config.Service
-	for _, name := range names {
-		service := services[name]
-		if len(service.Domains) == 0 || len(service.ProbeURLs) == 0 {
+	rawOutbounds := make([]json.RawMessage, 0)
+	for index, path := range paths {
+		raw, err := readSubscriptionFile(path)
+		if err != nil {
+			return "", fmt.Errorf("read VPN subscription source %d: %w", index+1, err)
+		}
+		outbounds, err := extractRawOutbounds(raw)
+		if err != nil {
+			return "", fmt.Errorf("parse VPN subscription source %d: %w", index+1, err)
+		}
+		for _, outbound := range outbounds {
+			rawOutbounds = append(rawOutbounds, append(json.RawMessage(nil), outbound.Raw...))
+		}
+	}
+	merged, err := json.Marshal(map[string]any{"outbounds": rawOutbounds})
+	if err != nil {
+		return "", err
+	}
+	merged = append(merged, '\n')
+	if err := writeFileAtomic(outputPath, merged, 0o600); err != nil {
+		return "", err
+	}
+	return "sha256:" + sha256Hex(merged), nil
+}
+
+func subscriptionProbeService(cfg *config.Config) (config.Service, error) {
+	if cfg == nil {
+		return config.Service{}, errors.New("VPN subscription verification target is not configured")
+	}
+	for _, endpoint := range cfg.GeoIP.Endpoints {
+		parsed, err := url.Parse(strings.TrimSpace(endpoint.URL))
+		if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
 			continue
 		}
-		if fallback == nil {
-			copy := service
-			fallback = &copy
-		}
-		if service.RequireNonRUEgress {
-			return service, nil
-		}
+		return config.Service{
+			Category:           "GEO_LOCKED",
+			Domains:            []string{strings.ToLower(parsed.Hostname())},
+			AllowedPaths:       []string{"vless"},
+			ForbiddenPaths:     []string{"direct", "smart_dns", "zapret"},
+			RequireNonRUEgress: true,
+			ProbeURLs: []config.ProbeCheck{{
+				Name:          "subscription-egress",
+				URL:           parsed.String(),
+				Required:      true,
+				ExpectedCodes: []int{http.StatusOK},
+				BodyMode:      "optional",
+			}},
+		}, nil
 	}
-	if fallback != nil {
-		return *fallback, nil
-	}
-	return config.Service{}, errors.New("no service is configured for VLESS verification")
+	return config.Service{}, errors.New("VPN subscription verification target is not configured")
 }

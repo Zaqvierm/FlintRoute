@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -24,6 +25,13 @@ type concurrentProber struct {
 	active  int
 	maximum int
 	results map[string]probe.RouteResult
+}
+
+type blockingProber struct{}
+
+func (blockingProber) ProbeRoute(ctx context.Context, _ *config.Config, _, _ string, _ config.Service, _ config.Route) probe.RouteResult {
+	<-ctx.Done()
+	return probe.RouteResult{Status: "FAIL", ReasonCode: "context_done"}
 }
 
 func (p *concurrentProber) ProbeRoute(ctx context.Context, _ *config.Config, _, _ string, _ config.Service, route config.Route) probe.RouteResult {
@@ -102,6 +110,87 @@ func TestCollectRefusesUnboundProbeResult(t *testing.T) {
 	}
 }
 
+func TestCollectRouteSeparatesServiceClassificationFromVerifiedPath(t *testing.T) {
+	binding := artifact.Binding{TransactionID: "tx_0011223344556677", RevisionID: "rev_2_001122334455", CandidateHash: "sha256:candidate"}
+	manifestHash := "sha256:manifest"
+	required := artifact.RouteProof{Tag: "direct", Type: "direct", Mark: "0x41", Table: 100, RulePriority: 10010, RequiresDNS: true, RequiresIPv4: true, RequiresIPv6: true, RequiresEgress: true}
+	proof := completeDirectProof(binding, manifestHash, time.Now().UTC())
+	result := probe.RouteResult{
+		Status:       "SUSPECTED_TSPU",
+		ReasonCode:   "route_path_verified",
+		PathVerified: true,
+		PathEvidence: &proof,
+	}
+	item := collectRoute(context.Background(), Options{
+		Config: testConfig(), Binding: binding, ManifestHash: manifestHash,
+		Prober: fakeProber{results: map[string]probe.RouteResult{"direct": result}},
+	}, 0, required)
+	if item.err != nil {
+		t.Fatalf("verified route path was rejected because of service classification: %v", item.err)
+	}
+}
+
+func TestCollectRouteEnforcesOverallProbeTimeout(t *testing.T) {
+	required := artifact.RouteProof{Tag: "direct", Type: "direct"}
+	start := time.Now()
+	item := collectRoute(context.Background(), Options{
+		Config: testConfig(), Prober: blockingProber{}, RouteTimeout: 25 * time.Millisecond,
+	}, 0, required)
+	if item.err == nil || !strings.Contains(item.err.Error(), "exceeded overall timeout") {
+		t.Fatalf("expected bounded route timeout, got %v", item.err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("route timeout was not bounded: %s", elapsed)
+	}
+}
+
+func TestProductionRouteProofsAreSerialized(t *testing.T) {
+	cfg := testConfig()
+	cfg.Platform.Target = "glinet-flint2"
+	if got := routeProofParallelism(cfg, 4, 4); got != 1 {
+		t.Fatalf("production path proofs run with parallelism %d, want 1", got)
+	}
+	cfg.Platform.Target = "test"
+	if got := routeProofParallelism(cfg, 4, 4); got != 4 {
+		t.Fatalf("test path proofs lost bounded concurrency: %d", got)
+	}
+}
+
+func TestProductionRouteProofGetsWholeCollectionBudget(t *testing.T) {
+	cfg := testConfig()
+	cfg.OpenWrt.ProbeTimeoutSeconds = 20
+	cfg.Platform.Target = "glinet-flint2"
+	if got := routeProbeTimeout(Options{Config: cfg}); got != time.Minute {
+		t.Fatalf("production route proof budget = %s, want 1m", got)
+	}
+	if got := routeProbeTimeout(Options{Config: cfg, RouteTimeout: 3 * time.Second}); got != 3*time.Second {
+		t.Fatalf("explicit route proof budget was ignored: %s", got)
+	}
+}
+
+func TestZapretProofTargetsAssignedAdaptiveBundle(t *testing.T) {
+	cfg := testConfig()
+	cfg.Routes = append(cfg.Routes, config.Route{Type: "zapret", Tag: "zapret"})
+	cfg.Services["discord"] = config.Service{
+		Category: "TSPU_RESTRICTED", Domains: []string{"discord.example"},
+		AllowedPaths: []string{"zapret"}, ProbeURLs: []config.ProbeCheck{{URL: "https://discord.example/", Required: true}},
+	}
+	cfg.Services["youtube"] = config.Service{
+		Category: "TSPU_RESTRICTED", Domains: []string{"youtube.example"},
+		AllowedPaths: []string{"zapret"}, ProbeURLs: []config.ProbeCheck{{URL: "https://youtube.example/", Required: true}},
+	}
+	cfg.Zapret.AdaptiveEnabled = true
+	cfg.Zapret.AdaptiveAssignments = []config.ZapretProfileAssignment{{BundleID: "youtube", ProfileID: "profile-1"}}
+
+	name, domain, _, err := selectProbeTarget(cfg, config.Route{Type: "zapret", Tag: "zapret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "youtube" || domain != "youtube.example" {
+		t.Fatalf("zapret proof targeted %s (%s), want assigned youtube bundle", name, domain)
+	}
+}
+
 func completeDirectProof(binding artifact.Binding, manifestHash string, checkedAt time.Time) evidence.RouteResult {
 	return evidence.RouteResult{
 		Domain: "direct.example", RouteTag: "direct", RouteType: "direct", AdapterRevision: binding.RevisionID,
@@ -115,8 +204,9 @@ func completeDirectProof(binding artifact.Binding, manifestHash string, checkedA
 
 func testConfig() *config.Config {
 	return &config.Config{
-		Policy: config.Policy{},
-		Routes: []config.Route{{Type: "direct", Tag: "direct"}, {Type: "drop", Tag: "drop"}},
+		Platform: config.Platform{Target: "test"},
+		Policy:   config.Policy{},
+		Routes:   []config.Route{{Type: "direct", Tag: "direct"}, {Type: "drop", Tag: "drop"}},
 		Services: map[string]config.Service{
 			"direct":  {Category: "DIRECT_ONLY", Domains: []string{"direct.example"}, AllowedPaths: []string{"direct"}, ProbeURLs: []config.ProbeCheck{{URL: "https://direct.example/", Required: true}}},
 			"blocked": {Category: "GEO_LOCKED", Domains: []string{"blocked.example"}, AllowedPaths: []string{"drop"}},

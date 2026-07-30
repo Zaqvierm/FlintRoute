@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -116,6 +118,76 @@ func TestXraySubscriptionPrepareFailureCreatesNoChangeSet(t *testing.T) {
 	srv.mu.Unlock()
 	if changeCount != 0 {
 		t.Fatalf("failed preparation created %d ChangeSets", changeCount)
+	}
+}
+
+func TestXraySubscriptionSecretIsStoredWithoutEchoingIt(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	secretPath := filepath.Join(srv.cfg.Storage.StateDir, "secrets", "vpn-subscription-url")
+	srv.cfg.Xray.SubscriptionSecretFile = secretPath
+	srv.mu.Lock()
+	srv.activeConfig.Xray.SubscriptionSecretFile = secretPath
+	srv.mu.Unlock()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client, csrf := login(t, ts.URL)
+
+	const secretURL = "https://subscription.example/api/list?token=private-value"
+	request, _ := http.NewRequest(http.MethodPut, ts.URL+"/api/v1/xray/subscription/secret", strings.NewReader(`{"url":"`+secretURL+`"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", csrf)
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("secret update status=%d", response.StatusCode)
+	}
+	rawResponse, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rawResponse), secretURL) || strings.Contains(string(rawResponse), "private-value") {
+		t.Fatalf("secret update echoed the subscription URL: %s", rawResponse)
+	}
+	rawFile, err := os.ReadFile(secretPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(secretPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedFile, err := json.Marshal([]string{secretURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedFile = append(expectedFile, '\n')
+	if !bytes.Equal(rawFile, expectedFile) || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
+		t.Fatalf("subscription secret was not stored securely: mode=%o bytes=%d", info.Mode().Perm(), len(rawFile))
+	}
+}
+
+func TestXraySubscriptionSecretRejectsInsecureURLAndSymlink(t *testing.T) {
+	parent := t.TempDir()
+	target := filepath.Join(parent, "target")
+	if err := os.WriteFile(target, []byte("keep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(parent, "subscription")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := storeSubscriptionSecret(link, "https://subscription.example/list"); err == nil {
+		t.Fatal("subscription secret writer followed a symlink")
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "keep\n" {
+		t.Fatalf("symlink target was modified: bytes=%q err=%v", got, err)
+	}
+	if _, err := normalizeSubscriptionURL("http://subscription.example/list"); err == nil {
+		t.Fatal("plain HTTP subscription URL was accepted")
 	}
 }
 

@@ -111,8 +111,32 @@ func validateAdaptiveAssignments(cfg *config.Config, profiles *zapret.Catalog, b
 	for _, assignment := range cfg.Zapret.AdaptiveAssignments {
 		assignments = append(assignments, zapret.BundleProfileAssignment{BundleID: assignment.BundleID, ProfileID: assignment.ProfileID})
 	}
-	_, err := zapret.RenderBundleProfiles(bundles, profiles, assignments)
-	return err
+	if _, err := zapret.RenderBundleProfiles(bundles, profiles, assignments); err != nil {
+		return err
+	}
+	runtime := &adaptiveRuntime{bundles: bundles}
+	for _, assignment := range cfg.Zapret.AdaptiveAssignments {
+		bundle, ok := bundles.Lookup(assignment.BundleID)
+		if !ok {
+			return fmt.Errorf("adaptive bundle %s is unavailable", assignment.BundleID)
+		}
+		if !adaptiveRouteAllowed(cfg, runtime, bundle.ID, bundle.FailureRoute) {
+			return fmt.Errorf("adaptive bundle %s has unavailable failure route %s", bundle.ID, bundle.FailureRoute)
+		}
+		if bundle.DirectFallback {
+			directAllowed := false
+			for _, route := range cfg.RoutesByType("direct") {
+				if adaptiveRouteAllowed(cfg, runtime, bundle.ID, route.Tag) {
+					directAllowed = true
+					break
+				}
+			}
+			if !directAllowed {
+				return fmt.Errorf("adaptive bundle %s enables direct fallback without an allowed direct route", bundle.ID)
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Server) handleAdaptiveZapretEvaluate(w http.ResponseWriter, r *http.Request) {
@@ -290,7 +314,28 @@ func (s *Server) evaluateAdaptiveZapret(ctx context.Context, request adaptiveEva
 	if err != nil {
 		return adaptiveEvaluateResponse{}, &actionFailure{Status: 422, Code: "adaptive_ranking_invalid", Message: err.Error()}
 	}
+	if decision.Action == zapret.SwitchFallback {
+		change, fallbackFailure := s.applyAdaptiveFallback(ctx, active, runtime, request.Key.BundleID, decision)
+		if err := persistAdaptiveState(runtime, stateKey, request.Key, now); err != nil {
+			return adaptiveEvaluateResponse{}, internalFailure(err)
+		}
+		if fallbackFailure != nil {
+			return adaptiveEvaluateResponse{}, fallbackFailure
+		}
+		return adaptiveEvaluateResponse{Decision: decision, Change: change}, nil
+	}
 	if decision.Action != zapret.SwitchProfile {
+		if activeAdaptiveFallback(active, runtime, request.Key.BundleID) && profileProductionReady(request.Ranking, decision.FromProfile) {
+			change, recoveryFailure := s.commitAdaptiveRouteSelection(ctx, active, runtime, request.Key.BundleID, "", "Restore Zapret service route", "adaptive_profile_recovered")
+			if recoveryFailure != nil {
+				return adaptiveEvaluateResponse{}, recoveryFailure
+			}
+			if err := persistAdaptiveState(runtime, stateKey, request.Key, now); err != nil {
+				return adaptiveEvaluateResponse{}, internalFailure(err)
+			}
+			s.publishEvent(Event{Type: "zapret.adaptive_recovery", Severity: "info", ReasonCode: "adaptive_profile_recovered", Details: map[string]any{"bundle_id": request.Key.BundleID, "profile_id": decision.FromProfile, "revision_id": change.RevisionID}})
+			return adaptiveEvaluateResponse{Decision: decision, Change: change}, nil
+		}
 		if err := persistAdaptiveState(runtime, stateKey, request.Key, now); err != nil {
 			return adaptiveEvaluateResponse{}, internalFailure(err)
 		}
@@ -303,7 +348,9 @@ func (s *Server) evaluateAdaptiveZapret(ctx context.Context, request adaptiveEva
 	s.mu.Lock()
 	baseVersion := s.configVersion
 	s.mu.Unlock()
-	change, err := s.createDraftChange("Switch Zapret service profile", decision.Reason, baseVersion, []ChangeOp{{Type: "update", Path: "/zapret/adaptive_assignments", Value: updated}}, "adaptive-controller")
+	operations := []ChangeOp{{Type: "update", Path: "/zapret/adaptive_assignments", Value: updated}}
+	operations = append(operations, adaptiveRouteSelectionOps(active, runtime, request.Key.BundleID, "")...)
+	change, err := s.createDraftChange("Switch Zapret service profile", decision.Reason, baseVersion, operations, "adaptive-controller")
 	if err != nil {
 		return adaptiveEvaluateResponse{}, internalFailure(err)
 	}
@@ -333,6 +380,135 @@ func (s *Server) evaluateAdaptiveZapret(ctx context.Context, request adaptiveEva
 	}
 	s.publishEvent(Event{Type: "zapret.adaptive_switch", Severity: "info", ReasonCode: decision.Reason, Details: map[string]any{"bundle_id": request.Key.BundleID, "from_profile": decision.FromProfile, "to_profile": decision.ToProfile, "revision_id": change.RevisionID}})
 	return adaptiveEvaluateResponse{Decision: decision, Change: &change}, nil
+}
+
+func (s *Server) applyAdaptiveFallback(ctx context.Context, active *config.Config, runtime *adaptiveRuntime, bundleID string, decision zapret.SwitchDecision) (*ChangeSet, *actionFailure) {
+	bundle, ok := runtime.bundles.Lookup(bundleID)
+	if !ok {
+		return nil, conflict("adaptive_bundle_missing", "service bundle is absent from the adaptive catalog")
+	}
+	if activeAdaptiveFallback(active, runtime, bundleID) {
+		return nil, nil
+	}
+	tags := []string{bundle.FailureRoute}
+	if bundle.DirectFallback {
+		for _, route := range active.RoutesByType("direct") {
+			if route.Enabled() {
+				tags = append(tags, route.Tag)
+				break
+			}
+		}
+	}
+	var lastFailure *actionFailure
+	for _, tag := range tags {
+		if !adaptiveRouteAllowed(active, runtime, bundleID, tag) {
+			continue
+		}
+		change, failure := s.commitAdaptiveRouteSelection(ctx, active, runtime, bundleID, tag, "Use fallback route for Zapret service", decision.Reason)
+		if failure == nil {
+			s.publishEvent(Event{Type: "zapret.adaptive_fallback", Severity: "warning", ReasonCode: decision.Reason, Details: map[string]any{"bundle_id": bundleID, "route_tag": tag, "revision_id": change.RevisionID}})
+			return change, nil
+		}
+		lastFailure = failure
+		active = s.currentConfig()
+	}
+	if lastFailure != nil {
+		return nil, lastFailure
+	}
+	return nil, conflict("adaptive_fallback_unavailable", "no allowed fallback route is available for the service bundle")
+}
+
+func (s *Server) commitAdaptiveRouteSelection(ctx context.Context, active *config.Config, runtime *adaptiveRuntime, bundleID, routeTag, title, reason string) (*ChangeSet, *actionFailure) {
+	operations := adaptiveRouteSelectionOps(active, runtime, bundleID, routeTag)
+	if len(operations) == 0 {
+		return nil, nil
+	}
+	s.mu.Lock()
+	baseVersion := s.configVersion
+	s.mu.Unlock()
+	change, err := s.createDraftChange(title, reason, baseVersion, operations, "adaptive-controller")
+	if err != nil {
+		return nil, internalFailure(err)
+	}
+	change, failure := s.validateChangeSet(change)
+	if failure == nil {
+		change, failure = s.applyChangeSet(ctx, change)
+	}
+	if failure == nil && change.State != "awaiting_confirmation" {
+		failure = conflict("adaptive_apply_unverified", "adaptive route candidate did not reach confirmation")
+	}
+	if failure == nil {
+		change, failure = s.confirmChangeSet(ctx, change)
+	}
+	if failure != nil {
+		if change.TransactionID != "" && change.State != "rolled_back" && change.State != "expired" {
+			_, _ = s.rollbackChangeSet(context.WithoutCancel(ctx), change, false)
+		}
+		return nil, failure
+	}
+	return &change, nil
+}
+
+func adaptiveRouteSelectionOps(cfg *config.Config, runtime *adaptiveRuntime, bundleID, routeTag string) []ChangeOp {
+	var operations []ChangeOp
+	for _, name := range adaptiveBundleServiceNames(cfg, runtime, bundleID) {
+		service := cfg.Services[name]
+		if service.SelectedRouteTag == routeTag {
+			continue
+		}
+		operations = append(operations, ChangeOp{Type: "set", Path: "/services/" + escapeJSONPointer(name) + "/selected_route_tag", Value: routeTag})
+	}
+	return operations
+}
+
+func adaptiveBundleServiceNames(cfg *config.Config, runtime *adaptiveRuntime, bundleID string) []string {
+	var names []string
+	for name, service := range cfg.Services {
+		for _, domain := range service.Domains {
+			bundle, ok := runtime.bundles.LookupDomain(domain)
+			if ok && bundle.ID == bundleID {
+				names = append(names, name)
+				break
+			}
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func adaptiveRouteAllowed(cfg *config.Config, runtime *adaptiveRuntime, bundleID, routeTag string) bool {
+	route, ok := cfg.RouteByTag(routeTag)
+	if !ok || !route.Enabled() {
+		return false
+	}
+	names := adaptiveBundleServiceNames(cfg, runtime, bundleID)
+	if len(names) == 0 {
+		return false
+	}
+	for _, name := range names {
+		if !config.PathAllowed(cfg.Services[name], route, cfg.Policy) {
+			return false
+		}
+	}
+	return true
+}
+
+func activeAdaptiveFallback(cfg *config.Config, runtime *adaptiveRuntime, bundleID string) bool {
+	for _, name := range adaptiveBundleServiceNames(cfg, runtime, bundleID) {
+		if cfg.Services[name].SelectedRouteTag != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func profileProductionReady(ranking []zapret.CandidateScore, profileID string) bool {
+	for _, score := range ranking {
+		if score.ProfileID == profileID {
+			return score.ProductionReady && score.SafetyGate && score.RequiredChecksPassed && !score.RecentHardFailure
+		}
+	}
+	return false
 }
 
 func persistAdaptiveState(runtime *adaptiveRuntime, key string, decisionKey zapret.DecisionKey, now time.Time) error {

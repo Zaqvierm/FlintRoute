@@ -12,6 +12,7 @@ import (
 	"router-policy/internal/config"
 	"router-policy/internal/state"
 	"router-policy/internal/tspu"
+	"router-policy/internal/zapret"
 )
 
 func TestSetupTokenIfNeededIsIdempotentAfterAdminCreation(t *testing.T) {
@@ -187,6 +188,34 @@ func TestTSPUMatchForDomainReportsUnavailableMatchAndStaleMatch(t *testing.T) {
 	}
 	if stale.Status != "STALE_MATCH" {
 		t.Fatalf("expired match was treated as fresh: %+v", stale)
+	}
+}
+
+func TestZapretBlockcheckImportWritesValidatedCatalog(t *testing.T) {
+	dir := t.TempDir()
+	report := filepath.Join(dir, "blockcheck.log")
+	binary := filepath.Join(dir, "nfqws")
+	catalog := filepath.Join(dir, "adaptive-catalog.json")
+	if err := os.WriteFile(report, []byte("curl_test_https_tls12 ipv4 alpha.example : nfqws --dpi-desync=fake --dpi-desync-ttl=3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binary, []byte("reviewed-test-binary"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	err := run([]string{
+		"zapret-blockcheck-import", "--report", report, "--binary", binary,
+		"--provider-version", "72.12", "--queue", "200", "--domain", "alpha.example",
+		"--bundle-id", "auto-alpha", "--catalog-out", catalog,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles, bundles, err := zapret.LoadCatalogFile(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profiles.Len() != 1 || bundles.Len() != 1 {
+		t.Fatalf("written catalog is incomplete: profiles=%d bundles=%d", profiles.Len(), bundles.Len())
 	}
 }
 

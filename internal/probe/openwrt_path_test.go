@@ -17,6 +17,8 @@ type fakeOpenWrtCommands struct {
 	advance        bool
 	routeTable     int
 	conntrackMark  string
+	conntrackCalls int
+	conntrackFails int
 	mark           string
 	rulePriority   int
 	policyActions  map[string]bool
@@ -67,10 +69,49 @@ func (f *fakeOpenWrtCommands) ProcessRunning(context.Context, string) (bool, err
 }
 
 func (f *fakeOpenWrtCommands) ConntrackMark(string, string) (string, error) {
+	f.conntrackCalls++
+	if f.conntrackCalls <= f.conntrackFails {
+		return "", fmt.Errorf("conntrack tuple not visible yet")
+	}
 	if f.conntrackMark == "" {
 		return "", fmt.Errorf("missing conntrack mark")
 	}
 	return f.conntrackMark, nil
+}
+
+func TestOpenWrtPathVerifierWaitsForConntrackTuple(t *testing.T) {
+	root, activePath, binding, manifestHash := generateDirectArtifacts(t)
+	commands := &fakeOpenWrtCommands{
+		counter: 10, advance: true, routeTable: 100, conntrackMark: "0x41", conntrackFails: 2,
+	}
+	verifier, err := NewOpenWrtPathVerifier(OpenWrtPathOptions{
+		ArtifactRoot: root, ActiveBindingPath: activePath, Binding: binding, ManifestHash: manifestHash,
+		Commands: commands, AllowSimulation: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().UTC()
+	session, err := verifier.Begin(context.Background(), PathProofStart{Domain: "example.test", Route: config.Route{Type: "direct", Tag: "direct"}, StartedAt: started})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = verifier.Verify(context.Background(), PathProofRequest{
+		Route: config.Route{Type: "direct", Tag: "direct"}, Session: session,
+		Observation: PathObservation{
+			Domain: "example.test", RouteTag: "direct", RouteType: "direct", DNSResolver: "192.0.2.53", DNSProtocol: "udp",
+			ResolvedIPs: []string{"203.0.113.10"}, ConnectedIP: "203.0.113.10", ConnectedPort: 443,
+			LocalIP: "192.0.2.2", AddressFamily: "ipv4", Transport: "direct", SocketMark: "0x41",
+			HostPreserved: true, SNIPreserved: true, TLSResult: "OK", HTTPResult: "OK", ContentResult: "OK",
+			ExternalIPHash: "sha256:egress", ExternalCountry: "DE", StartedAt: started, CompletedAt: started.Add(20 * time.Millisecond),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if commands.conntrackCalls != 3 {
+		t.Fatalf("unexpected conntrack attempts: %d", commands.conntrackCalls)
+	}
 }
 
 func TestOpenWrtPathVerifierProvesBoundDirectFlow(t *testing.T) {

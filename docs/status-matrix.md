@@ -27,6 +27,16 @@
 | P13 | 85% | Маршруты, Smart DNS, recursion guard, crash/reboot и physical power-loss доказаны; multi-client и soak остаются |
 | P14 | 100% | Ownership, cleanup, bounded storage, provider/dataplane recovery, idle write budget и полный lifecycle tail доказаны на Flint 2 |
 
+### Текущая ветка после P14
+
+| Область | Локально | Flint 2 |
+|---|---|---|
+| Dynamic DNS observation и классификация без заводского service catalog | unit/API/artifact tests | повторный apply ещё не выполнялся |
+| Opt-in static rules и редактируемый fallback порядок | API tests и UI typecheck/build | требуется пользовательский apply на текущем Flint 2 |
+| TSPU fallback `Zapret → Smart DNS → VLESS → Direct → DROP` | planner test доказывает, что VLESS не вызывается до Smart DNS | требуется проверка с production resolver |
+| Пять VPN subscription slots и объединённая проверка outbound | API/UI/typecheck/build | требуется повторный subscription prepare |
+| Top-3 blockcheck import, domain binding и atomic catalog | parser/catalog/CLI tests | calibration runner ещё не запускался |
+
 ### P14: lifecycle и storage
 
 | Критерий | Локально | Flint 2 |

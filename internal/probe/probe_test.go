@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,25 @@ import (
 	"router-policy/internal/config"
 	"router-policy/internal/evidence"
 )
+
+func TestPreferIPv4KeepsEveryAddressAndMovesIPv4First(t *testing.T) {
+	input := []netip.Addr{
+		netip.MustParseAddr("2001:db8::1"),
+		netip.MustParseAddr("192.0.2.10"),
+		netip.MustParseAddr("2001:db8::2"),
+		netip.MustParseAddr("192.0.2.11"),
+	}
+	got := preferIPv4(input)
+	want := []netip.Addr{input[1], input[3], input[0], input[2]}
+	if len(got) != len(want) {
+		t.Fatalf("address count changed: got %d want %d", len(got), len(want))
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("address %d = %s, want %s", index, got[index], want[index])
+		}
+	}
+}
 
 func TestProbeHTTP200WithMarker(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

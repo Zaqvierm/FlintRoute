@@ -410,6 +410,7 @@ type routeInfo struct {
 	Dst     string `json:"dst"`
 	Gateway string `json:"gateway"`
 	Dev     string `json:"dev"`
+	Type    string `json:"type"`
 	Table   any    `json:"table"`
 }
 
@@ -734,9 +735,11 @@ func (p OpenWrtProvider) Overview(cfg *config.Config) map[string]any {
 			dns = "NO_UPSTREAM"
 		}
 	}
-	ipv6 := "NOT_CONFIGURED"
-	if len(snapshot.WAN.IPv6Address) > 0 || hasDefaultRoute(snapshot.Routes6) {
+	ipv6 := "DISABLED"
+	if cfg != nil && cfg.Platform.IPv6Enabled && (len(snapshot.WAN.IPv6Address) > 0 || hasDefaultRoute(snapshot.Routes6)) {
 		ipv6 = "CONFIGURED"
+	} else if cfg != nil && cfg.Platform.IPv6Enabled {
+		ipv6 = "UNAVAILABLE"
 	}
 
 	return map[string]any{
@@ -1050,7 +1053,9 @@ func sanitizeLabel(value string) string {
 
 func hasDefaultRoute(routes []routeInfo) bool {
 	for _, route := range routes {
-		if route.Dst == "default" || route.Dst == "0.0.0.0/0" || route.Dst == "::/0" {
+		isDefault := route.Dst == "default" || route.Dst == "0.0.0.0/0" || route.Dst == "::/0"
+		isForwarding := route.Type == "" || route.Type == "unicast"
+		if isDefault && isForwarding && mainRouteTable(route.Table) && route.Gateway != "" && route.Dev != "" {
 			return true
 		}
 	}

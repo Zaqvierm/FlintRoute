@@ -34,6 +34,8 @@ probe_route(domain, service, route)
 - **VPN-подписка/Xray** — нормализация подписки VPN-провайдера, VLESS health-checks с EWMA и кворумом
 - **TSPU cache** — multi-source, eTLD+1/wildcard matching, ETag/drop-ratio, SHA-256
 - **GeoIP** — MaxMind MMDB, двухсорсный consensus
+- **Dynamic discovery** — перехваченные DNS-запросы попадают в bounded runtime
+  log; домены классифицируются по route evidence, а не по встроенному списку
 
 ## Статус
 
@@ -45,8 +47,8 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
 - локальная сборка, тесты, race-проверка и выпуск ARM64-бинарника;
 - транзакции конфигурации с commit/rollback и fail-closed поведением;
 - Direct, Zapret, Drop и VLESS/Xray на GL-MT6000 с bound route evidence;
-- два production Smart DNS resolver через UDP/53 и TCP/53, оба маршрута
-  транзакционно активированы и проверены bound path evidence;
+- два production Smart DNS resolver ранее прошли UDP/53, TCP/53 и bound path
+  evidence; заводской конфиг намеренно оставляет resolver slots пустыми;
 - полная применимая матрица `route × protocol × address family`: 23 аппаратных
   PASS, без FAIL и непроверенных клеток;
 - восстановление committed dataplane после физической перезагрузки: controller,
@@ -75,6 +77,11 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
 
 ### Реализовано, но требует проверки на железе
 
+- автоматическое обнаружение доменов без заводского каталога сервисов;
+- ручные opt-in правила и редактируемый порядок fallback для найденных доменов;
+- настройка Smart DNS и пяти VPN-подписок через Web UI;
+- импорт top-3 `blockcheck`-кандидатов, привязанных к фактически проверенному
+  домену и fingerprint сети;
 - расширенная IPv6-матрица на реальных LAN-клиентах;
 - работа под нагрузкой с несколькими клиентами;
 
@@ -135,13 +142,11 @@ router-policy run --listen 127.0.0.1:8787
 router-policy validate-config
 router-policy routes
 router-policy services
-router-policy candidates chatgpt.com openai
-router-policy probe-route --route direct github.com github
+router-policy candidates observed.example automatic
 
 # When the control plane already owns the state database, collect live
 # transaction-bound evidence without trying to persist probe history:
-router-policy probe-route --no-persist --route direct github.com github
-router-policy check-domain github.com github
+router-policy check-domain observed.example
 # Нормализовать VPN-подписку перед генерацией Xray-конфига:
 router-policy subscription-normalize subscription.json
 router-policy tspu-update --out tspu-cache.json

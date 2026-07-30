@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -402,6 +403,88 @@ func run(args []string) error {
 			return err
 		}
 		return printJSON(plan)
+	case "zapret-blockcheck-import":
+		fs := flag.NewFlagSet("zapret-blockcheck-import", flag.ContinueOnError)
+		reportPath := fs.String("report", "", "blockcheck output file")
+		binaryPath := fs.String("binary", "/usr/bin/nfqws", "nfqws binary")
+		providerVersion := fs.String("provider-version", "", "nfqws version")
+		queue := fs.Uint("queue", 0, "NFQUEUE number")
+		domain := fs.String("domain", "", "domain used by blockcheck")
+		bundleID := fs.String("bundle-id", "", "dynamic service bundle ID")
+		failureRoute := fs.String("failure-route", "drop", "route tag used when all profiles fail")
+		catalogOut := fs.String("catalog-out", "", "write the validated adaptive catalog atomically")
+		networkFingerprint := fs.String("network-fingerprint", "", "sha256 network identity")
+		save := fs.Bool("save", false, "save the bounded top-three set in persistent state")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 || *reportPath == "" || *providerVersion == "" || *queue == 0 || *queue > 65535 || *domain == "" || *bundleID == "" {
+			return errors.New("usage: router-policy zapret-blockcheck-import --report FILE --binary FILE --provider-version VERSION --queue N --domain DOMAIN --bundle-id ID")
+		}
+		report, err := readBoundedRegularFile(*reportPath, zapret.MaxBlockcheckReportBytes)
+		if err != nil {
+			return fmt.Errorf("read blockcheck report: %w", err)
+		}
+		binaryDigest, err := regularFileSHA256(*binaryPath)
+		if err != nil {
+			return fmt.Errorf("hash nfqws binary: %w", err)
+		}
+		candidates, err := zapret.ParseBlockcheckReport(report, zapret.BlockcheckParseOptions{
+			Queue: uint16(*queue), ProviderVersion: *providerVersion, BinaryDigest: binaryDigest,
+		})
+		if err != nil {
+			return err
+		}
+		catalog, err := zapret.BuildBlockcheckCatalog(candidates, *bundleID, *domain, *failureRoute)
+		if err != nil {
+			return err
+		}
+		evidence := make([]map[string]any, 0, len(candidates))
+		for _, candidate := range candidates {
+			profile := candidate.Profile
+			evidence = append(evidence, map[string]any{
+				"profile_id": profile.ID, "domains": candidate.Domains, "tests": candidate.Tests,
+				"occurrences": candidate.Occurrences, "first_line": candidate.FirstLine,
+			})
+		}
+		document := map[string]any{
+			"schema_version": 1, "source": "blockcheck", "candidate_count": len(catalog.Profiles),
+			"network_fingerprint": *networkFingerprint, "domain": *domain, "bundle_id": *bundleID,
+			"catalog": catalog, "evidence": evidence,
+		}
+		if *catalogOut != "" {
+			raw, err := json.MarshalIndent(catalog, "", "  ")
+			if err != nil {
+				return err
+			}
+			if err := writePrivateFileAtomic(*catalogOut, append(raw, '\n')); err != nil {
+				return fmt.Errorf("write adaptive Zapret catalog: %w", err)
+			}
+			document["catalog_saved"] = true
+		}
+		if *save {
+			if !validSHA256Digest(*networkFingerprint) {
+				return errors.New("--save requires a sha256 network fingerprint")
+			}
+			cfg, err := config.Load(cfgPath)
+			if err != nil {
+				return err
+			}
+			store, err := state.Open(cfg)
+			if err != nil {
+				return err
+			}
+			saveErr := store.SaveJSON("zapret_blockcheck", *networkFingerprint+"|"+*bundleID, document)
+			closeErr := store.Close()
+			if saveErr != nil {
+				return saveErr
+			}
+			if closeErr != nil {
+				return closeErr
+			}
+			document["saved"] = true
+		}
+		return printJSON(document)
 	case "internal-verify-rollback-token":
 		if len(args) != 2 {
 			return errors.New("rollback token hash is required")
@@ -1077,6 +1160,7 @@ func usage() {
   lifecycle add-network --id RUN_ID --resource ID --kind KIND [--family FAMILY --table TABLE --address VALUE]
   lifecycle finish --id RUN_ID [--result RESULT]
   cleanup stale [--dry-run|--apply] [--json]
+  zapret-blockcheck-import --report FILE --binary FILE --provider-version VERSION --queue N --domain DOMAIN --bundle-id ID
   maintenance begin --owner OWNER --reason REASON [--lease 15m]
   maintenance end|status
   watchdog [--health-url URL] [--interval 1m] [--startup-grace 90s]
@@ -1240,6 +1324,126 @@ func loadRuntimeConfig(path string) (*config.Config, error) {
 	}
 	cfg.TSPUSources = append([]config.TSPUSource(nil), factory.TSPUSources...)
 	return cfg, nil
+}
+
+func readBoundedRegularFile(path string, limit int) ([]byte, error) {
+	if limit <= 0 {
+		return nil, errors.New("invalid file size limit")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() > int64(limit) {
+		return nil, errors.New("input must be a bounded regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	raw, readErr := io.ReadAll(io.LimitReader(file, int64(limit)+1))
+	closeErr := file.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	if len(raw) > limit {
+		return nil, errors.New("input exceeds size limit")
+	}
+	return raw, nil
+}
+
+func regularFileSHA256(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", errors.New("target is not a regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	_, copyErr := io.Copy(hash, file)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return "", copyErr
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func validSHA256Digest(value string) bool {
+	if !strings.HasPrefix(value, "sha256:") || len(value) != len("sha256:")+64 {
+		return false
+	}
+	_, err := hex.DecodeString(strings.TrimPrefix(value, "sha256:"))
+	return err == nil
+}
+
+func writePrivateFileAtomic(path string, raw []byte) error {
+	if path == "" {
+		return errors.New("output path is required")
+	}
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return errors.New("output target is not a regular file")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	dir := filepath.Dir(path)
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return errors.New("output directory is unavailable")
+	}
+	tmp := filepath.Join(dir, "."+filepath.Base(path)+".tmp-"+strconv.Itoa(os.Getpid()))
+	file, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if _, err := file.Write(raw); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	removeTemp = false
+	if runtime.GOOS != "windows" {
+		parent, err := os.Open(dir)
+		if err != nil {
+			return err
+		}
+		syncErr := parent.Sync()
+		closeErr := parent.Close()
+		if syncErr != nil {
+			return syncErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+	}
+	return nil
 }
 
 func printJSON(v any) error {

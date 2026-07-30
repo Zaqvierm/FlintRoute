@@ -90,6 +90,14 @@ func TestCatalogRejectsUnreviewedAndUnsafeProfiles(t *testing.T) {
 			profile.Strategy = append(profile.Strategy, []byte("--new\n")...)
 			profile.StrategyDigest = Digest(profile.Strategy)
 		}},
+		{"repeats", func(profile *Profile) {
+			profile.Strategy = append(profile.Strategy, []byte("--dpi-desync-repeats=255\n")...)
+			profile.StrategyDigest = Digest(profile.Strategy)
+		}},
+		{"seqovl", func(profile *Profile) {
+			profile.Strategy = append(profile.Strategy, []byte("--dpi-desync-split-seqovl=65535\n")...)
+			profile.StrategyDigest = Digest(profile.Strategy)
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -99,6 +107,30 @@ func TestCatalogRejectsUnreviewedAndUnsafeProfiles(t *testing.T) {
 				t.Fatal("unsafe profile was accepted")
 			}
 		})
+	}
+}
+
+func TestCatalogAcceptsReviewedPathFreeYouTubeStrategy(t *testing.T) {
+	binaryDigest := Digest([]byte("binary"))
+	profile := testProfile(binaryDigest)
+	profile.Strategy = []byte(
+		"--qnum=200\n" +
+			"--filter-tcp=80\n" +
+			"--dpi-desync=fake,multidisorder\n" +
+			"--dpi-desync-split-pos=method+2,host+1\n" +
+			"--dpi-desync-fooling=badseq\n" +
+			"--dpi-desync-repeats=6\n" +
+			"--new\n" +
+			"--filter-tcp=443\n" +
+			"--dpi-desync=fake,multidisorder\n" +
+			"--dpi-desync-split-pos=1,sniext+1,midsld\n" +
+			"--dpi-desync-split-seqovl=681\n" +
+			"--dpi-desync-fooling=badseq\n" +
+			"--dpi-desync-repeats=6\n",
+	)
+	profile.StrategyDigest = Digest(profile.Strategy)
+	if _, err := NewCatalog([]Profile{profile}); err != nil {
+		t.Fatalf("reviewed path-free YouTube strategy was rejected: %v", err)
 	}
 }
 

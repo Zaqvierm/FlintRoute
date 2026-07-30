@@ -3,6 +3,8 @@ import { useEffect, useMemo, useState } from 'preact/hooks';
 import {
   APIError,
   changeAction,
+  classifyService,
+  configureSmartDNS,
   createChange,
   getChanges,
   getDevices,
@@ -11,13 +13,17 @@ import {
   getRevisions,
   getRoutes,
   getSecurity,
+  getSmartDNS,
   getServices,
+  getSubscriptionSecretStatus,
   getSystem,
   getTraffic,
   getTopology,
   login,
   logout,
   me,
+  prepareSubscription,
+  saveSubscriptionSecrets,
   setupAdmin,
   type ChangeSet,
   type ChangeOp,
@@ -374,7 +380,7 @@ function Content(props: any) {
     case 'Карточка устройства':
       return <DeviceCard device={props.devices[0]} />;
     case 'Сервисы':
-      return <Services services={props.services} />;
+      return <Services services={props.services} configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
     case 'Группа сервиса':
       return <ServiceGroup service={props.services[0]} />;
     case 'Политики: таблица':
@@ -386,9 +392,9 @@ function Content(props: any) {
     case 'Маршруты':
       return <Routes routes={props.routes} />;
     case 'VLESS-серверы':
-      return <Vless routes={props.routes} />;
+      return <Vless routes={props.routes} configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
     case 'Smart DNS':
-      return <RouteType title="Smart DNS" type="smart_dns" routes={props.routes} />;
+      return <SmartDNS configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
     case 'Zapret':
       return <RouteType title="Zapret" type="zapret" routes={props.routes} />;
     case 'Telegram':
@@ -430,8 +436,8 @@ function OverviewScreen({ overview, topology, services, events }: any) {
             </div>
           ))}
         </Card>
-        <Card title="Предупреждения">
-          <div class="row warn"><b>IPv6</b><span>{overview.ipv6}</span></div>
+        <Card title="Состояние">
+          <div class="row"><b>IPv6 (необязательно)</b><span>{overview.ipv6}</span></div>
           <div class="row warn"><b>Zapret</b><span>{overview.zapret}</span></div>
           <div class="row"><b>Data plane</b><span>{overview.data_plane}</span></div>
         </Card>
@@ -484,20 +490,224 @@ function DeviceCard({ device }: { device: any }) {
   );
 }
 
-function Services({ services }: { services: any[] }) {
-  return <Grid>{services.map((s) => <ServiceGroup service={s} key={s.id} />)}</Grid>;
+const serviceColumns = [
+  { category: 'GEO_LOCKED', title: 'GEO · VPN', hint: 'Smart DNS → VLESS → блокировка' },
+  { category: 'TSPU_RESTRICTED', title: 'TSPU', hint: 'Zapret → Smart DNS → VLESS → Direct' },
+  { category: 'DIRECT_PREFERRED', title: 'Direct', hint: 'Прямое подключение' }
+];
+
+const serviceRoutePaths = ['direct', 'zapret', 'smart_dns', 'vless', 'drop'];
+const staticServiceTemplates = [
+  { title: 'Яндекс напрямую', domain: 'yandex.ru', category: 'DIRECT_PREFERRED' },
+  { title: 'Госуслуги напрямую', domain: 'gosuslugi.ru', category: 'DIRECT_PREFERRED' },
+  { title: 'ChatGPT через GEO', domain: 'chatgpt.com', category: 'GEO_LOCKED' }
+];
+
+function defaultServicePaths(category: string): string[] {
+  if (category === 'GEO_LOCKED') return ['smart_dns', 'vless', 'drop'];
+  if (category === 'TSPU_RESTRICTED') return ['zapret', 'smart_dns', 'vless', 'direct', 'drop'];
+  return ['direct', 'zapret', 'smart_dns', 'vless', 'drop'];
 }
 
-function ServiceGroup({ service }: { service: any }) {
+function Services({
+  services,
+  configVersion,
+  role,
+  refresh
+}: {
+  services: any[];
+  configVersion: number;
+  role: SessionInfo['role'];
+  refresh: () => Promise<void>;
+}) {
+  const [moving, setMoving] = useState('');
+  const [message, setMessage] = useState('');
+  const [editor, setEditor] = useState<{ domain: string; category: string; paths: string[] } | null>(null);
+  const domains = useMemo(() => {
+    const byDomain = new Map<string, any>();
+    for (const service of services) {
+      for (const domain of service.domains ?? []) {
+        const current = byDomain.get(domain);
+        if (!current || service.source === 'configured') {
+          byDomain.set(domain, { ...service, domain });
+        }
+      }
+    }
+    return [...byDomain.values()];
+  }, [services]);
+
+  async function commitRule(domain: string, category: string, paths?: string[]) {
+    if (role !== 'administrator' || !configVersion || moving) return;
+    setMoving(domain);
+    setMessage(`Меняю правило для ${domain}…`);
+    let changeID = '';
+    try {
+      const created = await classifyService(domain, category, configVersion, paths);
+      changeID = created.change.id;
+      await changeAction(changeID, 'validate');
+      const applied = await changeAction(changeID, 'apply');
+      if (applied.state === 'awaiting_confirmation') {
+        await changeAction(changeID, 'confirm');
+      } else if (applied.state !== 'committed') {
+        throw new Error(`Изменение остановилось в состоянии ${applied.state}`);
+      }
+      setMessage(`${domain}: правило применено`);
+      setEditor(null);
+      await refresh();
+    } catch (error) {
+      if (changeID) {
+        try { await changeAction(changeID, 'rollback'); } catch { /* keep original error */ }
+      }
+      setMessage(error instanceof Error ? error.message : 'Не удалось изменить маршрут');
+    } finally {
+      setMoving('');
+    }
+  }
+
+  function editRule(service?: any) {
+    const category = serviceColumnFor(service?.category ?? 'DIRECT_PREFERRED');
+    setEditor({
+      domain: service?.domain ?? service?.domains?.[0] ?? '',
+      category,
+      paths: [...(service?.allowed_paths?.length ? service.allowed_paths : defaultServicePaths(category))]
+    });
+  }
+
+  function selectTemplate(template: (typeof staticServiceTemplates)[number]) {
+    setEditor({
+      domain: template.domain,
+      category: template.category,
+      paths: defaultServicePaths(template.category)
+    });
+  }
+
+  function togglePath(path: string) {
+    if (!editor) return;
+    const included = editor.paths.includes(path);
+    setEditor({
+      ...editor,
+      paths: included ? editor.paths.filter((item) => item !== path) : [...editor.paths, path]
+    });
+  }
+
+  return (
+    <section>
+      <div class="service-toolbar">
+        <div>
+          <b>Статические правила</b>
+          <span>Не включаются автоматически. Выбери шаблон или создай своё.</span>
+        </div>
+        <div class="actions">
+          <button class="primary" disabled={role !== 'administrator'} onClick={() => editRule()}>+ Новое правило</button>
+          {staticServiceTemplates.map((template) => (
+            <button disabled={role !== 'administrator'} onClick={() => selectTemplate(template)}>{template.title}</button>
+          ))}
+        </div>
+      </div>
+      {editor && (
+        <form
+          class="service-editor"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (editor.paths.length) void commitRule(editor.domain, editor.category, editor.paths);
+          }}
+        >
+          <label>Домен<input value={editor.domain} placeholder="example.com" onInput={(event) => setEditor({ ...editor, domain: event.currentTarget.value })} /></label>
+          <label>
+            Класс
+            <select
+              value={editor.category}
+              onChange={(event) => {
+                const category = event.currentTarget.value;
+                setEditor({ ...editor, category, paths: defaultServicePaths(category) });
+              }}
+            >
+              {serviceColumns.map((column) => <option value={column.category}>{column.title}</option>)}
+            </select>
+          </label>
+          <div>
+            <b>Порядок маршрутов</b>
+            <small>Нажимай в нужной очередности. Повторный клик удаляет маршрут.</small>
+            <div class="route-path-editor">
+              {serviceRoutePaths.map((path) => {
+                const position = editor.paths.indexOf(path);
+                return (
+                  <button type="button" class={position >= 0 ? 'selected' : ''} onClick={() => togglePath(path)}>
+                    {position >= 0 ? `${position + 1}. ` : ''}{path}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div class="actions">
+            <button class="primary" disabled={!editor.domain.trim() || editor.paths.length === 0 || Boolean(moving)}>Применить</button>
+            <button type="button" onClick={() => setEditor(null)}>Отмена</button>
+          </div>
+        </form>
+      )}
+      <div class="service-board">
+        {serviceColumns.map((column) => (
+          <section
+            class={`service-column ${column.category.toLowerCase()}`}
+            key={column.category}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault();
+              const domain = event.dataTransfer?.getData('text/plain');
+              if (domain) void commitRule(domain, column.category);
+            }}
+          >
+            <header><h2>{column.title}</h2><small>{column.hint}</small></header>
+            {domains
+              .filter((item) => serviceColumnFor(item.category) === column.category)
+              .map((item) => (
+                <ServiceGroup
+                  service={item}
+                  key={item.domain}
+                  draggable={role === 'administrator' && !moving}
+                  busy={moving === item.domain}
+                  onEdit={() => editRule(item)}
+                />
+              ))}
+            {!domains.some((item) => serviceColumnFor(item.category) === column.category) && <p class="empty-state">Пока пусто</p>}
+          </section>
+        ))}
+      </div>
+      <p class={message.includes('применено') ? 'action-status ok' : 'action-status'}>{message || 'Домены появляются после наблюдения и проверки. Перетащи карточку, чтобы закрепить правило.'}</p>
+    </section>
+  );
+}
+
+function serviceColumnFor(category: string): string {
+  if (category === 'GEO_LOCKED') return 'GEO_LOCKED';
+  if (category === 'TSPU_RESTRICTED') return 'TSPU_RESTRICTED';
+  return 'DIRECT_PREFERRED';
+}
+
+function ServiceGroup({
+  service,
+  draggable = false,
+  busy = false,
+  onEdit
+}: {
+  service: any;
+  draggable?: boolean;
+  busy?: boolean;
+  onEdit?: () => void;
+}) {
   if (!service) return <Generic title="Группа сервиса" text="Сервис не выбран." />;
   return (
-    <Card title={service.id}>
-      <div class="row"><RouteBadge type={service.category} /><b>{service.category}</b><span>{service.probe_count} probes</span></div>
-      <h4>Домены</h4>
-      <div class="chips">{(service.domains ?? []).map((d: string) => <span class="chip mono">{d}</span>)}</div>
-      <h4>Пути</h4>
-      <div class="chips">{(service.allowed_paths ?? []).map((p: string) => <RouteBadge type={p} />)}</div>
-    </Card>
+    <article
+      class={`service-card ${busy ? 'busy' : ''}`}
+      draggable={draggable}
+      onDragStart={(event) => event.dataTransfer?.setData('text/plain', service.domain ?? service.domains?.[0] ?? '')}
+    >
+      <div class="service-card-title"><b class="mono">{service.domain ?? service.id}</b><span class={`source ${service.source}`}>{service.source === 'automatic' ? 'auto' : 'rule'}</span></div>
+      <div class="service-card-route"><RouteBadge type={service.selected_route_type ?? service.category} /><span>{service.status ?? service.selected_route_tag ?? 'ожидает проверки'}</span></div>
+      {service.allowed_paths?.length > 0 && <small>{service.allowed_paths.join(' → ')}</small>}
+      {typeof service.confidence === 'number' && <small>уверенность {Math.round(service.confidence * 100)}%</small>}
+      {onEdit && <button type="button" class="service-edit" onClick={onEdit}>Настроить правило</button>}
+    </article>
   );
 }
 
@@ -621,13 +831,198 @@ function formatRate(value?: number): string {
   return value === undefined ? 'сбор базовой точки' : `${formatBytes(value)}/с`;
 }
 
-function Vless({ routes }: { routes: any[] }) {
+function Vless({
+  routes,
+  configVersion,
+  role,
+  refresh
+}: {
+  routes: any[];
+  configVersion: number;
+  role: SessionInfo['role'];
+  refresh: () => Promise<void>;
+}) {
   const vless = routes.filter((r) => r.type === 'vless');
-  return <Grid>{(vless.length ? vless : [{ tag: 'VPN subscription pending', type: 'vless', status: 'generated after subscription' }]).map((r) => <Card title={r.tag}><RouteBadge type="vless" /><span>{r.status ?? r.socks5 ?? 'pending'}</span></Card>)}</Grid>;
+  const [urls, setURLs] = useState(() => Array(5).fill('') as string[]);
+  const [present, setPresent] = useState<boolean | null>(null);
+  const [configuredCount, setConfiguredCount] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const [checkedServers, setCheckedServers] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (role !== 'administrator') return;
+    getSubscriptionSecretStatus()
+      .then((status) => {
+        setPresent(status.present);
+        setConfiguredCount(status.count ?? 0);
+      })
+      .catch(() => setPresent(null));
+  }, [role]);
+
+  async function saveAndPrepare() {
+    const values = urls.map((value) => value.trim()).filter(Boolean);
+    if (!values.length) {
+      setMessage('Вставь хотя бы одну HTTPS-ссылку подписки.');
+      return;
+    }
+    setBusy(true);
+    setMessage('Сохраняю секрет и проверяю серверы. Это может занять несколько минут.');
+    try {
+      const saved = await saveSubscriptionSecrets(values);
+      setURLs(Array(5).fill(''));
+      setPresent(true);
+      setConfiguredCount(saved.count);
+      const result = await prepareSubscription(configVersion);
+      if (!result.preparation.ready || result.preparation.secrets_printed) {
+        throw new Error('Backend не подтвердил безопасный VLESS bundle.');
+      }
+      setCheckedServers(result.preparation.servers);
+      setMessage(`Проверено серверов: ${result.preparation.servers.length}. Создан ChangeSet ${result.change.id}; открой очередь изменений.`);
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Не удалось проверить подписку.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section>
+      <Card title="VPN-подписки">
+        <div class="row"><b>Источники</b><span>{present === true ? `${configuredCount} из 5` : present === false ? 'не заданы' : 'статус неизвестен'}</span></div>
+        {role === 'administrator' ? (
+          <div>
+            <div class="subscription-slots">
+              {urls.map((url, index) => (
+                <label class={`subscription-slot ${index < configuredCount ? 'configured' : ''}`} key={index}>
+                  <span>#{index + 1}</span>
+                  <input
+                    type="password"
+                    value={url}
+                    onInput={(event) => {
+                      const next = [...urls];
+                      next[index] = (event.target as HTMLInputElement).value;
+                      setURLs(next);
+                    }}
+                    autocomplete="off"
+                    placeholder={index < configuredCount ? 'сохранена · вставь для замены набора' : 'https://…'}
+                  />
+                  <i>{busy ? 'проверка' : index < configuredCount ? 'сохранена' : 'пусто'}</i>
+                </label>
+              ))}
+            </div>
+            <small>URL хранится в закрытом файле и не возвращается через API.</small>
+            <button class="primary" disabled={busy || !configVersion} onClick={saveAndPrepare}>
+              {busy ? 'Проверяю серверы…' : 'Сохранить и проверить'}
+            </button>
+            {message && <p class={message.includes('Создан ChangeSet') ? '' : 'auth-error'}>{message}</p>}
+          </div>
+        ) : <p>Импорт подписки доступен администратору.</p>}
+      </Card>
+      <div class="server-checks">
+        {(checkedServers.length ? checkedServers : vless).map((server: any) => (
+          <article class={`server-check ${(server.status ?? '').toLowerCase()}`} key={server.tag}>
+            <b>{server.tag}</b>
+            <span>{server.status ?? 'настроен'}</span>
+            <small>{server.reason ?? server.socks5 ?? 'ожидает следующей проверки'}</small>
+          </article>
+        ))}
+        {!checkedServers.length && !vless.length && <p class="empty-state">Серверов пока нет</p>}
+      </div>
+    </section>
+  );
 }
 
 function RouteType({ title, type, routes }: { title: string; type: string; routes: any[] }) {
   return <Grid>{routes.filter((r) => r.type === type).map((r) => <Card title={r.tag}><RouteBadge type={type} /><pre>{JSON.stringify(r, null, 2)}</pre></Card>)}</Grid>;
+}
+
+function SmartDNS({
+  configVersion,
+  role,
+  refresh
+}: {
+  configVersion: number;
+  role: SessionInfo['role'];
+  refresh: () => Promise<void>;
+}) {
+  const [status, setStatus] = useState<any>(null);
+  const [error, setError] = useState('');
+  const [endpoints, setEndpoints] = useState(['', '']);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  useEffect(() => {
+    getSmartDNS().then(setStatus).catch((reason) => setError(reason instanceof Error ? reason.message : 'Smart DNS недоступен'));
+  }, []);
+  async function save() {
+    const values = endpoints.map((value) => value.trim()).filter(Boolean);
+    if (!values.length) {
+      setMessage('Укажи хотя бы один публичный DNS endpoint в формате IP:порт.');
+      return;
+    }
+    setBusy(true);
+    setMessage('Создаю проверяемое изменение Smart DNS…');
+    try {
+      const result = await configureSmartDNS(values, configVersion);
+      let change = await changeAction(result.change.id, 'validate');
+      change = await changeAction(change.id, 'apply');
+      if (change.state !== 'awaiting_confirmation') throw new Error(`Smart DNS apply завершился состоянием ${change.state}`);
+      change = await changeAction(change.id, 'confirm');
+      setEndpoints(['', '']);
+      setMessage(`Smart DNS проверен и применён: ${result.endpoint_count}.`);
+      setStatus(await getSmartDNS());
+      await refresh();
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Smart DNS не прошёл проверку.');
+    } finally {
+      setBusy(false);
+    }
+  }
+  if (error) return <Generic title="Smart DNS" text={error} />;
+  if (!status) return <Generic title="Smart DNS" text="Загружаю состояние…" />;
+  return (
+    <section class="grid">
+      <Card title="Состояние Smart DNS">
+        <div class="row"><b>{status.ready ?? 0}</b><span>готовых резолверов</span><small>{status.configured ? 'настроен' : 'не настроен'}</small></div>
+        <h4>Проверка успеха</h4>
+        <div class="chips">{(status.success_contract ?? []).map((item: string) => <span class="chip">{item}</span>)}</div>
+        {role === 'administrator' && (
+          <div class="smart-dns-editor">
+            {endpoints.map((endpoint, index) => (
+              <label key={index}>
+                <span>Резолвер #{index + 1}</span>
+                <input
+                  class="mono"
+                  value={endpoint}
+                  placeholder="1.1.1.1:53"
+                  onInput={(event) => {
+                    const next = [...endpoints];
+                    next[index] = (event.target as HTMLInputElement).value;
+                    setEndpoints(next);
+                  }}
+                />
+              </label>
+            ))}
+            <button class="primary" disabled={busy || !configVersion} onClick={save}>
+              {busy ? 'Проверяю…' : 'Проверить и применить'}
+            </button>
+            {message && <p class={message.includes('применён') ? 'action-status ok' : 'action-status'}>{message}</p>}
+          </div>
+        )}
+      </Card>
+      {(status.routes ?? []).map((route: any) => (
+        <Card title={route.tag} key={route.tag}>
+          <div class="row"><RouteBadge type="smart_dns" /><b>{route.status || 'не проверен'}</b><span>{route.resolver_configured ? 'endpoint задан' : 'нужен endpoint'}</span></div>
+          <small>{route.connect_to_resolved_ip ? 'HTTP/TLS проверяется по адресу из ответа DNS' : 'Небезопасно: проверка адреса отключена'}</small>
+        </Card>
+      ))}
+      <Card title="Порядок fallback">
+        <div class="row"><b>GEO</b><span>{(status.fallback_order?.geo ?? []).join(' → ')}</span></div>
+        <div class="row"><b>TSPU</b><span>{(status.fallback_order?.tspu ?? []).join(' → ')}</span></div>
+      </Card>
+    </section>
+  );
 }
 
 function Telegram() {

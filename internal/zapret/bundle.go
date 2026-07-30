@@ -30,6 +30,7 @@ type BundleSpec struct {
 	IPFamilies      []string   `json:"ip_families"`
 	AllowedProfiles []string   `json:"allowed_profiles"`
 	FailureRoute    string     `json:"failure_route"`
+	DirectFallback  bool       `json:"direct_fallback,omitempty"`
 }
 
 type ServiceBundle struct {
@@ -178,6 +179,7 @@ func normalizeBundle(raw BundleSpec, profiles *Catalog) (ServiceBundle, error) {
 	normalized := BundleSpec{
 		ID: raw.ID, Category: raw.Category, RequiredDomains: required, OptionalDomains: optional,
 		Protocols: protocols, IPFamilies: families, AllowedProfiles: profileIDs, FailureRoute: raw.FailureRoute,
+		DirectFallback: raw.DirectFallback,
 	}
 	canonical, err := json.Marshal(normalized)
 	if err != nil {
