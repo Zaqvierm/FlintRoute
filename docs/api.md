@@ -56,14 +56,16 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/storage` | storage sizes, rollback state и логические write counters |
 | `/api/v1/smart-dns` | redacted Smart DNS state and fallback order |
 | `/api/v1/smart-dns/configure` | validate resolver IP/port over UDP+TCP DNS and HTTP/TLS, then create a draft ChangeSet |
-| `/api/v1/zapret` | managed Zapret/nfqws plan state |
+| `/api/v1/zapret` | managed Zapret/nfqws state and pin status |
+| `/api/v1/zapret/setup/check` | verify pinned source/version/SHA, binary, architecture, NFQUEUE and nfqws dry-run without changing config |
+| `/api/v1/zapret/setup/activate` | repeat preflight and create one managed Zapret ChangeSet with the enabled route |
 | `/api/v1/zapret/adaptive/runtime` | production scheduler budget, fingerprint and live ranking |
 | `/api/v1/zapret/adaptive/evaluate` | bounded profile evaluation and transactional bundle switch |
 | `/api/v1/zapret/adaptive/state` | persisted active profile, cooldown, pin and quarantine state |
 | `/api/v1/zapret/adaptive/pin` | set a validated bundle-local manual pin and allowed fallbacks |
 | `/api/v1/zapret/adaptive/unpin` | clear the manual pin without changing unrelated bundles |
 | `/api/v1/xray/subscription/secret` | store up to five subscription sources without returning their URLs |
-| `/api/v1/xray/subscription/prepare` | merge and verify VPN subscriptions → draft ChangeSet |
+| `/api/v1/xray/subscription/prepare` | merge and verify VPN subscriptions; candidate check only offers activation, explicit managed mode creates one ChangeSet with mode, bundle and routes |
 | `/api/v1/events` | persisted history merged with live epoch |
 | `/api/v1/events/stream` | SSE stream |
 | `/api/v1/changes` `GET/POST` | list/create ChangeSet |
@@ -74,6 +76,13 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/security` `/api/v1/security/audit` | security audit |
 | `/api/v1/system` | system/provider status |
 | `/api/v1/telegram` | read-only `not_implemented` status for Telegram notifications and `tg_ws_proxy` |
+
+VLESS and Zapret setup endpoints are the normal user-facing control surface.
+`/api/v1/changes` remains the transaction engine and an Advanced/Developer
+interface; users do not need to construct JSON pointers for either provider.
+Both activation endpoints only create a draft. The standard
+`validate → apply → VerifyManagementPath → VerifyDataPlane → confirm` path is
+still authoritative; a failed proof rolls the transaction back.
 
 `/api/v1/lifecycle` различает `router-policy-xray` и штатный OpenWrt-сервис
 `xray`. `inactive` у системного сервиса не считается ошибкой, если production

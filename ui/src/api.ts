@@ -71,7 +71,7 @@ export type SubscriptionSecretStatus = {
   changed?: boolean;
 };
 export type SubscriptionPreparation = {
-  change: ChangeSet;
+  change?: ChangeSet;
   preparation: {
     ready: boolean;
     selected_tag: string;
@@ -80,6 +80,33 @@ export type SubscriptionPreparation = {
     checks: unknown[];
     secrets_printed: boolean;
   };
+  activation: {
+    current_mode: string;
+    managed_available: boolean;
+    explicit_confirmation_required: boolean;
+    tproxy_mode: string;
+    tproxy_port: number;
+    bypass_mark: string;
+  };
+};
+
+export type ZapretSetupRequest = {
+  source_url: string;
+  provider_version: string;
+  binary_sha256: string;
+  test_domain: string;
+};
+export type ZapretSetupReport = {
+  ready: boolean;
+  binary_present: boolean;
+  binary_sha256: string;
+  provider_version: string;
+  architecture: string;
+  nfqueue_available: boolean;
+  kernel_support: string;
+  dry_run: boolean;
+  test_domain: string;
+  source_pinned: boolean;
 };
 
 export type SmartDNSResolver = { ip: string; port: number };
@@ -219,8 +246,15 @@ export async function getSubscriptionSecretStatus(): Promise<SubscriptionSecretS
 export async function saveSubscriptionSecrets(urls: string[]): Promise<SubscriptionSecretStatus> {
   return request('/xray/subscription/secret', { method: 'PUT', body: JSON.stringify({ urls }) });
 }
-export async function prepareSubscription(baseVersion: number): Promise<SubscriptionPreparation> {
-  return request('/xray/subscription/prepare', { method: 'POST', body: JSON.stringify({ base_version: baseVersion }) });
+export async function prepareSubscription(baseVersion: number, activateManaged = false): Promise<SubscriptionPreparation> {
+  return request('/xray/subscription/prepare', { method: 'POST', body: JSON.stringify({ base_version: baseVersion, activate_managed: activateManaged }) });
+}
+export async function getZapret(): Promise<any> { return request('/zapret'); }
+export async function checkZapretSetup(input: ZapretSetupRequest, baseVersion: number): Promise<{ report: ZapretSetupReport }> {
+  return request('/zapret/setup/check', { method: 'POST', body: JSON.stringify({ ...input, base_version: baseVersion }) });
+}
+export async function activateZapretSetup(input: ZapretSetupRequest, baseVersion: number): Promise<{ report: ZapretSetupReport; change: ChangeSet }> {
+  return request('/zapret/setup/activate', { method: 'POST', body: JSON.stringify({ ...input, base_version: baseVersion }) });
 }
 export async function createChange(title: string, baseVersion: number, operations: ChangeOp[]): Promise<ChangeSet> {
   if (!Number.isSafeInteger(baseVersion) || baseVersion < 1) throw new Error('Некорректная версия конфигурации');

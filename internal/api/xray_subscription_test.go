@@ -30,7 +30,7 @@ func (f *fakeSubscriptionPreparer) Prepare(context.Context, *config.Config) (vpn
 	return f.result, f.err
 }
 
-func TestXraySubscriptionPrepareCreatesValidatableChangeSet(t *testing.T) {
+func TestXraySubscriptionPrepareOffersManagedActivationWithoutChangeSet(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
 	prepared := stagePreparedBundleForAPI(t, srv.cfg.Storage.StateDir)
@@ -74,8 +74,54 @@ func TestXraySubscriptionPrepareCreatesValidatableChangeSet(t *testing.T) {
 	if err := json.Unmarshal(rawResponse, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if preparer.calls != 1 || payload.Change.State != "draft" || len(payload.Change.Operations) != 2 || !payload.Preparation.Ready || payload.Preparation.SecretsPrinted || payload.Preparation.BundleHash != prepared.BundleHash {
+	if preparer.calls != 1 || payload.Change.ID != "" || !payload.Preparation.Ready || payload.Preparation.SecretsPrinted || payload.Preparation.BundleHash != prepared.BundleHash {
 		t.Fatalf("bad prepare payload: %+v", payload)
+	}
+	srv.mu.Lock()
+	changeCount := len(srv.changes)
+	srv.mu.Unlock()
+	if changeCount != 0 {
+		t.Fatalf("candidate-only preparation created %d ChangeSets", changeCount)
+	}
+}
+
+func TestXrayManagedActivationBindsModeBundleAndRoutesInOneChangeSet(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	srv.cfg.Xray.InitScript = "/etc/init.d/router-policy-xray"
+	srv.mu.Lock()
+	srv.activeConfig.Xray.InitScript = srv.cfg.Xray.InitScript
+	srv.mu.Unlock()
+	prepared := stagePreparedBundleForAPI(t, srv.cfg.Storage.StateDir)
+	srv.subscriptionPreparer = &fakeSubscriptionPreparer{result: prepared}
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client, csrf := login(t, ts.URL)
+
+	request, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/xray/subscription/prepare", strings.NewReader(`{"base_version":1,"activate_managed":true}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", csrf)
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("managed prepare status=%d", response.StatusCode)
+	}
+	var envelope Envelope
+	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+		t.Fatal(err)
+	}
+	rawResponse, _ := json.Marshal(envelope.Data)
+	var payload struct {
+		Change ChangeSet `json:"change"`
+	}
+	if err := json.Unmarshal(rawResponse, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Change.State != "draft" || len(payload.Change.Operations) != 3 {
+		t.Fatalf("managed activation did not create one complete ChangeSet: %+v", payload.Change)
 	}
 	validated := changeActionForTest(t, client, csrf, ts.URL, payload.Change.ID, "validate")
 	if validated.State != "validated" {
@@ -88,9 +134,20 @@ func TestXraySubscriptionPrepareCreatesValidatableChangeSet(t *testing.T) {
 	if record.Config.Xray.OutboundBundleSHA256 != prepared.BundleHash {
 		t.Fatalf("candidate did not bind prepared bundle: %+v", record.Config.Xray)
 	}
+	if record.Config.Xray.ActivationMode != "managed" {
+		t.Fatalf("candidate did not explicitly activate managed Xray: %+v", record.Config.Xray)
+	}
 	bound, ok := record.Config.RouteByTag("new-vless")
 	if !ok || bound.SOCKS5 != "127.0.0.1:13000" || bound.DNSServer != srv.cfg.Xray.ProbeDNSResolver || bound.DNSMode != "socks_remote" || bound.Status != "SELECTED" || bound.Disabled {
 		t.Fatalf("candidate does not contain verified VLESS route: %+v", bound)
+	}
+	applied := changeActionForTest(t, client, csrf, ts.URL, validated.ID, "apply")
+	if applied.State != "awaiting_confirmation" || !applied.DataPlaneVerified {
+		t.Fatalf("managed Xray did not reach verified confirmation: %+v", applied)
+	}
+	confirmed := changeActionForTest(t, client, csrf, ts.URL, applied.ID, "confirm")
+	if confirmed.State != "committed" {
+		t.Fatalf("managed Xray did not commit: %+v", confirmed)
 	}
 }
 

@@ -1036,7 +1036,7 @@ func operationRootAllowed(path string) bool {
 			return false
 		}
 		switch parts[1] {
-		case "adaptive_enabled", "adaptive_catalog_file", "adaptive_assignments":
+		case "activation_mode", "provider_source", "provider_version", "binary_sha256", "adaptive_enabled", "adaptive_catalog_file", "adaptive_assignments":
 			return true
 		default:
 			return false

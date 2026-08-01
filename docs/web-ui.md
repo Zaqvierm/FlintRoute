@@ -40,24 +40,20 @@ upgrade.
 
 ## Экраны (`Content` в `ui/src/main.tsx`)
 
-- вход (`LoginScreen`);
-- первичная настройка (`SetupScreen`);
 - обзор (`OverviewScreen`);
 - карта сети (`NetworkMap`, topology);
 - трафик (`Traffic`) — RX/TX bytes, текущая скорость, packets/errors по интерфейсам;
-- устройства (`Devices`, `DeviceCard`);
-- сервисы (`Services`, `ServiceGroup`);
+- устройства (`Devices`, `DeviceCard`); нереализованные действия видны только
+  как disabled с `Not implemented`;
+- сервисы (`Services`);
 - discovery (`Discovery`) — режим, лимиты и проверенные предложения;
-- политики (таблица/доска, `Policies`);
-- очередь изменений (`Changes`, refresh);
 - маршруты (`Routes`, `Vless`, `RouteType`);
-- Smart DNS и Zapret; Telegram — отдельный status-only экран незавершённой
-  подсистемы;
+- Smart DNS и managed Zapret setup;
 - поток решений (`DecisionFlow`, events);
 - диагностика (`Diagnostics`);
 - безопасность (`Security`);
-- система (`system`), настройки (`Settings`);
-- generic-карточки для прочих данных.
+- ревизии;
+- Advanced/Developer mode с очередью ChangeSet и JSON editor.
 
 Главный экран держит сетевую карту крупным блоком и правую колонку с критичными
 сервисами, предупреждениями и последними решениями.
@@ -102,6 +98,19 @@ conditional DNS, а не VPN, и отображает порядок:
 `Zapret → Smart DNS → VLESS → Direct` для TSPU и
 `Smart DNS → VLESS → DROP` для GEO. Экран VPN содержит пять независимых слотов
 подписок и показывает результат проверки каждого объединённого outbound.
+`Сохранить и проверить` не включает маршрутизацию. Отдельная кнопка managed
+activation повторяет проверку и одной транзакцией связывает Xray mode, bundle и
+routes. UI подтверждает транзакцию только после management/data-plane proof.
+
+Экран Zapret принимает immutable source URL, версию, SHA-256 и тестовый домен.
+Сначала он показывает capability/dry-run report без изменения конфигурации,
+затем отдельное подтверждение создаёт и прогоняет managed transaction. Кнопка
+activation недоступна до успешного preflight.
+
+Низкоуровневый JSON editor спрятан в `Advanced` и закрыт `<details>`. Перед
+действиями ChangeSet показывает человекочитаемые группы Routing,
+Firewall/data plane и Management. Кнопки переходов зависят от текущего state;
+невозможные действия не рисуются.
 
 Default admin и default password отсутствуют. Installer печатает one-time setup
 token только пока администратор ещё не создан. После setup используются данные
@@ -133,16 +142,16 @@ topology за реальные данные.
 ```text
 index.html  ~0.40 kB
 CSS         ~10 kB (gzip ~2.8 kB)
-JS          ~45 kB (gzip ~16 kB)
+JS          ~56 kB (gzip ~19 kB)
 ```
 
 Нормально для роутера: статические файлы внутри Go binary.
 
 ## Что ещё надо доделать
 
-- Telegram notifications и managed `tg_ws_proxy` runtime; текущий экран только
-  честно показывает `not_implemented`;
-- реальные edit controls для policies/routes/devices;
+- Telegram notifications и managed `tg_ws_proxy` runtime; они не выведены как
+  рабочий пользовательский экран;
+- реальные edit controls для devices;
 - подтверждение опасных операций отдельным modal;
 - отдельные состояния disabled/read-only для каждого role-specific control;
 - группировка интерфейсов и графики скорости вместо базовой таблицы counters;

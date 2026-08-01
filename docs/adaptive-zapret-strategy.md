@@ -70,6 +70,24 @@ Upstream умеет применять профили. FlintRoute добавля
 повторного поиска, а не как вечный демон и не как источник аргументов, которые
 сразу летят в production.
 
+## Managed setup
+
+Обычная настройка Zapret не требует ручного JSON ChangeSet. Сначала API/UI
+выполняет read-only preflight: проверяет наличие `nfqws`, точную версию и
+SHA-256, архитектуру процесса, nftables NFQUEUE capability, kernel module state
+и embedded `--dry-run` для текущей стратегии. Нужен тестовый домен, но до apply
+его трафик не перехватывается.
+
+Источник внешнего бинарника, версия и SHA-256 задаются вместе. URL обязан быть
+immutable HTTPS, содержать закреплённую версию и не может ссылаться на `latest`.
+FlintRoute ничего не скачивает в этом сценарии: он сверяет уже установленный
+бинарник с pin-данными. После отдельного подтверждения preflight повторяется и
+один ChangeSet включает managed activation, pin metadata и Zapret route.
+Тестовый домен одновременно получает явное TSPU service rule, выбранный Zapret
+route и HTTPS probe, поэтому data-plane collector проверяет именно его, а не
+случайный соседний сервис. Проверка data plane и management path идёт через
+общую transaction state machine; провал приводит к rollback.
+
 Installer не подставляет тестовый сайт. После первого реально замеченного
 TSPU-домена calibration runner нормализует отчёт, отбрасывает shell syntax и
 неизвестные опции, выбирает максимум три кандидата и связывает catalog bundle

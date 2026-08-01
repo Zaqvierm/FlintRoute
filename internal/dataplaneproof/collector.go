@@ -235,6 +235,9 @@ func selectProbeTarget(cfg *config.Config, route config.Route) (string, string, 
 			continue
 		}
 		score := 0
+		if service.SelectedRouteTag == route.Tag {
+			score += 500
+		}
 		if route.Type == "zapret" && adaptiveBundleAssigned(cfg, name) {
 			score += 200
 		}

@@ -34,6 +34,9 @@
       "type": "object",
       "properties": {
         "binary": { "type": "string" },
+        "provider_source": { "type": "string", "pattern": "^https://" },
+        "provider_version": { "type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+){1,2}$" },
+        "binary_sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
         "init_script": { "type": "string" },
         "active_config": { "type": "string" },
         "activation_mode": { "type": "string", "enum": ["managed"] },

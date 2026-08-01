@@ -199,6 +199,22 @@ func TestValidateRejectsUnknownFlowOffloadingPolicy(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsMutableOrPartialZapretPins(t *testing.T) {
+	cfg := validConfig()
+	cfg.Zapret = Zapret{Binary: "/usr/bin/nfqws", InitScript: "/etc/init.d/router-policy-zapret", ActiveConfig: "/etc/router-policy/zapret/nfqws.conf", ActivationMode: "managed", Strategy: "tls-fake-ttl3-v1", QueueNum: 200}
+	cfg.Routes = append(cfg.Routes, Route{Type: "zapret", Tag: "zapret", Mark: "0x42", Status: "CONFIGURED"})
+	cfg.Zapret.ProviderSource = "https://downloads.example/nfqws/latest/nfqws"
+	cfg.Zapret.ProviderVersion = "72.12"
+	cfg.Zapret.BinarySHA256 = "sha256:" + strings.Repeat("a", 64)
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "provider pins") {
+		t.Fatalf("mutable Zapret source was accepted: %v", err)
+	}
+	cfg.Zapret.ProviderSource = "https://downloads.example/nfqws/72.12/nfqws"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("immutable Zapret pins were rejected: %v", err)
+	}
+}
+
 func TestValidateRejectsVLESSDNSProxyPortExhaustion(t *testing.T) {
 	cfg := validConfig()
 	cfg.Routes = append(cfg.Routes, Route{Type: "vless", Tag: "vless-test", SOCKS5: "127.0.0.1:12000", DNSServer: "1.1.1.1:53", DNSMode: "socks_remote", Mark: "0x43"})

@@ -111,6 +111,24 @@ URL остаются вне bbolt/API/UI/SSE. `config.Validate` требует
 routes. Artifact generator мержит bundle в транзакционный `xray.json`; mismatch
 bundle hash/tag/SOCKS → validate fail.
 
+## Managed activation
+
+Subscription preparation and production activation are deliberately separate.
+The first request downloads, normalizes and checks the servers, then returns a
+redacted activation offer without changing configuration. Only an explicit
+managed activation repeats the checks and creates a single ChangeSet containing:
+
+- `xray.activation_mode=managed`;
+- the verified outbound bundle hash;
+- selected, standby and quarantined VLESS routes.
+
+Validation must produce a TPROXY plan with the configured bypass mark. Every
+outbound receives `SO_MARK`, the bypass rule precedes policy classification,
+and unmatched transparent traffic ends at the reserved blackhole outbound.
+Apply then uses the normal management/data-plane proof and confirm timer. An
+unavailable Xray, stale revision, bad bundle, missing path proof or failed
+management check cannot be confirmed and is rolled back.
+
 ## Проверка совместимости
 
 На реальной подписке VPN-провайдера: 31 VLESS запись → 12 unique supported, 19
@@ -133,8 +151,9 @@ endpoints unreachable), 1 RU rejected, 1 selected (≈656 ms). Bundle hash
 
 ## Ограничения текущей проверки
 
-Локальная генерация + `xray run -test` + health cycle доказаны. Persistent
-activation на Flint 2 (install `/etc/router-policy/xray/active.json`, procd
-lifecycle, per-exit external IP proof, route production-ready) — часть
-data-plane фазы P3/P13. Смена провайдера = новая подписка + пересборка bundle;
-маршруты остаются, если outbound tag/SHA-256 совпадают или конфиг обновлён.
+Локальная генерация, `xray run -test`, health cycle и явный managed activation
+ChangeSet покрыты тестами. Ранее сохранённое Flint 2 evidence подтверждает
+procd/TPROXY/recursion guard, но новый UI/API activation flow после этого
+изменения ещё требует повторного аппаратного прохода. Смена провайдера = новая
+подписка + пересборка bundle; маршруты остаются, если outbound tag/SHA-256
+совпадают или конфиг обновлён.

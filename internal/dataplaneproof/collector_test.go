@@ -191,6 +191,21 @@ func TestZapretProofTargetsAssignedAdaptiveBundle(t *testing.T) {
 	}
 }
 
+func TestRouteProofPrefersExplicitlySelectedSetupDomain(t *testing.T) {
+	cfg := testConfig()
+	cfg.Routes = append(cfg.Routes, config.Route{Type: "zapret", Tag: "zapret"})
+	cfg.Services["existing"] = config.Service{Category: "TSPU_RESTRICTED", Domains: []string{"existing.example"}, AllowedPaths: []string{"zapret"}, ProbeURLs: []config.ProbeCheck{{URL: "https://existing.example/", Required: true}}}
+	cfg.Services["setup"] = config.Service{Category: "TSPU_RESTRICTED", Domains: []string{"setup.example"}, AllowedPaths: []string{"zapret"}, SelectedRouteTag: "zapret", ProbeURLs: []config.ProbeCheck{{URL: "https://setup.example/", Required: true}}}
+
+	name, domain, _, err := selectProbeTarget(cfg, config.Route{Type: "zapret", Tag: "zapret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "setup" || domain != "setup.example" {
+		t.Fatalf("route proof targeted %s (%s), want explicit setup domain", name, domain)
+	}
+}
+
 func completeDirectProof(binding artifact.Binding, manifestHash string, checkedAt time.Time) evidence.RouteResult {
 	return evidence.RouteResult{
 		Domain: "direct.example", RouteTag: "direct", RouteType: "direct", AdapterRevision: binding.RevisionID,

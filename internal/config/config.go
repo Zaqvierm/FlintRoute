@@ -18,6 +18,7 @@ import (
 )
 
 var sha256ReferencePattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+var providerVersionPattern = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+){1,2}$`)
 var firewallMarkPattern = regexp.MustCompile(`^0x[0-9a-fA-F]{1,8}$`)
 var routeTagPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$`)
 var nftTablePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,31}$`)
@@ -103,6 +104,9 @@ type Xray struct {
 
 type Zapret struct {
 	Binary              string                    `json:"binary"`
+	ProviderSource      string                    `json:"provider_source,omitempty"`
+	ProviderVersion     string                    `json:"provider_version,omitempty"`
+	BinarySHA256        string                    `json:"binary_sha256,omitempty"`
 	InitScript          string                    `json:"init_script"`
 	ActiveConfig        string                    `json:"active_config"`
 	ActivationMode      string                    `json:"activation_mode"`
@@ -387,6 +391,13 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("managed xray requires the project-owned init script")
 	}
 	if hasZapret {
+		pinsConfigured := c.Zapret.ProviderSource != "" || c.Zapret.ProviderVersion != "" || c.Zapret.BinarySHA256 != ""
+		if pinsConfigured {
+			parsed, err := url.ParseRequestURI(c.Zapret.ProviderSource)
+			if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || strings.Contains(strings.ToLower(c.Zapret.ProviderSource), "latest") || !providerVersionPattern.MatchString(c.Zapret.ProviderVersion) || !strings.Contains(parsed.Path, c.Zapret.ProviderVersion) || !sha256ReferencePattern.MatchString(c.Zapret.BinarySHA256) {
+				return fmt.Errorf("managed zapret provider pins must use immutable HTTPS source, version and SHA-256")
+			}
+		}
 		if c.Zapret.ActivationMode != "managed" {
 			return fmt.Errorf("enabled zapret route requires managed zapret activation")
 		}

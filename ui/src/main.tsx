@@ -2,7 +2,9 @@ import { render } from 'preact';
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import {
   APIError,
+  activateZapretSetup,
   changeAction,
+  checkZapretSetup,
   classifyService,
   configureDiscovery,
   configureSmartDNS,
@@ -21,6 +23,7 @@ import {
   getSystem,
   getTraffic,
   getTopology,
+  getZapret,
   login,
   logout,
   me,
@@ -37,32 +40,21 @@ import {
 import './styles.css';
 
 const screens = [
-  'Вход',
-  'Первичная настройка',
   'Обзор',
   'Карта сети',
   'Трафик',
   'Устройства',
-  'Карточка устройства',
   'Сервисы',
   'Discovery',
-  'Группа сервиса',
-  'Политики: таблица',
-  'Политики: доска',
-  'Очередь изменений',
   'Маршруты',
   'VLESS-серверы',
   'Smart DNS',
   'Zapret',
-  'Telegram',
   'Поток решений',
   'Диагностика',
   'Безопасность',
   'Ревизии',
-  'Удалённые клиенты',
-  'Настройки',
-  'Обновление',
-  'Резервное копирование'
+  'Advanced'
 ];
 
 const unavailableOverview = {
@@ -396,7 +388,7 @@ function Content(props: any) {
       return <Policies mode="table" />;
     case 'Политики: доска':
       return <Policies mode="board" />;
-    case 'Очередь изменений':
+    case 'Advanced':
       return <Changes changes={props.changes} refresh={props.refresh} role={props.session.role} configVersion={props.configVersion} />;
     case 'Маршруты':
       return <Routes routes={props.routes} />;
@@ -405,7 +397,7 @@ function Content(props: any) {
     case 'Smart DNS':
       return <SmartDNS configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
     case 'Zapret':
-      return <RouteType title="Zapret" type="zapret" routes={props.routes} />;
+      return <Zapret routes={props.routes} configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
     case 'Telegram':
       return <Telegram />;
     case 'Поток решений':
@@ -467,10 +459,10 @@ function NetworkMap({ topology }: { topology: any; expanded?: boolean }) {
       <div class="router">{router?.label ?? 'OpenWrt router'}</div>
       <div class="groups">
         {nodes.filter((n: any) => n.type === 'group').map((n: any) => (
-          <button class="node" key={n.id}>
+          <div class="node" key={n.id}>
             <span>{n.label}</span>
             <b>{n.clients} clients</b>
-          </button>
+          </div>
         ))}
       </div>
       <div class="flow-line direct" />
@@ -494,7 +486,7 @@ function DeviceCard({ device }: { device: any }) {
         <dt>Политика</dt><dd>{device.policy}</dd>
       </dl>
       <div class="actions">
-        {['Переименовать', 'Закрепить IP', 'Профиль', 'Лимит', 'Отключить интернет', 'Диагностика'].map((a) => <button>{a}</button>)}
+        {['Переименовать', 'Закрепить IP', 'Профиль', 'Лимит', 'Отключить интернет', 'Диагностика'].map((a) => <button disabled title="Not implemented">{a}</button>)}
       </div>
     </Card>
   );
@@ -721,7 +713,7 @@ function Changes({ changes, refresh, role, configVersion }: { changes: ChangeSet
   const [error, setError] = useState('');
 
   if (role !== 'administrator') {
-    return <Generic title="Очередь изменений" text="Просмотр и создание ChangeSet доступны только администратору." />;
+    return <Generic title="Advanced" text="Developer mode доступен только администратору." />;
   }
 
   async function create() {
@@ -750,8 +742,11 @@ function Changes({ changes, refresh, role, configVersion }: { changes: ChangeSet
     await refresh();
   }
   return (
-    <Card title="Очередь изменений">
-      <div class="change-editor">
+    <Card title="Advanced · ChangeSet">
+      <p>Низкоуровневый редактор. Обычная настройка VLESS, Zapret, Smart DNS и discovery делается в их собственных экранах.</p>
+      <details>
+        <summary>Открыть Developer JSON editor</summary>
+        <div class="change-editor">
         <label><span>Название</span><input value={title} onInput={(e) => setTitle((e.target as HTMLInputElement).value)} /></label>
         <label><span>Операция</span><select value={operationType} onChange={(e) => setOperationType((e.target as HTMLSelectElement).value as ChangeOp['type'])}><option value="set">set</option><option value="remove">remove</option></select></label>
         <label><span>Путь</span><input class="mono" placeholder="/services/example/category" value={path} onInput={(e) => setPath((e.target as HTMLInputElement).value)} /></label>
@@ -759,17 +754,46 @@ function Changes({ changes, refresh, role, configVersion }: { changes: ChangeSet
         <small>Базовая версия: {configVersion || 'загрузка...'}</small>
         {error && <p class="auth-error">{error}</p>}
         <button class="primary" disabled={!configVersion} onClick={create}>Создать ChangeSet</button>
-      </div>
+        </div>
+      </details>
       {changes.map((c) => (
         <div class="change" key={c.id}>
           <b>{c.title}</b><span>{c.state}</span>
+          <ChangeDiff change={c} />
           <div class="actions">
-            {['validate', 'apply', 'confirm', 'rollback'].map((a) => <button onClick={() => act(c.id, a)}>{a}</button>)}
+            {actionsForChange(c.state).map((a) => <button onClick={() => act(c.id, a)}>{a}</button>)}
           </div>
         </div>
       ))}
     </Card>
   );
+}
+
+function actionsForChange(state: string): string[] {
+  if (state === 'draft') return ['validate'];
+  if (state === 'validated') return ['apply'];
+  if (state === 'awaiting_confirmation') return ['confirm', 'rollback'];
+  return [];
+}
+
+function ChangeDiff({ change }: { change: ChangeSet }) {
+  const diff = change.diff?.length ? change.diff : change.operations;
+  const groups = [
+    { title: 'Routing', matches: (path: string) => /^\/(routes|services|policy|overrides)/.test(path) },
+    { title: 'Firewall / data plane', matches: (path: string) => /^\/(openwrt|routes|zapret)/.test(path) },
+    { title: 'Management', matches: (path: string) => /^\/(xray\/activation_mode|zapret\/activation_mode|storage)/.test(path) }
+  ];
+  return <div class="change-diff">{groups.map((group) => {
+    const items = diff.filter((item) => group.matches(item.path));
+    if (!items.length) return null;
+    return <section key={group.title}><h4>{group.title}</h4>{items.map((item, index) => <div class="row" key={`${item.path}:${index}`}><b>{item.type}</b><span class="mono">{item.path}</span><small>{summarizeValue(item.value)}</small></div>)}</section>;
+  })}</div>;
+}
+
+function summarizeValue(value: unknown): string {
+  if (value === undefined) return 'удаление';
+  const raw = JSON.stringify(value);
+  return raw.length > 160 ? `${raw.slice(0, 157)}…` : raw;
 }
 
 function Routes({ routes }: { routes: any[] }) {
@@ -913,6 +937,7 @@ function Vless({
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [checkedServers, setCheckedServers] = useState<any[]>([]);
+  const [managedAvailable, setManagedAvailable] = useState(false);
 
   useEffect(() => {
     if (role !== 'administrator') return;
@@ -937,15 +962,38 @@ function Vless({
       setURLs(Array(5).fill(''));
       setPresent(true);
       setConfiguredCount(saved.count);
-      const result = await prepareSubscription(configVersion);
+      const result = await prepareSubscription(configVersion, false);
       if (!result.preparation.ready || result.preparation.secrets_printed) {
         throw new Error('Backend не подтвердил безопасный VLESS bundle.');
       }
       setCheckedServers(result.preparation.servers);
-      setMessage(`Проверено серверов: ${result.preparation.servers.length}. Создан ChangeSet ${result.change.id}; открой очередь изменений.`);
-      await refresh();
+      setManagedAvailable(result.activation.managed_available);
+      setMessage(`Проверено серверов: ${result.preparation.servers.length}. Маршруты пока не включены; подтверди managed Xray отдельно.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Не удалось проверить подписку.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function activateManaged() {
+    setBusy(true);
+    setMessage('Повторно проверяю подписку, TPROXY и bypass mark перед транзакцией…');
+    try {
+      const result = await prepareSubscription(configVersion, true);
+      if (!result.change) throw new Error('Backend не создал транзакцию managed Xray.');
+      let change = await changeAction(result.change.id, 'validate');
+      change = await changeAction(change.id, 'apply');
+      if (change.state !== 'awaiting_confirmation' || !change.data_plane_verified) {
+        throw new Error(`Xray apply не получил PathVerified: ${change.state}`);
+      }
+      change = await changeAction(change.id, 'confirm');
+      if (change.state !== 'committed') throw new Error(`Xray confirm: ${change.state}`);
+      setManagedAvailable(false);
+      setMessage(`Managed Xray включён и подтверждён ревизией ${change.revision_id}.`);
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Managed Xray не включён; транзакция откатилась или ждёт устройство.');
     } finally {
       setBusy(false);
     }
@@ -980,7 +1028,9 @@ function Vless({
             <button class="primary" disabled={busy || !configVersion} onClick={saveAndPrepare}>
               {busy ? 'Проверяю серверы…' : 'Сохранить и проверить'}
             </button>
-            {message && <p class={message.includes('Создан ChangeSet') ? '' : 'auth-error'}>{message}</p>}
+            {managedAvailable && <button class="primary" disabled={busy || !configVersion} onClick={activateManaged}>Явно включить managed Xray</button>}
+            {managedAvailable && <small>Одна транзакция включит TPROXY, bypass mark и проверенные VLESS routes. Без успешной проверки она не будет подтверждена.</small>}
+            {message && <p class="action-status">{message}</p>}
           </div>
         ) : <p>Импорт подписки доступен администратору.</p>}
       </Card>
@@ -1000,6 +1050,58 @@ function Vless({
 
 function RouteType({ title, type, routes }: { title: string; type: string; routes: any[] }) {
   return <Grid>{routes.filter((r) => r.type === type).map((r) => <Card title={r.tag}><RouteBadge type={type} /><pre>{JSON.stringify(r, null, 2)}</pre></Card>)}</Grid>;
+}
+
+function Zapret({ routes, configVersion, role, refresh }: { routes: any[]; configVersion: number; role: SessionInfo['role']; refresh: () => Promise<void> }) {
+  const [status, setStatus] = useState<any>(null);
+  const [sourceURL, setSourceURL] = useState('');
+  const [version, setVersion] = useState('');
+  const [sha256, setSHA256] = useState('');
+  const [testDomain, setTestDomain] = useState('example.com');
+  const [report, setReport] = useState<any>(null);
+  const [checked, setChecked] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  useEffect(() => { getZapret().then(setStatus).catch((error) => setMessage(error instanceof Error ? error.message : 'Zapret API недоступен')); }, []);
+  const input = { source_url: sourceURL.trim(), provider_version: version.trim(), binary_sha256: sha256.trim(), test_domain: testDomain.trim() };
+  async function check() {
+    setBusy(true); setChecked(false); setMessage('Проверяю nfqws, архитектуру, NFQUEUE и dry-run…');
+    try {
+      const result = await checkZapretSetup(input, configVersion);
+      setReport(result.report); setChecked(true); setMessage('Preflight пройден. Zapret ещё не включён.');
+    } catch (error) { setReport(null); setMessage(error instanceof Error ? error.message : 'Zapret preflight провален.'); }
+    finally { setBusy(false); }
+  }
+  async function activate() {
+    setBusy(true); setMessage('Повторяю preflight и применяю managed Zapret транзакцией…');
+    try {
+      const result = await activateZapretSetup(input, configVersion);
+      let change = await changeAction(result.change.id, 'validate');
+      change = await changeAction(change.id, 'apply');
+      if (change.state !== 'awaiting_confirmation' || !change.data_plane_verified) throw new Error(`Zapret apply не получил PathVerified: ${change.state}`);
+      change = await changeAction(change.id, 'confirm');
+      if (change.state !== 'committed') throw new Error(`Zapret confirm: ${change.state}`);
+      setChecked(false); setReport(result.report); setMessage(`Managed Zapret подтверждён ревизией ${change.revision_id}.`);
+      setStatus(await getZapret()); await refresh();
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Zapret не включён; транзакция откатилась или ждёт устройство.'); }
+    finally { setBusy(false); }
+  }
+  return <section class="grid">
+    <Card title="Zapret · managed setup">
+      <div class="row"><b>{status?.status ?? 'загрузка'}</b><span>{status?.provider_version || 'version не закреплена'}</span><small>{status?.provider_pinned ? 'source/version/SHA закреплены' : 'нужен preflight'}</small></div>
+      {role === 'administrator' && <div class="change-editor">
+        <label><span>Закреплённый HTTPS source</span><input class="mono" value={sourceURL} placeholder="https://…/72.12/nfqws" onInput={(event) => { setSourceURL((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
+        <label><span>Версия nfqws</span><input class="mono" value={version} placeholder="72.12" onInput={(event) => { setVersion((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
+        <label><span>SHA-256 бинарника</span><input class="mono" value={sha256} placeholder="sha256:…" onInput={(event) => { setSHA256((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
+        <label><span>Тестовый домен</span><input class="mono" value={testDomain} onInput={(event) => { setTestDomain((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
+        <button class="primary" disabled={busy || !configVersion} onClick={check}>{busy ? 'Проверяю…' : 'Проверить возможности'}</button>
+        <button class="primary" disabled={busy || !checked || !configVersion} onClick={activate}>Явно включить managed Zapret</button>
+        {message && <p class="action-status">{message}</p>}
+      </div>}
+    </Card>
+    {report && <Card title="Результат preflight"><div class="row"><b>{report.dry_run ? 'dry-run OK' : 'dry-run FAIL'}</b><span>{report.architecture}</span><small>NFQUEUE: {report.kernel_support}</small></div><div class="row"><b>{report.provider_version}</b><span>{report.test_domain}</span><small>{report.source_pinned ? 'immutable source pinned' : 'source не закреплён'}</small></div></Card>}
+    <RouteType title="Zapret route" type="zapret" routes={routes} />
+  </section>;
 }
 
 function SmartDNS({

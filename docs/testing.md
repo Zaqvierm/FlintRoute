@@ -118,7 +118,14 @@ Verified: every Go package passed.
 - `TestBackupsEndpointReadsVerifiedStoreMetadata`, `TestBackupMetadataSurvivesRestartAndDetectsCorruption`
 - `TestProbesEndpointReadsPersistedResultsAndRedactsIPs`, `TestListProbeResultsReturnsNewestFirstAndHonorsLimit`
 - `TestRouteHealthPersistsAcrossRestart`, `TestServerHealthCycleCallsInjectedEnginePersistsAndExposesStatus`
-- `TestXraySubscriptionPrepareCreatesValidatableChangeSet`, `TestXraySubscriptionPrepareFailureCreatesNoChangeSet`
+- `TestXraySubscriptionPrepareOffersManagedActivationWithoutChangeSet`,
+  `TestXrayManagedActivationBindsModeBundleAndRoutesInOneChangeSet` and
+  `TestXraySubscriptionPrepareFailureCreatesNoChangeSet`;
+- `TestZapretSetupCheckDoesNotCreateChangeSet`,
+  `TestZapretSetupActivationCreatesOnePinnedManagedChangeSet` and
+  `TestZapretSetupFailureCreatesNoChangeSet`;
+- `TestLocalSetupCheckerVerifiesPinnedBinaryDryRunAndNFQueue` and
+  `TestLocalSetupCheckerRejectsMutableSourceAndNFQueueFailure`;
 - `TestProductionAdaptiveCycleCollectsActiveAndCandidateEvidence`, `TestAdaptiveNetworkFingerprintInvalidatesOldRanking`
 - `TestEventBrokerFailsWhenEntropyIsUnavailable`, `TestRequestIDFailsClosedWhenEntropyIsUnavailable`
 - `TestCreateChangeSetRejectsEmptyOperations`, `TestWildcardAPIListenerFailsClosed`

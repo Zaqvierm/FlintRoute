@@ -1301,6 +1301,7 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 	var provider platform.Provider = platform.OpenWrtProvider{}
 	var productionAdapter adapter.Interface
 	var subscriptionPreparer api.SubscriptionPreparer
+	var zapretSetupChecker zapret.SetupChecker
 	if development {
 		provider = platform.DevelopmentMockProvider{}
 		productionAdapter = adapter.NewFilesystem(cfg)
@@ -1314,8 +1315,9 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 				Runner: runner, Parallelism: cfg.Policy.ParallelServerChecks, CheckAttempts: cfg.Policy.FailAfterConsecutiveErrors,
 			}
 		}
+		zapretSetupChecker = zapret.LocalSetupChecker{}
 	}
-	app, err := api.NewServerWithOptions(cfg, api.Options{Provider: provider, ProductionAdapter: productionAdapter, SubscriptionPreparer: subscriptionPreparer, Development: development})
+	app, err := api.NewServerWithOptions(cfg, api.Options{Provider: provider, ProductionAdapter: productionAdapter, SubscriptionPreparer: subscriptionPreparer, ZapretSetupChecker: zapretSetupChecker, Development: development})
 	if err != nil {
 		return err
 	}

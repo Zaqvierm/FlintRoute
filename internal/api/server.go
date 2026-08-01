@@ -37,6 +37,7 @@ import (
 	"router-policy/internal/tspu"
 	"router-policy/internal/vpnsub"
 	"router-policy/internal/web"
+	"router-policy/internal/zapret"
 )
 
 var secureRandomHex = secureid.Hex
@@ -47,6 +48,7 @@ type Options struct {
 	State                  *state.Store
 	ProductionAdapter      adapter.Interface
 	SubscriptionPreparer   SubscriptionPreparer
+	ZapretSetupChecker     zapret.SetupChecker
 	ProbeEngineFactory     func(*config.Config) health.ProbeEngine
 	TSPURefresh            TSPURefreshFunc
 	DNSObservationPath     string
@@ -78,6 +80,7 @@ type Server struct {
 	store                  *state.Store
 	adapter                adapter.Interface
 	subscriptionPreparer   SubscriptionPreparer
+	zapretSetupChecker     zapret.SetupChecker
 	probeEngineFactory     func(*config.Config) health.ProbeEngine
 	tspuRefresh            TSPURefreshFunc
 	tspuDelay              tspuDelayFunc
@@ -216,6 +219,7 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		store:                  stateStore,
 		adapter:                opts.ProductionAdapter,
 		subscriptionPreparer:   opts.SubscriptionPreparer,
+		zapretSetupChecker:     opts.ZapretSetupChecker,
 		probeEngineFactory:     probeEngineFactory,
 		tspuRefresh:            tspuRefresh,
 		tspuDelay:              randomTSPUDelay,
@@ -705,6 +709,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/smart-dns", s.requireRole(auth.RoleViewer, s.handleSmartDNS))
 	s.mux.HandleFunc("/api/v1/smart-dns/configure", s.requireRole(auth.RoleAdministrator, s.handleSmartDNSConfigure))
 	s.mux.HandleFunc("/api/v1/zapret", s.requireRole(auth.RoleViewer, s.handleZapret))
+	s.mux.HandleFunc("/api/v1/zapret/setup/check", s.requireRole(auth.RoleAdministrator, s.handleZapretSetupCheck))
+	s.mux.HandleFunc("/api/v1/zapret/setup/activate", s.requireRole(auth.RoleAdministrator, s.handleZapretSetupActivate))
 	s.mux.HandleFunc("/api/v1/zapret/adaptive/runtime", s.requireRole(auth.RoleViewer, s.handleAdaptiveZapretRuntime))
 	s.mux.HandleFunc("/api/v1/zapret/adaptive/evaluate", s.requireRole(auth.RoleAdministrator, s.handleAdaptiveZapretEvaluate))
 	s.mux.HandleFunc("/api/v1/zapret/adaptive/state", s.requireRole(auth.RoleAdministrator, s.handleAdaptiveZapretState))
@@ -1285,7 +1291,14 @@ func normalizeSmartDNSEndpoint(raw string) (string, error) {
 	return net.JoinHostPort(ip.Unmap().String(), strconv.FormatUint(parsedPort, 10)), nil
 }
 func (s *Server) handleZapret(w http.ResponseWriter, r *http.Request) {
-	writeData(w, r, map[string]any{"status": "requires-openwrt-diagnostics", "route": filterRoutes(s.currentConfig(), "zapret")})
+	cfg := s.currentConfig()
+	writeData(w, r, map[string]any{
+		"status":           zapretSetupStatus(cfg),
+		"routes":           filterRoutes(cfg, "zapret"),
+		"activation_mode":  cfg.Zapret.ActivationMode,
+		"provider_pinned":  cfg.Zapret.ProviderSource != "" && cfg.Zapret.ProviderVersion != "" && cfg.Zapret.BinarySHA256 != "",
+		"provider_version": cfg.Zapret.ProviderVersion,
+	})
 }
 func (s *Server) handleTelegram(w http.ResponseWriter, r *http.Request) {
 	writeData(w, r, map[string]any{

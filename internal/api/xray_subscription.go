@@ -19,7 +19,8 @@ import (
 )
 
 type xraySubscriptionPrepareRequest struct {
-	BaseVersion int64 `json:"base_version"`
+	BaseVersion     int64 `json:"base_version"`
+	ActivateManaged bool  `json:"activate_managed"`
 }
 
 type xraySubscriptionSecretRequest struct {
@@ -250,12 +251,33 @@ func (s *Server) handleXraySubscriptionPrepare(w http.ResponseWriter, r *http.Re
 		writeError(w, r, http.StatusUnprocessableEntity, "xray_routes_invalid", err.Error())
 		return
 	}
+	response := map[string]any{
+		"preparation": xraySubscriptionPreparation{
+			BundleHash: prepared.BundleHash, SubscriptionHash: prepared.SubscriptionHash, SubscriptionBytes: prepared.SubscriptionBytes,
+			SelectedTag: prepared.SelectedTag, Checks: prepared.Checks, Servers: prepared.Servers, Routes: prepared.Routes,
+			Ready: prepared.Ready, SecretsPrinted: prepared.SecretsPrinted,
+		},
+		"activation": map[string]any{
+			"current_mode":                   active.Xray.ActivationMode,
+			"managed_available":              true,
+			"explicit_confirmation_required": true,
+			"tproxy_mode":                    "tproxy",
+			"tproxy_port":                    active.Xray.TransparentPort,
+			"bypass_mark":                    active.OpenWrt.XrayBypassMark,
+		},
+	}
+	if !request.ActivateManaged {
+		s.publishEvent(Event{Type: "xray.subscription_prepared", Severity: "info", ReasonCode: "managed_activation_offered", Details: map[string]any{"bundle_hash": prepared.BundleHash, "selected_tag": prepared.SelectedTag}})
+		writeData(w, r, response)
+		return
+	}
 	operations := []ChangeOp{
+		{Type: "set", Path: "/xray/activation_mode", Value: "managed"},
 		{Type: "set", Path: "/xray/outbound_bundle_sha256", Value: prepared.BundleHash},
 		{Type: "set", Path: "/routes", Value: routes},
 	}
 	session := currentSession(r)
-	change, err := s.createDraftChange("VPN subscription refresh", "Prepared and verified VLESS outbound bundle", request.BaseVersion, operations, session.User)
+	change, err := s.createDraftChange("Activate managed Xray", "Bind verified VLESS routes and transparent proxy activation in one transaction", request.BaseVersion, operations, session.User)
 	if err != nil {
 		if errors.Is(err, errBaseVersionConflict) {
 			writeError(w, r, http.StatusConflict, "base_version_conflict", "active revision changed while the subscription was being checked")
@@ -264,15 +286,9 @@ func (s *Server) handleXraySubscriptionPrepare(w http.ResponseWriter, r *http.Re
 		writeError(w, r, http.StatusInternalServerError, "state_store_failed", err.Error())
 		return
 	}
-	s.publishEvent(Event{Type: "xray.subscription_prepared", Severity: "info", ReasonCode: "transaction_required", Details: map[string]any{"change_id": change.ID, "bundle_hash": prepared.BundleHash, "selected_tag": prepared.SelectedTag}})
-	writeData(w, r, map[string]any{
-		"change": change,
-		"preparation": xraySubscriptionPreparation{
-			BundleHash: prepared.BundleHash, SubscriptionHash: prepared.SubscriptionHash, SubscriptionBytes: prepared.SubscriptionBytes,
-			SelectedTag: prepared.SelectedTag, Checks: prepared.Checks, Servers: prepared.Servers, Routes: prepared.Routes,
-			Ready: prepared.Ready, SecretsPrinted: prepared.SecretsPrinted,
-		},
-	})
+	response["change"] = change
+	s.publishEvent(Event{Type: "xray.managed_activation_prepared", Severity: "info", ReasonCode: "transaction_required", Details: map[string]any{"change_id": change.ID, "bundle_hash": prepared.BundleHash, "selected_tag": prepared.SelectedTag}})
+	writeData(w, r, response)
 }
 
 func routesForPreparedBundle(active *config.Config, prepared vpnsub.PreparedBundle) ([]config.Route, error) {
