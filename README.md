@@ -39,7 +39,8 @@ probe_route(domain, service, route)
 - **TSPU cache** — multi-source, eTLD+1/wildcard matching, ETag/drop-ratio, SHA-256
 - **GeoIP** — MaxMind MMDB, двухсорсный consensus
 - **Dynamic discovery** — перехваченные DNS-запросы попадают в bounded runtime
-  log; домены классифицируются по route evidence, а не по встроенному списку
+  log; домены классифицируются по route evidence, а не по встроенному списку.
+  Чистая установка начинает в `observe_only`: наблюдает, но не меняет правила
 
 ## Статус
 
@@ -86,8 +87,10 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
 ### Реализовано, но требует проверки на железе
 
 - автоматическое обнаружение доменов без заводского каталога сервисов;
+- режимы discovery `observe_only`, `suggest`, `auto_apply_verified` и `locked`;
 - ручные opt-in правила и редактируемый порядок fallback для найденных доменов;
-- настройка Smart DNS и пяти VPN-подписок через Web UI;
+- настройка Smart DNS с UDP/TCP DNS и HTTP/TLS preflight и пяти VPN-подписок
+  через Web UI;
 - импорт top-3 `blockcheck`-кандидатов, привязанных к фактически проверенному
   домену и fingerprint сети;
 - расширенная IPv6-матрица на реальных LAN-клиентах;
@@ -108,6 +111,11 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
   заменяет clean-install pass на конкретном устройстве;
 - Telegram notifications и `tg_ws_proxy` пока не реализованы. Это отдельная
   подсистема и не блокер Direct/Zapret/Smart DNS/VLESS/DROP.
+
+Baseline revision не захватывает обычный трафик. Пока домен не получил явное
+правило, он остаётся `unclassified` и идёт через системный default route
+OpenWrt. `FlintRoute-managed Direct` появляется только для домена с применённым
+Direct-правилом; это не то же самое, что системный маршрут по умолчанию.
 
 ### Запланировано
 

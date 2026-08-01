@@ -646,7 +646,7 @@ func testAPIConfig(t *testing.T) *config.Config {
 		},
 		Routes: []config.Route{
 			{Type: "direct", Tag: "direct"},
-			{Type: "smart_dns", Tag: "smart", DNSServer: "203.0.113.53:53", ConnectToResolvedIP: true},
+			{Type: "smart_dns", Tag: "smart", DNSServer: "1.1.1.1:53", ConnectToResolvedIP: true},
 			{Type: "drop", Tag: "drop"},
 		},
 		Services: map[string]config.Service{

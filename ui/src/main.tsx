@@ -4,10 +4,12 @@ import {
   APIError,
   changeAction,
   classifyService,
+  configureDiscovery,
   configureSmartDNS,
   createChange,
   getChanges,
   getDevices,
+  getDiscovery,
   getEvents,
   getOverview,
   getRevisions,
@@ -27,6 +29,7 @@ import {
   setupAdmin,
   type ChangeSet,
   type ChangeOp,
+  type DiscoveryStatus,
   type EventItem,
   type SessionInfo,
   type TrafficSnapshot
@@ -42,6 +45,7 @@ const screens = [
   'Устройства',
   'Карточка устройства',
   'Сервисы',
+  'Discovery',
   'Группа сервиса',
   'Политики: таблица',
   'Политики: доска',
@@ -89,6 +93,7 @@ function App() {
   const [devices, setDevices] = useState<any[]>([]);
   const [services, setServices] = useState<any[]>([]);
   const [routes, setRoutes] = useState<any[]>([]);
+  const [discovery, setDiscovery] = useState<DiscoveryStatus | null>(null);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [changes, setChanges] = useState<ChangeSet[]>([]);
   const [security, setSecurity] = useState<any>(null);
@@ -98,7 +103,7 @@ function App() {
 
   async function refresh() {
     try {
-      const [nextOverview, nextTopology, nextDevices, nextServices, nextRoutes, nextTraffic, nextEvents, nextSystem, nextRevisions] = await Promise.all([
+      const [nextOverview, nextTopology, nextDevices, nextServices, nextRoutes, nextTraffic, nextEvents, nextSystem, nextRevisions, nextDiscovery] = await Promise.all([
         getOverview(),
         getTopology(),
         getDevices(),
@@ -107,7 +112,8 @@ function App() {
         getTraffic(),
         getEvents(),
         getSystem(),
-        getRevisions()
+        getRevisions(),
+        getDiscovery()
       ]);
       setOverview(nextOverview);
       setTopology(nextTopology);
@@ -118,6 +124,7 @@ function App() {
       setEvents(nextEvents);
       setSystem(nextSystem);
       setConfigVersion(nextRevisions.config_version);
+      setDiscovery(nextDiscovery);
 
       const optionalErrors: string[] = [];
       if (session?.role === 'administrator') {
@@ -263,7 +270,7 @@ function App() {
       <main>
         <SessionBar session={session} apiError={apiError} onLogout={handleLogout} />
         <TopBar overview={overview} />
-        <Content screen={screen} session={session} configVersion={configVersion} overview={overview} topology={topology} devices={devices} services={services} routes={routes} traffic={traffic} events={events} changes={changes} security={security} system={system} refresh={refresh} />
+        <Content screen={screen} session={session} configVersion={configVersion} overview={overview} topology={topology} devices={devices} services={services} discovery={discovery} routes={routes} traffic={traffic} events={events} changes={changes} security={security} system={system} refresh={refresh} />
       </main>
     </div>
   );
@@ -381,6 +388,8 @@ function Content(props: any) {
       return <DeviceCard device={props.devices[0]} />;
     case 'Сервисы':
       return <Services services={props.services} configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
+    case 'Discovery':
+      return <Discovery data={props.discovery} configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
     case 'Группа сервиса':
       return <ServiceGroup service={props.services[0]} />;
     case 'Политики: таблица':
@@ -494,20 +503,17 @@ function DeviceCard({ device }: { device: any }) {
 const serviceColumns = [
   { category: 'GEO_LOCKED', title: 'GEO · VPN', hint: 'Smart DNS → VLESS → блокировка' },
   { category: 'TSPU_RESTRICTED', title: 'TSPU', hint: 'Zapret → Smart DNS → VLESS → Direct' },
-  { category: 'DIRECT_PREFERRED', title: 'Direct', hint: 'Прямое подключение' }
+  { category: 'DIRECT_ONLY', title: 'Direct', hint: 'Только прямое подключение под управлением FlintRoute' },
+  { category: 'BLOCKED', title: 'Drop', hint: 'DNS NXDOMAIN и блокировка forwarding' }
 ];
 
 const serviceRoutePaths = ['direct', 'zapret', 'smart_dns', 'vless', 'drop'];
-const staticServiceTemplates = [
-  { title: 'Яндекс напрямую', domain: 'yandex.ru', category: 'DIRECT_PREFERRED' },
-  { title: 'Госуслуги напрямую', domain: 'gosuslugi.ru', category: 'DIRECT_PREFERRED' },
-  { title: 'ChatGPT через GEO', domain: 'chatgpt.com', category: 'GEO_LOCKED' }
-];
 
 function defaultServicePaths(category: string): string[] {
   if (category === 'GEO_LOCKED') return ['smart_dns', 'vless', 'drop'];
   if (category === 'TSPU_RESTRICTED') return ['zapret', 'smart_dns', 'vless', 'direct', 'drop'];
-  return ['direct', 'zapret', 'smart_dns', 'vless', 'drop'];
+  if (category === 'BLOCKED') return ['drop'];
+  return ['direct'];
 }
 
 function Services({
@@ -566,19 +572,11 @@ function Services({
   }
 
   function editRule(service?: any) {
-    const category = serviceColumnFor(service?.category ?? 'DIRECT_PREFERRED');
+    const category = serviceColumnFor(service?.category ?? 'DIRECT_ONLY');
     setEditor({
       domain: service?.domain ?? service?.domains?.[0] ?? '',
       category,
       paths: [...(service?.allowed_paths?.length ? service.allowed_paths : defaultServicePaths(category))]
-    });
-  }
-
-  function selectTemplate(template: (typeof staticServiceTemplates)[number]) {
-    setEditor({
-      domain: template.domain,
-      category: template.category,
-      paths: defaultServicePaths(template.category)
     });
   }
 
@@ -595,14 +593,11 @@ function Services({
     <section>
       <div class="service-toolbar">
         <div>
-          <b>Статические правила</b>
-          <span>Не включаются автоматически. Выбери шаблон или создай своё.</span>
+          <b>Проверенные правила</b>
+          <span>Discovery наблюдает домены сам. Здесь можно вручную закрепить результат.</span>
         </div>
         <div class="actions">
           <button class="primary" disabled={role !== 'administrator'} onClick={() => editRule()}>+ Новое правило</button>
-          {staticServiceTemplates.map((template) => (
-            <button disabled={role !== 'administrator'} onClick={() => selectTemplate(template)}>{template.title}</button>
-          ))}
         </div>
       </div>
       {editor && (
@@ -682,7 +677,8 @@ function Services({
 function serviceColumnFor(category: string): string {
   if (category === 'GEO_LOCKED') return 'GEO_LOCKED';
   if (category === 'TSPU_RESTRICTED') return 'TSPU_RESTRICTED';
-  return 'DIRECT_PREFERRED';
+  if (category === 'BLOCKED') return 'BLOCKED';
+  return 'DIRECT_ONLY';
 }
 
 function ServiceGroup({
@@ -777,7 +773,74 @@ function Changes({ changes, refresh, role, configVersion }: { changes: ChangeSet
 }
 
 function Routes({ routes }: { routes: any[] }) {
-  return <Grid>{routes.map((r) => <Card title={r.tag}><RouteBadge type={r.type} /><pre>{JSON.stringify(r, null, 2)}</pre></Card>)}</Grid>;
+  const titles: Record<string, string> = {
+    system_default: 'Системный default route',
+    direct: 'FlintRoute Direct',
+    unclassified: 'Неклассифицированный трафик',
+    smart_dns: 'Smart DNS · conditional DNS'
+  };
+  return <Grid>{routes.map((route) => (
+    <Card title={titles[route.type] ?? route.tag} key={`${route.type}:${route.tag}`}>
+      <RouteBadge type={route.type} />
+      <div class="row"><b>{route.status || (route.disabled ? 'выключен' : 'настроен')}</b><span>{route.owner}</span><small>{route.managed ? 'управляет FlintRoute' : 'не управляется FlintRoute'}</small></div>
+      <p>{route.scope}</p>
+      {route.effective_path && <small>Фактический путь: {route.effective_path}</small>}
+      {route.type === 'direct' && <div class="row"><b>{route.managed_domains ?? 0}</b><span>доменов под managed Direct</span></div>}
+      {route.type === 'smart_dns' && <small>Это выбор DNS-ответа для домена, а не VPN и не туннель.</small>}
+    </Card>
+  ))}</Grid>;
+}
+
+function Discovery({ data, configVersion, role, refresh }: { data: DiscoveryStatus | null; configVersion: number; role: SessionInfo['role']; refresh: () => Promise<void> }) {
+  const [mode, setMode] = useState<DiscoveryStatus['mode']>(data?.mode ?? 'observe_only');
+  const [hourly, setHourly] = useState(data?.max_new_rules_per_hour ?? 4);
+  const [rollbacks, setRollbacks] = useState(data?.max_consecutive_rollbacks ?? 3);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  useEffect(() => {
+    if (!data) return;
+    setMode(data.mode);
+    setHourly(data.max_new_rules_per_hour);
+    setRollbacks(data.max_consecutive_rollbacks);
+  }, [data?.mode, data?.max_new_rules_per_hour, data?.max_consecutive_rollbacks]);
+  async function save(resetFailures = false) {
+    setBusy(true);
+    setMessage('Создаю и применяю настройку discovery…');
+    try {
+      const result = await configureDiscovery(mode, hourly, rollbacks, configVersion, resetFailures);
+      let change = await changeAction(result.change.id, 'validate');
+      change = await changeAction(change.id, 'apply');
+      if (change.state !== 'awaiting_confirmation') throw new Error(`Discovery apply: ${change.state}`);
+      await changeAction(change.id, 'confirm');
+      setMessage('Режим discovery применён.');
+      await refresh();
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Настройка discovery не применена.');
+    } finally {
+      setBusy(false);
+    }
+  }
+  if (!data) return <Generic title="Discovery" text="Загружаю состояние…" />;
+  return <section class="grid">
+    <Card title="Режим discovery">
+      <div class="row"><b>{data.mode}</b><span>{data.paused ? `остановлен: ${data.paused_reason}` : 'активен'}</span><small>{data.applied_last_hour} правил за последний час</small></div>
+      <p>observe_only только журналирует; suggest добавляет предложения; auto_apply_verified применяет лишь PathVerified; locked не запускает проверки.</p>
+      {role === 'administrator' && <div class="smart-dns-editor">
+        <label><span>Режим</span><select value={mode} onChange={(event) => setMode((event.target as HTMLSelectElement).value as DiscoveryStatus['mode'])}>
+          <option value="observe_only">observe_only</option><option value="suggest">suggest</option><option value="auto_apply_verified">auto_apply_verified</option><option value="locked">locked</option>
+        </select></label>
+        <label><span>Новых правил в час</span><input type="number" min="1" max="1000" value={hourly} onInput={(event) => setHourly(Number((event.target as HTMLInputElement).value))} /></label>
+        <label><span>Rollback до остановки</span><input type="number" min="1" max="100" value={rollbacks} onInput={(event) => setRollbacks(Number((event.target as HTMLInputElement).value))} /></label>
+        <button class="primary" disabled={busy || !configVersion} onClick={() => save(false)}>{busy ? 'Применяю…' : 'Применить режим'}</button>
+        {data.paused && <button disabled={busy || !configVersion} onClick={() => save(true)}>Сбросить circuit breaker</button>}
+        {message && <p class="action-status">{message}</p>}
+      </div>}
+    </Card>
+    <Card title="Предложения">
+      {(data.suggestions ?? []).map((item: any) => <div class="row" key={item.domain}><b>{item.domain}</b><span>{item.route_type} · {item.route}</span><small>{item.path_verified ? 'PathVerified' : 'не подтверждено'} · {item.reason}</small></div>)}
+      {!data.suggestions?.length && <p class="empty-state">Предложений пока нет</p>}
+    </Card>
+  </section>;
 }
 
 type TrafficView = Omit<TrafficSnapshot, 'interfaces'> & { interfaces: Array<TrafficSnapshot['interfaces'][number] & { rx_bps?: number; tx_bps?: number }> };
@@ -950,27 +1013,34 @@ function SmartDNS({
 }) {
   const [status, setStatus] = useState<any>(null);
   const [error, setError] = useState('');
-  const [endpoints, setEndpoints] = useState(['', '']);
+  const [resolvers, setResolvers] = useState([{ ip: '', port: 53 }, { ip: '', port: 53 }]);
+  const [testDomain, setTestDomain] = useState('example.com');
+  const [validations, setValidations] = useState<any[]>([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   useEffect(() => {
     getSmartDNS().then(setStatus).catch((reason) => setError(reason instanceof Error ? reason.message : 'Smart DNS недоступен'));
   }, []);
   async function save() {
-    const values = endpoints.map((value) => value.trim()).filter(Boolean);
+    const values = resolvers.filter((value) => value.ip.trim()).map((value) => ({ ip: value.ip.trim(), port: Number(value.port) }));
     if (!values.length) {
-      setMessage('Укажи хотя бы один публичный DNS endpoint в формате IP:порт.');
+      setMessage('Укажи хотя бы один публичный IP резолвера и порт.');
+      return;
+    }
+    if (!testDomain.trim()) {
+      setMessage('Укажи домен для DNS и HTTP/TLS проверки.');
       return;
     }
     setBusy(true);
     setMessage('Создаю проверяемое изменение Smart DNS…');
     try {
-      const result = await configureSmartDNS(values, configVersion);
+      const result = await configureSmartDNS(values, testDomain.trim(), configVersion);
+      setValidations(result.validations ?? []);
       let change = await changeAction(result.change.id, 'validate');
       change = await changeAction(change.id, 'apply');
       if (change.state !== 'awaiting_confirmation') throw new Error(`Smart DNS apply завершился состоянием ${change.state}`);
       change = await changeAction(change.id, 'confirm');
-      setEndpoints(['', '']);
+      setResolvers([{ ip: '', port: 53 }, { ip: '', port: 53 }]);
       setMessage(`Smart DNS проверен и применён: ${result.endpoint_count}.`);
       setStatus(await getSmartDNS());
       await refresh();
@@ -990,21 +1060,15 @@ function SmartDNS({
         <div class="chips">{(status.success_contract ?? []).map((item: string) => <span class="chip">{item}</span>)}</div>
         {role === 'administrator' && (
           <div class="smart-dns-editor">
-            {endpoints.map((endpoint, index) => (
-              <label key={index}>
-                <span>Резолвер #{index + 1}</span>
-                <input
-                  class="mono"
-                  value={endpoint}
-                  placeholder="1.1.1.1:53"
-                  onInput={(event) => {
-                    const next = [...endpoints];
-                    next[index] = (event.target as HTMLInputElement).value;
-                    setEndpoints(next);
-                  }}
-                />
-              </label>
-            ))}
+            {resolvers.map((resolver, index) => <div class="row" key={index}>
+              <label><span>IP резолвера #{index + 1}</span><input class="mono" value={resolver.ip} placeholder="1.1.1.1" onInput={(event) => {
+                const next = [...resolvers]; next[index] = { ...resolver, ip: (event.target as HTMLInputElement).value }; setResolvers(next);
+              }} /></label>
+              <label><span>Порт</span><input type="number" min="1" max="65535" value={resolver.port} onInput={(event) => {
+                const next = [...resolvers]; next[index] = { ...resolver, port: Number((event.target as HTMLInputElement).value) }; setResolvers(next);
+              }} /></label>
+            </div>)}
+            <label><span>Домен для DNS + HTTP/TLS</span><input class="mono" value={testDomain} placeholder="example.com" onInput={(event) => setTestDomain((event.target as HTMLInputElement).value)} /></label>
             <button class="primary" disabled={busy || !configVersion} onClick={save}>
               {busy ? 'Проверяю…' : 'Проверить и применить'}
             </button>
@@ -1012,10 +1076,16 @@ function SmartDNS({
           </div>
         )}
       </Card>
+      {validations.map((validation: any) => <Card title={`Проверка ${validation.endpoint}`} key={validation.endpoint}>
+        <div class="row"><b>{validation.udp?.safe ? 'UDP OK' : 'UDP FAIL'}</b><b>{validation.tcp?.safe ? 'TCP OK' : 'TCP FAIL'}</b><b>{validation.tls_ok ? 'TLS OK' : 'TLS FAIL'}</b><b>{validation.http_ok ? `HTTP ${validation.http_status}` : 'HTTP FAIL'}</b></div>
+        <div class="chips">{(validation.addresses ?? []).map((address: string) => <span class="chip mono">{address}</span>)}</div>
+        <small>Соединение: {validation.connected_ip || 'не установлено'} · Host/SNI: {validation.domain}</small>
+      </Card>)}
       {(status.routes ?? []).map((route: any) => (
         <Card title={route.tag} key={route.tag}>
           <div class="row"><RouteBadge type="smart_dns" /><b>{route.status || 'не проверен'}</b><span>{route.resolver_configured ? 'endpoint задан' : 'нужен endpoint'}</span></div>
-          <small>{route.connect_to_resolved_ip ? 'HTTP/TLS проверяется по адресу из ответа DNS' : 'Небезопасно: проверка адреса отключена'}</small>
+          <small>{route.connect_to_resolved_ip ? 'HTTP/TLS проверяется по адресу из ответа DNS' : 'Маршрут выключен: resolver ещё не проверен'}</small>
+          <small>Conditional DNS, не VPN.</small>
         </Card>
       ))}
       <Card title="Порядок fallback">

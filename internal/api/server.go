@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"path/filepath"
 	"sort"
@@ -25,6 +26,7 @@ import (
 	"router-policy/internal/domaincache"
 	"router-policy/internal/health"
 	"router-policy/internal/managementproof"
+	"router-policy/internal/netpolicy"
 	"router-policy/internal/planner"
 	"router-policy/internal/platform"
 	"router-policy/internal/probe"
@@ -51,6 +53,9 @@ type Options struct {
 	Development            bool
 	ManagementProofs       *managementproof.Manager
 	RequireManagementProof bool
+	SmartDNSValidator      SmartDNSValidator
+	DiscoveryNow           func() time.Time
+	DomainChecker          DomainChecker
 }
 
 type SubscriptionPreparer interface {
@@ -98,6 +103,10 @@ type Server struct {
 	adaptiveZapret         *adaptiveRuntime
 	managementProofs       *managementproof.Manager
 	requireManagementProof bool
+	smartDNSValidator      SmartDNSValidator
+	discoveryNow           func() time.Time
+	domainChecker          DomainChecker
+	discoverySuggestionMap map[string]discoverySuggestion
 	schedulerOnce          sync.Once
 	schedulerCancel        context.CancelFunc
 	schedulerWG            sync.WaitGroup
@@ -120,6 +129,18 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		if err != nil {
 			return nil, fmt.Errorf("initialize management proof service: %w", err)
 		}
+	}
+	smartDNSValidator := opts.SmartDNSValidator
+	if smartDNSValidator == nil {
+		smartDNSValidator = probe.ValidateSmartDNSCandidate
+	}
+	discoveryNow := opts.DiscoveryNow
+	if discoveryNow == nil {
+		discoveryNow = func() time.Time { return time.Now().UTC() }
+	}
+	domainChecker := opts.DomainChecker
+	if domainChecker == nil {
+		domainChecker = planner.CheckDomain
 	}
 	authStore := opts.Auth
 	if authStore == nil {
@@ -213,6 +234,10 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		hideSensitive:          true,
 		managementProofs:       managementProofs,
 		requireManagementProof: requireManagementProof,
+		smartDNSValidator:      smartDNSValidator,
+		discoveryNow:           discoveryNow,
+		domainChecker:          domainChecker,
+		discoverySuggestionMap: map[string]discoverySuggestion{},
 	}
 	s.adaptiveZapret, err = buildAdaptiveRuntime(activeConfig, stateStore)
 	if err != nil {
@@ -327,6 +352,11 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 	if active == nil || active.ServiceForDomain(observation.Domain) != "" {
 		return
 	}
+	mode := active.Policy.EffectiveDiscoveryMode()
+	if mode == "locked" {
+		s.publishEvent(Event{Type: "domain.discovery", Severity: "info", ReasonCode: "discovery_locked", Details: map[string]any{"domain": observation.Domain, "query_type": observation.QueryType, "mode": mode}})
+		return
+	}
 	s.mu.Lock()
 	revision := s.activeRevision
 	s.mu.Unlock()
@@ -345,7 +375,7 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, time.Duration(maxInt(active.Policy.MaxProbeSeconds, 15))*time.Second)
 	defer cancel()
-	check, err := planner.CheckDomain(checkCtx, active, observation.Domain, "", planner.Options{
+	check, err := s.domainChecker(checkCtx, active, observation.Domain, "", planner.Options{
 		TSPUResult: match, RouteProber: s.probeEngineFactory(active), HealthTracker: s.healthTracker,
 		DecisionCache: s.domainDecisions, ActiveRevision: revision,
 	})
@@ -355,41 +385,55 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 	}
 	details := map[string]any{
 		"domain": check.Domain, "category": check.Category, "status": check.Status,
-		"confidence": check.Confidence, "tspu_status": check.TSPUStatus, "query_type": observation.QueryType,
+		"confidence": check.Confidence, "tspu_status": check.TSPUStatus, "query_type": observation.QueryType, "mode": mode,
 	}
 	if check.Selected != nil {
 		details["route"] = check.Selected.Route
 		details["route_type"] = check.Selected.RouteType
+		details["path_verified"] = check.Selected.PathVerified
+		details["route_reason"] = check.Selected.ReasonCode
 	}
-	s.publishEvent(Event{Type: "route.decision", Severity: "info", ReasonCode: "automatic_domain_classified", Details: details})
-	if check.Selected == nil || check.Selected.RouteType == "direct" || check.Selected.RouteType == "drop" {
+	s.publishEvent(Event{Type: "route.decision", Severity: "info", ReasonCode: "domain_observed_and_classified", Details: details})
+	if mode == "observe_only" {
 		return
 	}
-	if err := s.commitAutomaticDomain(ctx, check); err != nil {
-		s.publishEvent(Event{Type: "domain.discovery", Severity: "warning", ReasonCode: "automatic_policy_commit_failed", Details: map[string]any{"domain": check.Domain, "error": err.Error()}})
+	s.saveDiscoverySuggestion(observation, check)
+	if mode == "suggest" {
+		return
+	}
+	if err := s.discoveryAutoAllowed(active, check); err != nil {
+		s.publishEvent(Event{Type: "domain.discovery", Severity: "warning", ReasonCode: "automatic_policy_blocked", Details: map[string]any{"domain": check.Domain, "reason": err.Error(), "mode": mode}})
+		return
+	}
+	result := s.commitAutomaticDomain(ctx, check)
+	s.recordDiscoveryAutoResult(result)
+	if !result.Applied {
+		s.publishEvent(Event{Type: "domain.discovery", Severity: "warning", ReasonCode: "automatic_policy_commit_failed", Details: map[string]any{"domain": check.Domain, "error": result.Reason, "rolled_back": result.RolledBack}})
 	}
 }
 
-func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.DomainCheck) error {
+func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.DomainCheck) automaticCommitResult {
 	service, id, ok := automaticServiceForDecision(check)
 	if !ok {
-		return nil
+		return automaticCommitResult{Reason: "decision_not_eligible"}
+	}
+	operations := []ChangeOp{{Type: "set", Path: "/services/" + escapeJSONPointer(id), Value: service}}
+	if err := validateDiscoveryOperations(operations); err != nil {
+		return automaticCommitResult{Reason: err.Error()}
 	}
 	active := s.currentConfig()
 	if active.ServiceForDomain(check.Domain) != "" {
-		return nil
+		return automaticCommitResult{Reason: "domain_already_configured"}
 	}
 	s.mu.Lock()
 	baseVersion := s.configVersion
 	s.mu.Unlock()
-	change, err := s.createDraftChange("Add discovered domain policy", "Apply verified automatic route decision", baseVersion, []ChangeOp{{
-		Type: "set", Path: "/services/" + escapeJSONPointer(id), Value: service,
-	}}, "domain-discovery")
+	change, err := s.createDraftChange("Add discovered domain policy", "Apply verified automatic route decision", baseVersion, operations, "domain-discovery")
 	if err != nil {
 		if errors.Is(err, errBaseVersionConflict) {
-			return nil
+			return automaticCommitResult{Reason: "base_version_conflict"}
 		}
-		return err
+		return automaticCommitResult{Reason: err.Error()}
 	}
 	change, failure := s.validateChangeSet(change)
 	if failure == nil {
@@ -402,12 +446,14 @@ func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.Domain
 		change, failure = s.confirmChangeSet(ctx, change)
 	}
 	if failure != nil {
+		rolledBack := change.State == "rolled_back" || change.State == "expired" || change.State == "failed"
 		if change.TransactionID != "" && change.State != "rolled_back" && change.State != "expired" {
-			_, _ = s.rollbackChangeSet(context.WithoutCancel(ctx), change, false)
+			rolled, rollbackFailure := s.rollbackChangeSet(context.WithoutCancel(ctx), change, false)
+			rolledBack = rollbackFailure == nil && (rolled.State == "rolled_back" || rolled.State == "expired" || rolled.State == "failed")
 		}
-		return errors.New(failure.Code)
+		return automaticCommitResult{RolledBack: rolledBack, Reason: failure.Code}
 	}
-	return nil
+	return automaticCommitResult{Applied: true, Reason: "committed"}
 }
 
 func automaticServiceForDecision(check planner.DomainCheck) (config.Service, string, bool) {
@@ -646,6 +692,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/devices", s.requireRole(auth.RoleViewer, s.handleDevices))
 	s.mux.HandleFunc("/api/v1/services", s.requireRole(auth.RoleViewer, s.handleServices))
 	s.mux.HandleFunc("/api/v1/services/classify", s.requireRole(auth.RoleAdministrator, s.handleServiceClassify))
+	s.mux.HandleFunc("/api/v1/discovery", s.requireRole(auth.RoleViewer, s.handleDiscovery))
+	s.mux.HandleFunc("/api/v1/discovery/configure", s.requireRole(auth.RoleAdministrator, s.handleDiscoveryConfigure))
 	s.mux.HandleFunc("/api/v1/domains", s.requireRole(auth.RoleViewer, s.handleDomains))
 	s.mux.HandleFunc("/api/v1/policies", s.requireRole(auth.RoleViewer, s.handlePolicies))
 	s.mux.HandleFunc("/api/v1/routes", s.requireRole(auth.RoleViewer, s.handleRoutes))
@@ -924,8 +972,16 @@ func serviceForClassifyRequest(request serviceClassifyRequest) (string, config.S
 	case "DIRECT_PREFERRED":
 		service.Category = category
 		service.AllowedPaths = []string{"direct", "zapret", "smart_dns", "vless", "drop"}
+	case "DIRECT_ONLY":
+		service.Category = category
+		service.AllowedPaths = []string{"direct"}
+		service.ForbiddenPaths = []string{"zapret", "smart_dns", "vless", "drop"}
+	case "BLOCKED":
+		service.Category = category
+		service.AllowedPaths = []string{"drop"}
+		service.ForbiddenPaths = []string{"direct", "zapret", "smart_dns", "vless"}
 	default:
-		return "", config.Service{}, fmt.Errorf("category must be GEO_LOCKED, TSPU_RESTRICTED or DIRECT_PREFERRED")
+		return "", config.Service{}, fmt.Errorf("category must be GEO_LOCKED, TSPU_RESTRICTED, DIRECT_PREFERRED, DIRECT_ONLY or BLOCKED")
 	}
 	if len(request.AllowedPaths) > 0 {
 		if len(request.AllowedPaths) > 5 {
@@ -945,6 +1001,12 @@ func serviceForClassifyRequest(request serviceClassifyRequest) (string, config.S
 			}
 			if category == "GEO_LOCKED" && (path == "direct" || path == "zapret") {
 				return "", config.Service{}, fmt.Errorf("GEO_LOCKED cannot use %s unless the global policy explicitly permits it", path)
+			}
+			if category == "DIRECT_ONLY" && path != "direct" {
+				return "", config.Service{}, fmt.Errorf("DIRECT_ONLY can only use direct")
+			}
+			if category == "BLOCKED" && path != "drop" {
+				return "", config.Service{}, fmt.Errorf("BLOCKED can only use drop")
 			}
 			seen[path] = true
 			service.AllowedPaths = append(service.AllowedPaths, path)
@@ -1009,9 +1071,6 @@ func (s *Server) handlePolicies(w http.ResponseWriter, r *http.Request) {
 	cfg := s.currentConfig()
 	writeData(w, r, map[string]any{"priority": []string{"emergency", "blocked", "device-domain", "device-service", "domain", "service", "category", "auto", "default"}, "device_policies": s.provider.Policies(cfg), "source": s.provider.Name(), "simulation": s.provider.Simulation()})
 }
-func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
-	writeData(w, r, s.currentConfig().Routes)
-}
 func (s *Server) handleTraffic(w http.ResponseWriter, r *http.Request) {
 	writeData(w, r, traffic.ReadProcNetDev("/proc/net/dev", time.Now().UTC()))
 }
@@ -1066,12 +1125,23 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 		if !route.Disabled && resolverConfigured {
 			configured++
 		}
-		items = append(items, map[string]any{
+		item := map[string]any{
 			"tag": route.Tag, "status": status, "enabled": !route.Disabled,
 			"resolver_configured":    resolverConfigured,
 			"connect_to_resolved_ip": route.ConnectToResolvedIP,
 			"health":                 health,
-		})
+			"kind":                   "conditional_dns",
+			"vpn":                    false,
+		}
+		if resolverConfigured {
+			host, port, _ := net.SplitHostPort(route.DNSServer)
+			item["resolver_ip"] = host
+			item["resolver_port"] = port
+			if validation, ok := s.loadSmartDNSValidation(route.DNSServer); ok {
+				item["last_validation"] = validation
+			}
+		}
+		items = append(items, item)
 	}
 	writeData(w, r, map[string]any{
 		"configured":       configured > 0,
@@ -1083,12 +1153,20 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 			"tspu": {"zapret", "smart_dns", "vless", "direct", "drop"},
 		},
 		"success_contract": []string{"safe DNS answer", "connection to returned address", "content check", "egress check when required"},
+		"route_semantics":  "conditional DNS; not a VPN or tunnel",
 	})
 }
 
 type smartDNSConfigureRequest struct {
-	BaseVersion int64    `json:"base_version"`
-	Endpoints   []string `json:"endpoints"`
+	BaseVersion int64                   `json:"base_version"`
+	Resolvers   []smartDNSResolverInput `json:"resolvers,omitempty"`
+	Endpoints   []string                `json:"endpoints,omitempty"`
+	TestDomain  string                  `json:"test_domain"`
+}
+
+type smartDNSResolverInput struct {
+	IP   string `json:"ip"`
+	Port int    `json:"port"`
 }
 
 func (s *Server) handleSmartDNSConfigure(w http.ResponseWriter, r *http.Request) {
@@ -1116,9 +1194,19 @@ func (s *Server) handleSmartDNSConfigure(w http.ResponseWriter, r *http.Request)
 		writeError(w, r, http.StatusBadRequest, "invalid_base_version", "base_version must be positive")
 		return
 	}
-	endpoints := make([]string, 0, len(request.Endpoints))
+	testDomain, err := tspu.NormalizeDomain(request.TestDomain)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_smart_dns_test_domain", "test_domain must be a DNS name used for the HTTP/TLS check")
+		return
+	}
+	request.TestDomain = testDomain
+	rawEndpoints := append([]string{}, request.Endpoints...)
+	for _, resolver := range request.Resolvers {
+		rawEndpoints = append(rawEndpoints, net.JoinHostPort(strings.TrimSpace(resolver.IP), strconv.Itoa(resolver.Port)))
+	}
+	endpoints := make([]string, 0, len(rawEndpoints))
 	seen := map[string]bool{}
-	for _, raw := range request.Endpoints {
+	for _, raw := range rawEndpoints {
 		endpoint, err := normalizeSmartDNSEndpoint(raw)
 		if err != nil {
 			writeError(w, r, http.StatusBadRequest, "invalid_smart_dns_endpoint", err.Error())
@@ -1133,6 +1221,21 @@ func (s *Server) handleSmartDNSConfigure(w http.ResponseWriter, r *http.Request)
 		writeError(w, r, http.StatusBadRequest, "invalid_smart_dns_endpoint_count", fmt.Sprintf("provide 1..%d unique Smart DNS endpoints", len(routeIndexes)))
 		return
 	}
+	validationResults := make([]probe.SmartDNSValidationResult, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		validationContext, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+		result, validationErr := s.smartDNSValidator(validationContext, endpoint, request.TestDomain)
+		cancel()
+		if validationErr != nil {
+			writeError(w, r, http.StatusUnprocessableEntity, "smart_dns_validation_failed", fmt.Sprintf("%s: %v", endpoint, validationErr))
+			return
+		}
+		if err := s.saveSmartDNSValidation(endpoint, request.TestDomain, result); err != nil {
+			writeError(w, r, http.StatusInternalServerError, "smart_dns_validation_store_failed", err.Error())
+			return
+		}
+		validationResults = append(validationResults, result)
+	}
 	operations := make([]ChangeOp, 0, len(routeIndexes)*4)
 	for slot, routeIndex := range routeIndexes {
 		prefix := fmt.Sprintf("/routes/%d", routeIndex)
@@ -1141,11 +1244,13 @@ func (s *Server) handleSmartDNSConfigure(w http.ResponseWriter, r *http.Request)
 				ChangeOp{Type: "set", Path: prefix + "/dns_server", Value: endpoints[slot]},
 				ChangeOp{Type: "set", Path: prefix + "/connect_to_resolved_ip", Value: true},
 				ChangeOp{Type: "set", Path: prefix + "/disabled", Value: false},
-				ChangeOp{Type: "set", Path: prefix + "/status", Value: "UNVERIFIED"},
+				ChangeOp{Type: "set", Path: prefix + "/status", Value: "CONFIGURED"},
 			)
 			continue
 		}
 		operations = append(operations,
+			ChangeOp{Type: "set", Path: prefix + "/dns_server", Value: ""},
+			ChangeOp{Type: "set", Path: prefix + "/connect_to_resolved_ip", Value: false},
 			ChangeOp{Type: "set", Path: prefix + "/disabled", Value: true},
 			ChangeOp{Type: "set", Path: prefix + "/status", Value: "NOT_CONFIGURED"},
 		)
@@ -1160,7 +1265,7 @@ func (s *Server) handleSmartDNSConfigure(w http.ResponseWriter, r *http.Request)
 		writeError(w, r, http.StatusInternalServerError, "smart_dns_change_failed", err.Error())
 		return
 	}
-	writeData(w, r, map[string]any{"change": change, "endpoint_count": len(endpoints)})
+	writeData(w, r, map[string]any{"change": change, "endpoint_count": len(endpoints), "validations": validationResults})
 }
 
 func normalizeSmartDNSEndpoint(raw string) (string, error) {
@@ -1169,15 +1274,15 @@ func normalizeSmartDNSEndpoint(raw string) (string, error) {
 	if err != nil {
 		return "", errors.New("Smart DNS endpoint must use host:port form")
 	}
-	ip := net.ParseIP(host)
-	if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsMulticast() {
-		return "", errors.New("Smart DNS endpoint must use a public unicast IP address")
+	ip, err := netip.ParseAddr(host)
+	if err != nil || !netpolicy.PublicResolverAddr(ip) {
+		return "", errors.New("Smart DNS endpoint must use a public, non-bogon unicast IP address")
 	}
 	parsedPort, err := strconv.ParseUint(port, 10, 16)
 	if err != nil || parsedPort == 0 {
 		return "", errors.New("Smart DNS endpoint port must be between 1 and 65535")
 	}
-	return net.JoinHostPort(ip.String(), strconv.FormatUint(parsedPort, 10)), nil
+	return net.JoinHostPort(ip.Unmap().String(), strconv.FormatUint(parsedPort, 10)), nil
 }
 func (s *Server) handleZapret(w http.ResponseWriter, r *http.Request) {
 	writeData(w, r, map[string]any{"status": "requires-openwrt-diagnostics", "route": filterRoutes(s.currentConfig(), "zapret")})

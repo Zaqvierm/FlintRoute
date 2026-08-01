@@ -39,7 +39,10 @@
     "geo_locked_unknown_country_is_safe": false,
     "geo_locked_allow_direct": false,
     "geo_locked_allow_zapret": false,
-    "direct_only_allow_foreign_proxy": false
+    "direct_only_allow_foreign_proxy": false,
+    "discovery_mode": "observe_only",
+    "discovery_max_new_rules_per_hour": 4,
+    "discovery_max_consecutive_rollbacks": 3
   },
   "xray": {
     "binary": "/usr/bin/xray",
@@ -126,20 +129,20 @@
     },
     {
       "type": "smart_dns",
-      "tag": "xbox-dns-primary",
+      "tag": "smart-dns-primary",
       "priority": 30,
       "disabled": true,
       "status": "NOT_CONFIGURED",
-      "dns_server": "DNS_SERVER_PLACEHOLDER",
+      "dns_server": "",
       "connect_to_resolved_ip": true
     },
     {
       "type": "smart_dns",
-      "tag": "xbox-dns-secondary",
+      "tag": "smart-dns-secondary",
       "priority": 31,
       "disabled": true,
       "status": "NOT_CONFIGURED",
-      "dns_server": "DNS_SERVER_PLACEHOLDER_2",
+      "dns_server": "",
       "connect_to_resolved_ip": true
     },
     {

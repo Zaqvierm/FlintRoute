@@ -172,7 +172,7 @@ func TestValidateRejectsOverrideThatViolatesDirectOnly(t *testing.T) {
 	service.AllowedPaths = []string{"direct"}
 	cfg.Services["site"] = service
 	cfg.Routes = append(cfg.Routes, Route{
-		Type: "smart_dns", Tag: "smart", DNSServer: "203.0.113.53:53", ConnectToResolvedIP: true,
+		Type: "smart_dns", Tag: "smart", DNSServer: "1.1.1.1:53", ConnectToResolvedIP: true,
 	})
 	cfg.Overrides = []PolicyOverride{{ID: "unsafe", Scope: "service", Service: "site", RouteTag: "smart"}}
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "DIRECT_ONLY") {

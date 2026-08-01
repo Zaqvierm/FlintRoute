@@ -1,7 +1,8 @@
 # Алгоритмический каркас
 
 > Основные реализации: `internal/probe/probe.go`,
-> `internal/health/service.go`, `internal/artifact/artifact.go`.
+> `internal/health/service.go`, `internal/artifact/artifact.go`,
+> `internal/api/discovery_control.go`.
 
 Этот документ фиксирует flowchart как основной алгоритмический контракт. Код
 не обязан копировать каждый блок в отдельную функцию или shell-команду:
@@ -21,13 +22,29 @@ probe.ProbeRoute(ctx, cfg, domain, service, route)
 { "type": "direct",   "tag": "direct" }
 { "type": "drop",     "tag": "drop" }
 { "type": "zapret",   "tag": "zapret" }
-{ "type": "smart_dns","tag": "xbox-dns", "dns_server": "DNS_SERVER_PLACEHOLDER" }
+{ "type": "smart_dns", "tag": "smart-dns-primary", "disabled": true, "dns_server": "" }
 { "type": "vless",    "tag": "vpn-frankfurt-3", "socks5": "127.0.0.1:12003", "dns_mode": "socks_remote" }
 ```
 
 `tg_ws_proxy` зарезервирован в config/proof schema, но его managed transport ещё
 не реализован. В production flow ниже Telegram-ветка является планируемым
 расширением и не описывает текущий исполняемый dataplane.
+
+## Discovery mode
+
+DNS observation и изменение committed config — разные действия:
+
+- `observe_only` (заводской режим) запускает классификацию и пишет reason/evidence
+  в runtime/event stream, но не создаёт правило;
+- `suggest` дополнительно сохраняет предложение для UI;
+- `auto_apply_verified` допускает только `PathVerified` решение, одну активную
+  транзакцию, bounded hourly rate и rollback timer; management/firewall paths
+  запрещены, повторные rollback открывают circuit breaker;
+- `locked` останавливает discovery до probe.
+
+Direct и Drop не фиксируются автоматически: перехват обычного прямого трафика и
+блокировка требуют явного правила. Baseline оставляет unclassified traffic на
+system default route OpenWrt.
 
 Запрещённый анти-паттерн: `check_direct()`, `check_zapret()`, `check_vless()` —
 они размножат сетевую логику.

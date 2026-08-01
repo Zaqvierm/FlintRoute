@@ -480,7 +480,7 @@ func TestGeneratedDNSMasqBindsDomainsToRouteSetsAndFormatsResolver(t *testing.T)
 	cfg.Policy.UnknownDomainBackgroundCheck = true
 	cfg.Storage.RuntimeDir = filepath.Join(root, "runtime")
 	cfg.Routes = append(cfg.Routes, config.Route{
-		Type: "smart_dns", Tag: "smart-primary", Priority: 15, DNSServer: "203.0.113.53:5353", ConnectToResolvedIP: true,
+		Type: "smart_dns", Tag: "smart-primary", Priority: 15, DNSServer: "1.1.1.1:5353", ConnectToResolvedIP: true,
 	})
 	cfg.Services["smart"] = config.Service{
 		Category: "GEO_LOCKED", Domains: []string{"smart.example"}, AllowedPaths: []string{"smart_dns", "vless", "drop"}, RequireNonRUEgress: true,
@@ -496,12 +496,12 @@ func TestGeneratedDNSMasqBindsDomainsToRouteSetsAndFormatsResolver(t *testing.T)
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, fragment := range []string{"stop-dns-rebind", "log-queries=extra", "log-async=25", "dns-observations.log", "svc_", "route_", "4#inet#router_policy#", "6#inet#router_policy#", "server=/smart.example/203.0.113.53#5353"} {
+	for _, fragment := range []string{"stop-dns-rebind", "log-queries=extra", "log-async=25", "dns-observations.log", "svc_", "route_", "4#inet#router_policy#", "6#inet#router_policy#", "server=/smart.example/1.1.1.1#5353"} {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("generated dnsmasq config lacks %q:\n%s", fragment, text)
 		}
 	}
-	if strings.Contains(text, "server=/smart.example/203.0.113.53:5353") {
+	if strings.Contains(text, "server=/smart.example/1.1.1.1:5353") {
 		t.Fatalf("dnsmasq resolver uses host:port instead of host#port: %s", text)
 	}
 }
@@ -647,6 +647,52 @@ func TestDropDNSUsesLocalNXDOMAINWithoutUpstream(t *testing.T) {
 			t.Fatalf("DROP domain uses ambiguous address/upstream form %q:\n%s", forbidden, text)
 		}
 	}
+	nftRaw, err := os.ReadFile(filepath.Join(generated, NFTFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nftText := string(nftRaw)
+	dropSet := "route_" + routeID("drop")
+	dropMark := cfg.OpenWrt.DropMark
+	for _, required := range []string{
+		"nftset=/github.com/", dropSet + "_v4", "chain rp_route_" + routeID("drop"),
+		"ct mark set " + dropMark + " meta mark set " + dropMark + " counter drop", "chain rp_forward_guard",
+		"meta mark " + dropMark + " counter drop", "ct mark " + dropMark + " counter drop",
+	} {
+		combined := text + nftText
+		if !strings.Contains(combined, required) {
+			t.Fatalf("DROP scenario lacks %q\nDNS:\n%s\nNFT:\n%s", required, text, nftText)
+		}
+	}
+}
+
+func TestBaselineLeavesUnclassifiedTrafficOnSystemDefault(t *testing.T) {
+	root := t.TempDir()
+	cfg := testConfig(t, root)
+	cfg.Services = map[string]config.Service{}
+	cfg.Overrides = nil
+	binding := Binding{TransactionID: "tx_0011223344556677", RevisionID: "rev_1_001122334455", CandidateHash: "sha256:candidate"}
+	generated := filepath.Join(root, "generated-baseline")
+	if _, _, err := Generate(cfg, generated, binding, time.Unix(1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	nftRaw, err := os.ReadFile(filepath.Join(generated, NFTFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nftText := string(nftRaw)
+	start := strings.Index(nftText, "  chain rp_classify {")
+	if start < 0 {
+		t.Fatal("classification chain is missing")
+	}
+	end := strings.Index(nftText[start:], "  }\n")
+	if end < 0 {
+		t.Fatal("classification chain is malformed")
+	}
+	classification := nftText[start : start+end]
+	if strings.Contains(classification, "jump rp_route_") || strings.Contains(classification, "mark set") {
+		t.Fatalf("baseline classifies unconfigured traffic:\n%s", classification)
+	}
 }
 
 func TestLoadIPPlanRejectsNonLoopbackVLESSDNSListener(t *testing.T) {
@@ -745,7 +791,7 @@ func smartDNSPolicyConfig(t *testing.T, root string) *config.Config {
 	cfg.Routes[1].Disabled = true
 	cfg.Routes[1].Status = "NOT_CONFIGURED"
 	cfg.Xray.OutboundBundleSHA256 = ""
-	cfg.Routes = append(cfg.Routes, config.Route{Type: "smart_dns", Tag: "smart", Priority: 30, Mark: "0x41", DNSServer: "203.0.113.53:53", ConnectToResolvedIP: true})
+	cfg.Routes = append(cfg.Routes, config.Route{Type: "smart_dns", Tag: "smart", Priority: 30, Mark: "0x41", DNSServer: "1.1.1.1:53", ConnectToResolvedIP: true})
 	cfg.Services["github"] = config.Service{
 		Category: "GEO_LOCKED", Domains: []string{"github.com"}, AllowedPaths: []string{"smart_dns", "drop"}, RequireNonRUEgress: true,
 		ProbeURLs: []config.ProbeCheck{{Name: "web", URL: "https://github.com/", Required: true, ExpectedCodes: []int{200}, BodyMode: "optional"}},

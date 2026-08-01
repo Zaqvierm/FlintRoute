@@ -146,6 +146,7 @@ func (s *Server) validateChangeSet(cs ChangeSet) (ChangeSet, *actionFailure) {
 		return cs, conflict("base_version_conflict", "base_version does not match current revision")
 	}
 	candidate, canonical, diff, validations := buildCandidate(active, cs.Operations)
+	validations = append(validations, s.smartDNSCandidateValidations(active, candidate)...)
 	if len(diff) == 0 {
 		for index := range validations {
 			if validations[index].Code == "candidate_noop" {
@@ -282,6 +283,13 @@ func (s *Server) applyChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet, *
 	tx, failure := s.loadVerifiedTransaction(cs)
 	if failure != nil {
 		return cs, failure
+	}
+	candidate, failure := s.loadVerifiedCandidate(cs, tx)
+	if failure != nil {
+		return cs, failure
+	}
+	if validations := s.smartDNSCandidateValidations(s.currentConfig(), candidate); hasValidationError(validations) {
+		return cs, conflict("smart_dns_validation_expired", "Smart DNS validation is missing or expired; validate the candidate again")
 	}
 	if failure := s.ensureAutomaticManagementProof(ctx, tx); failure != nil {
 		return cs, failure

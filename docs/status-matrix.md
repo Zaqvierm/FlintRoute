@@ -38,6 +38,10 @@ hardware acceptance пока относятся только к Flint 2.
 | Область | Локально | Flint 2 |
 |---|---|---|
 | Dynamic DNS observation и классификация без заводского service catalog | unit/API/artifact tests | повторный apply ещё не выполнялся |
+| Discovery modes и safe auto-apply gates | unit/API tests; clean default `observe_only` | auto-apply на текущем dataplane не запускался |
+| System default, managed Direct и unclassified разделены | API/artifact tests | UI/API требует повторной проверки на роутере |
+| Drop: NXDOMAIN + nft set/mark + forward guard | единый artifact regression test | прежний Drop evidence сохранён; этот commit не применялся |
+| Smart DNS resolver preflight и apply proof | UDP/TCP/HTTP/TLS validator tests, bogon guard и expiry gate | требуется повторный тест с выбранным production resolver |
 | Opt-in static rules и редактируемый fallback порядок | API tests и UI typecheck/build | требуется пользовательский apply на текущем Flint 2 |
 | TSPU fallback `Zapret → Smart DNS → VLESS → Direct → DROP` | planner test доказывает, что VLESS не вызывается до Smart DNS | требуется проверка с production resolver |
 | Пять VPN subscription slots и объединённая проверка outbound | API/UI/typecheck/build | требуется повторный subscription prepare |

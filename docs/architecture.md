@@ -98,6 +98,27 @@ TTL. Retention по bounded probe count и time-based политикам.
 Hysteresis: failure/recovery streaks, route hold, cooldown, quarantine. Для
 `GEO_LOCKED` российский egress запрещён; нет безопасного пути → DROP.
 
+Обычный default route принадлежит OpenWrt, а не FlintRoute. Baseline revision
+нужна control plane как безопасная committed точка, но не добавляет catch-all
+mark или переход в managed route chain. Только домены из service/override sets
+получают `FlintRoute-managed Direct`, Zapret, Smart DNS, VLESS или Drop.
+Остальной трафик остаётся `unclassified` и использует system default route.
+
+Drop — единый fail-closed сценарий: dnsmasq возвращает локальный NXDOMAIN без
+upstream forwarding, A/AAAA nft sets попадают в drop route chain, mark
+устанавливается до drop, а forward guard режет и meta mark, и conntrack mark.
+
+Smart DNS — conditional DNS, не туннель и не VPN. Его resolver можно включить
+только после публичного IP/bogon guard, UDP и TCP DNS-запросов, проверки
+полученных адресов и HTTP/TLS-запроса к выбранному домену с подключением к
+ответу resolver. Proof живёт десять минут и повторно проверяется перед apply.
+
+Discovery отделяет наблюдение от изменения конфигурации: `observe_only` только
+пишет решение в bounded runtime/event stream, `suggest` сохраняет предложение,
+`auto_apply_verified` может создать ChangeSet, `locked` не запускает probe.
+Предложения ограничены 256 доменами и не пишутся в persistent DB. Заводской
+режим — `observe_only`.
+
 ### Unified probe engine
 
 `probe.ProbeRoute(domain, service, route)` — один интерфейс для всех route types.

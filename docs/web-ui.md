@@ -47,6 +47,7 @@ upgrade.
 - трафик (`Traffic`) — RX/TX bytes, текущая скорость, packets/errors по интерфейсам;
 - устройства (`Devices`, `DeviceCard`);
 - сервисы (`Services`, `ServiceGroup`);
+- discovery (`Discovery`) — режим, лимиты и проверенные предложения;
 - политики (таблица/доска, `Policies`);
 - очередь изменений (`Changes`, refresh);
 - маршруты (`Routes`, `Vless`, `RouteType`);
@@ -77,21 +78,27 @@ overview/topology/devices/services/routes/traffic/events/system/revisions + SSE.
 для admin; 403 на дополнительном экране не валит общий dashboard.
 
 Service board строится из текущего конфига и bounded decision cache. Заводского
-списка сайтов нет. Карточку можно перетащить между GEO, TSPU и Direct; UI
+списка сайтов и кнопок с заранее заданными доменами нет. Карточку можно
+перетащить между GEO, TSPU, Direct и Drop; UI
 создаёт, проверяет, применяет и подтверждает ChangeSet.
 
-Статические правила не активируются сами. Администратор выбирает необязательный
-шаблон или вводит домен вручную, затем задаёт класс и порядок `direct`,
+Статические правила не активируются сами. Администратор вводит домен вручную,
+затем задаёт класс и порядок `direct`,
 `zapret`, `smart_dns`, `vless`, `drop`. Тем же редактором меняется автоматически
 обнаруженное правило. Порядок сохраняется как `allowed_paths`; небезопасные для
-GEO комбинации отклоняются API до apply.
+GEO комбинации отклоняются API до apply. Direct и Drop — строгие классы с одним
+путём: соответственно `direct` и `drop`.
 
 Отключённый IPv6 показывается как необязательное состояние, а не как
 предупреждение: отсутствие WAN6 само по себе не означает поломку IPv4 data
 plane.
 
-Экран Smart DNS принимает публичные `IP:port`, не показывает resolver как
-готовый до route health proof и явно отображает порядок:
+Экран Smart DNS отдельно принимает IP и порт resolver и тестовый домен.
+Private/loopback/multicast/unspecified/bogon адреса отклоняются. До создания
+ChangeSet проходят UDP DNS, TCP DNS, проверка ответов и HTTP/TLS-подключение к
+полученному адресу; UI показывает адреса и результат каждого этапа. Resolver
+не показывается как готовый до route health proof. Smart DNS подписан как
+conditional DNS, а не VPN, и отображает порядок:
 `Zapret → Smart DNS → VLESS → Direct` для TSPU и
 `Smart DNS → VLESS → DROP` для GEO. Экран VPN содержит пять независимых слотов
 подписок и показывает результат проверки каждого объединённого outbound.

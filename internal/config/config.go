@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 	"strings"
 
 	"golang.org/x/net/idna"
+
+	"router-policy/internal/netpolicy"
 )
 
 var sha256ReferencePattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -59,24 +62,27 @@ type Storage struct {
 }
 
 type Policy struct {
-	UnknownDomainFirstPath         string `json:"unknown_domain_first_path"`
-	UnknownDomainBackgroundCheck   bool   `json:"unknown_domain_background_check"`
-	RouteHoldSeconds               int    `json:"route_hold_seconds"`
-	FailAfterConsecutiveErrors     int    `json:"fail_after_consecutive_errors"`
-	RecoverAfterConsecutiveSuccess int    `json:"recover_after_consecutive_successes"`
-	HealthCheckIntervalSeconds     int    `json:"health_check_interval_seconds"`
-	DomainDecisionTTLSeconds       int    `json:"domain_decision_ttl_seconds"`
-	SubscriptionUpdateIntervalSecs int    `json:"subscription_update_interval_seconds"`
-	TSPUListUpdateIntervalSeconds  int    `json:"tspu_list_update_interval_seconds"`
-	TSPUStalePolicy                string `json:"tspu_stale_policy"`
-	MaxSubscriptionBytes           int64  `json:"max_subscription_bytes"`
-	MaxTSPUListBytes               int64  `json:"max_tspu_list_bytes"`
-	MaxProbeSeconds                int    `json:"max_probe_seconds"`
-	ParallelServerChecks           int    `json:"parallel_server_checks"`
-	GeoLockedUnknownCountryIsSafe  bool   `json:"geo_locked_unknown_country_is_safe"`
-	GeoLockedAllowDirect           bool   `json:"geo_locked_allow_direct"`
-	GeoLockedAllowZapret           bool   `json:"geo_locked_allow_zapret"`
-	DirectOnlyAllowForeignProxy    bool   `json:"direct_only_allow_foreign_proxy"`
+	UnknownDomainFirstPath           string `json:"unknown_domain_first_path"`
+	UnknownDomainBackgroundCheck     bool   `json:"unknown_domain_background_check"`
+	RouteHoldSeconds                 int    `json:"route_hold_seconds"`
+	FailAfterConsecutiveErrors       int    `json:"fail_after_consecutive_errors"`
+	RecoverAfterConsecutiveSuccess   int    `json:"recover_after_consecutive_successes"`
+	HealthCheckIntervalSeconds       int    `json:"health_check_interval_seconds"`
+	DomainDecisionTTLSeconds         int    `json:"domain_decision_ttl_seconds"`
+	SubscriptionUpdateIntervalSecs   int    `json:"subscription_update_interval_seconds"`
+	TSPUListUpdateIntervalSeconds    int    `json:"tspu_list_update_interval_seconds"`
+	TSPUStalePolicy                  string `json:"tspu_stale_policy"`
+	MaxSubscriptionBytes             int64  `json:"max_subscription_bytes"`
+	MaxTSPUListBytes                 int64  `json:"max_tspu_list_bytes"`
+	MaxProbeSeconds                  int    `json:"max_probe_seconds"`
+	ParallelServerChecks             int    `json:"parallel_server_checks"`
+	GeoLockedUnknownCountryIsSafe    bool   `json:"geo_locked_unknown_country_is_safe"`
+	GeoLockedAllowDirect             bool   `json:"geo_locked_allow_direct"`
+	GeoLockedAllowZapret             bool   `json:"geo_locked_allow_zapret"`
+	DirectOnlyAllowForeignProxy      bool   `json:"direct_only_allow_foreign_proxy"`
+	DiscoveryMode                    string `json:"discovery_mode,omitempty"`
+	DiscoveryMaxNewRulesPerHour      int    `json:"discovery_max_new_rules_per_hour,omitempty"`
+	DiscoveryMaxConsecutiveRollbacks int    `json:"discovery_max_consecutive_rollbacks,omitempty"`
 }
 
 type Xray struct {
@@ -300,7 +306,8 @@ func (c *Config) Validate() error {
 			host, portText, err := net.SplitHostPort(r.DNSServer)
 			port, portErr := strconv.Atoi(portText)
 			ip := net.ParseIP(host)
-			if err != nil || portErr != nil || port < 1 || port > 65535 || ip == nil || ip.IsUnspecified() || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || !r.ConnectToResolvedIP {
+			addr, addrErr := netip.ParseAddr(host)
+			if err != nil || portErr != nil || port < 1 || port > 65535 || ip == nil || addrErr != nil || !netpolicy.PublicResolverAddr(addr) || !r.ConnectToResolvedIP {
 				return fmt.Errorf("smart_dns route %s requires a public resolver endpoint and connect_to_resolved_ip", r.Tag)
 			}
 		}
@@ -586,7 +593,39 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("invalid tspu_stale_policy")
 	}
+	switch c.Policy.EffectiveDiscoveryMode() {
+	case "observe_only", "suggest", "auto_apply_verified", "locked":
+	default:
+		return fmt.Errorf("invalid discovery_mode")
+	}
+	if c.Policy.DiscoveryMaxNewRulesPerHour < 0 || c.Policy.DiscoveryMaxNewRulesPerHour > 1000 {
+		return fmt.Errorf("discovery_max_new_rules_per_hour must be between 0 and 1000")
+	}
+	if c.Policy.DiscoveryMaxConsecutiveRollbacks < 0 || c.Policy.DiscoveryMaxConsecutiveRollbacks > 100 {
+		return fmt.Errorf("discovery_max_consecutive_rollbacks must be between 0 and 100")
+	}
 	return nil
+}
+
+func (p Policy) EffectiveDiscoveryMode() string {
+	if p.DiscoveryMode == "" {
+		return "observe_only"
+	}
+	return p.DiscoveryMode
+}
+
+func (p Policy) EffectiveDiscoveryMaxNewRulesPerHour() int {
+	if p.DiscoveryMaxNewRulesPerHour <= 0 {
+		return 4
+	}
+	return p.DiscoveryMaxNewRulesPerHour
+}
+
+func (p Policy) EffectiveDiscoveryMaxConsecutiveRollbacks() int {
+	if p.DiscoveryMaxConsecutiveRollbacks <= 0 {
+		return 3
+	}
+	return p.DiscoveryMaxConsecutiveRollbacks
 }
 
 func legacyFlint2StateAlias() bool {

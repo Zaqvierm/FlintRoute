@@ -11,8 +11,9 @@
     },
     {
       "type": "smart_dns",
-      "tag": "xbox-dns",
-      "dns_server": "DNS_SERVER_PLACEHOLDER"
+      "tag": "smart-dns-primary",
+      "disabled": true,
+      "dns_server": ""
     },
     {
       "type": "tg_ws_proxy",

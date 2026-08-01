@@ -42,9 +42,11 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/devices` | LAN/guest/remote clients |
 | `/api/v1/services` | configured and dynamically observed services |
 | `/api/v1/services/classify` | create or edit a domain rule through a draft ChangeSet; optional `allowed_paths` preserves the user-defined fallback order |
+| `/api/v1/discovery` | current discovery mode, limits, circuit-breaker state and suggestions |
+| `/api/v1/discovery/configure` | create a ChangeSet for discovery mode/limits; optionally reset rollback pause |
 | `/api/v1/domains` | domain policy / decision cache |
 | `/api/v1/policies` | policy + overrides |
-| `/api/v1/routes` | route descriptors, including disabled |
+| `/api/v1/routes` | system default route, managed route descriptors and unclassified traffic as separate records |
 | `/api/v1/traffic` | cumulative RX/TX bytes, packets and errors from `/proc/net/dev` |
 | `/api/v1/probes` | persisted probe evidence; `domain`/`service`/`route`/`limit` filters |
 | `/api/v1/route-health` | VLESS health matrix, selected/standby/quarantine roles |
@@ -53,7 +55,7 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/lifecycle` | procd ownership, PID/start time/executable/config и test-run manifests |
 | `/api/v1/storage` | storage sizes, rollback state и логические write counters |
 | `/api/v1/smart-dns` | redacted Smart DNS state and fallback order |
-| `/api/v1/smart-dns/configure` | validate public resolver endpoints through a draft ChangeSet |
+| `/api/v1/smart-dns/configure` | validate resolver IP/port over UDP+TCP DNS and HTTP/TLS, then create a draft ChangeSet |
 | `/api/v1/zapret` | managed Zapret/nfqws plan state |
 | `/api/v1/zapret/adaptive/runtime` | production scheduler budget, fingerprint and live ranking |
 | `/api/v1/zapret/adaptive/evaluate` | bounded profile evaluation and transactional bundle switch |
@@ -88,6 +90,24 @@ Telegram/TGWS пока не является рабочей частью control
 managed proxy process, installer и end-to-end verification отсутствуют.
 `/api/v1/settings` показывает только наличие настроенного пути к secret-файлу,
 не готовность доставки. Основной маршрутизатор от этой подсистемы не зависит.
+
+`/api/v1/routes` не называет системный default route управляемым Direct.
+Синтетические записи `system_default` и `unclassified` имеют `managed=false`;
+настроенный route `direct` имеет `managed=true` и список доменов, для которых
+созданы FlintRoute sets/rules. Baseline не создаёт catch-all правило.
+
+Discovery по умолчанию работает в `observe_only`. `suggest` сохраняет
+классифицированное предложение в bounded RAM cache (до 256 доменов), `locked`
+останавливает probe, а
+`auto_apply_verified` требует `PathVerified`, свободный transaction slot и
+rollback timer. Часовой лимит задаётся policy, management/firewall operations
+не допускаются, а серия rollback открывает circuit breaker. Direct/Drop
+наблюдения автоматически не закрепляются: блокировка и захват прямого трафика
+остаются явным действием администратора.
+
+Успешный Smart DNS preflight сохраняет короткоживущий proof для конкретного
+resolver endpoint. Candidate validation и apply требуют непротухший proof;
+одинаковый уже активный resolver не блокирует несвязанный ChangeSet.
 
 ## ChangeSet
 

@@ -93,3 +93,26 @@ func TestManualServiceRuleRejectsUnsafeOrDuplicateFallback(t *testing.T) {
 		})
 	}
 }
+
+func TestManualServiceRuleSupportsDirectAndDrop(t *testing.T) {
+	tests := []struct {
+		category string
+		path     string
+	}{
+		{category: "DIRECT_ONLY", path: "direct"},
+		{category: "BLOCKED", path: "drop"},
+	}
+	for _, test := range tests {
+		t.Run(test.category, func(t *testing.T) {
+			category, service, err := serviceForClassifyRequest(serviceClassifyRequest{
+				Domain: "route.example", Category: test.category,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if category != test.category || len(service.AllowedPaths) != 1 || service.AllowedPaths[0] != test.path {
+				t.Fatalf("unexpected service: category=%q service=%+v", category, service)
+			}
+		})
+	}
+}

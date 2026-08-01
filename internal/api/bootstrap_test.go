@@ -280,7 +280,7 @@ func TestDiscoveryRunsAfterBaselineWithoutApplyingOpenWrtState(t *testing.T) {
 	}
 	classified := false
 	for _, event := range srv.broker.Recent(0, 32) {
-		if event.ReasonCode == "automatic_domain_classified" {
+		if event.ReasonCode == "domain_observed_and_classified" {
 			classified = true
 			break
 		}

@@ -23,7 +23,7 @@ route-check scan.
 ## Race detector
 
 ```powershell
-$mingw = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source.8wekyb3d8bbwe\mingw64\bin"
+$mingw = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\mingw64\bin"
 $env:Path = "$mingw;$env:Path"
 $env:CGO_ENABLED = "1"
 .\.tools\go1.26.5\go\bin\go.exe test -race ./...
@@ -69,6 +69,28 @@ Verified: every Go package passed.
 - `TestMaintainPrunesBackupsAndCompactsActiveDatabase`
 - `TestOpenRecoversInterruptedActiveCompaction`
 - `TestValidateRefreshesProviderDiagnosticsAndBindsGeneratedArtifacts`
+
+## Base routes, Smart DNS and discovery
+
+- `TestBaselineLeavesUnclassifiedTrafficOnSystemDefault` — baseline не создаёт
+  route jump/mark для обычного трафика;
+- `TestRoutesSeparateSystemManagedDirectAndUnclassified` — API не
+  смешивает system default с managed Direct;
+- `TestDropDNSUsesLocalNXDOMAINWithoutUpstream` — один generated scenario
+  содержит NXDOMAIN, nftset/route mark и forward drop guard;
+- `TestSmartDNSConfigureCreatesDraft` — draft появляется только после UDP/TCP
+  DNS и HTTP/TLS proof; протухший proof блокирует apply;
+- `TestNormalizeSmartDNSEndpointRejectsUnsafeAddresses` — private, loopback,
+  multicast, unspecified и bogon resolver не принимаются;
+- `TestDiscoveryObserveOnlyNeverCreatesSuggestionOrChange`,
+  `TestDiscoverySuggestKeepsBoundedSuggestionWithoutApply`,
+  `TestDiscoveryLockedDoesNotProbe` и
+  `TestDiscoveryAutoApplyRequiresPathVerifiedAndCommits` проверяют разные
+  side effects четырёх режимов;
+- `TestDiscoveryAutoApplySafetyLimits` и
+  `TestDiscoveryRollbackCircuitBreakerStopsFurtherApply` —
+  PathVerified, transaction lock, rate limit, rollback timer, operation
+  allowlist и rollback circuit breaker обязательны.
 - `TestOpenWrtStepNamesMatchTransactionContract`
 
 ## Flow-offloading tests (P3)

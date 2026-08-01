@@ -82,6 +82,29 @@ export type SubscriptionPreparation = {
   };
 };
 
+export type SmartDNSResolver = { ip: string; port: number };
+export type SmartDNSValidation = {
+  endpoint: string;
+  domain: string;
+  udp: { safe: boolean; addresses: string[] };
+  tcp: { safe: boolean; addresses: string[] };
+  addresses: string[];
+  connected_ip: string;
+  http_status: number;
+  tls_ok: boolean;
+  http_ok: boolean;
+};
+export type DiscoveryStatus = {
+  mode: 'observe_only' | 'suggest' | 'auto_apply_verified' | 'locked';
+  max_new_rules_per_hour: number;
+  max_consecutive_rollbacks: number;
+  consecutive_rollbacks: number;
+  applied_last_hour: number;
+  paused: boolean;
+  paused_reason?: string;
+  suggestions: Array<Record<string, unknown>>;
+};
+
 export class APIError extends Error {
   status: number;
   code: string;
@@ -159,10 +182,29 @@ export async function classifyService(
 }
 export async function getRoutes(): Promise<any[]> { return request('/routes'); }
 export async function getSmartDNS(): Promise<any> { return request('/smart-dns'); }
-export async function configureSmartDNS(endpoints: string[], baseVersion: number): Promise<{ change: ChangeSet; endpoint_count: number }> {
+export async function configureSmartDNS(resolvers: SmartDNSResolver[], testDomain: string, baseVersion: number): Promise<{ change: ChangeSet; endpoint_count: number; validations: SmartDNSValidation[] }> {
   return request('/smart-dns/configure', {
     method: 'POST',
-    body: JSON.stringify({ endpoints, base_version: baseVersion })
+    body: JSON.stringify({ resolvers, test_domain: testDomain, base_version: baseVersion })
+  });
+}
+export async function getDiscovery(): Promise<DiscoveryStatus> { return request('/discovery'); }
+export async function configureDiscovery(
+  mode: DiscoveryStatus['mode'],
+  maxNewRulesPerHour: number,
+  maxConsecutiveRollbacks: number,
+  baseVersion: number,
+  resetFailures = false
+): Promise<{ change: ChangeSet }> {
+  return request('/discovery/configure', {
+    method: 'POST',
+    body: JSON.stringify({
+      mode,
+      max_new_rules_per_hour: maxNewRulesPerHour,
+      max_consecutive_rollbacks: maxConsecutiveRollbacks,
+      base_version: baseVersion,
+      reset_failures: resetFailures
+    })
   });
 }
 export async function getTraffic(): Promise<TrafficSnapshot> { return request('/traffic'); }
