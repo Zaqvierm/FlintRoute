@@ -28,13 +28,14 @@ const routes = plan.required_route_proofs.map((required, index) => {
     local_ip: drop ? "" : "192.0.2.2",
     address_family: drop ? "" : "ipv4",
     transport:
-      required.type === "vless" || required.type === "tg_ws_proxy" ? "socks5" : "direct",
+      required.type === "vless" || required.type === "external_socks" ? "socks5" : "direct",
     host_preserved: !drop,
     sni_preserved: !drop,
     xray_outbound_tag:
       required.type === "vless" ? required.tag : "",
-    socks5_endpoint: required.type === "vless" ? `127.0.0.1:${19000 + index}` : "",
-    socks5_loopback: required.type === "vless",
+    socks5_endpoint:
+      required.type === "vless" ? `127.0.0.1:${19000 + index}` : required.type === "external_socks" ? "127.0.0.1:1180" : "",
+    socks5_loopback: required.type === "vless" || required.type === "external_socks",
     direct_bypass_xray: required.type === "direct",
     direct_bypass_zapret: required.type === "direct",
     inherited_mark_cleared: required.type === "direct",
@@ -42,7 +43,7 @@ const routes = plan.required_route_proofs.map((required, index) => {
     zapret_flow_processed: required.type === "zapret",
     tcp_443_verified: required.type === "zapret",
     quic_policy: required.type === "zapret" ? "forced_tcp" : "",
-    proxy_flow_processed: required.type === "tg_ws_proxy",
+    proxy_flow_processed: required.type === "external_socks",
     ipv4_verified: !drop,
     ipv6_verified: !drop,
     drop_ipv4_enforced: drop,

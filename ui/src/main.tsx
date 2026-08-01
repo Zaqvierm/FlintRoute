@@ -2,16 +2,20 @@ import { render } from 'preact';
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import {
   APIError,
+  activateExternalSOCKS,
   activateZapretSetup,
   changeAction,
+  checkExternalSOCKS,
   checkZapretSetup,
   classifyService,
   configureDiscovery,
   configureSmartDNS,
+  configureTelegram,
   createChange,
   getChanges,
   getDevices,
   getDiscovery,
+  getExternalSOCKS,
   getEvents,
   getOverview,
   getRevisions,
@@ -21,6 +25,7 @@ import {
   getServices,
   getSubscriptionSecretStatus,
   getSystem,
+  getTelegram,
   getTraffic,
   getTopology,
   getZapret,
@@ -30,6 +35,7 @@ import {
   prepareSubscription,
   saveSubscriptionSecrets,
   setupAdmin,
+  testTelegram,
   type ChangeSet,
   type ChangeOp,
   type DiscoveryStatus,
@@ -50,6 +56,8 @@ const screens = [
   'VLESS-серверы',
   'Smart DNS',
   'Zapret',
+  'External SOCKS',
+  'Telegram',
   'Поток решений',
   'Диагностика',
   'Безопасность',
@@ -65,7 +73,7 @@ const unavailableOverview = {
   zapret: 'unavailable',
   vless_working: 0,
   smart_dns: 0,
-  telegram: 'unavailable',
+  external_socks_configured: 0,
   cpu: 'unavailable',
   memory: 'unavailable',
   temperature: 'unavailable',
@@ -398,8 +406,10 @@ function Content(props: any) {
       return <SmartDNS configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
     case 'Zapret':
       return <Zapret routes={props.routes} configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
+    case 'External SOCKS':
+      return <ExternalSOCKS configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
     case 'Telegram':
-      return <Telegram />;
+      return <Telegram role={props.session.role} />;
     case 'Поток решений':
       return <DecisionFlow events={props.events} />;
     case 'Диагностика':
@@ -1198,8 +1208,90 @@ function SmartDNS({
   );
 }
 
-function Telegram() {
-  return <Generic title="Telegram" text="Подсистема ещё не реализована. В конфиге зарезервированы route-схема и поля секретов, но runtime уведомлений и tg-ws-proxy отсутствует; основной маршрутизатор от них не зависит." />;
+function ExternalSOCKS({ configVersion, role, refresh }: { configVersion: number; role: SessionInfo['role']; refresh: () => Promise<void> }) {
+  const [status, setStatus] = useState<any>(null);
+  const [endpoint, setEndpoint] = useState('127.0.0.1:1180');
+  const [domain, setDomain] = useState('web.telegram.org');
+  const [report, setReport] = useState<any>(null);
+  const [checked, setChecked] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  useEffect(() => { getExternalSOCKS().then(setStatus).catch((error) => setMessage(error instanceof Error ? error.message : 'External SOCKS API недоступен')); }, []);
+  async function check() {
+    setBusy(true); setChecked(false); setMessage('Проверяю TCP, SOCKS5, remote DNS, TLS и HTTP…');
+    try {
+      const result = await checkExternalSOCKS(endpoint.trim(), domain.trim(), configVersion);
+      setReport(result.report); setChecked(true); setMessage('Endpoint проверен. Конфигурация ещё не менялась.');
+    } catch (error) { setReport(null); setMessage(error instanceof Error ? error.message : 'Проверка external SOCKS провалена.'); }
+    finally { setBusy(false); }
+  }
+  async function activate() {
+    setBusy(true); setMessage('Повторяю проверку и создаю одну транзакцию маршрутизации…');
+    try {
+      const result = await activateExternalSOCKS(endpoint.trim(), domain.trim(), configVersion);
+      let change = await changeAction(result.change.id, 'validate');
+      change = await changeAction(change.id, 'apply');
+      if (change.state !== 'awaiting_confirmation' || !change.data_plane_verified) throw new Error(`External SOCKS не получил PathVerified: ${change.state}`);
+      change = await changeAction(change.id, 'confirm');
+      if (change.state !== 'committed') throw new Error(`Confirm завершился состоянием ${change.state}`);
+      setMessage(`External SOCKS подтверждён ревизией ${change.revision_id}.`); setChecked(false); setStatus(await getExternalSOCKS()); await refresh();
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'External SOCKS не включён; транзакция откатилась или ждёт устройство.'); }
+    finally { setBusy(false); }
+  }
+  return <section class="grid">
+    <Card title="External SOCKS · внешняя зависимость">
+      <div class="row"><b>{status?.status ?? 'загрузка'}</b><span>управление процессом: внешнее</span><small>FlintRoute не устанавливает и не перезапускает transport</small></div>
+      {role === 'administrator' && <div class="change-editor">
+        <label><span>Loopback SOCKS5 endpoint</span><input class="mono" value={endpoint} onInput={(event) => { setEndpoint((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
+        <label><span>Домен для remote DNS + TLS/HTTP</span><input class="mono" value={domain} onInput={(event) => { setDomain((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
+        <button class="primary" disabled={busy || !configVersion} onClick={check}>{busy ? 'Проверяю…' : 'Проверить endpoint'}</button>
+        <button class="primary" disabled={busy || !checked || !configVersion} onClick={activate}>Явно включить маршрут</button>
+        {message && <p class="action-status">{message}</p>}
+      </div>}
+    </Card>
+    {report && <Card title="Результат проверки"><div class="row"><b>{report.ready ? 'READY' : 'FAILED'}</b><span>SOCKS5: {report.socks5_handshake ? 'OK' : 'FAIL'}</span><small>TLS: {report.tls_verified ? 'OK' : 'FAIL'} · HTTP {report.http_status || '—'}</small></div></Card>}
+  </section>;
+}
+
+function Telegram({ role }: { role: SessionInfo['role'] }) {
+  const [overview, setOverview] = useState<any>(null);
+  const [token, setToken] = useState('');
+  const [chatID, setChatID] = useState('');
+  const [enabled, setEnabled] = useState(false);
+  const [events, setEvents] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  async function load() {
+    try { const value = await getTelegram(); setOverview(value); setEnabled(value.notifications.enabled); setEvents(value.notifications.event_types); }
+    catch (error) { setMessage(error instanceof Error ? error.message : 'Telegram API недоступен'); }
+  }
+  useEffect(() => { load(); }, []);
+  async function save() {
+    setBusy(true); setMessage('Проверяю токен и доступ к чату…');
+    try { await configureTelegram(token.trim(), chatID.trim(), enabled, events); setToken(''); setChatID(''); await load(); setMessage(enabled ? 'Конфигурация проверена и сохранена.' : 'Уведомления выключены, настройки сохранены.'); }
+    catch (error) { setMessage(error instanceof Error ? error.message : 'Telegram не настроен.'); }
+    finally { setBusy(false); }
+  }
+  async function sendTest() {
+    setBusy(true); setMessage('Отправляю тест…');
+    try { await testTelegram(); await load(); setMessage('Тестовое сообщение доставлено.'); }
+    catch (error) { setMessage(error instanceof Error ? error.message : 'Тест не доставлен.'); }
+    finally { setBusy(false); }
+  }
+  if (!overview) return <Generic title="Telegram" text={message || 'Загружаю состояние…'} />;
+  const state = overview.notifications;
+  return <section class="grid"><Card title="Telegram notifications">
+    <div class="row"><b>{state.state}</b><span>{state.enabled ? 'включены' : 'выключены'}</span><small>очередь {state.queue_depth}/{state.queue_capacity}, ошибок подряд: {state.consecutive_failures}</small></div>
+    {role === 'administrator' && <div class="change-editor">
+      <label><span>Bot token {state.token_configured ? '(уже сохранён; пустое поле оставит прежний)' : ''}</span><input type="password" autocomplete="new-password" value={token} onInput={(event) => setToken((event.target as HTMLInputElement).value)} /></label>
+      <label><span>Chat ID {state.chat_configured ? '(уже сохранён; пустое поле оставит прежний)' : ''}</span><input class="mono" value={chatID} onInput={(event) => setChatID((event.target as HTMLInputElement).value)} /></label>
+      <label><input type="checkbox" checked={enabled} onChange={(event) => setEnabled((event.target as HTMLInputElement).checked)} /> Включить доставку</label>
+      <div class="chips">{overview.event_types.map((name: string) => <label class="chip" key={name}><input type="checkbox" checked={events.includes(name)} onChange={(event) => setEvents((old) => (event.target as HTMLInputElement).checked ? [...old, name] : old.filter((item) => item !== name))} /> {name}</label>)}</div>
+      <button class="primary" disabled={busy} onClick={save}>{busy ? 'Проверяю…' : 'Проверить и сохранить'}</button>
+      <button class="primary" disabled={busy || !state.enabled} onClick={sendTest}>Отправить тест</button>
+      {message && <p class="action-status">{message}</p>}
+    </div>}
+  </Card></section>;
 }
 
 function DecisionFlow({ events }: { events: EventItem[] }) {

@@ -26,9 +26,8 @@ probe.ProbeRoute(ctx, cfg, domain, service, route)
 { "type": "vless",    "tag": "vpn-frankfurt-3", "socks5": "127.0.0.1:12003", "dns_mode": "socks_remote" }
 ```
 
-`tg_ws_proxy` зарезервирован в config/proof schema, но его managed transport ещё
-не реализован. В production flow ниже Telegram-ветка является планируемым
-расширением и не описывает текущий исполняемый dataplane.
+`external_socks` означает внешний loopback SOCKS5 endpoint. FlintRoute проверяет
+его до создания ChangeSet, но не устанавливает и не управляет transport process.
 
 ## Discovery mode
 
@@ -119,7 +118,7 @@ flowchart TD
     MANUAL -- "BLOCKED" --> DROP_MANUAL["DROP"]
     MANUAL -- "DIRECT_ONLY" --> BUILD_DIRECT["Очередь: direct"]
     MANUAL -- "GEO_LOCKED" --> KILLSWITCH["Kill-switch на WAN, запрет direct/zapret"]
-    MANUAL -- "TELEGRAM (planned)" --> BUILD_TG["Зарезервированная очередь: tg_ws_proxy -> VLESS"]
+    MANUAL -- "TELEGRAM" --> BUILD_TG["Проверенный внешний SOCKS -> VLESS -> DROP"]
     MANUAL -- "TSPU_RESTRICTED" --> BUILD_TSPU["Очередь: zapret -> smart_dns -> VLESS"]
     MANUAL -- "DIRECT_PREFERRED" --> BUILD_DP["Очередь: direct -> zapret -> smart_dns -> VLESS"]
     MANUAL -- "обычная/unknown" --> TSPU_LIST{"TSPU evidence match?"}

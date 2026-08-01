@@ -112,8 +112,9 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
   доказательство;
 - локальный installer fixture доказывает порядок операций и rollback, но не
   заменяет clean-install pass на конкретном устройстве;
-- Telegram notifications и `tg_ws_proxy` пока не реализованы. Это отдельная
-  подсистема и не блокер Direct/Zapret/Smart DNS/VLESS/DROP.
+- Telegram notifications реализованы как отдельная необязательная подсистема с
+  проверкой bot/chat, bounded retry и фильтрами событий. `external_socks` честно
+  оформлен как внешняя loopback-зависимость; FlintRoute не управляет её процессом.
 
 Baseline revision не захватывает обычный трафик. Пока домен не получил явное
 правило, он остаётся `unclassified` и идёт через системный default route
@@ -123,7 +124,7 @@ Direct-правилом; это не то же самое, что системн
 ### Запланировано
 
 - длительный soak-test;
-- Telegram notifications и managed `tg_ws_proxy` runtime;
+- аппаратная проверка Telegram delivery и пользовательского external SOCKS endpoint;
 
 Точные фазы, проценты и критерии приёмки находятся в
 [`docs/status-matrix.md`](docs/status-matrix.md). Аппаратные результаты — в

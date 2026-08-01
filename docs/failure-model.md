@@ -31,7 +31,7 @@
 | Категория | Цепочка | Запрещено |
 |---|---|---|
 | `GEO_LOCKED` | smart_dns → VLESS (non-RU) → DROP | direct, Zapret, RU egress |
-| `TELEGRAM` | планируемая цепочка tg_ws_proxy → VLESS → DROP | managed tg_ws_proxy пока отсутствует |
+| `TELEGRAM` | external_socks → VLESS → DROP | внешний SOCKS должен пройти preflight и PathVerified |
 | `TSPU_RESTRICTED` | zapret → smart_dns → VLESS → DROP | небезопасный direct |
 | `DIRECT_ONLY` | только direct; при отказе — ошибка, не VLESS | зарубежный proxy |
 | `DIRECT_PREFERRED` | direct → zapret → smart_dns → VLESS | глобальный VLESS |
@@ -72,8 +72,7 @@ HTML/капчу/non-200. `retainPrevious` сохраняет прошлый ке
 
 ## Уведомления
 
-Это незавершённый контракт, а не работающий runtime. В typed config есть пути к
-Telegram/webhook secret-файлам и `dedupe_seconds`, но sender, очередь доставки и
-managed `tg_ws_proxy` process не реализованы. События основного маршрутизатора
-остаются в bounded local event store/SSE; отсутствие Telegram не считается
-отказом core routing.
+Telegram sender использует bounded queue, retry, rate limit и allowlist событий.
+Ошибки доставки переводят подсистему в `degraded`/`failed`, но не считаются отказом
+core routing. `external_socks` не является managed process: FlintRoute проверяет
+внешний loopback endpoint и откатывает только собственный routing ChangeSet.

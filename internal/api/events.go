@@ -106,6 +106,11 @@ func (s *Server) publishEvent(event Event) Event {
 	if published.Durable || durableEventType(published.Type) {
 		_ = s.persistEvent(published)
 	}
+	if s.telegramNotifier != nil {
+		if notification, ok := notificationForEvent(published); ok {
+			s.telegramNotifier.Enqueue(notification)
+		}
+	}
 	return published
 }
 

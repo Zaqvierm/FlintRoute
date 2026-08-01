@@ -355,7 +355,7 @@ func orderForService(category, tspuStatus, stalePolicy string) []string {
 	case "GEO_LOCKED":
 		return []string{"smart_dns", "vless", "drop"}
 	case "TELEGRAM":
-		return []string{"tg_ws_proxy", "vless", "drop"}
+		return []string{"external_socks", "vless", "drop"}
 	case "TSPU_RESTRICTED":
 		return []string{"zapret", "smart_dns", "vless", "direct", "drop"}
 	case "BLOCKED":

@@ -19,8 +19,8 @@ FlintRoute — Go control plane + Preact/Vite UI + транзакционный 
 
 - `probe.ProbeRoute(ctx, cfg, domain, service, svc, route)` — единый pipeline для
   рабочих route types: `direct`, `zapret`, `smart_dns`, `vless`, `drop`.
-  `tg_ws_proxy` пока присутствует только в schema/proof scaffolding без managed
-  transport. Анти-паттерн `check_direct()`/`check_vless()` отсутствует.
+  `external_socks` оформлен как проверяемая внешняя loopback-зависимость без
+  ложного process ownership. Анти-паттерн `check_direct()`/`check_vless()` отсутствует.
 - `probe.RouteResult` делит проверку на четыре независимых уровня (см. ниже).
 - Path proof: `evidence.RouteResult` + `evidence.ValidateRouteProof` связывает
   intent → artifact → live kernel/process state. Биндинг к `adapter.RevisionID`,
@@ -112,9 +112,9 @@ FlintRoute — Go control plane + Preact/Vite UI + транзакционный 
   evidence; их нужно повторять после затрагивающих data plane изменений.
 - Factory config оставляет Smart DNS resolver slots пустыми; пользовательские
   production endpoints требуют проверки перед apply.
-- Telegram delivery и managed `tg_ws_proxy` runtime не реализованы. Существующая
-  schema/proof заготовка не считается готовой подсистемой и не блокирует core
-  routing.
+- Telegram delivery и external SOCKS high-level setup реализованы локально;
+  требуется аппаратная проверка с реальными credentials и endpoint. Подсистема
+  не блокирует core routing.
 - External management bind проверен только за source-restricted firewall rule;
   встроенного TLS нет.
 - Роли кроме admin.

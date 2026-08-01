@@ -15,7 +15,7 @@
 | P1 | 100% | Доказательство маршрута, Smart DNS, VPN/Xray, проверка VLESS и GeoIP |
 | P2 | 100% | TSPU cache, плановое обновление и проверка живых источников на Flint 2 |
 | P3 | 100% | Headless dataplane Direct/Zapret/Drop/VLESS доказан на Flint 2 |
-| P4 | 0% | Есть только config/proof scaffolding; Telegram delivery и managed tg-ws-proxy runtime отсутствуют |
+| P4 | 80% | Telegram delivery и external SOCKS setup реализованы локально; аппаратная проверка ещё не выполнена |
 | P5 | 85% | Рабочий провайдер OpenWrt и API |
 | P6 | 100% | Постоянное состояние и восстановление после перезагрузки доказаны на Flint 2 |
 | P7 | 70% | Авторизация, fail-closed entropy handling и аудит listener bind |
@@ -48,7 +48,7 @@ hardware acceptance пока относятся только к Flint 2.
 | Явный candidate-only → managed Xray | mode, bundle и routes в одном ChangeSet; TPROXY/bypass/blackhole regression tests | требуется повторный apply/confirm и rollback test на текущем Flint 2 |
 | Managed Zapret setup | pinned source/version/SHA, architecture, NFQUEUE, kernel state и nfqws dry-run; high-level API/UI | требуется preflight/apply/confirm на текущем Flint 2 |
 | Top-3 blockcheck import, domain binding и atomic catalog | parser/catalog/CLI tests | calibration runner ещё не запускался |
-| Telegram notifications и `tg_ws_proxy` | schema/proof placeholders; API честно возвращает `not_implemented` | аппаратная проверка бессмысленна до реализации runtime |
+| Telegram notifications и `external_socks` | sender/queue/retry, secret store, API/UI, external endpoint preflight и transactional activation | требуется проверка реальной доставки и endpoint на роутере |
 
 ### Блокеры полностью рабочего clean install
 
@@ -60,8 +60,8 @@ hardware acceptance пока относятся только к Flint 2.
 - готовый package и factory config рассчитаны на Linux arm64/GL-MT6000;
   другие OpenWrt target требуют отдельной сборки, диагностики и acceptance;
 - локальные installer tests не доказывают конкретную прошивку или железо;
-- Telegram/TGWS не входят в готовность основного маршрутизатора и остаются
-  отдельным незавершённым этапом.
+- Telegram notifications не входят в routing bootstrap. Собственный TGWS не
+  реализован намеренно: поддерживается явно внешний SOCKS5 endpoint.
 
 ### P14: lifecycle и storage
 

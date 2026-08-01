@@ -49,6 +49,16 @@ The API must never return:
 
 Secrets are displayed as masked values only.
 
+Telegram configuration is accepted only after bot-token and chat-access
+verification when delivery is enabled. It is stored atomically in a regular
+non-symlink mode-0600 file under the configured secret root. API status exposes
+only booleans, delivery state and counters; token, chat ID and Telegram response
+bodies are excluded from API errors, events and notification text.
+
+`external_socks` accepts only a loopback endpoint and currently supports the
+SOCKS5 no-auth method. FlintRoute does not claim ownership of that process and
+never uses global process cleanup for it.
+
 Secret-bearing scripts and diagnostics must not use shell tracing (`set -x`),
 dump complete Xray configurations, or include raw subscription payloads in
 logs, crash bundles, API responses, or event streams. Public diagnostics must

@@ -75,7 +75,12 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/settings` | safe projection of active typed config (secrets omitted) |
 | `/api/v1/security` `/api/v1/security/audit` | security audit |
 | `/api/v1/system` | system/provider status |
-| `/api/v1/telegram` | read-only `not_implemented` status for Telegram notifications and `tg_ws_proxy` |
+| `/api/v1/telegram` | notification state without token or chat ID |
+| `/api/v1/telegram/configure` | verify bot/chat and atomically store notification settings |
+| `/api/v1/telegram/test` | send a real test notification |
+| `/api/v1/external-socks` | external dependency and route status |
+| `/api/v1/external-socks/check` | TCP/SOCKS5/remote-connect/TLS/HTTP preflight without config changes |
+| `/api/v1/external-socks/activate` | create one explicit ChangeSet for Xray, route and test-domain binding |
 
 VLESS and Zapret setup endpoints are the normal user-facing control surface.
 `/api/v1/changes` remains the transaction engine and an Advanced/Developer
@@ -94,11 +99,11 @@ Lifecycle/storage endpoints доступны роли diagnostician и выше.
 allowlisted metadata; subscription URL, VLESS UUID, rollback capability и auth
 tokens не включаются.
 
-Telegram/TGWS пока не является рабочей частью control plane. Конфиг содержит
-поля secret path, а route/proof schema знает тип `tg_ws_proxy`, но sender,
-managed proxy process, installer и end-to-end verification отсутствуют.
-`/api/v1/settings` показывает только наличие настроенного пути к secret-файлу,
-не готовность доставки. Основной маршрутизатор от этой подсистемы не зависит.
+Telegram notifications работают отдельно от routing bootstrap; статус строится
+по проверенной конфигурации, а не по наличию пути к secret-файлу. Собственного
+TGWS transport нет: `external_socks` явно обозначает внешний loopback SOCKS5,
+который проверяется до создания ChangeSet. Подробности — в
+[`telegram-notifications.md`](telegram-notifications.md).
 
 `/api/v1/routes` не называет системный default route управляемым Direct.
 Синтетические записи `system_default` и `unclassified` имеют `managed=false`;
@@ -205,5 +210,6 @@ DNS resolution, классификация, фактический egress, до�
   factory config намеренно не содержит resolver endpoints.
 - External bind проверен за source-restricted firewall rule. TLS termination
   пока не встроен; для недоверенной сети нужен reverse proxy/VPN.
-- Telegram notifications и `tg_ws_proxy` runtime не реализованы.
+- Telegram delivery и внешний SOCKS endpoint требуют аппаратной проверки с
+  пользовательскими credentials; собственный TGWS transport не поставляется.
 - Роли кроме admin.

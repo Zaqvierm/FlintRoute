@@ -18,7 +18,7 @@ jq -n \
     elif $svc.category == "TSPU_RESTRICTED" then
       ["zapret", "smart_dns", "vless", "drop"]
     elif $svc.category == "TELEGRAM" then
-      ["tg_ws_proxy", "vless", "drop"]
+      ["external_socks", "vless", "drop"]
     elif $svc.category == "DIRECT_ONLY" then
       ["direct"]
     elif $svc.category == "BLOCKED" then

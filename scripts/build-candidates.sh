@@ -38,7 +38,7 @@ jq -n \
     elif service_category == "GEO_LOCKED" then
       ["smart_dns", "vless"]
     elif service_category == "TELEGRAM" then
-      ["tg_ws_proxy", "vless"]
+      ["external_socks", "vless"]
     elif service_category == "TSPU_RESTRICTED" then
       ["zapret", "smart_dns", "vless"]
     elif service_category == "BLOCKED" then

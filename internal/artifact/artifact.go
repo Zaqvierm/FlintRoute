@@ -550,8 +550,8 @@ func nftProbeAction(routeType string) (string, string) {
 		return "zapret", "forced_tcp"
 	case "vless":
 		return "xray", "processed"
-	case "tg_ws_proxy":
-		return "tg_proxy", "processed"
+	case "external_socks":
+		return "external_socks", "processed"
 	default:
 		return "unsupported", ""
 	}
@@ -633,7 +633,7 @@ func renderRouteAction(b *strings.Builder, cfg *config.Config, route config.Rout
 		fmt.Fprintf(b, "    udp dport 443 ct mark set %s meta mark set %s counter drop comment \"%s quic=forced_tcp\"\n", dropMark, dropMark, comment)
 		fmt.Fprintf(b, "    tcp dport { 80, 443 } ct mark set %s meta mark set %s counter queue num %d comment \"%s nfqueue=required\"\n", classificationMark, classificationMark, plan.Zapret.QueueNum, comment)
 		fmt.Fprintf(b, "    ct mark set %s meta mark set %s counter return comment \"%s non_http=direct\"\n", classificationMark, classificationMark, comment)
-	case "vless", "tg_ws_proxy":
+	case "vless", "external_socks":
 		if !plan.TransparentProxy.Enabled || plan.TransparentProxy.Port < 1 {
 			return fmt.Errorf("route %s requires a transparent proxy plan", route.Tag)
 		}
@@ -662,8 +662,8 @@ func nftAction(routeType string) string {
 		return "zapret"
 	case "vless":
 		return "xray_tproxy"
-	case "tg_ws_proxy":
-		return "tg_proxy_tproxy"
+	case "external_socks":
+		return "external_socks_tproxy"
 	case "drop":
 		return "drop"
 	default:
@@ -766,7 +766,7 @@ func renderXray(cfg *config.Config, routes []config.Route, plan IPPlan, domainPo
 		case "drop":
 			outbound["protocol"] = "blackhole"
 			outbound["settings"] = map[string]any{}
-		case "tg_ws_proxy":
+		case "external_socks":
 			host, port, err := splitProxy(route.SOCKS5)
 			if err != nil {
 				return nil, fmt.Errorf("route %s: %w", route.Tag, err)
@@ -920,7 +920,7 @@ func buildProofPlan(cfg *config.Config, routes []config.Route) []RouteProof {
 	priorities := make(map[ruleKey]int)
 	proofs := make([]RouteProof, 0, len(routes))
 	for i, route := range routes {
-		requiresEgress := route.Type == "direct" || route.Type == "zapret" || route.Type == "vless" || route.Type == "tg_ws_proxy"
+		requiresEgress := route.Type == "direct" || route.Type == "zapret" || route.Type == "vless" || route.Type == "external_socks"
 		mark := firstNonEmpty(route.Mark, markForType(cfg, route.Type))
 		table := tableForType(cfg, route.Type)
 		priority := 10010 + i*10
@@ -966,7 +966,7 @@ func buildIPPlan(cfg *config.Config, binding Binding, proofs []RouteProof, polic
 		if proof.Type != "drop" {
 			needsNetwork = true
 		}
-		if proof.Type == "vless" || proof.Type == "tg_ws_proxy" {
+		if proof.Type == "vless" || proof.Type == "external_socks" {
 			managed := cfg.Xray.ActivationMode == "managed"
 			plan.TransparentProxy = TransparentProxyPlan{
 				Enabled: true, CandidateOnly: !managed, Status: "UNVERIFIED", Mode: "tproxy",
@@ -1090,7 +1090,7 @@ func buildIPPlan(cfg *config.Config, binding Binding, proofs []RouteProof, polic
 					add(IPRoute{Family: "ipv6", Table: proof.Table, Destination: "::/0", Type: "unreachable"})
 				}
 			}
-		case "vless", "tg_ws_proxy":
+		case "vless", "external_socks":
 			if proof.RequiresIPv4 {
 				add(IPRoute{Family: "ipv4", Table: proof.Table, Destination: "0.0.0.0/0", Type: "local", Device: "lo"})
 			}
@@ -1236,7 +1236,7 @@ func buildIPRules(cfg *config.Config, proofs []RouteProof) []IPRule {
 	}
 	hasTransparent := false
 	for _, proof := range proofs {
-		if proof.Type == "vless" || proof.Type == "tg_ws_proxy" {
+		if proof.Type == "vless" || proof.Type == "external_socks" {
 			hasTransparent = true
 			break
 		}
@@ -1481,7 +1481,7 @@ func markForType(cfg *config.Config, routeType string) string {
 		return cfg.OpenWrt.DirectMark
 	case "zapret":
 		return cfg.OpenWrt.ZapretMark
-	case "vless", "tg_ws_proxy":
+	case "vless", "external_socks":
 		return cfg.OpenWrt.XrayMark
 	case "drop":
 		return cfg.OpenWrt.DropMark
@@ -1496,7 +1496,7 @@ func tableForType(cfg *config.Config, routeType string) int {
 		return cfg.OpenWrt.WANRouteTable
 	case "zapret":
 		return cfg.OpenWrt.ZapretRouteTable
-	case "vless", "tg_ws_proxy":
+	case "vless", "external_socks":
 		return cfg.OpenWrt.XrayRouteTable
 	default:
 		return 0

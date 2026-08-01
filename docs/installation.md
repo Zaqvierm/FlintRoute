@@ -132,12 +132,14 @@ first-start/reboot pass на OpenWrt.
 - не устанавливает Xray и `nfqws`;
 - не добавляет VPN-подписку и не выбирает production Smart DNS resolver;
 - не подтверждает совместимость с произвольным OpenWrt-устройством;
-- не реализует Telegram notifications или `tg_ws_proxy`.
+- не устанавливает собственный TGWS transport; для `external_socks` нужен
+  заранее запущенный loopback SOCKS5 endpoint. Telegram bot/chat настраиваются
+  отдельно после установки.
 
 То есть control plane устанавливается чисто и транзакционно, но полноценные
 Zapret/VLESS/Smart DNS маршруты требуют внешних бинарников, пользовательской
-конфигурации и route proof. Telegram/TGWS — отдельная незавершённая подсистема,
-не зависимость базового маршрутизатора.
+конфигурации и route proof. Telegram notifications — отдельная необязательная
+подсистема; внешний SOCKS не является зависимостью базового маршрутизатора.
 
 ## Удаление
 

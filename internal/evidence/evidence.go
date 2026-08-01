@@ -184,9 +184,9 @@ func ValidateRouteProof(required artifact.RouteProof, actual RouteResult, bindin
 		if !actual.SOCKS5Loopback || actual.SOCKS5Endpoint == "" {
 			return fmt.Errorf("route %s lacks Xray outbound/SOCKS proof", required.Tag)
 		}
-	case "tg_ws_proxy":
-		if !actual.ProxyFlowProcessed {
-			return fmt.Errorf("route %s lacks Telegram proxy flow proof", required.Tag)
+	case "external_socks":
+		if !actual.ProxyFlowProcessed || !actual.SOCKS5Loopback || actual.SOCKS5Endpoint == "" {
+			return fmt.Errorf("route %s lacks external SOCKS flow proof", required.Tag)
 		}
 	case "drop":
 		// Handled before common transport checks.

@@ -130,7 +130,7 @@ loopback API. Автоматические controller-транзакции ис�
    `RouteTable`/`Interface`/`SocketMark`/`XrayOutboundTag`. Per-type proof в
    `evidence.ValidateRouteProof`: direct (bypass Xray/Zapret + cleared mark),
    zapret (installed + flow + TCP443 + QUIC policy), smart_dns (response safe +
-   Host/SNI), vless (SOCKS5 loopback + bound outbound tag), tg_ws_proxy (proxy
+   Host/SNI), vless (SOCKS5 loopback + bound outbound tag), external_socks (proxy
    flow), drop (IPv4/IPv6/DNS enforcement). Биндинг к `RevisionID`/`CandidateHash`/
    `ArtifactManifestHash`.
 

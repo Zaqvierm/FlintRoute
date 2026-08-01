@@ -16,8 +16,8 @@
       "dns_server": ""
     },
     {
-      "type": "tg_ws_proxy",
-      "tag": "tg-ws-proxy",
+      "type": "external_socks",
+      "tag": "external-socks",
       "socks5": "127.0.0.1:1180"
     },
     {

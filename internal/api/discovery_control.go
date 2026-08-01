@@ -173,6 +173,7 @@ func (s *Server) recordDiscoveryAutoResult(result automaticCommitResult) {
 		limit := s.currentConfig().Policy.EffectiveDiscoveryMaxConsecutiveRollbacks()
 		if state.ConsecutiveRollbacks >= limit {
 			state.PausedReason = "consecutive_rollbacks"
+			s.publishEvent(Event{Type: "discovery.auto_apply_paused", Severity: "error", ReasonCode: "consecutive_rollbacks", Details: map[string]any{"count": state.ConsecutiveRollbacks, "limit": limit}})
 		}
 	}
 	_ = s.store.SaveJSON("discovery", discoveryStateKey, state)

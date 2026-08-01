@@ -246,14 +246,16 @@ func (v *OpenWrtPathVerifier) Verify(ctx context.Context, request PathProofReque
 		actual.XrayOutboundTag = request.Route.Tag
 		actual.SOCKS5Endpoint = request.Route.SOCKS5
 		actual.SOCKS5Loopback = loopback
-	case "tg_ws_proxy":
-		running, err := v.commands.ProcessRunning(ctx, "tg-ws-proxy")
-		if err != nil || !running {
-			return evidence.RouteResult{}, pathStatusError("NOT_CONFIGURED", "telegram_proxy_not_running", err)
+	case "external_socks":
+		if !policy.Actions["external_socks"] {
+			return evidence.RouteResult{}, errors.New("external_socks_route_policy_missing")
 		}
-		if !policy.Actions["tg_proxy"] {
-			return evidence.RouteResult{}, errors.New("telegram_proxy_route_policy_missing")
+		loopback, err := v.verifySOCKSBinding(request.Route)
+		if err != nil {
+			return evidence.RouteResult{}, pathStatusError("NOT_CONFIGURED", "external_socks_endpoint_unavailable", err)
 		}
+		actual.SOCKS5Endpoint = request.Route.SOCKS5
+		actual.SOCKS5Loopback = loopback
 		actual.ProxyFlowProcessed = true
 	default:
 		return evidence.RouteResult{}, errors.New("unsupported_route_type")

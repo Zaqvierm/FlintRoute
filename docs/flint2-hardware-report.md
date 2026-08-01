@@ -332,7 +332,8 @@ baseline. Полный authenticated route-matrix повторно не запу
 ## Что НЕ доказано на железе
 
 - Smart DNS activation и bound path proof; transport preflight уже пройден.
-- `tg_ws_proxy` transport (route type определён в proof, реализации нет).
+- Telegram delivery и пользовательский `external_socks` endpoint для этого кода
+  ещё не проходили аппаратную проверку.
 - Timer fault injection beyond the verified rollback expiry cases.
 - Multi-client, 72h soak и расширенная fault injection matrix.
 

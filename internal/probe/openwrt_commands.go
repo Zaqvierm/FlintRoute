@@ -129,7 +129,7 @@ func (c *ExecOpenWrtCommands) NFTPolicy(ctx context.Context, routeTag string) (N
 }
 
 func (c *ExecOpenWrtCommands) ProcessRunning(ctx context.Context, process string) (bool, error) {
-	if process != "nfqws" && process != "xray" && process != "tg-ws-proxy" {
+	if process != "nfqws" && process != "xray" {
 		return false, errors.New("process_name_not_allowed")
 	}
 	cmd := exec.CommandContext(ctx, c.pidofPath, process)

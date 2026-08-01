@@ -21,7 +21,7 @@ rp_build_candidates() {
     def service_order:
       if svc.category == "DIRECT_ONLY" then ["direct"]
       elif svc.category == "GEO_LOCKED" then ["smart_dns", "vless", "drop"]
-      elif svc.category == "TELEGRAM" then ["tg_ws_proxy", "vless", "drop"]
+      elif svc.category == "TELEGRAM" then ["external_socks", "vless", "drop"]
       elif svc.category == "TSPU_RESTRICTED" then ["zapret", "smart_dns", "vless", "drop"]
       elif svc.category == "BLOCKED" then ["drop"]
       elif svc.category == "UNKNOWN" then

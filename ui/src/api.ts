@@ -131,6 +131,37 @@ export type DiscoveryStatus = {
   paused_reason?: string;
   suggestions: Array<Record<string, unknown>>;
 };
+export type TelegramStatus = {
+  state: 'not_configured' | 'configured' | 'verified' | 'degraded' | 'failed';
+  enabled: boolean;
+  token_configured: boolean;
+  chat_configured: boolean;
+  event_types: string[];
+  queue_depth: number;
+  queue_capacity: number;
+  consecutive_failures: number;
+  last_error_code?: string;
+  last_verified_at?: string;
+  last_delivery_at?: string;
+  dropped: number;
+};
+export type TelegramOverview = {
+  notifications: TelegramStatus;
+  event_types: string[];
+  transport: { type: 'external_socks'; managed_by: 'external'; core_routing_dependency: false };
+};
+export type ExternalSOCKSReport = {
+  ready: boolean;
+  endpoint: string;
+  dependency: string;
+  managed_by: 'external';
+  tcp_reachable: boolean;
+  socks5_handshake: boolean;
+  remote_connect: boolean;
+  tls_verified: boolean;
+  http_status: number;
+  test_domain: string;
+};
 
 export class APIError extends Error {
   status: number;
@@ -216,6 +247,20 @@ export async function configureSmartDNS(resolvers: SmartDNSResolver[], testDomai
   });
 }
 export async function getDiscovery(): Promise<DiscoveryStatus> { return request('/discovery'); }
+export async function getTelegram(): Promise<TelegramOverview> { return request('/telegram'); }
+export async function configureTelegram(botToken: string, chatID: string, enabled: boolean, eventTypes: string[]): Promise<TelegramStatus> {
+  return request('/telegram/configure', { method: 'PUT', body: JSON.stringify({ bot_token: botToken, chat_id: chatID, enabled, event_types: eventTypes }) });
+}
+export async function testTelegram(): Promise<{ delivered: boolean; status: TelegramStatus }> {
+  return request('/telegram/test', { method: 'POST', body: '{}' });
+}
+export async function getExternalSOCKS(): Promise<any> { return request('/external-socks'); }
+export async function checkExternalSOCKS(endpoint: string, testDomain: string, baseVersion: number): Promise<{ report: ExternalSOCKSReport }> {
+  return request('/external-socks/check', { method: 'POST', body: JSON.stringify({ endpoint, test_domain: testDomain, base_version: baseVersion }) });
+}
+export async function activateExternalSOCKS(endpoint: string, testDomain: string, baseVersion: number): Promise<{ report: ExternalSOCKSReport; change: ChangeSet }> {
+  return request('/external-socks/activate', { method: 'POST', body: JSON.stringify({ endpoint, test_domain: testDomain, base_version: baseVersion }) });
+}
 export async function configureDiscovery(
   mode: DiscoveryStatus['mode'],
   maxNewRulesPerHour: number,

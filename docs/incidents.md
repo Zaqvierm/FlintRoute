@@ -186,7 +186,7 @@ to a proxy endpoint cannot be captured again by policy routing.
 
 The first run failed even though the VLESS route returned `OK`, had bound path
 evidence and used a loopback SOCKS inbound. The validation code additionally
-required `ProxyFlowProcessed`. That field belongs to the `tg_ws_proxy` proof
+required `ProxyFlowProcessed`. That field belongs to the `external_socks` proof
 contract, not the VLESS contract. Because the gate returned before its second
 nft read, the result also displayed a default zero for the final counter; the
 counter had not actually been reset.

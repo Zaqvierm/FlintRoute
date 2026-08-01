@@ -46,7 +46,7 @@ func TestAuthAndOverview(t *testing.T) {
 	}
 }
 
-func TestTelegramEndpointReportsUnimplementedSubsystem(t *testing.T) {
+func TestTelegramEndpointReportsSeparateSubsystems(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
 	ts := httptest.NewServer(srv.Handler())
@@ -54,17 +54,21 @@ func TestTelegramEndpointReportsUnimplementedSubsystem(t *testing.T) {
 
 	client, _ := login(t, ts.URL)
 	var status struct {
-		Status                string `json:"status"`
-		TelegramNotifications string `json:"telegram_notifications"`
-		TGWSProxy             string `json:"tg_ws_proxy"`
-		RouteSchemaAvailable  bool   `json:"route_schema_available"`
-		CoreRoutingDependency bool   `json:"core_routing_dependency"`
+		Notifications struct {
+			State           string `json:"state"`
+			TokenConfigured bool   `json:"token_configured"`
+		} `json:"notifications"`
+		Transport struct {
+			Type                  string `json:"type"`
+			ManagedBy             string `json:"managed_by"`
+			CoreRoutingDependency bool   `json:"core_routing_dependency"`
+		} `json:"transport"`
 	}
 	if err := json.Unmarshal(getAPIData(t, client, ts.URL+"/api/v1/telegram"), &status); err != nil {
 		t.Fatal(err)
 	}
-	if status.Status != "not_implemented" || status.TelegramNotifications != "not_implemented" || status.TGWSProxy != "not_implemented" || !status.RouteSchemaAvailable || status.CoreRoutingDependency {
-		t.Fatalf("telegram status overstates subsystem readiness: %+v", status)
+	if status.Notifications.State != "not_configured" || status.Notifications.TokenConfigured || status.Transport.Type != "external_socks" || status.Transport.ManagedBy != "external" || status.Transport.CoreRoutingDependency {
+		t.Fatalf("telegram/external SOCKS status is dishonest: %+v", status)
 	}
 }
 

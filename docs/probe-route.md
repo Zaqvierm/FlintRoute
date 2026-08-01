@@ -41,7 +41,7 @@ loop/limit (≤8), размер ответа (≤16 KiB), лимит адрес�
 
 `probeExternalIP` (через тот же route) → `ExternalIPHash` (SHA-256 от IP),
 `ExternalCountry`, `ExternalCountrySources`, `EgressConsensus`. Egress probe
-включён для `vless`, `ExternalIPProbe=true`, и для direct/zapret/tg_ws_proxy вне
+включён для `vless`, `ExternalIPProbe=true`, и для direct/zapret/external_socks вне
 test-платформы. Для `RequireNonRUEgress` страна `RU` → `RU_EXIT`, пустая/`UNKNOWN`
 → `FAIL`.
 
@@ -54,9 +54,9 @@ test-платформы. Для `RequireNonRUEgress` страна `RU` → `RU_E
 — в `evidence.ValidateRouteProof` (см. `adapter-transaction.md`).
 
 `PathVerified=false` → маршрут `UNVERIFIED`, production не выбирается.
-Для `tg_ws_proxy` код proof-контракта существует, но без отдельного managed
-proxy runtime такой маршрут остаётся `NOT_CONFIGURED`; это не доказательство
-готового Telegram transport.
+`external_socks` не выдаётся за встроенный Telegram transport. Preflight проверяет
+внешний loopback endpoint, а PathVerified подтверждает binding и фактический поток;
+process lifecycle остаётся ответственностью внешнего компонента.
 
 ## Route descriptor (`config.Route`)
 
@@ -76,7 +76,7 @@ proxy runtime такой маршрут остаётся `NOT_CONFIGURED`; эт�
 
 - `direct`/`drop` — без proxy fields.
 - `smart_dns` — `dns_server` (публичный), `connect_to_resolved_ip=true`.
-- `vless`/`tg_ws_proxy` — loopback `socks5`, `dns_mode=socks_remote`,
+- `vless`/`external_socks` — loopback `socks5`, `dns_mode=socks_remote`,
   `dns_server = xray.probe_dns_resolver` (порт 53, публичный).
 - `zapret` — managed activation, fixed strategy.
 - `disabled=true` или `status=NOT_CONFIGURED` → `NOT_CONFIGURED`, probe не идёт.

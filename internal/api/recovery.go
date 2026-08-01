@@ -157,6 +157,11 @@ func (s *Server) setRecoveryStatus(status recoveryStatus) {
 	s.recovery = status
 	s.mu.Unlock()
 	_ = s.store.SaveJSON("meta", "recovery_status", status)
+	if status.Status == "ok" {
+		s.publishEvent(Event{Type: "recovery.completed", Severity: "info", ReasonCode: "committed_dataplane_recovered", Details: map[string]any{"revision_id": status.RevisionID}})
+	} else if status.Status == "error" {
+		s.publishEvent(Event{Type: "recovery.failed", Severity: "error", ReasonCode: status.ReasonCode, Details: map[string]any{"revision_id": status.RevisionID}})
+	}
 }
 
 func (s *Server) currentRecoveryStatus() recoveryStatus {

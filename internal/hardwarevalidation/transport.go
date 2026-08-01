@@ -229,7 +229,7 @@ func configuredRouteMark(cfg *config.Config, routeType string) string {
 		return cfg.OpenWrt.DirectMark
 	case "zapret":
 		return cfg.OpenWrt.ZapretMark
-	case "vless", "tg_ws_proxy":
+	case "vless", "external_socks":
 		return cfg.OpenWrt.XrayMark
 	case "drop":
 		return cfg.OpenWrt.DropMark

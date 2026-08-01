@@ -146,8 +146,8 @@
       "connect_to_resolved_ip": true
     },
     {
-      "type": "tg_ws_proxy",
-      "tag": "tg-ws-proxy",
+      "type": "external_socks",
+      "tag": "external-socks",
       "priority": 40,
       "disabled": true,
       "status": "NOT_CONFIGURED",
@@ -183,7 +183,7 @@
   ],
   "overrides": [],
   "notifications": {
-    "telegram_secret_file": "/etc/router-policy/secrets/telegram.env",
+    "telegram_secret_file": "/etc/router-policy/secrets/telegram.json",
     "https_webhook_secret_file": "/etc/router-policy/secrets/webhook.env",
     "dedupe_seconds": 3600
   }

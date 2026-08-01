@@ -149,8 +149,8 @@ JS          ~56 kB (gzip ~19 kB)
 
 ## Что ещё надо доделать
 
-- Telegram notifications и managed `tg_ws_proxy` runtime; они не выведены как
-  рабочий пользовательский экран;
+- аппаратная проверка Telegram delivery и external SOCKS endpoint; UI уже
+  разделяет уведомления и внешнюю транспортную зависимость;
 - реальные edit controls для devices;
 - подтверждение опасных операций отдельным modal;
 - отдельные состояния disabled/read-only для каждого role-specific control;

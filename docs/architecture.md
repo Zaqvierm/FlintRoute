@@ -123,9 +123,10 @@ Discovery отделяет наблюдение от изменения конф
 
 `probe.ProbeRoute(domain, service, route)` — один интерфейс для всех route types.
 Рабочие маршруты `direct`, `zapret`, `smart_dns`, `vless`, `drop` отличаются
-`config.Route`. Тип `tg_ws_proxy` присутствует в schema/proof scaffolding, но
-управляемого транспорта для него пока нет. Отдельные `check_*()` запрещены
-архитектурно.
+`config.Route`. `external_socks` использует проверенный внешний loopback SOCKS5;
+FlintRoute не устанавливает и не управляет этим transport. Активация маршрута
+проходит через общий ChangeSet и unified PathVerified contract. Отдельные
+route-specific apply-механизмы запрещены архитектурно.
 
 ### Xray и VPN-провайдер
 

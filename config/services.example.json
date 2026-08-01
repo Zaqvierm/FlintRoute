@@ -48,7 +48,7 @@
       "probe_urls": [
         "https://api.telegram.org/"
       ],
-      "allowed_paths": ["tg_ws_proxy", "vless", "drop"],
+      "allowed_paths": ["external_socks", "vless", "drop"],
       "forbidden_paths": ["direct"],
       "require_non_ru_egress": false
     },

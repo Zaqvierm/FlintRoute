@@ -174,7 +174,7 @@ func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, ser
 	result.LatencyMS = time.Since(startAll).Milliseconds()
 
 	probeEgress := route.ExternalIPProbe || route.Type == "vless"
-	if cfg.Platform.Target != "test" && (route.Type == "direct" || route.Type == "zapret" || route.Type == "tg_ws_proxy") {
+	if cfg.Platform.Target != "test" && (route.Type == "direct" || route.Type == "zapret" || route.Type == "external_socks") {
 		probeEgress = true
 	}
 	if probeEgress {

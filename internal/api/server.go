@@ -24,6 +24,7 @@ import (
 	"router-policy/internal/config"
 	"router-policy/internal/discovery"
 	"router-policy/internal/domaincache"
+	"router-policy/internal/externalsocks"
 	"router-policy/internal/health"
 	"router-policy/internal/managementproof"
 	"router-policy/internal/netpolicy"
@@ -33,6 +34,7 @@ import (
 	"router-policy/internal/secureid"
 	"router-policy/internal/security"
 	"router-policy/internal/state"
+	"router-policy/internal/telegramnotify"
 	"router-policy/internal/traffic"
 	"router-policy/internal/tspu"
 	"router-policy/internal/vpnsub"
@@ -49,6 +51,8 @@ type Options struct {
 	ProductionAdapter      adapter.Interface
 	SubscriptionPreparer   SubscriptionPreparer
 	ZapretSetupChecker     zapret.SetupChecker
+	ExternalSOCKSChecker   externalsocks.Checker
+	TelegramNotifier       *telegramnotify.Manager
 	ProbeEngineFactory     func(*config.Config) health.ProbeEngine
 	TSPURefresh            TSPURefreshFunc
 	DNSObservationPath     string
@@ -81,6 +85,8 @@ type Server struct {
 	adapter                adapter.Interface
 	subscriptionPreparer   SubscriptionPreparer
 	zapretSetupChecker     zapret.SetupChecker
+	externalSOCKSChecker   externalsocks.Checker
+	telegramNotifier       *telegramnotify.Manager
 	probeEngineFactory     func(*config.Config) health.ProbeEngine
 	tspuRefresh            TSPURefreshFunc
 	tspuDelay              tspuDelayFunc
@@ -144,6 +150,10 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 	domainChecker := opts.DomainChecker
 	if domainChecker == nil {
 		domainChecker = planner.CheckDomain
+	}
+	externalSOCKSChecker := opts.ExternalSOCKSChecker
+	if externalSOCKSChecker == nil {
+		externalSOCKSChecker = externalsocks.LocalChecker{}
 	}
 	authStore := opts.Auth
 	if authStore == nil {
@@ -212,6 +222,21 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		_ = stateStore.Close()
 		return nil, err
 	}
+	telegramNotifier := opts.TelegramNotifier
+	if telegramNotifier == nil {
+		secretFile := strings.TrimSpace(activeConfig.Notifications.TelegramSecretFile)
+		if secretFile == "" {
+			secretFile = filepath.Join(activeConfig.Storage.StateDir, "secrets", "telegram.json")
+		}
+		telegramNotifier, err = telegramnotify.New(telegramnotify.Options{
+			SecretFile: secretFile,
+			DedupeFor:  time.Duration(activeConfig.Notifications.DedupeSeconds) * time.Second,
+		})
+		if err != nil {
+			_ = stateStore.Close()
+			return nil, fmt.Errorf("initialize Telegram notifications: %w", err)
+		}
+	}
 	s := &Server{
 		cfg:                    cfg,
 		auth:                   authStore,
@@ -220,6 +245,8 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		adapter:                opts.ProductionAdapter,
 		subscriptionPreparer:   opts.SubscriptionPreparer,
 		zapretSetupChecker:     opts.ZapretSetupChecker,
+		externalSOCKSChecker:   externalSOCKSChecker,
+		telegramNotifier:       telegramNotifier,
 		probeEngineFactory:     probeEngineFactory,
 		tspuRefresh:            tspuRefresh,
 		tspuDelay:              randomTSPUDelay,
@@ -245,16 +272,19 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 	}
 	s.adaptiveZapret, err = buildAdaptiveRuntime(activeConfig, stateStore)
 	if err != nil {
+		telegramNotifier.Close()
 		_ = stateStore.Close()
 		return nil, fmt.Errorf("initialize adaptive Zapret: %w", err)
 	}
 	s.routes()
 	if err := s.recoverTransactions(context.Background()); err != nil {
+		telegramNotifier.Close()
 		_ = stateStore.Close()
 		return nil, err
 	}
 	s.adaptiveZapret, err = buildAdaptiveRuntime(s.currentConfig(), stateStore)
 	if err != nil {
+		telegramNotifier.Close()
 		_ = stateStore.Close()
 		return nil, fmt.Errorf("refresh adaptive Zapret after recovery: %w", err)
 	}
@@ -280,6 +310,9 @@ func (s *Server) Close() error {
 		}
 		s.schedulerWG.Wait()
 		s.timerWG.Wait()
+		if s.telegramNotifier != nil {
+			s.telegramNotifier.Close()
+		}
 		if s.store != nil {
 			s.closeErr = s.store.Close()
 		}
@@ -314,7 +347,7 @@ func (s *Server) StartScheduler(ctx context.Context) {
 					s.runHealthCycle(schedulerCtx)
 				case <-maintenance.C:
 					if err := s.store.Maintain(time.Now().UTC()); err != nil {
-						s.publishEvent(Event{Type: "state.maintenance_failed", Severity: "error", ReasonCode: "bbolt_maintenance_failed", Details: map[string]any{"error": err.Error()}})
+						s.publishEvent(Event{Type: "storage.maintenance_failed", Severity: "error", ReasonCode: "bbolt_maintenance_failed", Details: map[string]any{"error": err.Error()}})
 					}
 				}
 			}
@@ -717,6 +750,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/zapret/adaptive/pin", s.requireRole(auth.RoleAdministrator, s.handleAdaptiveZapretPin))
 	s.mux.HandleFunc("/api/v1/zapret/adaptive/unpin", s.requireRole(auth.RoleAdministrator, s.handleAdaptiveZapretUnpin))
 	s.mux.HandleFunc("/api/v1/telegram", s.requireRole(auth.RoleViewer, s.handleTelegram))
+	s.mux.HandleFunc("/api/v1/telegram/configure", s.requireRole(auth.RoleAdministrator, s.handleTelegramConfigure))
+	s.mux.HandleFunc("/api/v1/telegram/test", s.requireRole(auth.RoleAdministrator, s.handleTelegramTest))
+	s.mux.HandleFunc("/api/v1/external-socks", s.requireRole(auth.RoleViewer, s.handleExternalSOCKS))
+	s.mux.HandleFunc("/api/v1/external-socks/check", s.requireRole(auth.RoleAdministrator, s.handleExternalSOCKSCheck))
+	s.mux.HandleFunc("/api/v1/external-socks/activate", s.requireRole(auth.RoleAdministrator, s.handleExternalSOCKSActivate))
 	s.mux.HandleFunc("/api/v1/diagnostics", s.requireRole(auth.RoleDiagnostician, s.handleDiagnostics))
 	s.mux.HandleFunc("/api/v1/lifecycle", s.requireRole(auth.RoleDiagnostician, s.handleLifecycle))
 	s.mux.HandleFunc("/api/v1/storage", s.requireRole(auth.RoleDiagnostician, s.handleStorage))
@@ -1301,12 +1339,14 @@ func (s *Server) handleZapret(w http.ResponseWriter, r *http.Request) {
 	})
 }
 func (s *Server) handleTelegram(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
+		return
+	}
 	writeData(w, r, map[string]any{
-		"status":                  "not_implemented",
-		"telegram_notifications":  "not_implemented",
-		"tg_ws_proxy":             "not_implemented",
-		"route_schema_available":  true,
-		"core_routing_dependency": false,
+		"notifications": s.telegramNotifier.Status(),
+		"event_types":   telegramnotify.SupportedEventTypes,
+		"transport":     map[string]any{"type": "external_socks", "managed_by": "external", "core_routing_dependency": false},
 	})
 }
 func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
@@ -1471,10 +1511,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"outbound_bundle_sha256": cfg.Xray.OutboundBundleSHA256,
 		},
 		"notifications": map[string]any{
-			"telegram_secret_path_configured": strings.TrimSpace(cfg.Notifications.TelegramSecretFile) != "",
-			"webhook_secret_path_configured":  strings.TrimSpace(cfg.Notifications.HTTPSWebhookSecretFile) != "",
-			"delivery_runtime":                "not_implemented",
-			"dedupe_seconds":                  cfg.Notifications.DedupeSeconds,
+			"telegram":                       s.telegramNotifier.Status(),
+			"webhook_secret_path_configured": strings.TrimSpace(cfg.Notifications.HTTPSWebhookSecretFile) != "",
+			"dedupe_seconds":                 cfg.Notifications.DedupeSeconds,
 		},
 		"privacy": map[string]any{"hide_ips": s.hideSensitive, "domain_logging": "normal"},
 	})
