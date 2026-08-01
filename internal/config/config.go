@@ -37,7 +37,7 @@ type Config struct {
 
 type Platform struct {
 	Target                      string `json:"target"`
-	IPv6Enabled                 bool   `json:"ipv6_enabled"`
+	IPv6Enabled                 bool   `json:"ipv6_enabled,omitempty"`
 	RequireConfirmedDiagnostics bool   `json:"require_confirmed_diagnostics"`
 	UnsupportedApplyPolicy      string `json:"unsupported_apply_policy"`
 }

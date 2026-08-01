@@ -1,9 +1,34 @@
 package config
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func TestPlatformIPv6FalseKeepsLegacyCanonicalJSON(t *testing.T) {
+	legacy := []byte(`{"target":"glinet-flint2","require_confirmed_diagnostics":true,"unsupported_apply_policy":"fail_closed"}`)
+	var platform Platform
+	if err := json.Unmarshal(legacy, &platform); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := json.Marshal(platform)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(canonical) != string(legacy) {
+		t.Fatalf("disabled IPv6 changed legacy canonical JSON: %s", canonical)
+	}
+
+	platform.IPv6Enabled = true
+	canonical, err = json.Marshal(platform)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(canonical), `"ipv6_enabled":true`) {
+		t.Fatalf("enabled IPv6 was omitted from canonical JSON: %s", canonical)
+	}
+}
 
 func TestValidateCanonicalizesIDNDomains(t *testing.T) {
 	cfg := validConfig()
