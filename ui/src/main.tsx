@@ -451,10 +451,11 @@ function OverviewScreen({ overview, topology, services, events }: any) {
 
 function NetworkMap({ topology }: { topology: any; expanded?: boolean }) {
   const nodes = topology.nodes ?? [];
+  const router = nodes.find((n: any) => n.type === 'router');
   return (
     <div class="network">
       <div class="internet">Internet</div>
-      <div class="router">Flint 2</div>
+      <div class="router">{router?.label ?? 'OpenWrt router'}</div>
       <div class="groups">
         {nodes.filter((n: any) => n.type === 'group').map((n: any) => (
           <button class="node" key={n.id}>
@@ -1026,7 +1027,7 @@ function SmartDNS({
 }
 
 function Telegram() {
-  return <Generic title="Telegram" text="Цепочка: tg-ws-proxy -> VLESS -> другой VLESS -> DROP. Bot API проверяется отдельно." />;
+  return <Generic title="Telegram" text="Подсистема ещё не реализована. В конфиге зарезервированы route-схема и поля секретов, но runtime уведомлений и tg-ws-proxy отсутствует; основной маршрутизатор от них не зависит." />;
 }
 
 function DecisionFlow({ events }: { events: EventItem[] }) {

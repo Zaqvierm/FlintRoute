@@ -75,16 +75,16 @@ func (p DevelopmentMockProvider) Topology(*config.Config) map[string]any {
 	return map[string]any{
 		"nodes": []map[string]any{
 			{"id": "internet", "label": "Internet", "type": "internet", "status": "simulation"},
-			{"id": "flint2", "label": "Flint 2", "type": "router", "status": "simulation"},
+			{"id": "router", "label": "OpenWrt router", "type": "router", "status": "simulation"},
 			{"id": "ethernet", "label": "Ethernet", "type": "group", "clients": 4},
 			{"id": "wifi24", "label": "Wi-Fi 2.4 GHz", "type": "group", "clients": 7},
 			{"id": "wifi5", "label": "Wi-Fi 5 GHz", "type": "group", "clients": 5},
 		},
 		"edges": []map[string]any{
-			{"from": "internet", "to": "flint2", "route": "simulation"},
-			{"from": "flint2", "to": "ethernet", "route": "simulation"},
-			{"from": "flint2", "to": "wifi24", "route": "simulation"},
-			{"from": "flint2", "to": "wifi5", "route": "simulation"},
+			{"from": "internet", "to": "router", "route": "simulation"},
+			{"from": "router", "to": "ethernet", "route": "simulation"},
+			{"from": "router", "to": "wifi24", "route": "simulation"},
+			{"from": "router", "to": "wifi5", "route": "simulation"},
 		},
 		"source":       p.Name(),
 		"status":       "simulation",

@@ -1,10 +1,15 @@
 # Установка на OpenWrt
 
-FlintRoute устанавливается из готового ARM64-архива. На роутере не нужны Go,
+FlintRoute устанавливается из готового Linux arm64-архива. На роутере не нужны Go,
 Node.js, npm, Git или отдельный `coreutils-stat`: сборка и упаковка выполняются
 на рабочем компьютере, а проверки mode/owner используют штатные BusyBox
 `ls`/`awk`. Xray и совместимый `nfqws` устанавливаются отдельно до первой
 dataplane-транзакции.
+
+Код не проверяет, что устройство обязательно является GL.iNet Flint 2. При этом
+factory config, пути хранения и опубликованное аппаратное evidence рассчитаны на
+GL-MT6000. Установка на другой OpenWrt target требует отдельного профиля,
+совместимой архитектуры CPU и собственной аппаратной приёмки.
 
 ## Сборка пакета
 
@@ -106,11 +111,25 @@ health и только после этого возвращает watchdog. Prod
 перезапускаются; installer проверяет, что их исходное running/stopped состояние
 не изменилось.
 
-Текущий Alpha package после этих изменений ещё не прошёл повторный аппаратный
-upgrade. Предыдущая попытка потеряла procd/ubus и закончилась U-Boot recovery;
-подробности и ограничения записаны в [`incidents.md`](incidents.md). До нового
-hardware pass команды выше считаются процедурой проверки, а не рекомендацией
-для unattended production upgrade.
+Сохранённый GL-MT6000 evidence включает повторный clean install, upgrade,
+rollback timer, compatible downgrade, uninstall и reinstall/reconcile после
+исправления инцидента с потерей procd/ubus. Подробности и границы доказательства
+записаны в [`flint2-hardware-report.md`](flint2-hardware-report.md) и
+[`incidents.md`](incidents.md). Этот локальный цикл не повторяет hardware pass,
+поэтому будущие изменения installer/data plane требуют новой проверки до
+unattended production upgrade.
+
+## Что clean install не делает
+
+- не устанавливает Xray и `nfqws`;
+- не добавляет VPN-подписку и не выбирает production Smart DNS resolver;
+- не подтверждает совместимость с произвольным OpenWrt-устройством;
+- не реализует Telegram notifications или `tg_ws_proxy`.
+
+То есть control plane устанавливается чисто и транзакционно, но полноценные
+Zapret/VLESS/Smart DNS маршруты требуют внешних бинарников, пользовательской
+конфигурации и route proof. Telegram/TGWS — отдельная незавершённая подсистема,
+не зависимость базового маршрутизатора.
 
 ## Удаление
 

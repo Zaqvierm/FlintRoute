@@ -8,7 +8,7 @@
 |---|---|---|
 | Presentation | Preact/Vite UI embedded into the Go binary | local build works |
 | Control | `/api/v1`, auth, ChangeSet, planner, `probe_route`, audit, recovery | tested locally |
-| Data | nftables, dnsmasq, fw4, Xray, Zapret, policy routing | gated until Flint 2 proof |
+| Data | nftables, dnsmasq, fw4, Xray, Zapret, policy routing | requires diagnostics and proof from the target OpenWrt device |
 
 UI никогда не пишет nftables/Xray/dnsmasq/UCI/routes/fw4 напрямую. Любая
 state-changing операция идёт через API и ChangeSet.
@@ -71,7 +71,7 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/settings` | safe projection of active typed config (secrets omitted) |
 | `/api/v1/security` `/api/v1/security/audit` | security audit |
 | `/api/v1/system` | system/provider status |
-| `/api/v1/telegram` | telegram notification config (secrets in files) |
+| `/api/v1/telegram` | read-only `not_implemented` status for Telegram notifications and `tg_ws_proxy` |
 
 `/api/v1/lifecycle` различает `router-policy-xray` и штатный OpenWrt-сервис
 `xray`. `inactive` у системного сервиса не считается ошибкой, если production
@@ -82,6 +82,12 @@ Lifecycle/storage endpoints доступны роли diagnostician и выше.
 изменяют persistent state. Возвращаются только hashes, размеры, счётчики и
 allowlisted metadata; subscription URL, VLESS UUID, rollback capability и auth
 tokens не включаются.
+
+Telegram/TGWS пока не является рабочей частью control plane. Конфиг содержит
+поля secret path, а route/proof schema знает тип `tg_ws_proxy`, но sender,
+managed proxy process, installer и end-to-end verification отсутствуют.
+`/api/v1/settings` показывает только наличие настроенного пути к secret-файлу,
+не готовность доставки. Основной маршрутизатор от этой подсистемы не зависит.
 
 ## ChangeSet
 
@@ -152,10 +158,13 @@ DNS resolution, классификация, фактический egress, до�
 
 ## Current Limits
 
-- Provider fixture-tested и проверен на активном Flint 2 dataplane.
+- Provider fixture-tested; сохранённое hardware evidence относится к активному
+  Flint 2 dataplane. Код не блокирует другие модели по имени, но их
+  совместимость не доказана.
 - Zapret/Xray `NOT_CONFIGURED` на устройстве без бинарника.
-- Direct/Zapret/Drop/VLESS доказаны на Flint 2 до и после reboot; Smart DNS
-  требует отдельной проверки с production resolver.
+- Direct/Zapret/Drop/VLESS и два Smart DNS resolver ранее доказаны на Flint 2;
+  factory config намеренно не содержит resolver endpoints.
 - External bind проверен за source-restricted firewall rule. TLS termination
   пока не встроен; для недоверенной сети нужен reverse proxy/VPN.
+- Telegram notifications и `tg_ws_proxy` runtime не реализованы.
 - Роли кроме admin.

@@ -31,7 +31,7 @@
 | Категория | Цепочка | Запрещено |
 |---|---|---|
 | `GEO_LOCKED` | smart_dns → VLESS (non-RU) → DROP | direct, Zapret, RU egress |
-| `TELEGRAM` | tg_ws_proxy → VLESS → DROP | ненадёжный прямой выход |
+| `TELEGRAM` | планируемая цепочка tg_ws_proxy → VLESS → DROP | managed tg_ws_proxy пока отсутствует |
 | `TSPU_RESTRICTED` | zapret → smart_dns → VLESS → DROP | небезопасный direct |
 | `DIRECT_ONLY` | только direct; при отказе — ошибка, не VLESS | зарубежный proxy |
 | `DIRECT_PREFERRED` | direct → zapret → smart_dns → VLESS | глобальный VLESS |
@@ -53,8 +53,8 @@ Hard failure (утечка, MITM, неверный outbound, мёртвый пр
 
 Не применять, если: HTTP ≠ 200, ответ > `policy.max_subscription_bytes`, битый
 JSON, нет `.outbounds`, нет VLESS, нет обязательных полей, `xray run -test`
-падает, supported = 0. Действие: оставить last-good bundle, записать событие,
-уведомление в очередь. См. `vpn-subscription.md`.
+падает, supported = 0. Действие: оставить last-good bundle и записать событие.
+См. `vpn-subscription.md`.
 
 ## Повреждённый TSPU-список
 
@@ -72,6 +72,8 @@ HTML/капчу/non-200. `retainPrevious` сохраняет прошлый ке
 
 ## Уведомления
 
-Событие: id, тип, сервис, first/last seen, count, last status, recovery flag.
-`dedupe_seconds` — нельзя слать одинаковую тревогу каждые 5 минут. Очередь +
-dedup; отправка через рабочий VLESS или резервный канал.
+Это незавершённый контракт, а не работающий runtime. В typed config есть пути к
+Telegram/webhook secret-файлам и `dedupe_seconds`, но sender, очередь доставки и
+managed `tg_ws_proxy` process не реализованы. События основного маршрутизатора
+остаются в bounded local event store/SSE; отсутствие Telegram не считается
+отказом core routing.

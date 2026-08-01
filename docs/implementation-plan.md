@@ -9,13 +9,18 @@ FlintRoute — Go control plane + Preact/Vite UI + транзакционный 
 адаптер. Shell остаётся только как fixed-command helper под `exec` адаптера;
 сетевой логики в shell нет.
 
+Заводской config и готовый arm64 package нацелены на GL-MT6000, но production
+код проверяет возможности целевого OpenWrt, а не жёстко разрешённую модель.
+Другие устройства пока не имеют аппаратного acceptance.
+
 ## Текущее основание
 
 ### Control plane (Go)
 
 - `probe.ProbeRoute(ctx, cfg, domain, service, svc, route)` — единый pipeline для
-  всех route types: `direct`, `zapret`, `smart_dns`, `vless`, `tg_ws_proxy`,
-  `drop`. Анти-паттерн `check_direct()`/`check_vless()` отсутствует.
+  рабочих route types: `direct`, `zapret`, `smart_dns`, `vless`, `drop`.
+  `tg_ws_proxy` пока присутствует только в schema/proof scaffolding без managed
+  transport. Анти-паттерн `check_direct()`/`check_vless()` отсутствует.
 - `probe.RouteResult` делит проверку на четыре независимых уровня (см. ниже).
 - Path proof: `evidence.RouteResult` + `evidence.ValidateRouteProof` связывает
   intent → artifact → live kernel/process state. Биндинг к `adapter.RevisionID`,
@@ -102,11 +107,16 @@ FlintRoute — Go control plane + Preact/Vite UI + транзакционный 
 
 ## Открытые задачи
 
-- **P13**: Full hardware matrix. Все route types × TCP/UDP × IPv4/IPv6 ×
-  reboot/crash × multi-client × 72h soak. План в `flint2-hardware-validation.md`.
-- Smart DNS: не доказан на железе (placeholder resolver).
-- `tg_ws_proxy`: route type определён в evidence proof, реализации транспорта нет.
-- API external LAN binding: заблокирован до TLS/firewall checks.
+- **P13**: multi-client/performance и 72h soak. Применимая route/protocol/address
+  family matrix, crash/reboot, Smart DNS и power-loss уже записаны в hardware
+  evidence; их нужно повторять после затрагивающих data plane изменений.
+- Factory config оставляет Smart DNS resolver slots пустыми; пользовательские
+  production endpoints требуют проверки перед apply.
+- Telegram delivery и managed `tg_ws_proxy` runtime не реализованы. Существующая
+  schema/proof заготовка не считается готовой подсистемой и не блокирует core
+  routing.
+- External management bind проверен только за source-restricted firewall rule;
+  встроенного TLS нет.
 - Роли кроме admin.
 
 ## Следующие этапы

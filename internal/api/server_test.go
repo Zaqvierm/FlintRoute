@@ -46,6 +46,28 @@ func TestAuthAndOverview(t *testing.T) {
 	}
 }
 
+func TestTelegramEndpointReportsUnimplementedSubsystem(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	client, _ := login(t, ts.URL)
+	var status struct {
+		Status                string `json:"status"`
+		TelegramNotifications string `json:"telegram_notifications"`
+		TGWSProxy             string `json:"tg_ws_proxy"`
+		RouteSchemaAvailable  bool   `json:"route_schema_available"`
+		CoreRoutingDependency bool   `json:"core_routing_dependency"`
+	}
+	if err := json.Unmarshal(getAPIData(t, client, ts.URL+"/api/v1/telegram"), &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Status != "not_implemented" || status.TelegramNotifications != "not_implemented" || status.TGWSProxy != "not_implemented" || !status.RouteSchemaAvailable || status.CoreRoutingDependency {
+		t.Fatalf("telegram status overstates subsystem readiness: %+v", status)
+	}
+}
+
 func TestEventBrokerUsesNewEpochAfterRestart(t *testing.T) {
 	first, err := NewEventBroker(8)
 	if err != nil {

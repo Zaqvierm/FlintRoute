@@ -64,6 +64,11 @@ if (!$shellcheck) {
   $localSc = Join-Path $root ".tools\shellcheck-stable\shellcheck.exe"
   if (Test-Path $localSc) { $shellcheck = $localSc }
 }
+if (!$shellcheck) {
+  $localSc = Get-ChildItem -Path (Join-Path $root ".tools") -Recurse -Filter shellcheck.exe -File -ErrorAction SilentlyContinue |
+    Select-Object -First 1 -ExpandProperty FullName
+  if ($localSc) { $shellcheck = $localSc }
+}
 if ($shellcheck -and (Test-Path -LiteralPath $shellcheck)) {
   $shellFiles = Get-ChildItem -Recurse -File -Include *.sh,router-policy,router-policy-boot-guard,router-policy-watchdog,router-policy-xray,router-policy-zapret,95-router-policy,install.sh,uninstall.sh |
     Where-Object { $_.FullName -notmatch '\\.tools\\|\\.git\\|\\.local\\|\\dist\\|\\node_modules\\' }

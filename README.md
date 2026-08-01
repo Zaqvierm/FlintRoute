@@ -1,8 +1,12 @@
 # FlintRoute
 
-**Выборочная маршрутизация для GL.iNet Flint 2 / GL-MT6000 на OpenWrt.**
+**Выборочная маршрутизация для OpenWrt. Текущий заводской профиль и аппаратные
+доказательства относятся к GL.iNet Flint 2 / GL-MT6000.**
 
-Роутер сам выбирает маршрут для каждого домена: `direct`, `Zapret`, `smart_dns`, `VLESS/Xray` или `DROP`. Клиенты ничего не настраивают — получают Flint 2 как обычный шлюз и DNS.
+Роутер сам выбирает маршрут для каждого домена: `direct`, `Zapret`, `smart_dns`,
+`VLESS/Xray` или `DROP`. Клиенты используют OpenWrt-устройство как обычный шлюз
+и DNS. Код не запрещает другие OpenWrt-устройства по модели, но совместимость с
+ними пока не подтверждена.
 
 ## Принцип
 
@@ -40,11 +44,15 @@ probe_route(domain, service, route)
 ## Статус
 
 FlintRoute пока находится в Alpha. Текущая сборка подходит для разработки и
-контролируемых испытаний на Flint 2, но ещё не для установки «и забыл».
+контролируемых испытаний на совместимом OpenWrt, но ещё не для установки «и
+забыл». Локальные утверждения ниже проверяются текущим test suite. Утверждения о
+железе взяты из сохранённого evidence для GL-MT6000 и в этом цикле не
+перепроверялись на роутере.
 
 ### Работает и проверено
 
-- локальная сборка, тесты, race-проверка и выпуск ARM64-бинарника;
+- локальная сборка, тесты, race-проверка, ShellCheck, UI build и выпуск
+  ARM64-бинарника;
 - транзакции конфигурации с commit/rollback и fail-closed поведением;
 - Direct, Zapret, Drop и VLESS/Xray на GL-MT6000 с bound route evidence;
 - два production Smart DNS resolver ранее прошли UDP/53, TCP/53 и bound path
@@ -85,9 +93,26 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
 - расширенная IPv6-матрица на реальных LAN-клиентах;
 - работа под нагрузкой с несколькими клиентами;
 
+### Известные ограничения чистой установки
+
+- готовый архив собирается только для Linux arm64; другие архитектуры требуют
+  отдельной сборки;
+- Xray и совместимый `nfqws` не входят в пакет и должны быть установлены
+  отдельно до включения соответствующих маршрутов;
+- заводской конфиг не содержит VPN-подписку и production Smart DNS resolver,
+  поэтому VLESS и Smart DNS после одной установки не становятся рабочими сами;
+- штатный профиль `config/default.json` нацелен на GL-MT6000. Для другого
+  OpenWrt-устройства нужны проверенный platform config и отдельное аппаратное
+  доказательство;
+- локальный installer fixture доказывает порядок операций и rollback, но не
+  заменяет clean-install pass на конкретном устройстве;
+- Telegram notifications и `tg_ws_proxy` пока не реализованы. Это отдельная
+  подсистема и не блокер Direct/Zapret/Smart DNS/VLESS/DROP.
+
 ### Запланировано
 
 - длительный soak-test;
+- Telegram notifications и managed `tg_ws_proxy` runtime;
 
 Точные фазы, проценты и критерии приёмки находятся в
 [`docs/status-matrix.md`](docs/status-matrix.md). Аппаратные результаты — в
@@ -112,7 +137,9 @@ dist/router-policy-linux-arm64      # Flint 2 / OpenWrt
 powershell -ExecutionPolicy Bypass -File .\tests\run-all.ps1
 ```
 
-Проверяет: `go test`, `go vet`, `go test -race`, ShellCheck, frontend typecheck/build, ARM64 build, adapter integration.
+Проверяет: `go test`, `go vet`, ShellCheck (если бинарник доступен), frontend
+typecheck/build, ARM64 build и adapter integration. `go test -race ./...`
+запускается отдельно.
 
 ## Установка
 
@@ -175,9 +202,10 @@ router-policy storage migrate --dry-run
 
 ## Платформа
 
-- GL.iNet Flint 2 / GL-MT6000
-- OpenWrt 24.10.4 с firewall4/nftables
-- Linux arm64
+- OpenWrt с `procd`, `ubus`, firewall4/nftables и policy routing;
+- текущий готовый пакет: Linux arm64;
+- текущий заводской профиль и аппаратное evidence: GL.iNet Flint 2 / GL-MT6000,
+  OpenWrt 24.10.4;
 - dnsmasq-full с nftset
 - Xray для VLESS
 - внешний `nfqws` arm64 для маршрута Zapret (бинарник не вендорится)

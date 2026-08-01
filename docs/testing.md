@@ -8,12 +8,17 @@
 powershell -ExecutionPolicy Bypass -File .\tests\run-all.ps1
 ```
 
-Verified result: `all_tests_ok=true`.
+Current local baseline: `all_tests_ok=true`. Этот результат не включает SSH,
+router apply или повторную аппаратную проверку.
 
 Suite: Go tests/vet, frontend typecheck/build, Windows и Linux arm64 builds,
-ShellCheck, installer failure behavior, rollback snapshot integrity, mocked
+ShellCheck (при доступном бинарнике), installer failure behavior, rollback snapshot integrity, mocked
 OpenWrt transaction integration, CLI fixtures, secret scan, duplicate
 route-check scan.
+
+`go test -race ./...` запускается отдельной командой ниже. Hardware runners из
+`tests/hardware` также не входят в `run-all.ps1` и требуют явного запуска на
+целевом устройстве.
 
 ## Race detector
 

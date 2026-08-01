@@ -3,7 +3,19 @@
 > Основные реализации находятся в `internal/*`, `cmd/router-policy` и
 > `openwrt/*`.
 
-## Проверенные факты
+## Платформенная граница
+
+Исполняемый код ориентирован на OpenWrt primitives (`procd`, `ubus`,
+firewall4/nftables, dnsmasq и policy routing), а не на проверку конкретной модели
+роутера. Значение `platform.target=glinet-flint2` включает дополнительные
+инварианты путей persistent/runtime storage, но другие target не отклоняются
+только из-за имени модели.
+
+Поставляемый `config/default.json`, готовый Linux arm64 package и всё текущее
+аппаратное evidence нацелены на GL-MT6000. Совместимость с другим OpenWrt-железом
+не заявляется без отдельной диагностики и проверки.
+
+## Проверенные аппаратные факты
 
 - GL-MT6000 / Flint 2: Filogic 830, 4×Cortex-A53 2.0 GHz, 1 GB RAM, 8 GB eMMC.
 - OpenWrt 24.10.4, firewall4/nftables (queue + tproxy support подтверждены),
@@ -22,7 +34,7 @@ github.com/remittor/zapret-openwrt.
 ```text
 LAN client
   -> DNS request (53/tcp/udp перехват)
-  -> Flint 2 dnsmasq/full resolver
+  -> OpenWrt dnsmasq/full resolver
   -> policy classifier (service/category/override/TSPU)
   -> nft sets для IPv4/IPv6
   -> nftables mark + collision guard
@@ -61,7 +73,7 @@ OpenWrt-слой (`adapter.OpenWrt` + `openwrt/adapter.sh`):
 - procd watchdog, boot guard.
 
 Data plane недоверен к автоматическому включению, пока не снята диагностика
-конкретного Flint 2. `--activate` gated через confirmed diagnostics.
+целевого OpenWrt-устройства. `--activate` gated через confirmed diagnostics.
 
 ## Компоненты
 
@@ -89,8 +101,10 @@ Hysteresis: failure/recovery streaks, route hold, cooldown, quarantine. Для
 ### Unified probe engine
 
 `probe.ProbeRoute(domain, service, route)` — один интерфейс для всех route types.
-`direct`, `zapret`, `smart_dns`, `tg_ws_proxy`, `vless`, `drop` отличаются только
-`config.Route`. Отдельные `check_*()` запрещены архитектурно.
+Рабочие маршруты `direct`, `zapret`, `smart_dns`, `vless`, `drop` отличаются
+`config.Route`. Тип `tg_ws_proxy` присутствует в schema/proof scaffolding, но
+управляемого транспорта для него пока нет. Отдельные `check_*()` запрещены
+архитектурно.
 
 ### Xray и VPN-провайдер
 

@@ -50,7 +50,8 @@ upgrade.
 - политики (таблица/доска, `Policies`);
 - очередь изменений (`Changes`, refresh);
 - маршруты (`Routes`, `Vless`, `RouteType`);
-- Smart DNS, Zapret, Telegram;
+- Smart DNS и Zapret; Telegram — отдельный status-only экран незавершённой
+  подсистемы;
 - поток решений (`DecisionFlow`, events);
 - диагностика (`Diagnostics`);
 - безопасность (`Security`);
@@ -132,6 +133,8 @@ JS          ~45 kB (gzip ~16 kB)
 
 ## Что ещё надо доделать
 
+- Telegram notifications и managed `tg_ws_proxy` runtime; текущий экран только
+  честно показывает `not_implemented`;
 - реальные edit controls для policies/routes/devices;
 - подтверждение опасных операций отдельным modal;
 - отдельные состояния disabled/read-only для каждого role-specific control;

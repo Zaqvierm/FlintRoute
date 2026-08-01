@@ -17,6 +17,9 @@ func TestAuditFailsWithoutAuthStore(t *testing.T) {
 	if report.Status != "fail" {
 		t.Fatalf("expected fail summary, got %s", report.Status)
 	}
+	if !hasCheck(report, "openwrt-diagnostics", "requires-device") || hasCheck(report, "flint2-diagnostics", "requires-device") {
+		t.Fatalf("device diagnostics must not hard-code one router model: %+v", report.Checks)
+	}
 }
 
 func TestListenerBindClassificationNeverTreatsWildcardAsSafe(t *testing.T) {

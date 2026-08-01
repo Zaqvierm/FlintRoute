@@ -54,6 +54,9 @@ test-платформы. Для `RequireNonRUEgress` страна `RU` → `RU_E
 — в `evidence.ValidateRouteProof` (см. `adapter-transaction.md`).
 
 `PathVerified=false` → маршрут `UNVERIFIED`, production не выбирается.
+Для `tg_ws_proxy` код proof-контракта существует, но без отдельного managed
+proxy runtime такой маршрут остаётся `NOT_CONFIGURED`; это не доказательство
+готового Telegram transport.
 
 ## Route descriptor (`config.Route`)
 

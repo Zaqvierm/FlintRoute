@@ -319,7 +319,7 @@ func (a *Filesystem) VerifyDataPlane(_ context.Context, tx Transaction) StepResu
 	if err == nil {
 		res.OK = false
 		res.Status = "UNVERIFIED"
-		res.Reason = "needs_read_only_flint2_probe_then_test_apply"
+		res.Reason = "needs_target_openwrt_probe_then_test_apply"
 	}
 	res.DataPlaneVerified = false
 	res.Evidence = map[string]any{"network_changed": false, "requires_device": true}

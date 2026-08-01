@@ -52,7 +52,7 @@ func Audit(cfg *config.Config) AuditReport {
 		checkAuthFiles(cfg),
 		checkSetupToken(cfg),
 		checkGeoLockedPolicy(cfg),
-		{ID: "flint2-diagnostics", Level: "high", Status: "requires-device", Message: "activation needs real Flint 2 diagnostics", Requires: "ubus, fw4, nft, dnsmasq, ip route, ip -6 route"},
+		{ID: "openwrt-diagnostics", Level: "high", Status: "requires-device", Message: "activation needs diagnostics from the target OpenWrt device", Requires: "ubus, fw4, nft, dnsmasq, ip route, ip -6 route"},
 		{ID: "tls", Level: "high", Status: "requires-device", Message: "LAN HTTPS certificate is not verified on this host", Requires: "router TLS config"},
 		{ID: "ipv6-leak", Level: "critical", Status: "requires-device", Message: "IPv6 route and nft guard need target route tables", Requires: "ip -6 route and fw4 print"},
 	}

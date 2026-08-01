@@ -1159,10 +1159,16 @@ func normalizeSmartDNSEndpoint(raw string) (string, error) {
 	return net.JoinHostPort(ip.String(), strconv.FormatUint(parsedPort, 10)), nil
 }
 func (s *Server) handleZapret(w http.ResponseWriter, r *http.Request) {
-	writeData(w, r, map[string]any{"status": "requires-flint2-diagnostics", "route": filterRoutes(s.currentConfig(), "zapret")})
+	writeData(w, r, map[string]any{"status": "requires-openwrt-diagnostics", "route": filterRoutes(s.currentConfig(), "zapret")})
 }
 func (s *Server) handleTelegram(w http.ResponseWriter, r *http.Request) {
-	writeData(w, r, map[string]any{"strategy": "tg-ws-proxy -> vless -> drop", "bot_api": "checked separately", "transparent_mode": "requires-flint2"})
+	writeData(w, r, map[string]any{
+		"status":                  "not_implemented",
+		"telegram_notifications":  "not_implemented",
+		"tg_ws_proxy":             "not_implemented",
+		"route_schema_available":  true,
+		"core_routing_dependency": false,
+	})
 }
 func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	writeData(w, r, s.provider.Diagnostics(s.currentConfig()))
@@ -1326,9 +1332,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"outbound_bundle_sha256": cfg.Xray.OutboundBundleSHA256,
 		},
 		"notifications": map[string]any{
-			"telegram_configured": strings.TrimSpace(cfg.Notifications.TelegramSecretFile) != "",
-			"webhook_configured":  strings.TrimSpace(cfg.Notifications.HTTPSWebhookSecretFile) != "",
-			"dedupe_seconds":      cfg.Notifications.DedupeSeconds,
+			"telegram_secret_path_configured": strings.TrimSpace(cfg.Notifications.TelegramSecretFile) != "",
+			"webhook_secret_path_configured":  strings.TrimSpace(cfg.Notifications.HTTPSWebhookSecretFile) != "",
+			"delivery_runtime":                "not_implemented",
+			"dedupe_seconds":                  cfg.Notifications.DedupeSeconds,
 		},
 		"privacy": map[string]any{"hide_ips": s.hideSensitive, "domain_logging": "normal"},
 	})

@@ -15,7 +15,7 @@
 | P1 | 100% | Доказательство маршрута, Smart DNS, VPN/Xray, проверка VLESS и GeoIP |
 | P2 | 100% | TSPU cache, плановое обновление и проверка живых источников на Flint 2 |
 | P3 | 100% | Headless dataplane Direct/Zapret/Drop/VLESS доказан на Flint 2 |
-| P4 | 0% | Уведомления Telegram и tg-ws-proxy |
+| P4 | 0% | Есть только config/proof scaffolding; Telegram delivery и managed tg-ws-proxy runtime отсутствуют |
 | P5 | 85% | Рабочий провайдер OpenWrt и API |
 | P6 | 100% | Постоянное состояние и восстановление после перезагрузки доказаны на Flint 2 |
 | P7 | 70% | Авторизация, fail-closed entropy handling и аудит listener bind |
@@ -27,7 +27,13 @@
 | P13 | 85% | Маршруты, Smart DNS, recursion guard, crash/reboot и physical power-loss доказаны; multi-client и soak остаются |
 | P14 | 100% | Ownership, cleanup, bounded storage, provider/dataplane recovery, idle write budget и полный lifecycle tail доказаны на Flint 2 |
 
-### Текущая ветка после P14
+### Исходная точка текущей ветки
+
+Текущий локальный suite подтверждает сборку и поведение fixtures. Аппаратные
+строки ниже основаны на сохранённом GL-MT6000 evidence и не означают, что этот
+конкретный commit повторно применялся на роутере. Исполняемый код не содержит
+общего запрета для других моделей OpenWrt; заводской профиль, ARM64 package и
+hardware acceptance пока относятся только к Flint 2.
 
 | Область | Локально | Flint 2 |
 |---|---|---|
@@ -36,6 +42,19 @@
 | TSPU fallback `Zapret → Smart DNS → VLESS → Direct → DROP` | planner test доказывает, что VLESS не вызывается до Smart DNS | требуется проверка с production resolver |
 | Пять VPN subscription slots и объединённая проверка outbound | API/UI/typecheck/build | требуется повторный subscription prepare |
 | Top-3 blockcheck import, domain binding и atomic catalog | parser/catalog/CLI tests | calibration runner ещё не запускался |
+| Telegram notifications и `tg_ws_proxy` | schema/proof placeholders; API честно возвращает `not_implemented` | аппаратная проверка бессмысленна до реализации runtime |
+
+### Блокеры полностью рабочего clean install
+
+- installer устанавливает FlintRoute control plane, но не поставляет Xray и
+  `nfqws`;
+- VLESS требует пользовательскую VPN-подписку, Smart DNS — проверенные
+  production resolver endpoints;
+- готовый package и factory config рассчитаны на Linux arm64/GL-MT6000;
+  другие OpenWrt target требуют отдельной сборки, диагностики и acceptance;
+- локальные installer tests не доказывают конкретную прошивку или железо;
+- Telegram/TGWS не входят в готовность основного маршрутизатора и остаются
+  отдельным незавершённым этапом.
 
 ### P14: lifecycle и storage
 
@@ -101,7 +120,7 @@
 | Полный локальный набор тестов | да | `run-all.ps1` | нет |
 | Полный Go race suite | да | `go test -race ./...` | нет |
 
-## Оставшиеся проверки на железе
+## Сохранённые аппаратные результаты и оставшиеся проверки
 
 - Direct, Zapret, fail-closed Drop и VLESS/Xray применены и доказаны на Flint 2.
   После физической перезагрузки повторный связанный сбор доказательств прошёл строгую
@@ -132,5 +151,5 @@
   bypass counter вырос во время проверки. Этот release blocker закрыт.
 - Изолированный P14 lifecycle runner выполнил 100 последовательных test-run:
   baseline восстановлен, stale cleanup идемпотентен, SIGKILL и SSH disconnect
-  пережиты, foreign process и production processes сохранены. Это не заменяет
-  проваленный production install/restart/reboot gate.
+  пережиты, foreign process и production processes сохранены. Эти результаты не
+  заменяют повторный hardware pass после будущих изменений lifecycle/data plane.
