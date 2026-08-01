@@ -366,6 +366,77 @@ func (s *Store) SaveBatch(entries ...Entry) error {
 	return err
 }
 
+// InitializeIfEmpty atomically writes the initial control-plane state only when
+// the database contains no application data. The schema marker is created by
+// init and is deliberately ignored; every other key or bucket entry protects an
+// existing or incomplete installation from being overwritten.
+func (s *Store) InitializeIfEmpty(entries ...Entry) (bool, error) {
+	if len(entries) == 0 {
+		return false, fmt.Errorf("initial state entries are required")
+	}
+	encoded := make([][]byte, len(entries))
+	for i, entry := range entries {
+		if entry.Bucket == "" || entry.Key == "" {
+			return false, fmt.Errorf("bucket and key are required")
+		}
+		raw, err := json.Marshal(entry.Value)
+		if err != nil {
+			return false, err
+		}
+		encoded[i] = raw
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	created := false
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		for _, name := range []string{"probes", "changes", "events", "revisions", "transactions", "candidates", "route_health", "backups"} {
+			bucket := tx.Bucket([]byte(name))
+			if bucket == nil {
+				continue
+			}
+			key, _ := bucket.Cursor().First()
+			if key != nil {
+				return nil
+			}
+		}
+		meta := tx.Bucket([]byte("meta"))
+		if meta == nil {
+			return fmt.Errorf("meta bucket is missing")
+		}
+		cursor := meta.Cursor()
+		for key, _ := cursor.First(); key != nil; key, _ = cursor.Next() {
+			if string(key) != "schema_version" {
+				return nil
+			}
+		}
+		for i, entry := range entries {
+			bucket, err := tx.CreateBucketIfNotExists([]byte(entry.Bucket))
+			if err != nil {
+				return err
+			}
+			if err := bucket.Put([]byte(entry.Key), encoded[i]); err != nil {
+				return err
+			}
+		}
+		created = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	if !created {
+		s.metrics.NoopWrites++
+		return false, nil
+	}
+	written := 0
+	for _, raw := range encoded {
+		written += len(raw)
+	}
+	s.recordPersistentWriteLocked("initialize_empty_state", written)
+	return true, nil
+}
+
 func (s *Store) recordPersistentWriteLocked(reason string, bytesWritten int) {
 	s.metrics.PersistentTransactions++
 	s.metrics.PersistentBytes += uint64(bytesWritten)

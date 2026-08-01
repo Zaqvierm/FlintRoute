@@ -123,6 +123,9 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 			return nil, err
 		}
 	}
+	if _, err := ensureBaselineRevision(stateStore, cfg, time.Now().UTC()); err != nil {
+		return nil, err
+	}
 	if err := stateStore.Maintain(time.Now().UTC()); err != nil {
 		return nil, err
 	}

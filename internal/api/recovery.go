@@ -43,6 +43,15 @@ func (s *Server) recoverCommittedDataplane(ctx context.Context) {
 		s.setRecoveryStatus(result)
 		return
 	}
+	if revision.Kind == baselineRevisionKind {
+		if err := validateBaselineRevision(revision, activeRevision, s.currentConfig()); err != nil {
+			result = failedRecovery(started, "active_baseline_invalid", err.Error(), adapter.RecoveryTarget{RevisionID: activeRevision, CandidateHash: revision.CandidateHash})
+		} else {
+			result = recoveryStatus{Status: "not_required", RevisionID: activeRevision, CandidateHash: revision.CandidateHash, StartedAt: started, FinishedAt: time.Now().UTC()}
+		}
+		s.setRecoveryStatus(result)
+		return
+	}
 	target := adapter.RecoveryTarget{
 		TransactionID: revision.TransactionID, RevisionID: revision.RevisionID,
 		CandidateHash: revision.CandidateHash, ArtifactManifestHash: revision.ArtifactManifestHash,

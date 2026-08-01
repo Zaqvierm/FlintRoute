@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +14,51 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 )
+
+func TestInitializeIfEmptyIsAtomicAndIdempotent(t *testing.T) {
+	cfg := &config.Config{Storage: config.Storage{StateDir: t.TempDir()}}
+	store, err := Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	entries := []Entry{
+		{Bucket: "meta", Key: "active_revision", Value: "rev_1_001122334455"},
+		{Bucket: "meta", Key: "config_version", Value: int64(1)},
+	}
+	var wg sync.WaitGroup
+	created := make(chan bool, 32)
+	errors := make(chan error, 32)
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, err := store.InitializeIfEmpty(entries...)
+			created <- ok
+			errors <- err
+		}()
+	}
+	wg.Wait()
+	close(created)
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	createdCount := 0
+	for ok := range created {
+		if ok {
+			createdCount++
+		}
+	}
+	if createdCount != 1 {
+		t.Fatalf("initial state was created %d times", createdCount)
+	}
+	if writes := store.WriteMetrics().PersistentTransactions; writes != 1 {
+		t.Fatalf("initialization used %d persistent transactions", writes)
+	}
+}
 
 func TestStorePersistsJSONAcrossReopen(t *testing.T) {
 	cfg := &config.Config{Storage: config.Storage{StateDir: t.TempDir()}}

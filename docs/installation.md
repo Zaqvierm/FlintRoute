@@ -121,6 +121,14 @@ unattended production upgrade.
 
 ## Что clean install не делает
 
+Первый запуск на пустом state store создаёт committed baseline revision версии
+1. Это только control-plane anchor для scheduler/discovery: он не создаёт
+ChangeSet/transaction, не вызывает OpenWrt adapter, не запускает Xray/`nfqws` и
+не меняет route или flow offloading. Повторный запуск использует тот же baseline;
+любое существующее, частичное или повреждённое revision state не
+перезаписывается. Этот bootstrap проверен локально и ещё требует повторного
+first-start/reboot pass на OpenWrt.
+
 - не устанавливает Xray и `nfqws`;
 - не добавляет VPN-подписку и не выбирает production Smart DNS resolver;
 - не подтверждает совместимость с произвольным OpenWrt-устройством;

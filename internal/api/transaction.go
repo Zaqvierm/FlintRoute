@@ -51,6 +51,7 @@ type transactionRecord struct {
 
 type revisionRecord struct {
 	RevisionID           string     `json:"revision_id"`
+	Kind                 string     `json:"kind,omitempty"`
 	ChangeID             string     `json:"change_id"`
 	TransactionID        string     `json:"transaction_id"`
 	BaseVersion          int64      `json:"base_version"`
@@ -375,6 +376,23 @@ func (s *Server) applyNoopChangeSet(ctx context.Context, cs ChangeSet) (ChangeSe
 	var revision revisionRecord
 	if cs.RevisionID == "" || s.store.LoadJSON("revisions", cs.RevisionID, &revision) != nil || revision.State != "committed" {
 		return cs, conflict("noop_revision_missing", "active committed revision is unavailable; validate again")
+	}
+	if revision.Kind == baselineRevisionKind {
+		if err := validateBaselineRevision(revision, cs.RevisionID, s.currentConfig()); err != nil {
+			return cs, conflict("noop_baseline_invalid", err.Error())
+		}
+		cs.State = "committed"
+		cs.AdapterStatus = "NOOP"
+		cs.ManagementVerified = true
+		cs.DataPlaneVerified = true
+		cs.Version++
+		cs.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		if err := s.store.SaveJSON("changes", cs.ID, cs); err != nil {
+			return cs, internalFailure(err)
+		}
+		s.setChange(cs)
+		s.publishChangeEvent(cs, "identical_baseline_configuration_noop")
+		return cs, nil
 	}
 	status := s.adapter.Status(ctx)
 	if !stepOK(status) ||

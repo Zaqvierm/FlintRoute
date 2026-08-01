@@ -368,7 +368,7 @@ func TestChangeSetCommitPersistsAcrossRestart(t *testing.T) {
 	if err := json.Unmarshal(getAPIData(t, client2, ts2.URL+"/api/v1/revisions"), &revisions); err != nil {
 		t.Fatal(err)
 	}
-	if revisions.Source != "bbolt" || revisions.Status != "OK" || revisions.ActiveRevision != cs.RevisionID || revisions.ConfigVersion != 2 || len(revisions.Items) != 1 || revisions.Items[0].RevisionID != cs.RevisionID {
+	if revisions.Source != "bbolt" || revisions.Status != "OK" || revisions.ActiveRevision != cs.RevisionID || revisions.ConfigVersion != 2 || len(revisions.Items) != 2 || revisions.Items[0].RevisionID != cs.RevisionID || revisions.Items[1].Kind != baselineRevisionKind {
 		t.Fatalf("revision endpoint did not expose persisted commit: %+v", revisions)
 	}
 	var settings struct {

@@ -161,17 +161,26 @@ cleanup contract описаны в [`storage-lifecycle.md`](storage-lifecycle.md
 
 `api.recoverCommittedDataplane` при старте сервера:
 
-1. Загружает active revision из bbolt. Если `configVersion>1` без active
+1. На действительно пустом bbolt атомарно создаёт baseline revision версии 1:
+   active config + deterministic revision ID/canonical hash. Baseline имеет
+   `kind=baseline`, не содержит ChangeSet/transaction/artifact binding и не
+   вызывает OpenWrt adapter. Любое существующее или частичное control-plane
+   состояние запрещает этот bootstrap.
+2. Загружает active revision из bbolt. Если `configVersion>1` без active
    revision → `active_revision_missing`.
-2. Проверяет `revision.State=committed` + полноту binding.
-3. Загружает transaction record, проверяет `State=committed` + hash match
+3. Для baseline повторно проверяет committed state, canonical hash и отсутствие
+   deployment binding; recovery завершается как `not_required` без `Reconcile`
+   и `Status`.
+4. Для deployment revision проверяет `revision.State=committed` + полноту
+   binding.
+5. Загружает transaction record, проверяет `State=committed` + hash match
    (`constantEqual` для `CandidateHash`/`ArtifactManifestHash`).
-4. Проверяет ChangeSet `committed` + binding match.
-5. `loadVerifiedCandidate` + canonical hash совпадение с active config.
-6. `adapter.Reconcile(ctx, RecoveryTarget)`. Временный `adapter_busy` от
+6. Проверяет ChangeSet `committed` + binding match.
+7. `loadVerifiedCandidate` + canonical hash совпадение с active config.
+8. `adapter.Reconcile(ctx, RecoveryTarget)`. Временный `adapter_busy` от
    параллельного boot guard повторяется с bounded timeout; остальные ошибки →
    `adapter_reconcile_failed`.
-7. `adapter.Status(ctx)` — evidence должен совпадать: `active_revision`,
+9. `adapter.Status(ctx)` — evidence должен совпадать: `active_revision`,
    `active_transaction`, `active_candidate_hash`,
    `active_artifact_manifest_hash`, `transaction_state=committed`. Иначе
    `adapter_recovery_binding_mismatch`.
@@ -187,9 +196,11 @@ reload, не перезапускает dnsmasq и не трогает Xray/Zapr
 только после проверки recovery binding и только когда действительно требуется
 восстановление data plane.
 
-На factory OpenWrt с пустой active revision это подтверждено controlled reboot:
-boot guard держал bounded 120-second lease, не создал nft table и завершился;
-controller/watchdog поднялись через procd, IP rules остались factory baseline.
+Новый baseline bootstrap и его reboot/idempotency contract подтверждены пока
+локальными тестами с adapter call count = 0. На factory OpenWrt ранее проверялся
+только старый сценарий с пустой active revision: boot guard не создавал nft
+table, controller/watchdog поднялись через procd, IP rules оставались factory
+baseline. Новый first-start path требует отдельного аппаратного повтора.
 
 ## Аппаратная проверка
 
