@@ -19,6 +19,32 @@
 | Xray | 25.1.30 (opkg) — manual live process; локальная сборка 26.3.27 (upstream commit `d2758a023cd7`) для `xray run -test` |
 | nfqws | Zapret v72.12 arm64 (внешний pinned provider, не вендорится) |
 
+## Текущий fixed candidate — clean baseline и reboot
+
+На factory OpenWrt установлен commit
+`af8d81893d94434135d3cc942b27518c06a241d0`. SHA-256 пакета:
+`e4ebe78b51b8c7fc05ba50056a60230a88f28f3c96625123eca32298408dbb18`,
+SHA-256 ARM64 binary:
+`799d9a79f02214dfc6c05c2755188c3ae3d5eca484a7d9153778b77dd83e5caf`.
+
+Clean install создал одну committed baseline revision
+`rev_1_3ad4defb917c`. Baseline не поднял Xray или Zapret, не создал
+FlintRoute nftables/IP rules и сохранил системный default route OpenWrt.
+Control-plane health вернул `status=ok`, recovery — `not_required`.
+
+Web listener включён отдельным opt-in на TCP/8787 и ограничен исходной
+подсетью firewall rule. До и после controlled reboot были доступны key-only
+SSH, штатная панель роутера, FlintRoute Web API, DNS и внешний HTTP. Boot ID
+сменился, active revision сохранилась, controller/watchdog восстановились,
+проектные nftables tables не появились. Bounded boot-guard lease не затрагивал
+системный default route.
+
+Этот прогон доказывает fixed clean install, безопасный baseline и controlled
+reboot. Он не доказывает in-place upgrade старой revision с legacy
+`tg_ws_proxy`, а также не повторяет Direct/Drop/Smart DNS/VLESS/Zapret route
+matrix на текущем commit. Старые результаты ниже остаются историческим
+hardware evidence для соответствующих revision.
+
 ## P1 — Direct + fail-closed Drop (committed)
 
 - Scope: только `github.com`, маршруты Direct + fail-closed Drop.

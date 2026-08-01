@@ -56,6 +56,16 @@ shell integration, frontend, package and secret-scan gates pass locally. The
 hardware upgrade/reboot claim must be renewed with evidence from the fixed
 revision before unattended upgrade is considered verified again.
 
+The fixed revision was subsequently installed on a freshly recovered Flint 2.
+Installation created one safe baseline revision without Xray, Zapret, nftables
+or policy-routing resources. The system default route, DNS, SSH and the router
+administration page remained available. A controlled reboot preserved the same
+active revision and restored the controller, watchdog and source-restricted Web
+listener. This renews the clean-install and baseline-reboot result for the fixed
+revision. It does not renew an in-place upgrade from the legacy committed state;
+that exact hardware scenario remains blocked until it can be replayed without
+restoring old production state onto the recovered router.
+
 ## 2026-07-27 — external listener rollback was not armed
 
 ### What was tested

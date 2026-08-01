@@ -29,17 +29,21 @@
 
 ### Исходная точка текущей ветки
 
-Текущий локальный suite подтверждает сборку и поведение fixtures. Аппаратные
-строки ниже основаны на сохранённом GL-MT6000 evidence и не означают, что этот
-конкретный commit повторно применялся на роутере. Исполняемый код не содержит
-общего запрета для других моделей OpenWrt; заводской профиль, ARM64 package и
-hardware acceptance пока относятся только к Flint 2.
+Текущий commit `af8d81893d94434135d3cc942b27518c06a241d0` clean-installed
+на GL-MT6000 после factory recovery. На нём подтверждены безопасная baseline
+revision, отсутствие автоматического dataplane, control-plane health,
+source-restricted Web listener и восстановление того же committed state после
+controlled reboot. Direct/Drop/Smart DNS/VLESS/Zapret matrix и legacy in-place
+upgrade на этом commit не повторялись: соответствующие строки ниже используют
+сохранённое evidence более ранних revision. Исполняемый код не содержит общего
+запрета для других моделей OpenWrt; заводской профиль, ARM64 package и hardware
+acceptance пока относятся только к Flint 2.
 
 | Область | Локально | Flint 2 |
 |---|---|---|
 | Dynamic DNS observation и классификация без заводского service catalog | unit/API/artifact tests | повторный apply ещё не выполнялся |
 | Discovery modes и safe auto-apply gates | unit/API tests; clean default `observe_only` | auto-apply на текущем dataplane не запускался |
-| System default, managed Direct и unclassified разделены | API/artifact tests | UI/API требует повторной проверки на роутере |
+| System default, managed Direct и unclassified разделены | API/artifact tests | clean baseline сохранил system default и не создал managed rules; Direct apply на текущем commit не повторялся |
 | Drop: NXDOMAIN + nft set/mark + forward guard | единый artifact regression test | прежний Drop evidence сохранён; этот commit не применялся |
 | Smart DNS resolver preflight и apply proof | UDP/TCP/HTTP/TLS validator tests, bogon guard и expiry gate | требуется повторный тест с выбранным production resolver |
 | Opt-in static rules и редактируемый fallback порядок | API tests и UI typecheck/build | требуется пользовательский apply на текущем Flint 2 |
