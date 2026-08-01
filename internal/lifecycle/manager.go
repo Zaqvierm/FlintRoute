@@ -224,7 +224,7 @@ func (m Manager) FinishTestRun(runID, result string) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
-	if manifest.CleanupState == "complete" {
+	if cleanupStateTerminal(manifest.CleanupState) {
 		return manifest, nil
 	}
 	manifest.CleanupState = "pending"
@@ -280,7 +280,7 @@ func (m Manager) CleanupStale(apply bool) (CleanupReport, error) {
 		report.AmbiguousSkipped++
 	}
 	for _, manifest := range manifests {
-		if manifest.CleanupState == "complete" {
+		if cleanupStateTerminal(manifest.CleanupState) {
 			continue
 		}
 		expires, _ := time.Parse(time.RFC3339, manifest.ExpiresAt)
@@ -314,6 +314,7 @@ func (m Manager) CleanupStale(apply bool) (CleanupReport, error) {
 			}
 			report.Actions = append(report.Actions, action)
 		}
+		baselineDrift := false
 		if apply && allClean && m.Verifier != nil {
 			comparisons, verifyErr := m.Verifier.Verify(manifest.Baseline)
 			if verifyErr != nil {
@@ -324,14 +325,20 @@ func (m Manager) CleanupStale(apply bool) (CleanupReport, error) {
 				report.Baseline = append(report.Baseline, comparisons...)
 				for _, comparison := range comparisons {
 					if !comparison.Matches {
-						allClean = false
+						baselineDrift = true
 					}
 				}
 			}
 		}
 		if apply && allClean {
-			manifest.CleanupState = "complete"
-			manifest.FinalResult = "stale resources removed"
+			if baselineDrift {
+				manifest.CleanupState = "drifted"
+				manifest.FinalResult = "owned resources removed; baseline drift detected"
+				report.Actions = append(report.Actions, CleanupAction{RunID: manifest.RunID, Owner: manifest.Owner.String(), Reason: "captured baseline differs after owned cleanup", Action: "record terminal baseline drift", Applied: true})
+			} else {
+				manifest.CleanupState = "complete"
+				manifest.FinalResult = "stale resources removed"
+			}
 			if err := m.Save(manifest); err != nil {
 				return report, err
 			}
@@ -343,6 +350,10 @@ func (m Manager) CleanupStale(apply bool) (CleanupReport, error) {
 		}
 	}
 	return report, nil
+}
+
+func cleanupStateTerminal(state string) bool {
+	return state == "complete" || state == "drifted"
 }
 
 func (m Manager) listForCleanup() ([]Manifest, []CleanupAction, error) {
@@ -387,7 +398,7 @@ func (m Manager) pruneCompleted() error {
 	}
 	completed := make([]Manifest, 0, len(manifests))
 	for _, manifest := range manifests {
-		if manifest.CleanupState == "complete" {
+		if cleanupStateTerminal(manifest.CleanupState) {
 			completed = append(completed, manifest)
 		}
 	}

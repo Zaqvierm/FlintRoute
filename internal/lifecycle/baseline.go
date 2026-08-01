@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -38,6 +39,11 @@ var openWrtBaselineCommands = []baselineCommand{
 	{name: "ip", args: []string{"-4", "route", "show", "table", "all"}},
 	{name: "ip", args: []string{"-6", "route", "show", "table", "all"}},
 }
+
+var (
+	listenerAttributePattern = regexp.MustCompile(`\b(pid|fd)=\d+\b`)
+	netstatProcessPattern    = regexp.MustCompile(`\b\d+/(router-policy|xray|nfqws)\b`)
+)
 
 func (v OpenWrtBaselineVerifier) Capture() Baseline {
 	runner := v.Runner
@@ -113,18 +119,43 @@ func captureBaselineCheck(runner CommandRunner, command baselineCommand) Baselin
 }
 
 func normalizeBaselineOutputFor(command baselineCommand, raw []byte) []byte {
+	if command.name == "ubus" {
+		var value any
+		if json.Unmarshal(raw, &value) == nil {
+			removeVolatileBaselineFields(value)
+			if canonical, err := json.Marshal(value); err == nil {
+				raw = canonical
+			}
+		}
+	}
 	if command.name == "ss" {
 		lines := strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n")
 		managed := make([]string, 0, len(lines))
 		for _, line := range lines {
 			lower := strings.ToLower(line)
 			if strings.Contains(lower, "router-policy") || strings.Contains(lower, "xray") || strings.Contains(lower, "nfqws") {
+				line = listenerAttributePattern.ReplaceAllString(line, "$1=*")
+				line = netstatProcessPattern.ReplaceAllString(line, "*/$1")
 				managed = append(managed, line)
 			}
 		}
 		raw = []byte(strings.Join(managed, "\n"))
 	}
 	return normalizeBaselineOutput(raw)
+}
+
+func removeVolatileBaselineFields(value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		delete(typed, "pid")
+		for _, child := range typed {
+			removeVolatileBaselineFields(child)
+		}
+	case []any:
+		for _, child := range typed {
+			removeVolatileBaselineFields(child)
+		}
+	}
 }
 
 func normalizeBaselineOutput(raw []byte) []byte {

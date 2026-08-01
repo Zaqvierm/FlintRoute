@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -12,6 +13,14 @@ import (
 type fakeInspector struct {
 	identities map[int]ProcessIdentity
 	terminated []int
+}
+
+type staticBaselineVerifier struct {
+	comparisons []BaselineComparison
+}
+
+func (v staticBaselineVerifier) Verify(Baseline) ([]BaselineComparison, error) {
+	return v.comparisons, nil
 }
 
 func (f *fakeInspector) Inspect(pid int) (ProcessIdentity, error) {
@@ -58,6 +67,35 @@ func TestStaleCleanupRequiresFullProcessIdentityAndIsIdempotent(t *testing.T) {
 	again, err := manager.CleanupStale(true)
 	if err != nil || len(inspector.terminated) != 1 || again.StaleRuns != 0 {
 		t.Fatalf("cleanup is not idempotent: report=%+v err=%v terminated=%v", again, err, inspector.terminated)
+	}
+}
+
+func TestStaleCleanupRecordsBaselineDriftOnce(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 7, 22, 7, 0, 0, 0, time.UTC)
+	manager := Manager{
+		StateDir: filepath.Join(root, "state"), RuntimeDir: filepath.Join(root, "run"), Inspector: &fakeInspector{},
+		Verifier: staticBaselineVerifier{comparisons: []BaselineComparison{{Name: "service", Available: true, Matches: false}}},
+		Now:      func() time.Time { return now },
+	}
+	manifest := testManifest(now, "run-drift")
+	if err := manager.Save(manifest); err != nil {
+		t.Fatal(err)
+	}
+	report, err := manager.CleanupStale(true)
+	if err != nil || report.StaleRuns != 1 {
+		t.Fatalf("baseline drift cleanup failed: report=%+v err=%v", report, err)
+	}
+	stored, err := manager.Load(manifest.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.CleanupState != "drifted" || !strings.Contains(stored.FinalResult, "baseline drift") {
+		t.Fatalf("baseline drift was not recorded honestly: %+v", stored)
+	}
+	again, err := manager.CleanupStale(true)
+	if err != nil || again.StaleRuns != 0 {
+		t.Fatalf("terminal baseline drift was retried: report=%+v err=%v", again, err)
 	}
 }
 

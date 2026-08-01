@@ -44,9 +44,26 @@ func TestListenerBaselineIgnoresUnmanagedOpenWrtSockets(t *testing.T) {
 	if string(normalizeBaselineOutputFor(command, before)) != string(normalizeBaselineOutputFor(command, after)) {
 		t.Fatal("unmanaged listener churn changed the FlintRoute baseline")
 	}
-	managedDrift := []byte("tcp 0 0 127.0.0.1:8787 0.0.0.0:* LISTEN 11/router-policy\n")
+	managedRestart := []byte("tcp 0 0 127.0.0.1:8787 0.0.0.0:* LISTEN 11/router-policy\n")
+	if string(normalizeBaselineOutputFor(command, before)) != string(normalizeBaselineOutputFor(command, managedRestart)) {
+		t.Fatal("managed listener PID churn changed the baseline")
+	}
+	managedDrift := []byte("tcp 0 0 127.0.0.1:9797 0.0.0.0:* LISTEN 11/router-policy\n")
 	if string(normalizeBaselineOutputFor(command, before)) == string(normalizeBaselineOutputFor(command, managedDrift)) {
 		t.Fatal("managed listener drift was hidden")
+	}
+}
+
+func TestServiceBaselineIgnoresPIDButKeepsRunningState(t *testing.T) {
+	command := openWrtBaselineCommands[0]
+	before := []byte(`{"router-policy":{"instances":{"main":{"running":true,"pid":101,"command":["/usr/bin/router-policy"]}}}}`)
+	restarted := []byte(`{"router-policy":{"instances":{"main":{"running":true,"pid":202,"command":["/usr/bin/router-policy"]}}}}`)
+	if string(normalizeBaselineOutputFor(command, before)) != string(normalizeBaselineOutputFor(command, restarted)) {
+		t.Fatal("procd PID churn changed the service baseline")
+	}
+	stopped := []byte(`{"router-policy":{"instances":{"main":{"running":false,"command":["/usr/bin/router-policy"]}}}}`)
+	if string(normalizeBaselineOutputFor(command, before)) == string(normalizeBaselineOutputFor(command, stopped)) {
+		t.Fatal("service running-state drift was hidden")
 	}
 }
 

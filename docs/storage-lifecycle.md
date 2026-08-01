@@ -75,6 +75,15 @@ router-policy cleanup stale --apply --json
 `complete` только после удаления зарегистрированных ресурсов и совпадения
 post-cleanup baseline. Production procd instances в этот cleanup не входят.
 
+PID procd-процессов и PID/fd listeners не входят в baseline hash: restart
+production-сервиса не считается утечкой test-run. Состояние running/stopped,
+executable, listener address, nftables и policy routing по-прежнему сравниваются.
+
+Если owned-ресурсы уже удалены, но сохранённый baseline отличается после
+независимого production upgrade, manifest получает терминальное состояние
+`drifted`. Это не успешный `complete`: диагностика сохраняет расхождения для
+разбора, а повторный stale cleanup не выполняет те же действия бесконечно.
+
 ## Watchdog
 
 `router-policy-watchdog` запускает Go controller через procd. Он учитывает
