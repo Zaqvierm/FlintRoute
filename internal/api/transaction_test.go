@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"router-policy/internal/artifact"
 	"router-policy/internal/auth"
 	"router-policy/internal/config"
+	"router-policy/internal/managementproof"
 	"router-policy/internal/platform"
 )
 
@@ -379,6 +381,22 @@ func TestUnverifiedVerificationRollsBackAppliedCandidate(t *testing.T) {
 	}
 }
 
+func TestManagementPathLossAfterApplyRollsBackAutomatically(t *testing.T) {
+	fake := newFakeAdapter()
+	fake.fail["verify_management_path"] = true
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer srv.Close()
+	defer ts.Close()
+	cs := createValidatedChange(t, client, csrf, ts.URL, "GEO_LOCKED")
+	cs, status := postAction(t, client, csrf, ts.URL, cs.ID, "apply", `{}`)
+	if status != http.StatusOK || cs.State != "rolled_back" || fake.callCount("rollback") != 1 {
+		t.Fatalf("management path loss did not trigger rollback: status=%d change=%+v", status, cs)
+	}
+	if fake.callCount("verify_data_plane") != 0 || cs.ManagementVerified || cs.DataPlaneVerified {
+		t.Fatalf("data-plane verification continued after management loss: %+v", cs)
+	}
+}
+
 func TestRollbackActionCallsAdapterRollback(t *testing.T) {
 	fake := newFakeAdapter()
 	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
@@ -541,6 +559,44 @@ func TestExpiredTransactionAutomaticallyRollsBack(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("transaction did not expire: %+v", srv.changes[cs.ID])
+}
+
+func TestHeadlessApplyRequiresProofExtendsRollbackAndConfirmsExplicitly(t *testing.T) {
+	cfg := testAPIConfig(t)
+	fake := newFakeAdapter()
+	srv, ts, client, csrf, manager := newManagementProofTransactionHTTP(t, cfg, fake)
+	defer srv.Close()
+	defer ts.Close()
+
+	missing := createValidatedChange(t, client, csrf, ts.URL, "GEO_LOCKED")
+	_, status := postAction(t, client, csrf, ts.URL, missing.ID, "apply", `{"management_mode":"headless"}`)
+	if status != http.StatusConflict || fake.callCount("apply_candidate") != 0 {
+		t.Fatalf("headless apply without proof was accepted: status=%d", status)
+	}
+
+	change := createValidatedChange(t, client, csrf, ts.URL, "GEO_LOCKED")
+	if _, err := manager.Issue(context.Background(), managementproof.Binding{TransactionID: change.TransactionID, RevisionID: change.RevisionID}, managementproof.Observation{
+		Mode: managementproof.ModeHeadless, ClientIP: netip.MustParseAddr("127.0.0.2"), LocalIP: netip.MustParseAddr("127.0.0.1"),
+		Interface: "lo", Subnet: netip.MustParsePrefix("127.0.0.0/8"), ControlPlaneURL: "http://127.0.0.1:8787/api/v1/health",
+	}, 15*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	change, status = postAction(t, client, csrf, ts.URL, change.ID, "apply", `{"management_mode":"headless"}`)
+	if status != http.StatusOK || change.State != "awaiting_confirmation" {
+		t.Fatalf("proved headless apply failed: status=%d change=%+v", status, change)
+	}
+	expires, err := time.Parse(time.RFC3339, change.ExpiresAt)
+	if err != nil || time.Until(expires) < 9*time.Minute {
+		t.Fatalf("headless rollback window was not extended: expires=%s err=%v", change.ExpiresAt, err)
+	}
+	_, status = postAction(t, client, csrf, ts.URL, change.ID, "confirm", `{}`)
+	if status != http.StatusConflict || fake.callCount("commit") != 0 {
+		t.Fatalf("implicit headless confirmation was accepted: status=%d", status)
+	}
+	change, status = postAction(t, client, csrf, ts.URL, change.ID, "confirm", `{"management_mode":"headless"}`)
+	if status != http.StatusOK || change.State != "committed" || fake.callCount("commit") != 1 {
+		t.Fatalf("explicit headless confirmation failed: status=%d change=%+v", status, change)
+	}
 }
 
 func TestExpiryAndManualRollbackCallAdapterOnce(t *testing.T) {
@@ -934,6 +990,36 @@ func newTransactionHTTPWithProvider(t *testing.T, cfg *config.Config, production
 	ts := httptest.NewServer(srv.Handler())
 	client, csrf := login(t, ts.URL)
 	return srv, ts, client, csrf, authStore
+}
+
+func newManagementProofTransactionHTTP(t *testing.T, cfg *config.Config, productionAdapter adapter.Interface) (*Server, *httptest.Server, *http.Client, string, *managementproof.Manager) {
+	t.Helper()
+	authStore, err := auth.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := authStore.CreateSetupToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authStore.SetupAdmin("admin", "CorrectHorse123!", token); err != nil {
+		t.Fatal(err)
+	}
+	bootIDPath := filepath.Join(cfg.Storage.StateDir, "test-boot-id")
+	if err := os.WriteFile(bootIDPath, []byte("boot-api-proof-001\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := managementproof.New(cfg.Storage.StateDir, cfg.Storage.RuntimeDir, managementproof.Options{BootIDPath: bootIDPath, AdminProbe: func(context.Context, string) bool { return false }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewServerWithOptions(cfg, Options{Auth: authStore, Provider: platform.DevelopmentMockProvider{}, ProductionAdapter: productionAdapter, Development: true, ManagementProofs: manager, RequireManagementProof: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	client, csrf := login(t, ts.URL)
+	return srv, ts, client, csrf, manager
 }
 
 func testArtifactNetworkDiagnostics(simulation bool) platform.NetworkDiagnostics {

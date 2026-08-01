@@ -369,7 +369,7 @@ func (s *Server) calibrateAdaptiveCandidate(ctx context.Context, active *config.
 	}
 	change, failure := s.validateChangeSet(change)
 	if failure == nil {
-		change, failure = s.applyChangeSet(ctx, change)
+		change, failure = s.applyChangeSet(withAutomaticManagementProof(ctx), change)
 	}
 	if failure != nil {
 		if failure.Status == 409 {

@@ -55,6 +55,10 @@ MOCK_OPENWRT_LOG="$TMP_NATIVE/openwrt-calls.log"
   echo "failed to build mock-openwrt" >&2
   exit 1
 }
+(cd "$ROOT" && "$GO" build -o "$TMP_NATIVE/bin/management-proof-fixture$EXE" ./tests/management-proof-fixture) || {
+  echo "failed to build management proof fixture" >&2
+  exit 1
+}
 [ -f "$TMP_NATIVE/bin/mock-openwrt$EXE" ] || {
   echo "mock-openwrt binary not found after build" >&2
   exit 1
@@ -89,10 +93,13 @@ ROUTER_POLICY_AUTO_COLLECT_EVIDENCE=0
 MOCK_UCI_STATE="$TMP_NATIVE/uci-state.env"
 MOCK_IP_STATE="$TMP_NATIVE/ip-state.json"
 MOCK_SERVICE_STATE="$TMP_NATIVE/service-state"
+MOCK_MANAGEMENT_INTERFACE=br-lan
+ROUTER_POLICY_BOOT_ID_PATH="$TMP_NATIVE/boot-id"
 export STATE_DIR RUNTIME_DIR ROUTER_POLICY_CONFIG_PATH ROUTER_POLICY_BIN ROUTER_POLICY_ADAPTER_SELF
 export ACTIVE_NFT ACTIVE_DNSMASQ ACTIVE_XRAY ACTIVE_ZAPRET MOCK_OPENWRT_LOG
 export NFT_BIN FW4_BIN DNSMASQ_BIN DNSMASQ_INIT XRAY_BIN XRAY_INIT NFQWS_BIN ZAPRET_INIT IP_BIN UCI_BIN WGET_BIN NSLOOKUP_BIN PIDOF_BIN
 export ROUTER_POLICY_ALLOW_SIMULATED_DIAGNOSTICS ROUTER_POLICY_AUTO_COLLECT_EVIDENCE MOCK_UCI_STATE MOCK_IP_STATE MOCK_SERVICE_STATE
+export MOCK_MANAGEMENT_INTERFACE ROUTER_POLICY_BOOT_ID_PATH
 
 printf '%s\n' \
   'firewall.@defaults[0].flow_offloading=1' \
@@ -100,7 +107,7 @@ printf '%s\n' \
   "dhcp.@dnsmasq[0].confdir=${ACTIVE_DNSMASQ%/*}" > "$TMP/uci-state.env"
 
 rm -f "$MOCK_IP_STATE"
-printf 'lan_management_path=true\nglinet_uhttpd_path=true\n' > "$TMP/state/diagnostics/management.env"
+printf 'boot-integration-001\n' > "$TMP/boot-id"
 cat > "$TMP/state/diagnostics/network.json" <<'JSON'
 {
   "status": "VERIFIED",
@@ -180,6 +187,7 @@ setup_transaction() {
   } > "$txdir/binding.env"
   printf '%s\n' "$token" > "$txdir/rollback.cap"
   chmod 600 "$txdir/rollback.cap"
+  "$TMP/bin/management-proof-fixture$EXE" --state "$STATE_DIR" --runtime "$RUNTIME_DIR" --boot-id "$ROUTER_POLICY_BOOT_ID_PATH" --transaction "$txid" --revision "$revision"
 }
 
 assert_status() {
@@ -350,12 +358,26 @@ adapter snapshot-current "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/
   exit 1
 }
 adapter apply-candidate "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
-rm -f "$STATE_DIR/diagnostics/management.env"
+printf 'lan_management_path=true\nglinet_uhttpd_path=true\n' > "$STATE_DIR/diagnostics/management.env"
+rm -f "$RUNTIME_DIR/management-proofs/$revision-$txid.json"
 management_unverified=$(adapter verify-management "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision")
 printf '%s\n' "$management_unverified" | grep -F 'lan_management_path=false' >/dev/null
-printf '%s\n' "$management_unverified" | grep -F 'glinet_uhttpd_path=false' >/dev/null
+printf '%s\n' "$management_unverified" | grep -F 'proof_valid=false' >/dev/null
+printf '%s\n' "$management_unverified" | grep -F 'legacy_management_env_present=true' >/dev/null
 printf '%s\n' "$management_unverified" | grep -F 'verification_status=UNVERIFIED' >/dev/null
-printf 'lan_management_path=true\nglinet_uhttpd_path=true\n' > "$STATE_DIR/diagnostics/management.env"
+"$TMP/bin/management-proof-fixture$EXE" --state "$STATE_DIR" --runtime "$RUNTIME_DIR" --boot-id "$ROUTER_POLICY_BOOT_ID_PATH" --transaction "$txid" --revision "$revision"
+MOCK_MANAGEMENT_INTERFACE=guest
+set +e
+management_lost=$(adapter verify-management "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" 2>&1)
+management_lost_rc=$?
+set -e
+MOCK_MANAGEMENT_INTERFACE=br-lan
+[ "$management_lost_rc" -eq 4 ] || {
+  echo "lost management route did not fail verification: rc=$management_lost_rc output=$management_lost" >&2
+  exit 1
+}
+printf '%s\n' "$management_lost" | grep -F 'reason=management_path_lost_after_apply' >/dev/null
+printf '%s\n' "$management_lost" | grep -F 'verification_status=ERROR' >/dev/null
 unverified=$(adapter verify-data-plane "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision")
 printf '%s\n' "$unverified" | grep -F 'verification_status=UNVERIFIED' >/dev/null
 printf '%s\n' \

@@ -76,6 +76,45 @@ failed | expired | requires_device
 candidate hash и adapter revision/transaction. Вызывает `Adapter.Commit` до
 атомарного продвижения candidate config, version и revision в bbolt.
 
+## Management proof
+
+Production `VerifyManagementPath` больше не доверяет статическим boolean-флагам.
+Перед apply control plane создаёт короткоживущий HMAC-SHA256 proof, связанный с:
+
+- текущим Linux boot ID;
+- transaction и candidate revision;
+- временем выдачи и expiry;
+- адресом management-клиента и локальным адресом listener;
+- LAN-интерфейсом и подсетью;
+- фактическим control-plane URL;
+- административным HTTP path роутера, если он отвечал до apply.
+
+После `ApplyCandidate` shell adapter сначала проверяет подпись, boot/revision/
+transaction binding и TTL через `internal-verify-management-proof`, затем заново
+проверяет процесс controller, loopback health, маршрут к management-клиенту,
+LAN HTTP health и ранее доступный admin HTTP path. Потеря живого пути — `ERROR` и
+немедленный rollback. Отсутствующий, истёкший или чужой proof — `UNVERIFIED`; если
+data plane уже применён, control plane также откатывает transaction.
+
+Proof хранится в `/tmp/router-policy/management-proofs`, поэтому исчезает после
+reboot. Ключ подписи — отдельный mode-0600 файл в persistent state. Простое
+редактирование proof меняет HMAC и не может превратить проверку в успешную.
+Файл `state/diagnostics/management.env` может остаться после старой установки,
+но учитывается только как migration diagnostic и не влияет на результат.
+
+Для SSH/headless работы оператор после `validate` выполняет:
+
+```sh
+router-policy management-proof issue-headless \
+  --transaction TX_ID --revision REVISION_ID --ttl 15m
+```
+
+Команда принимает сетевой путь только из `SSH_CONNECTION`. Apply отправляется с
+`management_mode=headless`: rollback window увеличивается минимум до 10 минут,
+но не более часа. Commit всё равно требует отдельный `confirm` с тем же mode через
+loopback API. Автоматические controller-транзакции используют отдельный
+`automatic` proof и не могут быть подтверждены через пользовательский API.
+
 ## Четыре уровня в транзакции
 
 Транзакция разделяет проверку маршрута на четыре независимых уровня:

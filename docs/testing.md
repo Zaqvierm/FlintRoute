@@ -123,12 +123,19 @@ Verified: every Go package passed.
 - `tests/openwrt-adapter-integration.sh` — real shell helper с заменой только
   fw4/nft/dnsmasq/Xray/nfqws/ip/router health. Доказывает generated files/hashes
   через prepare/validate/snapshot/apply/verify/commit, verification-failure
-  restore, LAN `UNVERIFIED`, stale/duplicate rollback, transaction exclusion,
+  restore, подписанный LAN management proof, отказ при отсутствующем proof,
+  игнорирование legacy `management.env`, потерю маршрута к management-клиенту,
+  stale/duplicate rollback, transaction exclusion,
   simulated-diagnostics refusal, candidate/artifact mismatch refusal. Managed
   Zapret: nfqws `--dry-run` before apply, service start before nft load,
   rollback active config + prior service state. Включает P6 reconcile path,
   запускается с отсутствующим external `stat` и проверяет, что первоначальный
   flow-offloading ownership baseline не перезаписывается поздней transaction.
+- `internal/managementproof` — подпись и проверка LAN/headless proof, expiry,
+  boot/revision/transaction binding, защита от редактирования и проверка
+  интерфейса/подсети при confirm. Transaction tests отдельно проверяют
+  автоматический rollback при потере management path и явный headless confirm с
+  увеличенным rollback window.
 - `tests/installer-backup.sh` — empty archive останавливает install/uninstall до удаления файлов и не пишет `last-backup-path`;
 - `tests/installer-lifecycle.sh` — clean install, повторный upgrade, compatible
   downgrade, rollback невалидной версии, verified uninstall, запрет

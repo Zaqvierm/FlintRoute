@@ -111,8 +111,18 @@ failed | expired | requires_device
 VerifyManagementPath → VerifyDataPlane`. `SKIPPED`/`UNVERIFIED` →
 `requires_device`.
 
+Для обычного LAN-запроса `POST .../apply` автоматически формирует подписанный
+management proof из фактических remote/local адресов HTTP-соединения,
+LAN-интерфейса и подсети. Необязательное поле `management_mode` принимает `lan`
+(значение по умолчанию) или `headless`. В headless-режиме proof сначала выдаётся
+локальной CLI из активной SSH-сессии; apply только проверяет его и расширяет
+rollback window.
+
 `confirm` вызывает `Adapter.Commit` только после обоих verification flags, expiry,
-candidate hash, adapter revision match.
+candidate hash, adapter revision match и повторной проверки management proof.
+LAN confirm должен прийти через тот же интерфейс и подсеть. Headless confirm
+требует явное `{"management_mode":"headless"}` и loopback API. Proof от другой
+revision/transaction, прошлого boot или с истёкшим TTL отклоняется.
 
 ## SSE
 

@@ -41,26 +41,27 @@ type RecoveryTarget struct {
 }
 
 type Transaction struct {
-	ID                   string    `json:"id"`
-	RevisionID           string    `json:"revision_id"`
-	ChangeID             string    `json:"change_id"`
-	BaseVersion          int64     `json:"base_version"`
-	CandidateVersion     int64     `json:"candidate_version"`
-	CandidateHash        string    `json:"candidate_hash"`
-	CandidatePath        string    `json:"candidate_path"`
-	ArtifactRoot         string    `json:"artifact_root"`
-	ArtifactManifestHash string    `json:"artifact_manifest_hash"`
-	ArtifactsReady       bool      `json:"artifacts_ready"`
-	ArtifactBlockReason  string    `json:"artifact_block_reason,omitempty"`
-	ArtifactsSimulation  bool      `json:"artifacts_simulation"`
-	RollbackTokenHash    string    `json:"rollback_token_hash"`
-	CapabilityPath       string    `json:"capability_path"`
-	BindingPath          string    `json:"binding_path"`
-	RollbackToken        string    `json:"-"`
-	CreatedAt            time.Time `json:"created_at"`
-	ExpiresAt            time.Time `json:"expires_at"`
-	ManagementVerifiedAt time.Time `json:"management_verified_at,omitempty"`
-	DataPlaneVerifiedAt  time.Time `json:"data_plane_verified_at,omitempty"`
+	ID                     string    `json:"id"`
+	RevisionID             string    `json:"revision_id"`
+	ChangeID               string    `json:"change_id"`
+	BaseVersion            int64     `json:"base_version"`
+	CandidateVersion       int64     `json:"candidate_version"`
+	CandidateHash          string    `json:"candidate_hash"`
+	CandidatePath          string    `json:"candidate_path"`
+	ArtifactRoot           string    `json:"artifact_root"`
+	ArtifactManifestHash   string    `json:"artifact_manifest_hash"`
+	ArtifactsReady         bool      `json:"artifacts_ready"`
+	ArtifactBlockReason    string    `json:"artifact_block_reason,omitempty"`
+	ArtifactsSimulation    bool      `json:"artifacts_simulation"`
+	RollbackTokenHash      string    `json:"rollback_token_hash"`
+	CapabilityPath         string    `json:"capability_path"`
+	BindingPath            string    `json:"binding_path"`
+	RollbackToken          string    `json:"-"`
+	CreatedAt              time.Time `json:"created_at"`
+	ExpiresAt              time.Time `json:"expires_at"`
+	RollbackTimeoutSeconds int       `json:"rollback_timeout_seconds"`
+	ManagementVerifiedAt   time.Time `json:"management_verified_at,omitempty"`
+	DataPlaneVerifiedAt    time.Time `json:"data_plane_verified_at,omitempty"`
 }
 
 type StepResult struct {
@@ -128,20 +129,21 @@ func NewTransaction(cfg *config.Config, changeID, revisionID string, baseVersion
 		ttl = 120 * time.Second
 	}
 	return Transaction{
-		ID:                id,
-		RevisionID:        revisionID,
-		ChangeID:          changeID,
-		BaseVersion:       baseVersion,
-		CandidateVersion:  candidateVersion,
-		CandidateHash:     "sha256:" + sha256Hex(canonicalCandidate),
-		CandidatePath:     candidatePath,
-		ArtifactRoot:      filepath.Join(txDir, "generated"),
-		RollbackTokenHash: "sha256:" + sha256Hex([]byte(token)),
-		CapabilityPath:    filepath.Join(txDir, "rollback.cap"),
-		BindingPath:       filepath.Join(txDir, "binding.env"),
-		RollbackToken:     token,
-		CreatedAt:         now,
-		ExpiresAt:         now.Add(ttl),
+		ID:                     id,
+		RevisionID:             revisionID,
+		ChangeID:               changeID,
+		BaseVersion:            baseVersion,
+		CandidateVersion:       candidateVersion,
+		CandidateHash:          "sha256:" + sha256Hex(canonicalCandidate),
+		CandidatePath:          candidatePath,
+		ArtifactRoot:           filepath.Join(txDir, "generated"),
+		RollbackTokenHash:      "sha256:" + sha256Hex([]byte(token)),
+		CapabilityPath:         filepath.Join(txDir, "rollback.cap"),
+		BindingPath:            filepath.Join(txDir, "binding.env"),
+		RollbackToken:          token,
+		CreatedAt:              now,
+		ExpiresAt:              now.Add(ttl),
+		RollbackTimeoutSeconds: int(ttl / time.Second),
 	}, nil
 }
 
@@ -149,7 +151,17 @@ func PersistBinding(tx Transaction) error {
 	if tx.ID == "" || tx.RevisionID == "" || tx.CandidateHash == "" || tx.ArtifactManifestHash == "" || tx.RollbackTokenHash == "" || tx.BindingPath == "" {
 		return fmt.Errorf("complete transaction binding is required")
 	}
-	content := fmt.Sprintf("transaction_id=%s\nrevision_id=%s\ncandidate_hash=%s\nartifact_manifest_hash=%s\nartifacts_ready=%t\nartifact_block_reason=%s\nartifacts_simulation=%t\nrollback_token_hash=%s\n", tx.ID, tx.RevisionID, tx.CandidateHash, tx.ArtifactManifestHash, tx.ArtifactsReady, tx.ArtifactBlockReason, tx.ArtifactsSimulation, tx.RollbackTokenHash)
+	rollbackTimeoutSeconds := tx.RollbackTimeoutSeconds
+	if rollbackTimeoutSeconds <= 0 && tx.ExpiresAt.After(tx.CreatedAt) {
+		rollbackTimeoutSeconds = int(tx.ExpiresAt.Sub(tx.CreatedAt) / time.Second)
+	}
+	if rollbackTimeoutSeconds <= 0 {
+		rollbackTimeoutSeconds = 120
+	}
+	if rollbackTimeoutSeconds > 3600 {
+		return fmt.Errorf("rollback timeout must be between 1 and 3600 seconds")
+	}
+	content := fmt.Sprintf("transaction_id=%s\nrevision_id=%s\ncandidate_hash=%s\nartifact_manifest_hash=%s\nartifacts_ready=%t\nartifact_block_reason=%s\nartifacts_simulation=%t\nrollback_token_hash=%s\nrollback_timeout_seconds=%d\n", tx.ID, tx.RevisionID, tx.CandidateHash, tx.ArtifactManifestHash, tx.ArtifactsReady, tx.ArtifactBlockReason, tx.ArtifactsSimulation, tx.RollbackTokenHash, rollbackTimeoutSeconds)
 	if err := os.MkdirAll(filepath.Dir(tx.BindingPath), 0o700); err != nil {
 		return err
 	}

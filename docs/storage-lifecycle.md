@@ -131,7 +131,9 @@ rollback capability удаляются после успешного commit.
 
 `/tmp/router-policy` содержит locks, rollback timers, heartbeat, текущие probe
 results, SSE buffers, adaptive live observations, test-run files и bounded
-`write-events.log`. Потеря этого каталога после reboot допустима. Durable
+`write-events.log`. Короткоживущие подписанные management proofs также лежат в
+`/tmp/router-policy/management-proofs`; reboot намеренно делает их невалидными.
+Потеря этого каталога после reboot допустима. Durable
 journal остаётся достаточным для fail-closed recovery.
 
 ### Exported diagnostics
@@ -160,6 +162,8 @@ Support bundles и аппаратные отчёты создаются толь
 | generated transaction artifacts | validate/apply | один набор на реальный transaction | да для active revision | atomic writer сравнивает bytes; no-op apply не генерирует |
 | active nft/dnsmasq/Xray/Zapret config | adapter apply | только при отличии content/mode | да | `cmp`, same-filesystem temp, fsync, rename |
 | исходный flow-offloading baseline | первая transaction перед изменением UCI | один mode-0600 manifest на installation ownership | да | создаётся один раз; последующие transaction не перезаписывают |
+| `management-proof.key` | первый production control-plane start | один 32-byte mode-0600 HMAC key | да | exclusive create; никогда не возвращается API |
+| management proofs | LAN/SSH/automatic apply | один bounded JSON на активную transaction, TTL не более часа | нет | HMAC, boot/revision/transaction binding; удаление после commit/rollback |
 | `last-good` | commit | один verified snapshot | да | новый snapshot проверяется до удаления прошлого |
 | bbolt backups | daily maintenance | максимум 7 | да | interval, hash verify, bounded pruning |
 | installer/uninstall backup registry | install lifecycle | максимум 2 verified / 128 MiB | да | manifest + hashes до удаления старого |

@@ -34,6 +34,7 @@ import (
 	"router-policy/internal/evidence"
 	"router-policy/internal/geoip"
 	"router-policy/internal/lifecycle"
+	"router-policy/internal/managementproof"
 	"router-policy/internal/planner"
 	"router-policy/internal/platform"
 	"router-policy/internal/probe"
@@ -106,6 +107,53 @@ func run(args []string) error {
 			return err
 		}
 		return printJSON(map[string]any{"setup_required": true, "setup_token": token, "expires_at": meta.ExpiresAt, "uses_left": meta.UsesLeft})
+	case "management-proof":
+		if len(args) < 2 || args[1] != "issue-headless" {
+			return errors.New("usage: router-policy management-proof issue-headless --transaction TX --revision REV [--ttl 15m]")
+		}
+		fs := flag.NewFlagSet("management-proof issue-headless", flag.ContinueOnError)
+		transactionID := fs.String("transaction", "", "validated transaction ID")
+		revisionID := fs.String("revision", "", "validated revision ID")
+		ttl := fs.Duration("ttl", 15*time.Minute, "proof lifetime, at most 1h")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			return err
+		}
+		manager, err := newManagementProofManager(cfg)
+		if err != nil {
+			return err
+		}
+		proof, err := manager.IssueHeadlessSSH(context.Background(), managementproof.Binding{TransactionID: *transactionID, RevisionID: *revisionID}, os.Getenv("SSH_CONNECTION"), *ttl)
+		if err != nil {
+			return err
+		}
+		path, _ := manager.ProofPath(managementproof.Binding{TransactionID: *transactionID, RevisionID: *revisionID})
+		return printJSON(map[string]any{"issued": true, "mode": proof.Mode, "transaction_id": proof.TransactionID, "revision_id": proof.RevisionID, "interface": proof.Interface, "subnet": proof.Subnet, "expires_at": proof.ExpiresAt, "proof_path": path})
+	case "internal-verify-management-proof":
+		fs := flag.NewFlagSet("internal-verify-management-proof", flag.ContinueOnError)
+		transactionID := fs.String("transaction", "", "transaction ID")
+		revisionID := fs.String("revision", "", "revision ID")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			return err
+		}
+		manager, err := newManagementProofManager(cfg)
+		if err != nil {
+			return err
+		}
+		proof, err := manager.Verify(managementproof.Binding{TransactionID: *transactionID, RevisionID: *revisionID})
+		if err != nil {
+			return err
+		}
+		adminHTTPHealth := manager.ProbeAdminHTTP(context.Background(), proof)
+		fmt.Printf("proof_valid=true\nmanagement_mode=%s\nmanagement_interface=%s\nmanagement_subnet=%s\nmanagement_client_ip=%s\nmanagement_local_ip=%s\ncontrol_plane_url=%s\nadmin_http_url=%s\nadmin_http_required=%t\nadmin_http_health=%t\nproof_expires_at=%s\n", proof.Mode, proof.Interface, proof.Subnet, proof.ClientIP, proof.LocalIP, proof.ControlPlaneURL, proof.AdminHTTPURL, proof.AdminHTTPAvailable, adminHTTPHealth, proof.ExpiresAt)
+		return nil
 	case "lifecycle":
 		if len(args) < 2 {
 			return errors.New("usage: router-policy lifecycle status|begin|add-process|add-file|add-network|finish")
@@ -1153,6 +1201,7 @@ func usage() {
   serve [--listen 127.0.0.1:8787]
   serve-dev [--listen 127.0.0.1:8787]
   auth setup-token [--if-needed]
+  management-proof issue-headless --transaction TX --revision REV [--ttl 15m]
   lifecycle status [--json]
   lifecycle begin --id RUN_ID [--lease 1h]
   lifecycle add-process --id RUN_ID --resource ID --pid PID --executable PATH --config PATH
@@ -1187,6 +1236,11 @@ func usage() {
   install-dry-run
   security audit
   version`)
+}
+
+func newManagementProofManager(cfg *config.Config) (*managementproof.Manager, error) {
+	bootIDPath := os.Getenv("ROUTER_POLICY_BOOT_ID_PATH")
+	return managementproof.New(cfg.Storage.StateDir, cfg.Storage.RuntimeDir, managementproof.Options{BootIDPath: bootIDPath})
 }
 
 func runWatchdog(healthURL string, interval, startupGrace time.Duration, failureThreshold int, inhibitPath, serviceScript string) error {

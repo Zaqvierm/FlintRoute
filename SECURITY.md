@@ -16,6 +16,26 @@ There is no default administrator password. First setup uses a one-time setup to
 
 State-changing API requests require an `X-CSRF-Token` header that matches the HttpOnly session cookie.
 
+## Management Proof
+
+A production apply is not accepted on the strength of a manually maintained
+boolean file. FlintRoute issues a short-lived HMAC-SHA256 proof bound to the
+current boot ID, transaction, revision, management interface, subnet, client
+address, and listener address. The adapter verifies that binding and repeats
+live controller, LAN route, HTTP health, and available router-admin HTTP checks
+after the candidate data plane has been applied.
+
+The signing key is a regular mode-0600 persistent-state file and is never
+returned by the API. Proofs live in tmpfs, expire within the rollback window,
+and are invalid after reboot or revision change. Editing a proof invalidates its
+signature. A legacy `state/diagnostics/management.env` file is ignored as an
+authority even when it contains successful-looking flags.
+
+Headless apply requires a proof issued from an active `SSH_CONNECTION`, uses a
+longer bounded rollback window, and still needs an explicit loopback API
+confirmation. Missing, stale, mismatched, or lost management paths fail closed
+and leave the existing rollback transaction model in charge of recovery.
+
 ## Secrets
 
 The API must never return:

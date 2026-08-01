@@ -283,6 +283,9 @@ func (s *Server) applyChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet, *
 	if failure != nil {
 		return cs, failure
 	}
+	if failure := s.ensureAutomaticManagementProof(ctx, tx); failure != nil {
+		return cs, failure
+	}
 	if !tx.ArtifactsReady {
 		cs.AdapterStatus = "REQUIRES_DEVICE"
 		if err := s.saveProgress(&cs, tx, "requires_device"); err != nil {
@@ -489,6 +492,9 @@ func (s *Server) confirmChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet,
 	s.cancelExpiryLocked(cs.ID)
 	s.mu.Unlock()
 	_ = adapter.RetireCapability(tx)
+	if s.managementProofs != nil {
+		_ = s.managementProofs.Remove(proofBinding(tx))
+	}
 	s.cleanupCommittedResources(tx, previousRevision)
 	s.publishChangeEvent(cs, "adapter_commit_succeeded")
 	return cs, nil
@@ -564,6 +570,9 @@ func (s *Server) rollbackLocked(ctx context.Context, cs ChangeSet, tx adapter.Tr
 	s.cancelExpiryLocked(cs.ID)
 	s.mu.Unlock()
 	_ = adapter.RetireCapability(tx)
+	if s.managementProofs != nil {
+		_ = s.managementProofs.Remove(proofBinding(tx))
+	}
 	cleanupStatus := map[string]any{"transaction_id": tx.ID, "revision_id": tx.RevisionID, "status": "complete", "cleaned_at": time.Now().UTC()}
 	if err := adapter.CleanupObsoleteTransaction(s.cfg, tx.RevisionID, tx.ID); err != nil {
 		cleanupStatus["status"] = "partial"

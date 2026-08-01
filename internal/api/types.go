@@ -106,5 +106,6 @@ type ChangeSetRequest struct {
 }
 
 type ChangeActionRequest struct {
-	Version int64 `json:"version,omitempty"`
+	Version        int64  `json:"version,omitempty"`
+	ManagementMode string `json:"management_mode,omitempty"`
 }

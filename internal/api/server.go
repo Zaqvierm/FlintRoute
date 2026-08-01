@@ -24,6 +24,7 @@ import (
 	"router-policy/internal/discovery"
 	"router-policy/internal/domaincache"
 	"router-policy/internal/health"
+	"router-policy/internal/managementproof"
 	"router-policy/internal/planner"
 	"router-policy/internal/platform"
 	"router-policy/internal/probe"
@@ -39,15 +40,17 @@ import (
 var secureRandomHex = secureid.Hex
 
 type Options struct {
-	Auth                 *auth.Store
-	Provider             platform.Provider
-	State                *state.Store
-	ProductionAdapter    adapter.Interface
-	SubscriptionPreparer SubscriptionPreparer
-	ProbeEngineFactory   func(*config.Config) health.ProbeEngine
-	TSPURefresh          TSPURefreshFunc
-	DNSObservationPath   string
-	Development          bool
+	Auth                   *auth.Store
+	Provider               platform.Provider
+	State                  *state.Store
+	ProductionAdapter      adapter.Interface
+	SubscriptionPreparer   SubscriptionPreparer
+	ProbeEngineFactory     func(*config.Config) health.ProbeEngine
+	TSPURefresh            TSPURefreshFunc
+	DNSObservationPath     string
+	Development            bool
+	ManagementProofs       *managementproof.Manager
+	RequireManagementProof bool
 }
 
 type SubscriptionPreparer interface {
@@ -64,48 +67,61 @@ type actionLockEntry struct {
 }
 
 type Server struct {
-	cfg                  *config.Config
-	auth                 *auth.Store
-	provider             platform.Provider
-	store                *state.Store
-	adapter              adapter.Interface
-	subscriptionPreparer SubscriptionPreparer
-	probeEngineFactory   func(*config.Config) health.ProbeEngine
-	tspuRefresh          TSPURefreshFunc
-	tspuDelay            tspuDelayFunc
-	healthTracker        *probe.HealthTracker
-	domainDecisions      *domaincache.Manager
-	dnsObservationPath   string
-	development          bool
-	broker               *EventBroker
-	mux                  *http.ServeMux
-	mu                   sync.Mutex
-	changes              map[string]ChangeSet
-	actionLocks          map[string]*actionLockEntry
-	transactionMu        sync.Mutex
-	subscriptionMu       sync.Mutex
-	timers               map[string]*time.Timer
-	timerWG              sync.WaitGroup
-	closing              bool
-	activeConfig         *config.Config
-	activeRevision       string
-	configVersion        int64
-	recovery             recoveryStatus
-	hideSensitive        bool
-	adaptiveZapret       *adaptiveRuntime
-	schedulerOnce        sync.Once
-	schedulerCancel      context.CancelFunc
-	schedulerWG          sync.WaitGroup
-	closeOnce            sync.Once
-	closeErr             error
+	cfg                    *config.Config
+	auth                   *auth.Store
+	provider               platform.Provider
+	store                  *state.Store
+	adapter                adapter.Interface
+	subscriptionPreparer   SubscriptionPreparer
+	probeEngineFactory     func(*config.Config) health.ProbeEngine
+	tspuRefresh            TSPURefreshFunc
+	tspuDelay              tspuDelayFunc
+	healthTracker          *probe.HealthTracker
+	domainDecisions        *domaincache.Manager
+	dnsObservationPath     string
+	development            bool
+	broker                 *EventBroker
+	mux                    *http.ServeMux
+	mu                     sync.Mutex
+	changes                map[string]ChangeSet
+	actionLocks            map[string]*actionLockEntry
+	transactionMu          sync.Mutex
+	subscriptionMu         sync.Mutex
+	timers                 map[string]*time.Timer
+	timerWG                sync.WaitGroup
+	closing                bool
+	activeConfig           *config.Config
+	activeRevision         string
+	configVersion          int64
+	recovery               recoveryStatus
+	hideSensitive          bool
+	adaptiveZapret         *adaptiveRuntime
+	managementProofs       *managementproof.Manager
+	requireManagementProof bool
+	schedulerOnce          sync.Once
+	schedulerCancel        context.CancelFunc
+	schedulerWG            sync.WaitGroup
+	closeOnce              sync.Once
+	closeErr               error
 }
 
 func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 	if opts.ProductionAdapter == nil {
 		return nil, fmt.Errorf("ProductionAdapter dependency is required")
 	}
-	authStore := opts.Auth
 	var err error
+	requireManagementProof := opts.RequireManagementProof
+	if _, ok := opts.ProductionAdapter.(*adapter.OpenWrt); ok {
+		requireManagementProof = true
+	}
+	managementProofs := opts.ManagementProofs
+	if requireManagementProof && managementProofs == nil {
+		managementProofs, err = managementproof.New(cfg.Storage.StateDir, cfg.Storage.RuntimeDir, managementproof.Options{})
+		if err != nil {
+			return nil, fmt.Errorf("initialize management proof service: %w", err)
+		}
+	}
+	authStore := opts.Auth
 	if authStore == nil {
 		authStore, err = auth.Open(cfg)
 		if err != nil {
@@ -173,28 +189,30 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{
-		cfg:                  cfg,
-		auth:                 authStore,
-		provider:             provider,
-		store:                stateStore,
-		adapter:              opts.ProductionAdapter,
-		subscriptionPreparer: opts.SubscriptionPreparer,
-		probeEngineFactory:   probeEngineFactory,
-		tspuRefresh:          tspuRefresh,
-		tspuDelay:            randomTSPUDelay,
-		healthTracker:        probe.NewHealthTracker(persistedHealth),
-		domainDecisions:      domainDecisions,
-		dnsObservationPath:   dnsObservationPath,
-		development:          opts.Development,
-		broker:               broker,
-		mux:                  http.NewServeMux(),
-		changes:              changes,
-		actionLocks:          map[string]*actionLockEntry{},
-		timers:               map[string]*time.Timer{},
-		activeConfig:         activeConfig,
-		activeRevision:       activeRevision,
-		configVersion:        configVersion,
-		hideSensitive:        true,
+		cfg:                    cfg,
+		auth:                   authStore,
+		provider:               provider,
+		store:                  stateStore,
+		adapter:                opts.ProductionAdapter,
+		subscriptionPreparer:   opts.SubscriptionPreparer,
+		probeEngineFactory:     probeEngineFactory,
+		tspuRefresh:            tspuRefresh,
+		tspuDelay:              randomTSPUDelay,
+		healthTracker:          probe.NewHealthTracker(persistedHealth),
+		domainDecisions:        domainDecisions,
+		dnsObservationPath:     dnsObservationPath,
+		development:            opts.Development,
+		broker:                 broker,
+		mux:                    http.NewServeMux(),
+		changes:                changes,
+		actionLocks:            map[string]*actionLockEntry{},
+		timers:                 map[string]*time.Timer{},
+		activeConfig:           activeConfig,
+		activeRevision:         activeRevision,
+		configVersion:          configVersion,
+		hideSensitive:          true,
+		managementProofs:       managementProofs,
+		requireManagementProof: requireManagementProof,
 	}
 	s.adaptiveZapret, err = buildAdaptiveRuntime(activeConfig, stateStore)
 	if err != nil {
@@ -375,7 +393,7 @@ func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.Domain
 	}
 	change, failure := s.validateChangeSet(change)
 	if failure == nil {
-		change, failure = s.applyChangeSet(ctx, change)
+		change, failure = s.applyChangeSet(withAutomaticManagementProof(ctx), change)
 	}
 	if failure == nil && change.State != "awaiting_confirmation" {
 		failure = conflict("automatic_apply_unverified", "automatic domain policy did not reach confirmation")
@@ -1442,9 +1460,19 @@ func (s *Server) handleChangeByID(w http.ResponseWriter, r *http.Request) {
 	case "validate":
 		cs, failure = s.validateChangeSet(cs)
 	case "apply":
-		cs, failure = s.applyChangeSet(r.Context(), cs)
+		if s.requireManagementProof && !cs.Noop {
+			cs, failure = s.prepareManagementProof(r, req, cs)
+		}
+		if failure == nil {
+			cs, failure = s.applyChangeSet(r.Context(), cs)
+		}
 	case "confirm":
-		cs, failure = s.confirmChangeSet(r.Context(), cs)
+		if s.requireManagementProof && !cs.Noop {
+			failure = s.verifyManagementConfirmation(r, req, cs)
+		}
+		if failure == nil {
+			cs, failure = s.confirmChangeSet(r.Context(), cs)
+		}
 	case "rollback":
 		cs, failure = s.rollbackChangeSet(r.Context(), cs, false)
 	case "delete":

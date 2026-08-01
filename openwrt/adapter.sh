@@ -595,7 +595,10 @@ EOF
 }
 
 rollback_timeout() {
-  value="$(sed -n 's/.*"rollback_timeout_seconds"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$candidate" 2>/dev/null | head -n 1)"
+  value="$(sed -n 's/^rollback_timeout_seconds=//p' "$binding_file" 2>/dev/null | head -n 1)"
+  if ! printf '%s\n' "$value" | grep -Eq '^[0-9]+$' || [ "$value" -lt 1 ] || [ "$value" -gt 3600 ]; then
+    value="$(sed -n 's/.*"rollback_timeout_seconds"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$candidate" 2>/dev/null | head -n 1)"
+  fi
   [ -n "$value" ] || value=120
   echo "$value"
 }
@@ -866,23 +869,63 @@ verify_management() {
   active_matches || exit 4
   process_health=false
   loopback_api_health=false
+  proof_valid=false
   lan_management_path=false
-  glinet_uhttpd_path=false
+  admin_http_path=false
+  admin_http_required=false
+  route_to_management_client=false
   default_gateway_path=false
   dns_availability=false
+  legacy_management_env_present=false
+  management_mode=unknown
+  management_interface=unknown
+  management_subnet=unknown
+  admin_http_url=""
+  admin_http_health=false
+  proof_error=""
   if "$pidof_bin" router-policy >/dev/null 2>&1; then process_health=true; fi
   if "$wget_bin" -q -T 3 -O - http://127.0.0.1:8787/api/v1/health >/dev/null 2>&1; then loopback_api_health=true; fi
-  management_evidence="$state/diagnostics/management.env"
-  if [ -f "$management_evidence" ]; then
-    [ "$(sed -n 's/^lan_management_path=//p' "$management_evidence" | head -n 1)" = "true" ] && lan_management_path=true
-    [ "$(sed -n 's/^glinet_uhttpd_path=//p' "$management_evidence" | head -n 1)" = "true" ] && glinet_uhttpd_path=true
+  [ ! -f "$state/diagnostics/management.env" ] || legacy_management_env_present=true
+  proof_error_file="$runtime/management-proof-$revision-$txid.error"
+  if proof_output="$(ROUTER_POLICY_CONFIG="$candidate" "$router_policy_bin" internal-verify-management-proof --transaction "$txid" --revision "$revision" 2>"$proof_error_file")"; then
+    proof_valid=true
+    management_mode="$(printf '%s\n' "$proof_output" | sed -n 's/^management_mode=//p' | head -n 1)"
+    management_interface="$(printf '%s\n' "$proof_output" | sed -n 's/^management_interface=//p' | head -n 1)"
+    management_subnet="$(printf '%s\n' "$proof_output" | sed -n 's/^management_subnet=//p' | head -n 1)"
+    management_client_ip="$(printf '%s\n' "$proof_output" | sed -n 's/^management_client_ip=//p' | head -n 1)"
+    control_plane_url="$(printf '%s\n' "$proof_output" | sed -n 's/^control_plane_url=//p' | head -n 1)"
+    admin_http_url="$(printf '%s\n' "$proof_output" | sed -n 's/^admin_http_url=//p' | head -n 1)"
+    admin_http_required="$(printf '%s\n' "$proof_output" | sed -n 's/^admin_http_required=//p' | head -n 1)"
+    admin_http_health="$(printf '%s\n' "$proof_output" | sed -n 's/^admin_http_health=//p' | head -n 1)"
+    if "$ip_bin" route get "$management_client_ip" 2>/dev/null | grep -F "dev $management_interface" >/dev/null 2>&1; then
+      route_to_management_client=true
+    fi
+    if "$wget_bin" -q -T 3 -O - "$control_plane_url" >/dev/null 2>&1 && [ "$route_to_management_client" = "true" ]; then
+      lan_management_path=true
+    fi
+    if [ "$admin_http_required" = "false" ] || [ "$admin_http_health" = "true" ]; then
+      admin_http_path=true
+    fi
+    rm -f "$proof_error_file"
+  else
+    proof_error="$(head -c 256 "$proof_error_file" 2>/dev/null | tr '\r\n' '  ' | sed 's/[^A-Za-z0-9_.: =\/-]/_/g')"
+    rm -f "$proof_error_file"
   fi
   if "$ip_bin" route show default 2>/dev/null | grep -q '^default'; then default_gateway_path=true; fi
   if "$nslookup_bin" localhost 127.0.0.1 >/dev/null 2>&1; then dns_availability=true; fi
   echo "process_health=$process_health"
   echo "loopback_api_health=$loopback_api_health"
+  echo "proof_valid=$proof_valid"
+  echo "management_mode=$management_mode"
+  echo "management_interface=$management_interface"
+  echo "management_subnet=$management_subnet"
+  echo "route_to_management_client=$route_to_management_client"
   echo "lan_management_path=$lan_management_path"
-  echo "glinet_uhttpd_path=$glinet_uhttpd_path"
+  echo "admin_http_required=$admin_http_required"
+  echo "admin_http_health=$admin_http_health"
+  echo "admin_http_url=$admin_http_url"
+  echo "admin_http_path=$admin_http_path"
+  echo "legacy_management_env_present=$legacy_management_env_present"
   echo "default_gateway_path=$default_gateway_path"
   echo "dns_availability=$dns_availability"
   if [ "$process_health" != "true" ] || [ "$loopback_api_health" != "true" ]; then
@@ -891,14 +934,24 @@ verify_management() {
     echo "verification_status=ERROR"
     exit 4
   fi
-  if [ "$lan_management_path" = "true" ] && [ "$glinet_uhttpd_path" = "true" ] && [ "$default_gateway_path" = "true" ] && [ "$dns_availability" = "true" ]; then
+  if [ "$proof_valid" != "true" ]; then
+    write_status "management_unverified"
+    echo "management_ok=false"
+    echo "verification_status=UNVERIFIED"
+    echo "reason=management_proof_missing_or_invalid"
+    [ -z "${proof_error:-}" ] || echo "proof_error=$proof_error"
+    return 0
+  fi
+  if [ "$lan_management_path" = "true" ] && [ "$admin_http_path" = "true" ]; then
     write_status "management_verified"
     echo "management_ok=true"
     echo "verification_status=OK"
   else
-    write_status "management_unverified"
+    write_status "management_failed"
     echo "management_ok=false"
-    echo "verification_status=UNVERIFIED"
+    echo "verification_status=ERROR"
+    echo "reason=management_path_lost_after_apply"
+    exit 4
   fi
 }
 

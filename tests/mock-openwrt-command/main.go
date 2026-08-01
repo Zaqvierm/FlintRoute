@@ -104,6 +104,14 @@ func handleIP(args []string) int {
 		fmt.Println("default via 192.0.2.1 dev wan")
 		return 0
 	}
+	if len(args) == 3 && args[0] == "route" && args[1] == "get" {
+		iface := os.Getenv("MOCK_MANAGEMENT_INTERFACE")
+		if iface == "" {
+			iface = "br-lan"
+		}
+		fmt.Printf("%s dev %s src 192.0.2.93\n", args[2], iface)
+		return 0
+	}
 	state, err := loadIPState()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -356,7 +356,7 @@ func (s *Server) evaluateAdaptiveZapret(ctx context.Context, request adaptiveEva
 	}
 	change, failure = s.validateChangeSet(change)
 	if failure == nil {
-		change, failure = s.applyChangeSet(ctx, change)
+		change, failure = s.applyChangeSet(withAutomaticManagementProof(ctx), change)
 	}
 	if failure == nil && change.State != "awaiting_confirmation" {
 		failure = conflict("adaptive_apply_unverified", "adaptive candidate did not reach confirmation")
@@ -432,7 +432,7 @@ func (s *Server) commitAdaptiveRouteSelection(ctx context.Context, active *confi
 	}
 	change, failure := s.validateChangeSet(change)
 	if failure == nil {
-		change, failure = s.applyChangeSet(ctx, change)
+		change, failure = s.applyChangeSet(withAutomaticManagementProof(ctx), change)
 	}
 	if failure == nil && change.State != "awaiting_confirmation" {
 		failure = conflict("adaptive_apply_unverified", "adaptive route candidate did not reach confirmation")
