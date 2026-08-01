@@ -30,7 +30,7 @@ type OpenWrtCommand string
 const (
 	commandSystemBoard      OpenWrtCommand = "system-board"
 	commandSystemInfo       OpenWrtCommand = "system-info"
-	commandInterfaceStatus  OpenWrtCommand = "interface-status"
+	commandInterfaceDump    OpenWrtCommand = "interface-dump"
 	commandLinkList         OpenWrtCommand = "link-list"
 	commandDeviceStatus     OpenWrtCommand = "device-status"
 	commandRoutes4          OpenWrtCommand = "routes-v4"
@@ -110,11 +110,11 @@ func fixedOpenWrtCommand(command OpenWrtCommand, parameter string) (string, []st
 		return "/bin/ubus", []string{"call", "system", "board"}, nil
 	case commandSystemInfo:
 		return "/bin/ubus", []string{"call", "system", "info"}, nil
-	case commandInterfaceStatus:
-		if parameter != "lan" && parameter != "wan" && parameter != "wan6" {
-			return "", nil, fmt.Errorf("interface status parameter is not allowed")
+	case commandInterfaceDump:
+		if parameter != "" {
+			return "", nil, fmt.Errorf("interface dump does not accept a parameter")
 		}
-		return "/bin/ubus", []string{"call", "network.interface." + parameter, "status"}, nil
+		return "/bin/ubus", []string{"call", "network.interface", "dump"}, nil
 	case commandLinkList:
 		return "/sbin/ip", []string{"-s", "-j", "-details", "link", "show"}, nil
 	case commandDeviceStatus:
@@ -261,25 +261,32 @@ func (p OpenWrtProvider) NetworkDiagnostics(_ *config.Config) NetworkDiagnostics
 	if snapshot.Status != "OK" {
 		return fail("provider_snapshot_" + strings.ToLower(snapshot.Status))
 	}
-	for _, required := range []string{"lan_status", "wan_status", "links", "routes_v4", "routes_v6", "flow_software", "flow_hardware"} {
+	for _, required := range []string{"interface_dump", "links", "routes_v4", "routes_v6", "flow_software", "flow_hardware"} {
 		if _, failed := snapshot.Errors[required]; failed {
 			return fail(required + "_unverified")
 		}
 	}
 
-	report.LANInterfaces = uniqueInterfaces(snapshot.LAN.L3Device, snapshot.LAN.Device)
-	if !snapshot.LAN.Up || len(report.LANInterfaces) == 0 || !linkPresent(snapshot.Links, report.LANInterfaces[0]) {
+	for _, lan := range snapshot.LANs {
+		report.LANInterfaces = append(report.LANInterfaces, firstInterface(lan.L3Device, lan.Device))
+	}
+	report.LANInterfaces = uniqueInterfaces(report.LANInterfaces...)
+	if len(report.LANInterfaces) == 0 || !allLinksPresent(snapshot.Links, report.LANInterfaces) {
 		return fail("lan_interface_unverified")
 	}
-	report.WANInterface = firstInterface(snapshot.WAN.L3Device, snapshot.WAN.Device)
-	if !snapshot.WAN.Up || report.WANInterface == "" || !linkPresent(snapshot.Links, report.WANInterface) {
+	for _, wan := range append(append([]interfaceInfo(nil), snapshot.WANs...), snapshot.WAN6s...) {
+		report.WANInterfaces = append(report.WANInterfaces, firstInterface(wan.L3Device, wan.Device))
+	}
+	report.WANInterfaces = uniqueInterfaces(report.WANInterfaces...)
+	if len(report.WANInterfaces) == 0 || !allLinksPresent(snapshot.Links, report.WANInterfaces) {
 		return fail("wan_interface_unverified")
 	}
 
 	gateway4, device4, ok := mainDefaultGateway(snapshot.Routes4, 4)
-	if !ok || device4 != report.WANInterface {
+	if !ok || !containsString(report.WANInterfaces, device4) {
 		return fail("ipv4_gateway_unverified")
 	}
+	report.WANInterface = device4
 	report.IPv4Gateway = gateway4
 
 	software, softwareOK := binaryFlag(snapshot.FlowSW)
@@ -292,9 +299,11 @@ func (p OpenWrtProvider) NetworkDiagnostics(_ *config.Config) NetworkDiagnostics
 	report.HardwareFlowOffload = hardware
 
 	resolverSet := map[string]struct{}{}
-	for _, resolver := range append(append([]string(nil), snapshot.WAN.DNSServer...), snapshot.WAN6.DNSServer...) {
-		if ip := net.ParseIP(strings.TrimSpace(resolver)); ip != nil {
-			resolverSet[ip.String()] = struct{}{}
+	for _, wan := range append(append([]interfaceInfo(nil), snapshot.WANs...), snapshot.WAN6s...) {
+		for _, resolver := range wan.DNSServer {
+			if ip := net.ParseIP(strings.TrimSpace(resolver)); ip != nil {
+				resolverSet[ip.String()] = struct{}{}
+			}
 		}
 	}
 	for resolver := range resolverSet {
@@ -306,8 +315,7 @@ func (p OpenWrtProvider) NetworkDiagnostics(_ *config.Config) NetworkDiagnostics
 	}
 
 	if gateway6, device6, available := mainDefaultGateway(snapshot.Routes6, 6); available {
-		wan6Interface := firstInterface(snapshot.WAN6.L3Device, snapshot.WAN6.Device, report.WANInterface)
-		if device6 != wan6Interface || device6 != report.WANInterface {
+		if !containsString(report.WANInterfaces, device6) || device6 != report.WANInterface {
 			return fail("ipv6_wan_interface_mismatch")
 		}
 		report.IPv6Available = true
@@ -365,6 +373,7 @@ type interfaceAddress struct {
 }
 
 type interfaceInfo struct {
+	Name        string             `json:"interface"`
 	Up          bool               `json:"up"`
 	Pending     bool               `json:"pending"`
 	Available   bool               `json:"available"`
@@ -505,6 +514,10 @@ type openWrtSnapshot struct {
 	LAN         interfaceInfo
 	WAN         interfaceInfo
 	WAN6        interfaceInfo
+	Interfaces  []interfaceInfo
+	LANs        []interfaceInfo
+	WANs        []interfaceInfo
+	WAN6s       []interfaceInfo
 	Links       []linkInfo
 	Devices     map[string]deviceInfo
 	Routes4     []routeInfo
@@ -577,9 +590,15 @@ func collectOpenWrtSnapshot(runtime *openWrtRuntime, now time.Time) *openWrtSnap
 
 	decode("system_board", commandSystemBoard, "", &snapshot.Board)
 	decode("system_info", commandSystemInfo, "", &snapshot.System)
-	decode("lan_status", commandInterfaceStatus, "lan", &snapshot.LAN)
-	decode("wan_status", commandInterfaceStatus, "wan", &snapshot.WAN)
-	decode("wan6_status", commandInterfaceStatus, "wan6", &snapshot.WAN6)
+	var interfaceDump struct {
+		Interfaces []interfaceInfo `json:"interface"`
+	}
+	decode("interface_dump", commandInterfaceDump, "", &interfaceDump)
+	snapshot.Interfaces = interfaceDump.Interfaces
+	if len(snapshot.Interfaces) > 128 {
+		snapshot.Interfaces = nil
+		snapshot.Errors["interface_dump"] = "output_limit_exceeded"
+	}
 	decode("links", commandLinkList, "", &snapshot.Links)
 	decode("routes_v4", commandRoutes4, "", &snapshot.Routes4)
 	decode("routes_v6", commandRoutes6, "", &snapshot.Routes6)
@@ -587,6 +606,16 @@ func collectOpenWrtSnapshot(runtime *openWrtRuntime, now time.Time) *openWrtSnap
 	decode("rules_v6", commandRules6, "", &snapshot.Rules6)
 	decode("neighbors", commandNeighbors, "", &snapshot.Neighbors)
 	decode("wireless", commandWirelessStatus, "", &snapshot.Wireless)
+	snapshot.LANs, snapshot.WANs, snapshot.WAN6s = classifyOpenWrtInterfaces(snapshot.Interfaces, snapshot.Routes4, snapshot.Routes6)
+	if len(snapshot.LANs) > 0 {
+		snapshot.LAN = snapshot.LANs[0]
+	}
+	if _, device, ok := mainDefaultGateway(snapshot.Routes4, 4); ok {
+		snapshot.WAN = interfaceForDevice(snapshot.WANs, device)
+	}
+	if _, device, ok := mainDefaultGateway(snapshot.Routes6, 6); ok {
+		snapshot.WAN6 = interfaceForDevice(snapshot.WAN6s, device)
+	}
 
 	if len(snapshot.Links) > 256 {
 		snapshot.Links = nil
@@ -681,7 +710,7 @@ func collectOpenWrtSnapshot(runtime *openWrtRuntime, now time.Time) *openWrtSnap
 		}
 	}
 
-	critical := []string{"system_board", "system_info", "lan_status", "wan_status", "links", "routes_v4"}
+	critical := []string{"system_board", "system_info", "interface_dump", "links", "routes_v4"}
 	for _, name := range critical {
 		if reason, failed := snapshot.Errors[name]; failed {
 			snapshot.Status = "UNVERIFIED"
@@ -722,9 +751,9 @@ func safeProviderError(err error) string {
 func (p OpenWrtProvider) Overview(cfg *config.Config) map[string]any {
 	snapshot := p.snapshot()
 	internet := "OFFLINE"
-	if _, failed := snapshot.Errors["wan_status"]; failed {
+	if _, failed := snapshot.Errors["interface_dump"]; failed {
 		internet = "UNVERIFIED"
-	} else if snapshot.WAN.Up && hasDefaultRoute(snapshot.Routes4) {
+	} else if len(snapshot.WANs) > 0 && hasDefaultRoute(snapshot.Routes4) {
 		internet = "ROUTE_AVAILABLE"
 	}
 	dns := "UNVERIFIED"
@@ -807,7 +836,7 @@ func (p OpenWrtProvider) System(cfg *config.Config) map[string]any {
 func (p OpenWrtProvider) Diagnostics(*config.Config) map[string]any {
 	snapshot := p.snapshot()
 	checks := make([]map[string]any, 0, len(snapshot.Errors)+6)
-	for _, name := range []string{"system_board", "system_info", "lan_status", "wan_status", "links", "routes_v4", "routes_v6", "rules_v4", "rules_v6", "wireless", "neighbors", "dhcp_leases", "firewall_check", "nft_tables"} {
+	for _, name := range []string{"system_board", "system_info", "interface_dump", "links", "routes_v4", "routes_v6", "rules_v4", "rules_v6", "wireless", "neighbors", "dhcp_leases", "firewall_check", "nft_tables"} {
 		status := "PASS"
 		reason := ""
 		if value, failed := snapshot.Errors[name]; failed {
@@ -836,8 +865,8 @@ func (p OpenWrtProvider) Diagnostics(*config.Config) map[string]any {
 			"ipv6_rule_count":     len(snapshot.Rules6),
 			"flow_offloading":     triState(snapshot.FlowSW),
 			"flow_offloading_hw":  triState(snapshot.FlowHW),
-			"management_lan_up":   snapshot.LAN.Up,
-			"wan_route_available": snapshot.WAN.Up && hasDefaultRoute(snapshot.Routes4),
+			"management_lan_up":   len(snapshot.LANs) > 0,
+			"wan_route_available": len(snapshot.WANs) > 0 && hasDefaultRoute(snapshot.Routes4),
 			"data_plane_verified": false,
 			"management_verified": false,
 		},
@@ -892,19 +921,20 @@ func (p OpenWrtProvider) Topology(*config.Config) map[string]any {
 	edges := []map[string]any{{"from": "internet", "to": "router", "status": internetStatus(snapshot)}}
 	linkIDs := map[string]string{}
 	for _, link := range snapshot.Links {
-		if !topologyInterface(link.IfName, snapshot.WAN.Device) {
+		kind, visible := topologyInterfaceKind(link.IfName, snapshot)
+		if !visible {
 			continue
 		}
 		id := "interface-" + stableID(link.IfName)
 		linkIDs[link.IfName] = id
 		detail := snapshot.Devices[link.IfName]
 		nodes = append(nodes, map[string]any{
-			"id": id, "label": link.IfName, "type": interfaceKind(link.IfName, snapshot.WAN.Device),
+			"id": id, "label": link.IfName, "type": kind,
 			"status": strings.ToUpper(nonEmpty(link.OperState, "UNKNOWN")), "carrier": detail.Carrier,
 			"speed_mbps": detail.Speed, "rx_bytes": maxUint64(link.Stats64.RX.Bytes, detail.Statistics.RXBytes),
 			"tx_bytes": maxUint64(link.Stats64.TX.Bytes, detail.Statistics.TXBytes),
 		})
-		if link.IfName != snapshot.WAN.Device {
+		if kind != "wan" {
 			edges = append(edges, map[string]any{"from": "router", "to": id, "status": strings.ToUpper(nonEmpty(link.OperState, "UNKNOWN"))})
 		}
 	}
@@ -1010,7 +1040,7 @@ func buildDeviceItems(snapshot *openWrtSnapshot, source string) []map[string]any
 		id := "device-" + stableID(lease.MAC)
 		seen[lease.IP] = true
 		items = append(items, map[string]any{
-			"id": id, "name": name, "kind": deviceKind(neighbor.Dev), "ip": lease.IP,
+			"id": id, "name": name, "kind": deviceKind(snapshot, neighbor.Dev), "ip": lease.IP,
 			"mac": maskMAC(lease.MAC), "mac_hash": hashText(lease.MAC), "interface": neighbor.Dev,
 			"connected": connected, "neighbor_state": neighbor.State, "lease_expires_at": lease.ExpiresAt,
 			"policy": "UNVERIFIED", "active_route": "UNVERIFIED", "source": source + ":dhcp+neighbor",
@@ -1024,7 +1054,7 @@ func buildDeviceItems(snapshot *openWrtSnapshot, source string) []map[string]any
 		neighbor := neighborsByIP[host.IP]
 		items = append(items, map[string]any{
 			"id": "device-" + stableID(host.IP), "name": nonEmpty(host.Hostname, "IPv6 device"),
-			"kind": deviceKind(neighbor.Dev), "ip": host.IP, "mac": maskMAC(neighbor.LLAddr),
+			"kind": deviceKind(snapshot, neighbor.Dev), "ip": host.IP, "mac": maskMAC(neighbor.LLAddr),
 			"mac_hash": hashText(neighbor.LLAddr), "interface": neighbor.Dev,
 			"connected":      neighborIsConnected(neighbor.State),
 			"neighbor_state": neighbor.State, "policy": "UNVERIFIED", "active_route": "UNVERIFIED",
@@ -1036,6 +1066,73 @@ func buildDeviceItems(snapshot *openWrtSnapshot, source string) []map[string]any
 		return fmt.Sprint(items[i]["name"], items[i]["ip"]) < fmt.Sprint(items[j]["name"], items[j]["ip"])
 	})
 	return items
+}
+
+func classifyOpenWrtInterfaces(interfaces []interfaceInfo, routes4, routes6 []routeInfo) (lans, wans, wan6s []interfaceInfo) {
+	wan4Devices := defaultRouteDevices(routes4, 4)
+	wan6Devices := defaultRouteDevices(routes6, 6)
+	for _, info := range interfaces {
+		device := firstInterface(info.L3Device, info.Device)
+		if !info.Up || device == "" || device == "lo" {
+			continue
+		}
+		_, isWAN4 := wan4Devices[device]
+		_, isWAN6 := wan6Devices[device]
+		if isWAN4 {
+			wans = append(wans, info)
+		}
+		if isWAN6 {
+			wan6s = append(wan6s, info)
+		}
+		if !isWAN4 && !isWAN6 && interfaceHasLANAddress(info) {
+			lans = append(lans, info)
+		}
+	}
+	sort.Slice(lans, func(i, j int) bool { return interfaceSortKey(lans[i]) < interfaceSortKey(lans[j]) })
+	sort.Slice(wans, func(i, j int) bool { return interfaceSortKey(wans[i]) < interfaceSortKey(wans[j]) })
+	sort.Slice(wan6s, func(i, j int) bool { return interfaceSortKey(wan6s[i]) < interfaceSortKey(wan6s[j]) })
+	return lans, wans, wan6s
+}
+
+func defaultRouteDevices(routes []routeInfo, family int) map[string]struct{} {
+	devices := map[string]struct{}{}
+	for _, route := range routes {
+		if !mainRouteTable(route.Table) || !interfaceNamePattern.MatchString(route.Dev) || route.Gateway == "" {
+			continue
+		}
+		ip := net.ParseIP(route.Gateway)
+		if ip == nil || (family == 4 && ip.To4() == nil) || (family == 6 && ip.To4() != nil) {
+			continue
+		}
+		if (family == 4 && route.Dst != "default" && route.Dst != "0.0.0.0/0") || (family == 6 && route.Dst != "default" && route.Dst != "::/0") {
+			continue
+		}
+		devices[route.Dev] = struct{}{}
+	}
+	return devices
+}
+
+func interfaceHasLANAddress(info interfaceInfo) bool {
+	for _, value := range append(append([]interfaceAddress(nil), info.IPv4Address...), info.IPv6Address...) {
+		ip := net.ParseIP(strings.TrimSpace(value.Address))
+		if ip != nil && !ip.IsUnspecified() && !ip.IsLoopback() && !ip.IsMulticast() && !ip.IsLinkLocalUnicast() {
+			return true
+		}
+	}
+	return false
+}
+
+func interfaceForDevice(interfaces []interfaceInfo, device string) interfaceInfo {
+	for _, info := range interfaces {
+		if firstInterface(info.L3Device, info.Device) == device {
+			return info
+		}
+	}
+	return interfaceInfo{}
+}
+
+func interfaceSortKey(info interfaceInfo) string {
+	return firstInterface(info.L3Device, info.Device) + "\x00" + info.Name
 }
 
 func sanitizeLabel(value string) string {
@@ -1143,6 +1240,24 @@ func linkPresent(links []linkInfo, name string) bool {
 	return false
 }
 
+func allLinksPresent(links []linkInfo, names []string) bool {
+	for _, name := range names {
+		if !linkPresent(links, name) {
+			return false
+		}
+	}
+	return true
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 func binaryFlag(value string) (bool, bool) {
 	switch strings.TrimSpace(value) {
 	case "0":
@@ -1207,10 +1322,10 @@ func linkSpeed(snapshot *openWrtSnapshot, device string) any {
 }
 
 func internetStatus(snapshot *openWrtSnapshot) string {
-	if _, failed := snapshot.Errors["wan_status"]; failed {
+	if _, failed := snapshot.Errors["interface_dump"]; failed {
 		return "UNVERIFIED"
 	}
-	if snapshot.WAN.Up && hasDefaultRoute(snapshot.Routes4) {
+	if len(snapshot.WANs) > 0 && hasDefaultRoute(snapshot.Routes4) {
 		return "ROUTE_AVAILABLE"
 	}
 	return "OFFLINE"
@@ -1241,32 +1356,42 @@ func nonEmpty(value, fallback string) string {
 	return value
 }
 
-func topologyInterface(name, wanDevice string) bool {
-	if name == wanDevice || name == "br-lan" || strings.HasPrefix(name, "lan") || strings.HasPrefix(name, "wlan") || strings.HasPrefix(name, "br-guest") || strings.HasPrefix(name, "br-iot") {
-		return true
+func topologyInterfaceKind(name string, snapshot *openWrtSnapshot) (string, bool) {
+	for _, wan := range append(append([]interfaceInfo(nil), snapshot.WANs...), snapshot.WAN6s...) {
+		if name == firstInterface(wan.L3Device, wan.Device) {
+			return "wan", true
+		}
 	}
-	return false
+	for _, radio := range snapshot.Wireless {
+		for _, iface := range radio.Interfaces {
+			if name == iface.IfName {
+				return "wifi", true
+			}
+		}
+	}
+	for _, lan := range snapshot.LANs {
+		if name == firstInterface(lan.L3Device, lan.Device) {
+			for _, link := range snapshot.Links {
+				if link.IfName == name && link.Master != "" {
+					return "ethernet", true
+				}
+			}
+			return "bridge", true
+		}
+	}
+	return "", false
 }
 
-func interfaceKind(name, wanDevice string) string {
-	if name == wanDevice {
-		return "wan"
-	}
-	if strings.HasPrefix(name, "wlan") {
-		return "wifi"
-	}
-	if strings.HasPrefix(name, "br-") {
-		return "bridge"
-	}
-	return "ethernet"
-}
-
-func deviceKind(name string) string {
-	if strings.HasPrefix(name, "wlan") {
-		return "wifi"
-	}
+func deviceKind(snapshot *openWrtSnapshot, name string) string {
 	if name == "" {
 		return "unknown"
+	}
+	for _, radio := range snapshot.Wireless {
+		for _, iface := range radio.Interfaces {
+			if name == iface.IfName {
+				return "wifi"
+			}
+		}
 	}
 	return "ethernet"
 }

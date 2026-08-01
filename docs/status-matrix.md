@@ -27,17 +27,19 @@
 | P13 | 85% | Маршруты, Smart DNS, recursion guard, crash/reboot и physical power-loss доказаны; multi-client и soak остаются |
 | P14 | 100% | Ownership, cleanup, bounded storage, provider/dataplane recovery, idle write budget и полный lifecycle tail доказаны на Flint 2 |
 
-### Исходная точка текущей ветки
+### Последняя аппаратная точка и текущая ветка
 
-Текущий commit `af8d81893d94434135d3cc942b27518c06a241d0` clean-installed
-на GL-MT6000 после factory recovery. На нём подтверждены безопасная baseline
+Commit `af8d81893d94434135d3cc942b27518c06a241d0` clean-installed на GL-MT6000
+после factory recovery. На нём подтверждены безопасная baseline
 revision, отсутствие автоматического dataplane, control-plane health,
 source-restricted Web listener и восстановление того же committed state после
-controlled reboot. Direct/Drop/Smart DNS/VLESS/Zapret matrix и legacy in-place
-upgrade на этом commit не повторялись: соответствующие строки ниже используют
-сохранённое evidence более ранних revision. Исполняемый код не содержит общего
-запрета для других моделей OpenWrt; заводской профиль, ARM64 package и hardware
-acceptance пока относятся только к Flint 2.
+controlled reboot. Более новые изменения текущей ветки, включая runtime network
+discovery без имён `lan`/`wan`/`br-lan`, пока проверены только локально и не
+наследуют этот аппаратный PASS. Direct/Drop/Smart DNS/VLESS/Zapret matrix и
+legacy in-place upgrade на указанном commit не повторялись: соответствующие
+строки ниже используют сохранённое evidence более ранних revisions. Код не
+проверяет модель роутера, но ARM64 package и hardware acceptance пока относятся
+только к Flint 2.
 
 | Область | Локально | Flint 2 |
 |---|---|---|
@@ -61,8 +63,8 @@ acceptance пока относятся только к Flint 2.
   уже установленного binary;
 - VLESS требует пользовательскую VPN-подписку, Smart DNS — проверенные
   production resolver endpoints;
-- готовый package и factory config рассчитаны на Linux arm64/GL-MT6000;
-  другие OpenWrt target требуют отдельной сборки, диагностики и acceptance;
+- готовый package рассчитан на Linux arm64, а hardware acceptance — на
+  GL-MT6000; другие OpenWrt target требуют отдельной сборки, диагностики и acceptance;
 - локальные installer tests не доказывают конкретную прошивку или железо;
 - Telegram notifications не входят в routing bootstrap. Собственный TGWS не
   реализован намеренно: поддерживается явно внешний SOCKS5 endpoint.

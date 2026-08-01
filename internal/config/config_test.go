@@ -69,21 +69,21 @@ func TestValidateCanonicalizesIDNDomains(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsVolatileFlint2State(t *testing.T) {
+func TestValidateRejectsVolatileProductionStateForAnyRouterTarget(t *testing.T) {
 	cfg := validConfig()
-	cfg.Platform.Target = "glinet-flint2"
+	cfg.Platform.Target = "openwrt"
 	cfg.Storage = Storage{StateDir: "/var/lib/router-policy", RuntimeDir: "/tmp/router-policy", Database: "/var/lib/router-policy/router-policy.bbolt"}
 	cfg.Xray.LastGoodConfig = "/var/lib/router-policy/last-good/xray.json"
 	cfg.GeoIP.Database = "/var/lib/router-policy/geoip/user-country.mmdb"
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "persistent") {
-		t.Fatalf("volatile Flint 2 state was accepted: %v", err)
+		t.Fatalf("volatile production state was accepted: %v", err)
 	}
 	cfg.Storage.StateDir = "/etc/router-policy/state"
 	cfg.Storage.Database = "/etc/router-policy/state/router-policy.bbolt"
 	cfg.Xray.LastGoodConfig = "/etc/router-policy/state/last-good/xray.json"
 	cfg.GeoIP.Database = "/etc/router-policy/state/geoip/user-country.mmdb"
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("persistent Flint 2 state was rejected: %v", err)
+		t.Fatalf("persistent production state was rejected: %v", err)
 	}
 }
 
@@ -255,7 +255,8 @@ func TestValidateRejectsVLESSDNSProxyPortExhaustion(t *testing.T) {
 
 func validConfig() *Config {
 	return &Config{
-		Version: 2,
+		Version:  2,
+		Platform: Platform{Target: "test"},
 		OpenWrt: OpenWrt{
 			NFTFamily: "inet", NFTTable: "router_policy", WANRouteTable: 100, ZapretRouteTable: 101, XrayRouteTable: 102,
 			DirectMark: "0x41", ZapretMark: "0x42", XrayMark: "0x43", XrayTProxyMark: "0x100", XrayBypassMark: "0x200", DropMark: "0x7f",

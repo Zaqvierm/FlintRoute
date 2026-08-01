@@ -1,7 +1,7 @@
 {
   "version": 2,
   "platform": {
-    "target": "glinet-flint2",
+    "target": "openwrt",
     "ipv6_enabled": false,
     "require_confirmed_diagnostics": true,
     "unsupported_apply_policy": "refuse"

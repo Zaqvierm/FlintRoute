@@ -62,7 +62,7 @@ if [ -f /etc/openwrt_release ]; then
 else
   printf 'openwrt_release=missing\n'
 fi
-run_sh "GL.iNet release files" 'for p in /etc/glversion /etc/glinet/glversion /etc/glinet_version /etc/version; do if [ -f "$p" ]; then printf "%s=" "$p"; sed -n "1p" "$p"; fi; done'
+run_sh "optional vendor release files" 'for p in /etc/glversion /etc/glinet/glversion /etc/glinet_version /etc/version; do if [ -f "$p" ]; then printf "%s=" "$p"; sed -n "1p" "$p"; fi; done'
 run_sh "opkg architectures" 'opkg print-architecture 2>/dev/null || true'
 
 section "storage and memory"
@@ -91,9 +91,7 @@ run_sh "ip -6 route default" 'ip -6 route show default 2>/dev/null'
 run_sh "interfaces names" 'ip -o link show | awk -F": " "{print \$2}" | sort'
 run_sh "interface address families" 'ip -o addr show 2>/dev/null | awk "{print \$2, \$3}" | sort -u'
 run_sh "bridge links" 'bridge link show 2>/dev/null || true'
-run_sh "LAN status" 'ubus call network.interface.lan status 2>/dev/null || true'
-run_sh "WAN status" 'ubus call network.interface.wan status 2>/dev/null || true'
-run_sh "WAN6 status" 'ubus call network.interface.wan6 status 2>/dev/null || true'
+run_sh "logical interface inventory" 'ubus call network.interface dump 2>/dev/null || true'
 run_sh "safe network UCI" 'uci -q show network 2>/dev/null | grep -E "\.(proto|device|ifname|type|ip6assign|delegate|metric|disabled)=" || true'
 
 section "firewall shape"

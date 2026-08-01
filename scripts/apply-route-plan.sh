@@ -43,7 +43,6 @@ if [ "$apply" != "1" ]; then
   exit 0
 fi
 
-echo "real apply is intentionally disabled until Flint 2 diagnostics are reviewed" >&2
+echo "this legacy helper is dry-run only; use the transactional OpenWrt adapter for apply" >&2
 rm -f "$staged"
 exit 3
-

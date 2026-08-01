@@ -7,13 +7,18 @@
 
 Исполняемый код ориентирован на OpenWrt primitives (`procd`, `ubus`,
 firewall4/nftables, dnsmasq и policy routing), а не на проверку конкретной модели
-роутера. Значение `platform.target=glinet-flint2` включает дополнительные
-инварианты путей persistent/runtime storage, но другие target не отклоняются
-только из-за имени модели.
+роутера. Новая установка использует `platform.target=openwrt`; legacy-значение
+`glinet-flint2` принимается без переписывания existing revisions. Оба production
+target применяют одинаковые инварианты persistent/runtime storage.
 
-Поставляемый `config/default.json`, готовый Linux arm64 package и всё текущее
-аппаратное evidence нацелены на GL-MT6000. Совместимость с другим OpenWrt-железом
-не заявляется без отдельной диагностики и проверки.
+Имена `lan`, `wan` и `br-lan` не являются контрактом. Logical interfaces
+читаются через UBUS dump, WAN связывается с main default route, а management
+proof требует фактический socket path и reachable neighbor. Полная карта
+ограничений находится в `network-platform-audit.md`.
+
+`config/default.json` больше не кодирует модель устройства. Готовый Linux arm64
+package и всё текущее аппаратное evidence относятся к GL-MT6000. Совместимость
+с другим OpenWrt-железом не заявляется без отдельной диагностики и проверки.
 
 ## Проверенные аппаратные факты
 

@@ -262,16 +262,16 @@ func (c *Config) Validate() error {
 	if c.Version < 2 {
 		return fmt.Errorf("config version must be >=2")
 	}
-	if c.Platform.Target == "glinet-flint2" {
+	if productionOpenWrtTarget(c.Platform.Target) {
 		persistentStorage := c.Storage.StateDir == "/etc/router-policy/state" && c.Storage.RuntimeDir == "/tmp/router-policy" && c.Storage.Database == "/etc/router-policy/state/router-policy.bbolt"
-		legacyStorage := c.Storage.StateDir == "/var/lib/router-policy" && c.Storage.RuntimeDir == "/tmp/router-policy" && c.Storage.Database == "/var/lib/router-policy/router-policy.bbolt" && legacyFlint2StateAlias()
+		legacyStorage := c.Storage.StateDir == "/var/lib/router-policy" && c.Storage.RuntimeDir == "/tmp/router-policy" && c.Storage.Database == "/var/lib/router-policy/router-policy.bbolt" && legacyStateAlias()
 		if !persistentStorage && !legacyStorage {
-			return fmt.Errorf("Flint 2 storage must use persistent /etc/router-policy/state and volatile /tmp/router-policy runtime")
+			return fmt.Errorf("production storage must use persistent /etc/router-policy/state and volatile /tmp/router-policy runtime")
 		}
 		persistentData := c.Xray.LastGoodConfig == "/etc/router-policy/state/last-good/xray.json" && c.GeoIP.Database == "/etc/router-policy/state/geoip/user-country.mmdb"
 		legacyData := c.Xray.LastGoodConfig == "/var/lib/router-policy/last-good/xray.json" && c.GeoIP.Database == "/var/lib/router-policy/geoip/user-country.mmdb" && legacyStorage
 		if !persistentData && !legacyData {
-			return fmt.Errorf("Flint 2 durable data paths must stay under /etc/router-policy/state")
+			return fmt.Errorf("production durable data paths must stay under /etc/router-policy/state")
 		}
 	}
 	if len(c.Routes) == 0 {
@@ -414,8 +414,8 @@ func (c *Config) Validate() error {
 			if !filepath.IsAbs(c.Zapret.AdaptiveCatalogFile) || len(c.Zapret.AdaptiveAssignments) == 0 || len(c.Zapret.AdaptiveAssignments) > 64 {
 				return fmt.Errorf("adaptive Zapret requires a catalog and bounded assignments")
 			}
-			if c.Platform.Target == "glinet-flint2" && c.Zapret.AdaptiveCatalogFile != "/etc/router-policy/zapret/catalog.json" {
-				return fmt.Errorf("Flint 2 adaptive Zapret catalog must use the project-owned path")
+			if productionOpenWrtTarget(c.Platform.Target) && c.Zapret.AdaptiveCatalogFile != "/etc/router-policy/zapret/catalog.json" {
+				return fmt.Errorf("production adaptive Zapret catalog must use the project-owned path")
 			}
 			seenBundles := map[string]bool{}
 			for _, assignment := range c.Zapret.AdaptiveAssignments {
@@ -649,9 +649,13 @@ func (p Policy) EffectiveDiscoveryMaxConsecutiveRollbacks() int {
 	return p.DiscoveryMaxConsecutiveRollbacks
 }
 
-func legacyFlint2StateAlias() bool {
+func legacyStateAlias() bool {
 	resolved, err := filepath.EvalSymlinks("/var/lib/router-policy")
 	return err == nil && filepath.Clean(resolved) == "/etc/router-policy/state"
+}
+
+func productionOpenWrtTarget(target string) bool {
+	return target == "openwrt" || target == "glinet-flint2"
 }
 
 func (c *Config) validateOverrides(routesByTag map[string]Route) error {

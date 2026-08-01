@@ -30,6 +30,7 @@ type NetworkDiagnostics struct {
 	Source               string    `json:"source"`
 	Simulation           bool      `json:"simulation"`
 	WANInterface         string    `json:"wan_interface"`
+	WANInterfaces        []string  `json:"wan_interfaces,omitempty"`
 	LANInterfaces        []string  `json:"lan_interfaces"`
 	IPv4Gateway          string    `json:"ipv4_gateway"`
 	IPv6Gateway          string    `json:"ipv6_gateway"`

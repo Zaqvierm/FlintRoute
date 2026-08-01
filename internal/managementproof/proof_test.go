@@ -18,6 +18,15 @@ type fixedResolver struct {
 	subnet netip.Prefix
 }
 
+type fixedAutomaticSource struct {
+	topology AutomaticTopology
+	err      error
+}
+
+func (s fixedAutomaticSource) Snapshot(context.Context) (AutomaticTopology, error) {
+	return s.topology, s.err
+}
+
 func (r fixedResolver) Resolve(localIP, clientIP netip.Addr) (string, netip.Prefix, error) {
 	return r.name, r.subnet, nil
 }
@@ -203,13 +212,65 @@ func TestLANObservationResolvesWildcardListenerFromValidatedHost(t *testing.T) {
 	}
 }
 
-func TestAutomaticProofDoesNotGuessWANInterface(t *testing.T) {
-	if !likelyLANInterface("br-lan") || !likelyLANInterface("lan.10") {
-		t.Fatal("known LAN interface was rejected")
+func TestAutomaticProofUsesObservedTopologyInsteadOfInterfaceNames(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		local  string
+		client string
+		prefix string
+		iface  string
+	}{
+		{"common-192-168-0", "192.168.0.93", "192.168.0.17", "192.168.0.0/24", "home_net"},
+		{"common-192-168-1", "192.168.1.1", "192.168.1.200", "192.168.1.0/24", "bridge0"},
+		{"common-192-168-8", "192.168.8.1", "192.168.8.44", "192.168.8.0/24", "custom_lan"},
+		{"unusual-private", "10.77.42.1", "10.77.43.201", "10.77.42.0/23", "house"},
+		{"ipv6-ula", "fd42:1234::1", "fd42:1234::99", "fd42:1234::/64", "inside6"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			topology := AutomaticTopology{
+				Interfaces: []AutomaticInterface{
+					{Name: "uplink", Up: true, Prefixes: []netip.Prefix{netip.MustParsePrefix("198.51.100.44/24")}},
+					{Name: test.iface, Up: true, Prefixes: []netip.Prefix{netip.MustParsePrefix(test.local + "/" + strings.Split(test.prefix, "/")[1])}},
+				},
+				DefaultRouteInterfaces: []string{"uplink"},
+				Neighbors: []AutomaticNeighbor{
+					{Interface: "uplink", IP: netip.MustParseAddr("198.51.100.1"), Reachable: true},
+					{Interface: test.iface, IP: netip.MustParseAddr(test.client), Reachable: true},
+				},
+			}
+			observation, err := selectAutomaticObservation(topology)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if observation.Interface != test.iface || observation.LocalIP.String() != test.local || observation.ClientIP.String() != test.client || observation.Subnet.String() != test.prefix {
+				t.Fatalf("wrong automatic observation: %+v", observation)
+			}
+		})
 	}
-	for _, name := range []string{"wan", "eth0", "wwan", "usb0"} {
-		if likelyLANInterface(name) {
-			t.Fatalf("non-LAN interface %q was accepted", name)
-		}
+}
+
+func TestAutomaticProofFailsClosedWithoutReachableClient(t *testing.T) {
+	topology := AutomaticTopology{
+		Interfaces: []AutomaticInterface{{Name: "not-br-lan", Up: true, Prefixes: []netip.Prefix{netip.MustParsePrefix("192.168.50.1/24")}}},
+		Neighbors:  []AutomaticNeighbor{{Interface: "not-br-lan", IP: netip.MustParseAddr("192.168.50.20"), Reachable: false}},
+	}
+	if _, err := selectAutomaticObservation(topology); err == nil {
+		t.Fatal("automatic proof invented a client without reachable-neighbor evidence")
+	}
+}
+
+func TestIssueAutomaticBindsRealDynamicClient(t *testing.T) {
+	now := time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC)
+	manager, _ := newTestManager(t, &now)
+	manager.automaticSource = fixedAutomaticSource{topology: AutomaticTopology{
+		Interfaces: []AutomaticInterface{{Name: "local-net", Up: true, Prefixes: []netip.Prefix{netip.MustParsePrefix("192.168.77.9/24")}}},
+		Neighbors:  []AutomaticNeighbor{{Interface: "local-net", IP: netip.MustParseAddr("192.168.77.231"), Reachable: true}},
+	}}
+	proof, err := manager.IssueAutomatic(context.Background(), testBinding(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proof.ClientIP != "192.168.77.231" || proof.LocalIP != "192.168.77.9" || proof.Interface != "local-net" {
+		t.Fatalf("automatic proof was not bound to live topology: %+v", proof)
 	}
 }

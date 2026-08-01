@@ -19,6 +19,7 @@ FlintRoute не привязан к конкретному поставщику 
 | `headless-dataplane.md` | managed Xray TPROXY и Zapret/nfqws lifecycle |
 | `tspu-cache.md` | формат и lifecycle локального TSPU cache |
 | `storage-lifecycle.md` | ownership manifests, stale cleanup, retention и write budget |
+| `network-platform-audit.md` | сетевой hardcode, runtime discovery и карта зависимостей GL.iNet/OpenWrt |
 | `tspu-sources.md` | источники, валидация и применение списков |
 | `adaptive-zapret-strategy.md` | bounded catalog, ranking, hysteresis и quarantine |
 | `flint2-diagnostics.md` | read-only диагностика GL-MT6000 |

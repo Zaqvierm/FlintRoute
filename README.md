@@ -107,9 +107,9 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
   только immutable HTTPS source, закреплённые version и SHA-256;
 - заводской конфиг не содержит VPN-подписку и production Smart DNS resolver,
   поэтому VLESS и Smart DNS после одной установки не становятся рабочими сами;
-- штатный профиль `config/default.json` нацелен на GL-MT6000. Для другого
-  OpenWrt-устройства нужны проверенный platform config и отдельное аппаратное
-  доказательство;
+- штатный профиль `config/default.json` использует нейтральный target `openwrt`,
+  но готовый ARM64 package и hardware acceptance пока относятся только к
+  GL-MT6000; другое устройство требует отдельной диагностики и доказательства;
 - локальный installer fixture доказывает порядок операций и rollback, но не
   заменяет clean-install pass на конкретном устройстве;
 - Telegram notifications реализованы как отдельная необязательная подсистема с
@@ -208,6 +208,7 @@ router-policy storage migrate --dry-run
 - `docs/headless-dataplane.md` — managed Xray TPROXY и Zapret/nfqws lifecycle
 - `docs/tspu-cache.md` — TSPU cache v2
 - `docs/storage-lifecycle.md` — ownership, cleanup, retention и write budget
+- `docs/network-platform-audit.md` — сетевые параметры и граница GL.iNet/OpenWrt
 - `docs/flint2-hardware-report.md` — обезличенный отчёт по железу
 - `docs/incidents.md` — аппаратные инциденты и найденные ошибки проверок
 - `docs/status-matrix.md` — матрица готовности
@@ -216,8 +217,7 @@ router-policy storage migrate --dry-run
 
 - OpenWrt с `procd`, `ubus`, firewall4/nftables и policy routing;
 - текущий готовый пакет: Linux arm64;
-- текущий заводской профиль и аппаратное evidence: GL.iNet Flint 2 / GL-MT6000,
-  OpenWrt 24.10.4;
+- текущее аппаратное evidence: GL.iNet Flint 2 / GL-MT6000, OpenWrt 24.10.4;
 - dnsmasq-full с nftset
 - Xray для VLESS
 - внешний `nfqws` arm64 для маршрута Zapret (бинарник не вендорится)

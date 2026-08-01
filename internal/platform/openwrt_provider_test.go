@@ -43,21 +43,20 @@ func newOpenWrtFixtureRunner() *fakeOpenWrtRunner {
 	put := func(command OpenWrtCommand, parameter, output string) {
 		runner.outputs[fakeCommandKey(command, parameter)] = []byte(output)
 	}
-	put(commandSystemBoard, "", `{"kernel":"6.6.110","hostname":"router","system":"ARMv8","model":"GL.iNet GL-MT6000","board_name":"glinet,gl-mt6000","rootfs_type":"squashfs","release":{"distribution":"OpenWrt","version":"24.10.4","target":"mediatek/filogic","description":"OpenWrt 24.10.4 test"}}`)
+	put(commandSystemBoard, "", `{"kernel":"6.6.110","hostname":"router","system":"ARMv8","model":"OpenWrt reference router","board_name":"vendor,reference","rootfs_type":"squashfs","release":{"distribution":"OpenWrt","version":"24.10.4","target":"mediatek/filogic","description":"OpenWrt 24.10.4 test"}}`)
 	put(commandSystemInfo, "", `{"uptime":3600,"load":[65536,32768,0],"memory":{"total":1000000,"free":200000,"available":750000,"cached":100000,"buffered":50000},"root":{"total":7000000,"free":6000000,"used":1000000},"tmp":{"total":500000,"free":450000,"used":50000}}`)
-	put(commandInterfaceStatus, "lan", `{"up":true,"available":true,"uptime":3500,"l3_device":"br-lan","proto":"static","device":"br-lan","ipv4-address":[{"address":"192.0.2.1","mask":24}],"ipv6-address":[],"dns-server":[]}`)
-	put(commandInterfaceStatus, "wan", `{"up":true,"available":true,"uptime":3000,"l3_device":"eth1","proto":"dhcp","device":"eth1","ipv4-address":[{"address":"198.51.100.44","mask":24}],"ipv6-address":[],"dns-server":["203.0.113.53"]}`)
-	put(commandInterfaceStatus, "wan6", `{"up":false,"available":true,"proto":"dhcpv6","device":"eth1","ipv4-address":[],"ipv6-address":[],"dns-server":[]}`)
-	put(commandLinkList, "", `[{"ifname":"eth1","operstate":"UP","address":"02:00:00:00:00:01","flags":["UP"],"stats64":{"rx":{"bytes":1000,"packets":10},"tx":{"bytes":2000,"packets":20}}},{"ifname":"br-lan","operstate":"UP","address":"02:00:00:00:00:02","flags":["UP"]},{"ifname":"lan1","operstate":"UP","master":"br-lan","address":"02:00:00:00:00:03","flags":["UP"]}]`)
-	put(commandDeviceStatus, "eth1", `{"up":true,"carrier":true,"speed":2500,"duplex":"full","statistics":{"rx_bytes":1100,"tx_bytes":2200}}`)
-	put(commandDeviceStatus, "br-lan", `{"up":true,"carrier":true,"speed":0,"duplex":"unknown","statistics":{"rx_bytes":3000,"tx_bytes":4000}}`)
-	put(commandDeviceStatus, "lan1", `{"up":true,"carrier":true,"speed":1000,"duplex":"full","statistics":{"rx_bytes":5000,"tx_bytes":6000}}`)
-	put(commandRoutes4, "", `[{"dst":"default","gateway":"198.51.100.1","dev":"eth1","table":"main"},{"dst":"192.0.2.0/24","dev":"br-lan","table":"main"}]`)
+	put(commandInterfaceDump, "", `{"interface":[{"interface":"home_net","up":true,"available":true,"uptime":3500,"l3_device":"home0","proto":"static","device":"home0","ipv4-address":[{"address":"192.0.2.1","mask":24}],"ipv6-address":[],"dns-server":[]},{"interface":"uplink_primary","up":true,"available":true,"uptime":3000,"l3_device":"uplink0","proto":"dhcp","device":"uplink0","ipv4-address":[{"address":"198.51.100.44","mask":24}],"ipv6-address":[],"dns-server":["203.0.113.53"]}]}`)
+	put(commandLinkList, "", `[{"ifname":"uplink0","operstate":"UP","address":"02:00:00:00:00:01","flags":["UP"],"stats64":{"rx":{"bytes":1000,"packets":10},"tx":{"bytes":2000,"packets":20}}},{"ifname":"home0","operstate":"UP","address":"02:00:00:00:00:02","flags":["UP"]},{"ifname":"port-a","operstate":"UP","master":"home0","address":"02:00:00:00:00:03","flags":["UP"]},{"ifname":"radio-ap0","operstate":"UP","master":"home0","address":"02:00:00:00:00:04","flags":["UP"]}]`)
+	put(commandDeviceStatus, "uplink0", `{"up":true,"carrier":true,"speed":2500,"duplex":"full","statistics":{"rx_bytes":1100,"tx_bytes":2200}}`)
+	put(commandDeviceStatus, "home0", `{"up":true,"carrier":true,"speed":0,"duplex":"unknown","statistics":{"rx_bytes":3000,"tx_bytes":4000}}`)
+	put(commandDeviceStatus, "port-a", `{"up":true,"carrier":true,"speed":1000,"duplex":"full","statistics":{"rx_bytes":5000,"tx_bytes":6000}}`)
+	put(commandDeviceStatus, "radio-ap0", `{"up":true,"carrier":true,"speed":1200,"duplex":"full","statistics":{"rx_bytes":7000,"tx_bytes":8000}}`)
+	put(commandRoutes4, "", `[{"dst":"default","gateway":"198.51.100.1","dev":"uplink0","table":"main"},{"dst":"192.0.2.0/24","dev":"home0","table":"main"}]`)
 	put(commandRoutes6, "", `[]`)
 	put(commandRules4, "", `[{"priority":0,"table":"local"},{"priority":32766,"table":"main"}]`)
 	put(commandRules6, "", `[{"priority":0,"table":"local"},{"priority":32766,"table":"main"}]`)
-	put(commandWirelessStatus, "", `{"radio0":{"up":true,"interfaces":[{"section":"default_radio0","ifname":"wlan0","config":{"mode":"ap","ssid":"Test WiFi","network":["lan"],"encryption":"sae-mixed","disabled":false,"isolate":false}}]}}`)
-	put(commandNeighbors, "", `[{"dst":"192.0.2.10","dev":"lan1","lladdr":"02:11:22:33:44:55","state":["REACHABLE"]}]`)
+	put(commandWirelessStatus, "", `{"radio0":{"up":true,"interfaces":[{"section":"default_radio0","ifname":"radio-ap0","config":{"mode":"ap","ssid":"Test WiFi","network":["home_net"],"encryption":"sae-mixed","disabled":false,"isolate":false}}]}}`)
+	put(commandNeighbors, "", `[{"dst":"192.0.2.10","dev":"port-a","lladdr":"02:11:22:33:44:55","state":["REACHABLE"]}]`)
 	put(commandDHCPLeases, "", "1893456000 02:11:22:33:44:55 192.0.2.10 workstation *\n")
 	put(commandODHCPDHosts, "", "")
 	put(commandFlowSoftware, "", "1\n")
@@ -100,11 +99,11 @@ func TestOpenWrtProviderCollectsLiveFactsWithoutExposingWANIP(t *testing.T) {
 	}
 
 	system := provider.System(nil)
-	if system["model"] != "GL.iNet GL-MT6000" || system["kernel"] != "6.6.110" {
+	if system["model"] != "OpenWrt reference router" || system["kernel"] != "6.6.110" {
 		t.Fatalf("board facts were not parsed: %#v", system)
 	}
 	devices := provider.Devices(nil)
-	if len(devices) != 1 || devices[0]["interface"] != "lan1" || devices[0]["connected"] != true {
+	if len(devices) != 1 || devices[0]["interface"] != "port-a" || devices[0]["connected"] != true {
 		t.Fatalf("device evidence was not merged: %#v", devices)
 	}
 	deviceJSON, _ := json.Marshal(devices)
@@ -131,7 +130,7 @@ func TestOpenWrtProviderBuildsVerifiedArtifactNetworkDiagnostics(t *testing.T) {
 	if diagnostics.Status != "VERIFIED" || diagnostics.Reason != "" || diagnostics.Simulation {
 		t.Fatalf("network diagnostics were not hardware-verifiable: %+v", diagnostics)
 	}
-	if diagnostics.WANInterface != "eth1" || len(diagnostics.LANInterfaces) != 1 || diagnostics.LANInterfaces[0] != "br-lan" {
+	if diagnostics.WANInterface != "uplink0" || len(diagnostics.WANInterfaces) != 1 || diagnostics.WANInterfaces[0] != "uplink0" || len(diagnostics.LANInterfaces) != 1 || diagnostics.LANInterfaces[0] != "home0" {
 		t.Fatalf("wrong live interfaces: %+v", diagnostics)
 	}
 	if diagnostics.IPv4Gateway != "198.51.100.1" || diagnostics.IPv6Available || diagnostics.IPv6Gateway != "" {
@@ -148,13 +147,13 @@ func TestOpenWrtProviderBuildsVerifiedArtifactNetworkDiagnostics(t *testing.T) {
 	}
 }
 
-func TestOpenWrtProviderArtifactDiagnosticsFailClosedOnWrongGatewayDevice(t *testing.T) {
+func TestOpenWrtProviderArtifactDiagnosticsFailClosedOnUnknownGatewayDevice(t *testing.T) {
 	runner := newOpenWrtFixtureRunner()
-	runner.outputs[fakeCommandKey(commandRoutes4, "")] = []byte(`[{"dst":"default","gateway":"198.51.100.1","dev":"br-lan","table":"main"}]`)
+	runner.outputs[fakeCommandKey(commandRoutes4, "")] = []byte(`[{"dst":"default","gateway":"198.51.100.1","dev":"missing0","table":"main"}]`)
 	provider := NewOpenWrtProvider(WithOpenWrtRunner(runner), WithOpenWrtCacheTTL(time.Hour))
 
 	diagnostics := provider.NetworkDiagnostics(nil)
-	if diagnostics.Status != "UNVERIFIED" || diagnostics.Reason != "ipv4_gateway_unverified" {
+	if diagnostics.Status != "UNVERIFIED" || diagnostics.Reason != "wan_interface_unverified" {
 		t.Fatalf("wrong-route diagnostics did not fail closed: %+v", diagnostics)
 	}
 }
@@ -162,7 +161,7 @@ func TestOpenWrtProviderArtifactDiagnosticsFailClosedOnWrongGatewayDevice(t *tes
 func TestOpenWrtProviderMalformedUbusFailsHonestlyAndRedactsRunnerError(t *testing.T) {
 	runner := newOpenWrtFixtureRunner()
 	runner.outputs[fakeCommandKey(commandSystemBoard, "")] = []byte(`{"model":`)
-	runner.errors[fakeCommandKey(commandInterfaceStatus, "wan")] = errors.New("token=must-not-leak")
+	runner.errors[fakeCommandKey(commandInterfaceDump, "")] = errors.New("token=must-not-leak")
 	provider := NewOpenWrtProvider(WithOpenWrtRunner(runner), WithOpenWrtCacheTTL(time.Hour))
 
 	system := provider.System(nil)
@@ -202,7 +201,7 @@ func TestFixedOpenWrtCommandsRejectUntrustedParameters(t *testing.T) {
 	}{
 		{commandDeviceStatus, "eth0;reboot"},
 		{commandDeviceStatus, "../../etc/shadow"},
-		{commandInterfaceStatus, "wan;reboot"},
+		{commandInterfaceDump, "wan;reboot"},
 		{commandProcess, "xray --config /tmp/evil"},
 		{commandComponentPresent, "../../xray"},
 		{OpenWrtCommand("unknown"), ""},
@@ -254,5 +253,62 @@ func TestDefaultRouteIgnoresPolicyFailClosedTables(t *testing.T) {
 	routes = append(routes, routeInfo{Dst: "default", Gateway: "192.0.2.1", Dev: "wan", Table: float64(254)})
 	if !hasDefaultRoute(routes) {
 		t.Fatal("main unicast default route was not detected")
+	}
+}
+
+func TestOpenWrtInterfaceClassificationUsesRoutesAndAddresses(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		address string
+		mask    int
+	}{
+		{"common-192-168-0", "192.168.0.93", 24},
+		{"common-192-168-1", "192.168.1.1", 24},
+		{"common-192-168-8", "192.168.8.1", 24},
+		{"unusual-private", "10.77.42.1", 23},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			interfaces := []interfaceInfo{
+				{Name: "inside_custom", Up: true, Device: "home-device", IPv4Address: []interfaceAddress{{Address: test.address, Mask: test.mask}}},
+				{Name: "internet_primary", Up: true, Device: "uplink-a", IPv4Address: []interfaceAddress{{Address: "198.51.100.44", Mask: 24}}},
+			}
+			routes := []routeInfo{{Dst: "default", Gateway: "198.51.100.1", Dev: "uplink-a", Table: "main"}}
+			lans, wans, _ := classifyOpenWrtInterfaces(interfaces, routes, nil)
+			if len(lans) != 1 || lans[0].Name != "inside_custom" || len(wans) != 1 || wans[0].Name != "internet_primary" {
+				t.Fatalf("classification depends on conventional names: lans=%+v wans=%+v", lans, wans)
+			}
+		})
+	}
+}
+
+func TestOpenWrtInterfaceClassificationSupportsMultipleLANAndWAN(t *testing.T) {
+	interfaces := []interfaceInfo{
+		{Name: "house", Up: true, L3Device: "house0", IPv4Address: []interfaceAddress{{Address: "10.20.30.1", Mask: 24}}},
+		{Name: "lab", Up: true, L3Device: "lab0", IPv4Address: []interfaceAddress{{Address: "172.20.5.1", Mask: 24}}},
+		{Name: "fiber", Up: true, L3Device: "fiber0", IPv4Address: []interfaceAddress{{Address: "198.51.100.44", Mask: 24}}},
+		{Name: "cellular", Up: true, L3Device: "wwan0", IPv4Address: []interfaceAddress{{Address: "203.0.113.44", Mask: 24}}},
+	}
+	routes := []routeInfo{
+		{Dst: "default", Gateway: "198.51.100.1", Dev: "fiber0", Table: "main"},
+		{Dst: "default", Gateway: "203.0.113.1", Dev: "wwan0", Table: "main"},
+	}
+	lans, wans, _ := classifyOpenWrtInterfaces(interfaces, routes, nil)
+	if len(lans) != 2 || len(wans) != 2 {
+		t.Fatalf("multiple interfaces were lost: lans=%+v wans=%+v", lans, wans)
+	}
+}
+
+func TestOpenWrtIPv6OnAnotherWANFailsClosed(t *testing.T) {
+	runner := newOpenWrtFixtureRunner()
+	runner.outputs[fakeCommandKey(commandInterfaceDump, "")] = []byte(`{"interface":[{"interface":"home","up":true,"device":"home0","ipv4-address":[{"address":"192.0.2.1","mask":24}]},{"interface":"uplink4","up":true,"device":"uplink0","dns-server":["203.0.113.53"]},{"interface":"uplink6","up":true,"device":"uplink6"}]}`)
+	runner.outputs[fakeCommandKey(commandLinkList, "")] = []byte(`[{"ifname":"home0","operstate":"UP"},{"ifname":"uplink0","operstate":"UP"},{"ifname":"uplink6","operstate":"UP"}]`)
+	for _, name := range []string{"home0", "uplink0", "uplink6"} {
+		runner.outputs[fakeCommandKey(commandDeviceStatus, name)] = []byte(`{"up":true,"carrier":true}`)
+	}
+	runner.outputs[fakeCommandKey(commandRoutes6, "")] = []byte(`[{"dst":"default","gateway":"2001:db8::1","dev":"uplink6","table":"main"}]`)
+	provider := NewOpenWrtProvider(WithOpenWrtRunner(runner), WithOpenWrtCacheTTL(time.Hour))
+	diagnostics := provider.NetworkDiagnostics(nil)
+	if diagnostics.Status != "UNVERIFIED" || diagnostics.Reason != "ipv6_wan_interface_mismatch" {
+		t.Fatalf("split IPv4/IPv6 WAN was not rejected by the single-WAN artifact contract: %+v", diagnostics)
 	}
 }

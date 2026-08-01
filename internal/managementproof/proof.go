@@ -14,9 +14,11 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 )
@@ -75,6 +77,31 @@ type Resolver interface {
 	Resolve(localIP, clientIP netip.Addr) (string, netip.Prefix, error)
 }
 
+type AutomaticInterface struct {
+	Name     string
+	Up       bool
+	Loopback bool
+	Prefixes []netip.Prefix
+}
+
+type AutomaticNeighbor struct {
+	Interface string
+	IP        netip.Addr
+	Reachable bool
+}
+
+type AutomaticTopology struct {
+	Interfaces             []AutomaticInterface
+	DefaultRouteInterfaces []string
+	Neighbors              []AutomaticNeighbor
+}
+
+type AutomaticTopologySource interface {
+	Snapshot(context.Context) (AutomaticTopology, error)
+}
+
+type systemAutomaticTopologySource struct{}
+
 type SystemResolver struct{}
 
 func (SystemResolver) Resolve(localIP, clientIP netip.Addr) (string, netip.Prefix, error) {
@@ -103,21 +130,23 @@ func (SystemResolver) Resolve(localIP, clientIP netip.Addr) (string, netip.Prefi
 }
 
 type Options struct {
-	KeyPath    string
-	BootIDPath string
-	Now        func() time.Time
-	Resolver   Resolver
-	AdminProbe func(context.Context, string) bool
+	KeyPath         string
+	BootIDPath      string
+	Now             func() time.Time
+	Resolver        Resolver
+	AdminProbe      func(context.Context, string) bool
+	AutomaticSource AutomaticTopologySource
 }
 
 type Manager struct {
-	stateDir   string
-	runtimeDir string
-	keyPath    string
-	bootIDPath string
-	now        func() time.Time
-	resolver   Resolver
-	adminProbe func(context.Context, string) bool
+	stateDir        string
+	runtimeDir      string
+	keyPath         string
+	bootIDPath      string
+	now             func() time.Time
+	resolver        Resolver
+	adminProbe      func(context.Context, string) bool
+	automaticSource AutomaticTopologySource
 }
 
 func New(stateDir, runtimeDir string, opts Options) (*Manager, error) {
@@ -146,7 +175,11 @@ func New(stateDir, runtimeDir string, opts Options) (*Manager, error) {
 	if adminProbe == nil {
 		adminProbe = probeAdminHTTP
 	}
-	manager := &Manager{stateDir: stateDir, runtimeDir: runtimeDir, keyPath: filepath.Clean(keyPath), bootIDPath: filepath.Clean(bootIDPath), now: now, resolver: resolver, adminProbe: adminProbe}
+	automaticSource := opts.AutomaticSource
+	if automaticSource == nil {
+		automaticSource = systemAutomaticTopologySource{}
+	}
+	manager := &Manager{stateDir: stateDir, runtimeDir: runtimeDir, keyPath: filepath.Clean(keyPath), bootIDPath: filepath.Clean(bootIDPath), now: now, resolver: resolver, adminProbe: adminProbe, automaticSource: automaticSource}
 	if _, err := manager.loadOrCreateKey(); err != nil {
 		return nil, err
 	}
@@ -283,46 +316,119 @@ func (m *Manager) IssueHeadlessSSH(ctx context.Context, binding Binding, sshConn
 }
 
 func (m *Manager) IssueAutomatic(ctx context.Context, binding Binding, ttl time.Duration) (Proof, error) {
-	interfaces, err := net.Interfaces()
+	topology, err := m.automaticSource.Snapshot(ctx)
 	if err != nil {
 		return Proof{}, err
 	}
+	observation, err := selectAutomaticObservation(topology)
+	if err != nil {
+		return Proof{}, err
+	}
+	adminURL := "http://" + net.JoinHostPort(observation.LocalIP.String(), "80") + "/"
+	observation.Mode = ModeAutomatic
+	observation.ControlPlaneURL = "http://" + net.JoinHostPort(observation.LocalIP.String(), "8787") + "/api/v1/health"
+	observation.AdminHTTPURL = adminURL
+	observation.AdminHTTPAvailable = m.adminProbe(ctx, adminURL)
+	return m.Issue(ctx, binding, observation, ttl)
+}
+
+func selectAutomaticObservation(topology AutomaticTopology) (Observation, error) {
+	defaultInterfaces := make(map[string]bool, len(topology.DefaultRouteInterfaces))
+	for _, name := range topology.DefaultRouteInterfaces {
+		defaultInterfaces[name] = true
+	}
+	interfaces := append([]AutomaticInterface(nil), topology.Interfaces...)
+	sort.Slice(interfaces, func(i, j int) bool { return interfaces[i].Name < interfaces[j].Name })
 	for _, iface := range interfaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || !interfacePattern.MatchString(iface.Name) || !likelyLANInterface(iface.Name) {
+		if !iface.Up || iface.Loopback || defaultInterfaces[iface.Name] || !interfacePattern.MatchString(iface.Name) {
 			continue
 		}
-		addrs, err := iface.Addrs()
-		if err != nil {
+		prefixes := append([]netip.Prefix(nil), iface.Prefixes...)
+		sort.Slice(prefixes, func(i, j int) bool { return prefixes[i].String() < prefixes[j].String() })
+		for _, rawPrefix := range prefixes {
+			localIP := rawPrefix.Addr().Unmap()
+			if !usableManagementAddress(localIP) {
+				continue
+			}
+			prefix := netip.PrefixFrom(localIP, rawPrefix.Bits()).Masked()
+			for _, neighbor := range topology.Neighbors {
+				clientIP := neighbor.IP.Unmap()
+				if neighbor.Interface != iface.Name || !neighbor.Reachable || clientIP == localIP || !usableManagementAddress(clientIP) || !prefix.Contains(clientIP) {
+					continue
+				}
+				return Observation{ClientIP: clientIP, LocalIP: localIP, Interface: iface.Name, Subnet: prefix}, nil
+			}
+		}
+	}
+	return Observation{}, fmt.Errorf("no active management interface with a reachable client is available for automatic proof")
+}
+
+func usableManagementAddress(ip netip.Addr) bool {
+	return ip.IsValid() && !ip.IsUnspecified() && !ip.IsLoopback() && !ip.IsMulticast() && !ip.IsLinkLocalUnicast()
+}
+
+func (systemAutomaticTopologySource) Snapshot(ctx context.Context) (AutomaticTopology, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return AutomaticTopology{}, err
+	}
+	topology := AutomaticTopology{}
+	for _, iface := range interfaces {
+		item := AutomaticInterface{Name: iface.Name, Up: iface.Flags&net.FlagUp != 0, Loopback: iface.Flags&net.FlagLoopback != 0}
+		addrs, addrErr := iface.Addrs()
+		if addrErr != nil {
 			continue
 		}
 		for _, raw := range addrs {
-			prefix, err := netip.ParsePrefix(raw.String())
-			if err != nil || !prefix.Addr().Is4() || !prefix.Addr().IsPrivate() || prefix.Addr().IsLoopback() || prefix.Addr().IsUnspecified() {
-				continue
+			if prefix, parseErr := netip.ParsePrefix(raw.String()); parseErr == nil {
+				item.Prefixes = append(item.Prefixes, prefix)
 			}
-			localIP := prefix.Addr().Unmap()
-			prefix = netip.PrefixFrom(localIP, prefix.Bits()).Masked()
-			clientIP := prefix.Addr().Next()
-			if clientIP == localIP {
-				clientIP = clientIP.Next()
+		}
+		topology.Interfaces = append(topology.Interfaces, item)
+	}
+	for _, familyArgs := range [][]string{{"-j", "route", "show", "default"}, {"-j", "-6", "route", "show", "default"}} {
+		raw, runErr := exec.CommandContext(ctx, "/sbin/ip", familyArgs...).Output()
+		if runErr != nil {
+			return AutomaticTopology{}, fmt.Errorf("read default routes: %w", runErr)
+		}
+		var routes []struct {
+			Dev string `json:"dev"`
+		}
+		if err := json.Unmarshal(raw, &routes); err != nil {
+			return AutomaticTopology{}, fmt.Errorf("parse default routes: %w", err)
+		}
+		for _, route := range routes {
+			if interfacePattern.MatchString(route.Dev) {
+				topology.DefaultRouteInterfaces = append(topology.DefaultRouteInterfaces, route.Dev)
 			}
-			if !clientIP.IsValid() || !prefix.Contains(clientIP) {
-				continue
-			}
-			adminURL := "http://" + net.JoinHostPort(localIP.String(), "80") + "/"
-			return m.Issue(ctx, binding, Observation{
-				Mode: ModeAutomatic, ClientIP: clientIP, LocalIP: localIP, Interface: iface.Name, Subnet: prefix,
-				ControlPlaneURL: "http://" + net.JoinHostPort(localIP.String(), "8787") + "/api/v1/health",
-				AdminHTTPURL:    adminURL, AdminHTTPAvailable: m.adminProbe(ctx, adminURL),
-			}, ttl)
 		}
 	}
-	return Proof{}, fmt.Errorf("no active IPv4 LAN interface is available for automatic management proof")
-}
-
-func likelyLANInterface(name string) bool {
-	name = strings.ToLower(name)
-	return name == "lan" || name == "br-lan" || strings.HasPrefix(name, "lan.") || strings.HasPrefix(name, "lan-")
+	raw, err := exec.CommandContext(ctx, "/sbin/ip", "-j", "neigh", "show").Output()
+	if err != nil {
+		return AutomaticTopology{}, fmt.Errorf("read neighbors: %w", err)
+	}
+	var neighbors []struct {
+		Dst   string   `json:"dst"`
+		Dev   string   `json:"dev"`
+		State []string `json:"state"`
+	}
+	if err := json.Unmarshal(raw, &neighbors); err != nil {
+		return AutomaticTopology{}, fmt.Errorf("parse neighbors: %w", err)
+	}
+	for _, neighbor := range neighbors {
+		ip, parseErr := netip.ParseAddr(neighbor.Dst)
+		if parseErr != nil || !interfacePattern.MatchString(neighbor.Dev) {
+			continue
+		}
+		reachable := len(neighbor.State) > 0
+		for _, state := range neighbor.State {
+			if state == "FAILED" || state == "INCOMPLETE" || state == "NONE" {
+				reachable = false
+			}
+		}
+		topology.Neighbors = append(topology.Neighbors, AutomaticNeighbor{Interface: neighbor.Dev, IP: ip, Reachable: reachable})
+	}
+	return topology, nil
 }
 
 func (m *Manager) Verify(binding Binding) (Proof, error) {
