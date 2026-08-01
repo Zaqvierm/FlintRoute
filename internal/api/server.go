@@ -739,6 +739,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/proxies", s.requireRole(auth.RoleViewer, s.handleProxies))
 	s.mux.HandleFunc("/api/v1/xray/subscription/secret", s.requireRole(auth.RoleAdministrator, s.handleXraySubscriptionSecret))
 	s.mux.HandleFunc("/api/v1/xray/subscription/prepare", s.requireRole(auth.RoleAdministrator, s.handleXraySubscriptionPrepare))
+	s.mux.HandleFunc("/api/v1/xray/manual-servers", s.requireRole(auth.RoleAdministrator, s.handleXrayManualServers))
 	s.mux.HandleFunc("/api/v1/smart-dns", s.requireRole(auth.RoleViewer, s.handleSmartDNS))
 	s.mux.HandleFunc("/api/v1/smart-dns/configure", s.requireRole(auth.RoleAdministrator, s.handleSmartDNSConfigure))
 	s.mux.HandleFunc("/api/v1/zapret", s.requireRole(auth.RoleViewer, s.handleZapret))
@@ -924,6 +925,12 @@ func (s *Server) handleTopology(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
+	session := currentSession(r)
+	reveal := r.URL.Query().Get("privacy") == "revealed" && session.Role == auth.RoleAdministrator
+	if provider, ok := s.provider.(platform.PrivacyDeviceProvider); ok {
+		writeData(w, r, provider.DevicesWithPrivacy(s.currentConfig(), reveal))
+		return
+	}
 	writeData(w, r, s.provider.Devices(s.currentConfig()))
 }
 
@@ -1246,6 +1253,10 @@ func (s *Server) handleSmartDNSConfigure(w http.ResponseWriter, r *http.Request)
 	request.TestDomain = testDomain
 	rawEndpoints := append([]string{}, request.Endpoints...)
 	for _, resolver := range request.Resolvers {
+		if resolver.Port == 0 {
+			rawEndpoints = append(rawEndpoints, strings.TrimSpace(resolver.IP))
+			continue
+		}
 		rawEndpoints = append(rawEndpoints, net.JoinHostPort(strings.TrimSpace(resolver.IP), strconv.Itoa(resolver.Port)))
 	}
 	endpoints := make([]string, 0, len(rawEndpoints))
@@ -1314,9 +1325,16 @@ func (s *Server) handleSmartDNSConfigure(w http.ResponseWriter, r *http.Request)
 
 func normalizeSmartDNSEndpoint(raw string) (string, error) {
 	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", errors.New("Smart DNS endpoint is empty")
+	}
 	host, port, err := net.SplitHostPort(value)
 	if err != nil {
-		return "", errors.New("Smart DNS endpoint must use host:port form")
+		if parsed := net.ParseIP(value); parsed != nil {
+			host, port = value, "53"
+		} else {
+			return "", errors.New("Smart DNS endpoint must be an IP address with an optional port")
+		}
 	}
 	ip, err := netip.ParseAddr(host)
 	if err != nil || !netpolicy.PublicResolverAddr(ip) {

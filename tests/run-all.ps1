@@ -205,7 +205,7 @@ $scanFiles = foreach ($scanRoot in $scanRoots) {
 }
 $secretHits = $scanFiles |
   Where-Object { $_.FullName -notmatch '\\node_modules\\|\\.tools\\|\\.git\\|\\dist\\|tests\\run-all\.(ps1|sh)$' } |
-  Select-String -Pattern 'vless://|TELEGRAM_BOT_TOKEN=[A-Za-z0-9]|-----BEGIN (OPENSSH |RSA |EC )?PRIVATE KEY-----|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' |
+  Select-String -Pattern 'TELEGRAM_BOT_TOKEN=[A-Za-z0-9]|-----BEGIN (OPENSSH |RSA |EC )?PRIVATE KEY-----|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' |
   Where-Object { $_.Line -notmatch 'UUID_PLACEHOLDER|11111111-1111-4111-8111-111111111111|22222222-2222-4222-8222-222222222222|33333333-3333-4333-8333-333333333333' }
 if ($secretHits) {
   $secretHits | Format-Table -AutoSize | Out-String | Write-Host

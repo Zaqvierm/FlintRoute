@@ -38,6 +38,8 @@ const (
 	commandRules4           OpenWrtCommand = "rules-v4"
 	commandRules6           OpenWrtCommand = "rules-v6"
 	commandWirelessStatus   OpenWrtCommand = "wireless-status"
+	commandWirelessClients  OpenWrtCommand = "wireless-clients"
+	commandBridgeFDB        OpenWrtCommand = "bridge-fdb"
 	commandNeighbors        OpenWrtCommand = "neighbors"
 	commandDHCPLeases       OpenWrtCommand = "dhcp-leases"
 	commandODHCPDHosts      OpenWrtCommand = "odhcpd-hosts"
@@ -133,6 +135,13 @@ func fixedOpenWrtCommand(command OpenWrtCommand, parameter string) (string, []st
 		return "/sbin/ip", []string{"-j", "-6", "rule", "show"}, nil
 	case commandWirelessStatus:
 		return "/bin/ubus", []string{"call", "network.wireless", "status"}, nil
+	case commandWirelessClients:
+		if !interfaceNamePattern.MatchString(parameter) {
+			return "", nil, fmt.Errorf("wireless interface name is not allowed")
+		}
+		return "/bin/ubus", []string{"call", "hostapd." + parameter, "get_clients"}, nil
+	case commandBridgeFDB:
+		return "/sbin/bridge", []string{"-j", "fdb", "show"}, nil
 	case commandNeighbors:
 		return "/sbin/ip", []string{"-j", "neigh", "show"}, nil
 	case commandDHCPLeases:
@@ -500,6 +509,39 @@ type wirelessRadio struct {
 	} `json:"interfaces"`
 }
 
+type wirelessStation struct {
+	MAC           string
+	Interface     string
+	SSID          string
+	Signal        int64
+	SignalAverage int64
+	ConnectedTime int64
+	RXBytes       uint64
+	TXBytes       uint64
+}
+
+type wirelessClientReport struct {
+	Clients map[string]struct {
+		Authorized    bool  `json:"authorized"`
+		Signal        int64 `json:"signal"`
+		SignalAverage int64 `json:"signal_avg"`
+		ConnectedTime int64 `json:"connected_time"`
+		RX            struct {
+			Bytes uint64 `json:"bytes"`
+		} `json:"rx"`
+		TX struct {
+			Bytes uint64 `json:"bytes"`
+		} `json:"tx"`
+	} `json:"clients"`
+}
+
+type bridgeFDBEntry struct {
+	MAC    string `json:"mac"`
+	Dev    string `json:"dev"`
+	Master string `json:"master"`
+	State  string `json:"state"`
+}
+
 type componentState struct {
 	Status    string `json:"status"`
 	Installed bool   `json:"installed"`
@@ -526,6 +568,8 @@ type openWrtSnapshot struct {
 	Rules6      []ruleInfo
 	Neighbors   []neighborInfo
 	Wireless    map[string]wirelessRadio
+	Stations    map[string]wirelessStation
+	BridgeFDB   []bridgeFDBEntry
 	DHCPLeases  []dhcpLease
 	ODHCPHosts  []odhcpHost
 	Components  map[string]componentState
@@ -565,6 +609,7 @@ func collectOpenWrtSnapshot(runtime *openWrtRuntime, now time.Time) *openWrtSnap
 		CollectedAt: now,
 		Devices:     map[string]deviceInfo{},
 		Wireless:    map[string]wirelessRadio{},
+		Stations:    map[string]wirelessStation{},
 		Components:  map[string]componentState{},
 		Errors:      map[string]string{},
 	}
@@ -606,6 +651,32 @@ func collectOpenWrtSnapshot(runtime *openWrtRuntime, now time.Time) *openWrtSnap
 	decode("rules_v6", commandRules6, "", &snapshot.Rules6)
 	decode("neighbors", commandNeighbors, "", &snapshot.Neighbors)
 	decode("wireless", commandWirelessStatus, "", &snapshot.Wireless)
+	decode("bridge_fdb", commandBridgeFDB, "", &snapshot.BridgeFDB)
+	if len(snapshot.BridgeFDB) > 8192 {
+		snapshot.BridgeFDB = nil
+		snapshot.Errors["bridge_fdb"] = "too_many_records"
+	}
+	for _, radio := range snapshot.Wireless {
+		for _, iface := range radio.Interfaces {
+			if iface.Config.Disabled || iface.Config.Mode != "ap" || !interfaceNamePattern.MatchString(iface.IfName) {
+				continue
+			}
+			var report wirelessClientReport
+			decode("wireless_clients_"+iface.IfName, commandWirelessClients, iface.IfName, &report)
+			for mac, client := range report.Clients {
+				parsed, err := net.ParseMAC(mac)
+				if err != nil || !client.Authorized {
+					continue
+				}
+				normalized := strings.ToLower(parsed.String())
+				snapshot.Stations[normalized] = wirelessStation{
+					MAC: normalized, Interface: iface.IfName, SSID: sanitizeLabel(iface.Config.SSID),
+					Signal: client.Signal, SignalAverage: client.SignalAverage, ConnectedTime: client.ConnectedTime,
+					RXBytes: client.RX.Bytes, TXBytes: client.TX.Bytes,
+				}
+			}
+		}
+	}
 	snapshot.LANs, snapshot.WANs, snapshot.WAN6s = classifyOpenWrtInterfaces(snapshot.Interfaces, snapshot.Routes4, snapshot.Routes6)
 	if len(snapshot.LANs) > 0 {
 		snapshot.LAN = snapshot.LANs[0]
@@ -881,7 +952,11 @@ func (p OpenWrtProvider) Diagnostics(*config.Config) map[string]any {
 }
 
 func (p OpenWrtProvider) Devices(*config.Config) []map[string]any {
-	return buildDeviceItems(p.snapshot(), p.Name())
+	return buildDeviceItems(p.snapshot(), p.Name(), false)
+}
+
+func (p OpenWrtProvider) DevicesWithPrivacy(_ *config.Config, reveal bool) []map[string]any {
+	return buildDeviceItems(p.snapshot(), p.Name(), reveal)
 }
 
 func (p OpenWrtProvider) Policies(cfg *config.Config) []map[string]any {
@@ -938,7 +1013,7 @@ func (p OpenWrtProvider) Topology(*config.Config) map[string]any {
 			edges = append(edges, map[string]any{"from": "router", "to": id, "status": strings.ToUpper(nonEmpty(link.OperState, "UNKNOWN"))})
 		}
 	}
-	for _, device := range buildDeviceItems(snapshot, p.Name()) {
+	for _, device := range buildDeviceItems(snapshot, p.Name(), false) {
 		id, _ := device["id"].(string)
 		nodes = append(nodes, map[string]any{
 			"id": id, "label": device["name"], "type": "device", "status": device["status"],
@@ -1026,7 +1101,7 @@ func parseODHCPHosts(output []byte) ([]odhcpHost, error) {
 	return hosts, nil
 }
 
-func buildDeviceItems(snapshot *openWrtSnapshot, source string) []map[string]any {
+func buildDeviceItems(snapshot *openWrtSnapshot, source string, reveal bool) []map[string]any {
 	neighborsByIP := make(map[string]neighborInfo, len(snapshot.Neighbors))
 	for _, neighbor := range snapshot.Neighbors {
 		neighborsByIP[neighbor.Dst] = neighbor
@@ -1039,12 +1114,19 @@ func buildDeviceItems(snapshot *openWrtSnapshot, source string) []map[string]any
 		connected := neighborIsConnected(neighbor.State)
 		id := "device-" + stableID(lease.MAC)
 		seen[lease.IP] = true
+		kind, interfaceName, ssid, rssi, rxBytes, txBytes, connectedAt := deviceConnection(snapshot, lease.MAC, neighbor.Dev)
+		ip, mac := maskIP(lease.IP), maskMAC(lease.MAC)
+		if reveal {
+			ip, mac = lease.IP, strings.ToLower(lease.MAC)
+		}
 		items = append(items, map[string]any{
-			"id": id, "name": name, "kind": deviceKind(snapshot, neighbor.Dev), "ip": lease.IP,
-			"mac": maskMAC(lease.MAC), "mac_hash": hashText(lease.MAC), "interface": neighbor.Dev,
+			"id": id, "name": name, "kind": kind, "ip": ip,
+			"mac": mac, "mac_hash": hashText(lease.MAC), "interface": interfaceName, "ssid": nilIfEmpty(ssid), "rssi": rssi,
+			"rx_bytes": rxBytes, "tx_bytes": txBytes, "first_seen": connectedAt, "last_seen": snapshot.CollectedAt,
 			"connected": connected, "neighbor_state": neighbor.State, "lease_expires_at": lease.ExpiresAt,
 			"policy": "UNVERIFIED", "active_route": "UNVERIFIED", "source": source + ":dhcp+neighbor",
 			"status": "OK", "simulation": false, "freshness": "live", "collected_at": snapshot.CollectedAt,
+			"addresses_revealed": reveal,
 		})
 	}
 	for _, host := range snapshot.ODHCPHosts {
@@ -1052,14 +1134,20 @@ func buildDeviceItems(snapshot *openWrtSnapshot, source string) []map[string]any
 			continue
 		}
 		neighbor := neighborsByIP[host.IP]
+		kind, interfaceName, ssid, rssi, rxBytes, txBytes, connectedAt := deviceConnection(snapshot, neighbor.LLAddr, neighbor.Dev)
+		ip, mac := maskIP(host.IP), maskMAC(neighbor.LLAddr)
+		if reveal {
+			ip, mac = host.IP, strings.ToLower(neighbor.LLAddr)
+		}
 		items = append(items, map[string]any{
 			"id": "device-" + stableID(host.IP), "name": nonEmpty(host.Hostname, "IPv6 device"),
-			"kind": deviceKind(snapshot, neighbor.Dev), "ip": host.IP, "mac": maskMAC(neighbor.LLAddr),
-			"mac_hash": hashText(neighbor.LLAddr), "interface": neighbor.Dev,
+			"kind": kind, "ip": ip, "mac": mac,
+			"mac_hash": hashText(neighbor.LLAddr), "interface": interfaceName, "ssid": nilIfEmpty(ssid), "rssi": rssi,
+			"rx_bytes": rxBytes, "tx_bytes": txBytes, "first_seen": connectedAt, "last_seen": snapshot.CollectedAt,
 			"connected":      neighborIsConnected(neighbor.State),
 			"neighbor_state": neighbor.State, "policy": "UNVERIFIED", "active_route": "UNVERIFIED",
 			"source": source + ":odhcpd+neighbor", "status": "OK", "simulation": false,
-			"freshness": "live", "collected_at": snapshot.CollectedAt,
+			"freshness": "live", "collected_at": snapshot.CollectedAt, "addresses_revealed": reveal,
 		})
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -1300,6 +1388,21 @@ func maskMAC(value string) string {
 	return "**:**:**:**:" + parts[4] + ":" + parts[5]
 }
 
+func maskIP(value string) string {
+	ip := net.ParseIP(strings.TrimSpace(value))
+	if ip == nil {
+		return "unavailable"
+	}
+	if ipv4 := ip.To4(); ipv4 != nil {
+		return fmt.Sprintf("%d.%d.*.*", ipv4[0], ipv4[1])
+	}
+	parts := strings.Split(ip.String(), ":")
+	if len(parts) < 2 {
+		return "****"
+	}
+	return parts[0] + ":" + parts[1] + ":…"
+}
+
 func loadOne(load []int64) any {
 	if len(load) == 0 {
 		return nil
@@ -1382,18 +1485,37 @@ func topologyInterfaceKind(name string, snapshot *openWrtSnapshot) (string, bool
 	return "", false
 }
 
-func deviceKind(snapshot *openWrtSnapshot, name string) string {
-	if name == "" {
-		return "unknown"
+func deviceConnection(snapshot *openWrtSnapshot, rawMAC, neighborInterface string) (kind, interfaceName, ssid string, rssi any, rxBytes, txBytes uint64, connectedAt any) {
+	mac := strings.ToLower(strings.TrimSpace(rawMAC))
+	if station, ok := snapshot.Stations[mac]; ok {
+		signal := station.SignalAverage
+		if signal == 0 {
+			signal = station.Signal
+		}
+		var firstSeen any
+		if station.ConnectedTime > 0 {
+			firstSeen = snapshot.CollectedAt.Add(-time.Duration(station.ConnectedTime) * time.Second)
+		}
+		return "wifi", station.Interface, station.SSID, signal, station.RXBytes, station.TXBytes, firstSeen
+	}
+	for _, entry := range snapshot.BridgeFDB {
+		if strings.EqualFold(entry.MAC, mac) && interfaceNamePattern.MatchString(entry.Dev) {
+			return "ethernet", entry.Dev, "", nil, 0, 0, nil
+		}
 	}
 	for _, radio := range snapshot.Wireless {
 		for _, iface := range radio.Interfaces {
-			if name == iface.IfName {
-				return "wifi"
+			if neighborInterface == iface.IfName {
+				return "wifi", neighborInterface, iface.Config.SSID, nil, 0, 0, nil
 			}
 		}
 	}
-	return "ethernet"
+	for _, link := range snapshot.Links {
+		if link.IfName == neighborInterface && link.Master != "" {
+			return "ethernet", neighborInterface, "", nil, 0, 0, nil
+		}
+	}
+	return "unknown", neighborInterface, "", nil, 0, 0, nil
 }
 
 func maxUint64(a, b uint64) uint64 {

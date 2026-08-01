@@ -73,6 +73,35 @@ func TestSubscriptionServiceRequiresVerificationTargetBeforeDownload(t *testing.
 	}
 }
 
+func TestSubscriptionServiceAcceptsManualServerWithoutSubscription(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	if _, _, err := AddManualServer(ManualServersPath(stateDir), testManualVLESSURI); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeXrayRunner{}
+	checker := &sequenceChecker{checks: []OutboundCheck{{Status: "OK", LatencyMS: 18, ExternalIPHash: "sha256:egress", ExternalCountry: "DE"}}}
+	service := &SubscriptionService{
+		Runner:         runner,
+		CheckerFactory: func(*config.Config, config.Service) OutboundChecker { return checker },
+	}
+	cfg := &config.Config{
+		Storage: config.Storage{StateDir: stateDir},
+		Policy:  config.Policy{MaxProbeSeconds: 10},
+		Xray:    config.Xray{SubscriptionSecretFile: filepath.Join(root, "missing-subscription.secret"), ProbeSocksBasePort: 12000},
+		GeoIP: config.GeoIP{Endpoints: []config.GeoIPEndpoint{{
+			Name: "country-is", Provider: "country_is", URL: "https://api.country.is/",
+		}}},
+	}
+	result, err := service.Prepare(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Ready || result.SubscriptionHash == "" || result.SubscriptionBytes != 0 || len(result.Servers) != 1 {
+		t.Fatalf("manual-only bundle was not prepared: %+v", result)
+	}
+}
+
 func TestSubscriptionProbeServiceDoesNotDependOnConfiguredServices(t *testing.T) {
 	cfg := &config.Config{
 		GeoIP: config.GeoIP{Endpoints: []config.GeoIPEndpoint{{

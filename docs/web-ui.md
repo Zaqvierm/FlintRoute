@@ -1,30 +1,29 @@
-# Web UI (Aegis Console)
+# Web UI
 
-> Основные реализации: `ui/src/main.tsx`, `internal/web`.
+> Реализация: `ui/src/main.tsx`, `ui/src/view-models.ts`, `internal/web`.
 
-## Стек
+Встроенная панель рассчитана на один понятный интерфейс: новичок видит короткие
+статусы и причины ошибок, а технические поля открываются в той же карточке. Нет
+отдельной «упрощённой» и «администраторской» версии экрана. Права API по-прежнему
+ограничивают опасные действия, но структура навигации для всех одна.
 
-- TypeScript + Preact + Vite;
+## Сборка и запуск
+
+- TypeScript, Preact и Vite;
 - CSS без CDN;
-- production build в `internal/web/dist`;
-- Go `embed` отдаёт UI из `router-policy serve`/`run`.
-
-Node.js нужен только на машине сборки. На Flint 2 кладётся собранный
-binary/static bundle — никакого Node runtime на устройстве.
-
-## Запуск
+- production bundle в `internal/web/dist`;
+- Go `embed` отдаёт интерфейс из `router-policy serve` и `router-policy run`.
 
 ```powershell
-npm install
+npm ci
 npm run typecheck
+npm test
 npm run build
 powershell -ExecutionPolicy Bypass -File .\scripts\build-go.ps1
 .\dist\router-policy.exe serve --listen 127.0.0.1:8787
 ```
 
-Открыть `http://127.0.0.1:8787/`.
-
-На OpenWrt listener настраивается отдельно от основного JSON:
+На OpenWrt listener настраивается отдельно от основной конфигурации:
 
 ```text
 # /etc/router-policy/config/listener.conf
@@ -32,128 +31,152 @@ listen_address=0.0.0.0:8787
 allow_firewalled_bind=1
 ```
 
-После изменения перезапустите только `router-policy`. Этот opt-in не открывает
-порт сам: firewall4 rule должен разрешать TCP/8787 только из доверенной
-management subnet. Default-файл остаётся `127.0.0.1:8787` и
-`allow_firewalled_bind=0`; installer не перезаписывает локальную настройку при
-upgrade.
+Non-loopback bind сам не открывает firewall. TCP-порт должен быть разрешён только
+из доверенной management subnet. Значение по умолчанию остаётся
+`127.0.0.1:8787`.
 
-## Экраны (`Content` в `ui/src/main.tsx`)
+## Общий UX
 
-- обзор (`OverviewScreen`);
-- карта сети (`NetworkMap`, topology);
-- трафик (`Traffic`) — RX/TX bytes, текущая скорость, packets/errors по интерфейсам;
-- устройства (`Devices`, `DeviceCard`); нереализованные действия видны только
-  как disabled с `Not implemented`;
-- сервисы (`Services`);
-- discovery (`Discovery`) — режим, лимиты и проверенные предложения;
-- маршруты (`Routes`, `Vless`, `RouteType`);
-- Smart DNS и managed Zapret setup;
-- поток решений (`DecisionFlow`, events);
-- диагностика (`Diagnostics`);
-- безопасность (`Security`);
-- ревизии;
-- Advanced/Developer mode с очередью ChangeSet и JSON editor.
+Основные сущности используют один паттерн:
 
-Главный экран держит сетевую карту крупным блоком и правую колонку с критичными
-сервисами, предупреждениями и последними решениями.
-
-## API-контракт
-
-UI не пишет nft/Xray/dnsmasq/UCI/routes напрямую. Все state-changing операции —
-через `/api/v1/changes` (ChangeSet: validate → apply → confirm/rollback). UI
-слушает SSE (`/api/v1/events/stream`) с `Last-Event-ID` + `Last-Event-EPoch`.
-
-## Fallback
-
-Production UI не подставляет mock-данные. API недоступен → ошибка API и
-stale/unavailable состояния. После загрузки UI вызывает `/auth/me`: 401 → форма
-входа; 428/первый запуск — admin через setup token. После входа —
-overview/topology/devices/services/routes/traffic/events/system/revisions + SSE.
-`security/audit` загружается только для diagnostician/admin, а `changes` — только
-для admin; 403 на дополнительном экране не валит общий dashboard.
-
-Service board строится из текущего конфига и bounded decision cache. Заводского
-списка сайтов и кнопок с заранее заданными доменами нет. Карточку можно
-перетащить между GEO, TSPU, Direct и Drop; UI
-создаёт, проверяет, применяет и подтверждает ChangeSet.
-
-Статические правила не активируются сами. Администратор вводит домен вручную,
-затем задаёт класс и порядок `direct`,
-`zapret`, `smart_dns`, `vless`, `drop`. Тем же редактором меняется автоматически
-обнаруженное правило. Порядок сохраняется как `allowed_paths`; небезопасные для
-GEO комбинации отклоняются API до apply. Direct и Drop — строгие классы с одним
-путём: соответственно `direct` и `drop`.
-
-Отключённый IPv6 показывается как необязательное состояние, а не как
-предупреждение: отсутствие WAN6 само по себе не означает поломку IPv4 data
-plane.
-
-Экран Smart DNS отдельно принимает IP и порт resolver и тестовый домен.
-Private/loopback/multicast/unspecified/bogon адреса отклоняются. До создания
-ChangeSet проходят UDP DNS, TCP DNS, проверка ответов и HTTP/TLS-подключение к
-полученному адресу; UI показывает адреса и результат каждого этапа. Resolver
-не показывается как готовый до route health proof. Smart DNS подписан как
-conditional DNS, а не VPN, и отображает порядок:
-`Zapret → Smart DNS → VLESS → Direct` для TSPU и
-`Smart DNS → VLESS → DROP` для GEO. Экран VPN содержит пять независимых слотов
-подписок и показывает результат проверки каждого объединённого outbound.
-`Сохранить и проверить` не включает маршрутизацию. Отдельная кнопка managed
-activation повторяет проверку и одной транзакцией связывает Xray mode, bundle и
-routes. UI подтверждает транзакцию только после management/data-plane proof.
-
-Экран Zapret принимает immutable source URL, версию, SHA-256 и тестовый домен.
-Сначала он показывает capability/dry-run report без изменения конфигурации,
-затем отдельное подтверждение создаёт и прогоняет managed transaction. Кнопка
-activation недоступна до успешного preflight.
-
-Низкоуровневый JSON editor спрятан в `Advanced` и закрыт `<details>`. Перед
-действиями ChangeSet показывает человекочитаемые группы Routing,
-Firewall/data plane и Management. Кнопки переходов зависят от текущего state;
-невозможные действия не рисуются.
-
-Default admin и default password отсутствуют. Installer печатает one-time setup
-token только пока администратор ещё не создан. После setup используются данные
-созданного владельцем аккаунта; FlintRoute не хранит и не показывает исходный
-пароль.
-
-Development simulation — только отдельной командой:
-
-```powershell
-.\dist\router-policy.exe serve-dev --listen 127.0.0.1:8787
+```text
+карточка с понятным состоянием → Открыть → подробности → сырые данные
 ```
 
-Production `run/serve` использует `OpenWrtProvider` и не выдаёт simulated
-topology за реальные данные.
+На кратком уровне не показываются transaction ID, nft mark, Xray tag, JSON
+Pointer и полный evidence. Они находятся в drawer. Raw JSON закрыт отдельным
+`Открыть сырые данные`.
+
+Для загрузки, пустого ответа, ошибки API и устаревших данных есть отдельные
+состояния. Верхняя строка показывает только Internet, data plane, DNS, текущий
+маршрут и критические ошибки. CPU, RAM и температура не подставляются, если
+backend не дал достоверного значения. Объекты не преобразуются через неявный
+`String()`, поэтому `[object Object]` не попадает в интерфейс.
+
+Навигация и выбранный экран сохраняются между reload. На телефоне меню становится
+горизонтальным, карточки и drawers занимают доступную ширину без переполнения.
+
+## Поток решений
+
+`Поток решений` отделяет сетевые решения от системного журнала. На основном
+экране остаются события, содержащие домен, устройство, выбранный маршрут или
+route evidence. `system.change.*`, lifecycle и rollback bookkeeping доступны в
+`Административном журнале`.
+
+Карточка решения показывает:
+
+- устройство и адрес в текущем privacy mode;
+- время, домен, сервис и категорию;
+- стратегию, правило, route и fallback;
+- PathVerified, конечный статус и длительность.
+
+Drawer показывает кандидатов и причины отказа, DNS addresses, destination IP,
+probe latency, HTTP/TLS evidence, nft mark, routing table, egress interface,
+Xray/SOCKS binding, policy/revision/transaction и timeline. Поля отображаются
+только если backend действительно прислал их.
+
+Интерфейс держит выбранное окно 15, 30, 60 или 120 минут; значение хранится
+локально. Значение по умолчанию — 30 минут. Доступны фильтры по устройству, IP,
+домену, сервису, категории, route, status, PathVerified и fallback.
+
+## Карта и устройства
+
+Название и модель центрального узла берутся из `/api/v1/system`. Production UI
+не содержит названия конкретного роутера, адреса управления, интерфейса или
+подсети.
+
+OpenWrt provider объединяет:
+
+- `ubus` interface и device state;
+- DHCP leases и neighbour table;
+- bridge FDB;
+- `hostapd.* get_clients` для реальных Wi-Fi stations;
+- interface counters.
+
+Ethernet определяется по bridge FDB/интерфейсу, Wi-Fi — только по данным
+wireless station. Имя устройства и IP для этого не используются. Поддерживаются
+несколько LAN/SSID, guest/mesh-пути, unknown connection и недавно отключённые
+клиенты; неполные данные не превращаются в выдуманное подключение.
+
+MAC и IP по умолчанию редактируются на backend. Полные значения не лежат в DOM.
+Кнопка privacy mode запрашивает раскрытую выдачу на пять минут и затем снова
+получает маскированную. Карточка устройства содержит тип подключения, interface,
+SSID, RSSI, трафик, first/last seen, policy и последние решения. Действия без
+готового API честно disabled.
+
+## Сервисы
+
+Домены группируются по каноническому service ID, а не только по eTLD+1. Поэтому
+один сервис может включать разные корневые домены. Карточка показывает категорию,
+число доменов, route и health; drawer — домены, источники, overrides, fallback и
+последние решения. Заводской список сайтов не зашит в UI.
+
+Service board сохраняет четыре понятных класса: GEO, TSPU, Direct и Drop.
+Перетаскивание одиночного правила создаёт обычный ChangeSet. Низкоуровневое
+редактирование остаётся в `Advanced`.
+
+## VLESS/Xray
+
+Экран разделяет:
+
+- до пяти HTTPS-подписок;
+- VLESS-серверы, добавленные вручную.
+
+Ручной `vless://` URI разбирается на backend и сохраняется как Xray outbound в
+файле режима `0600`. UUID и исходный URI не возвращаются через API. Безопасная
+выдача содержит имя, hostname/IP, порт, transport и security. Ручные и
+subscription outbounds объединяются в один candidate bundle и проходят одну
+проверку внешнего пути.
+
+`Сохранить и проверить` не включает маршрутизацию. Явный managed activation
+повторяет проверку и создаёт одну транзакцию с Xray mode, TPROXY/bypass binding и
+VLESS routes. Подтверждение возможно только после management/data-plane proof.
+
+`Обновить health` запускает лёгкую проверку задержки и выхода вручную. Это не
+speed test: интерфейс не выдаёт ping за пропускную способность и не расходует
+трафик постоянными загрузками. Фоновое обновление общего состояния выполняется
+примерно раз в 30 секунд только при видимой вкладке.
+
+## Smart DNS
+
+Resolver принимается как `IPv4`, `IPv4:port`, `IPv6` или `[IPv6]:port`. Порт
+необязателен, по умолчанию используется 53. Private, loopback, multicast,
+unspecified и bogon адреса отклоняются.
+
+До создания ChangeSet backend выполняет UDP DNS, TCP DNS, проверяет полученные
+адреса и HTTP/TLS подключение к выбранному домену. Результаты и код ошибки
+показываются по шагам. Smart DNS всегда называется conditional DNS, а не VPN.
+
+## Диагностика и recovery
+
+Security checks, diagnostics, revisions, backups и recovery представлены
+карточками. Подробности и raw JSON открываются вручную. Настройки пока являются
+честным read-only projection. ChangeSet editor находится только в `Advanced` и
+перед apply группирует diff по routing, firewall/data plane и management.
+
+Telegram events отображаются отдельными карточками; настройка уведомлений не
+смешана с routing bootstrap. External SOCKS также остаётся явно внешней
+зависимостью.
 
 ## Безопасность
 
-- Секреты (UUID VPN-серверов, адреса, REALITY-ключи, URL подписки, токены) не
-  попадают в UI/SSE/API responses;
-- `/api/v1/settings` отдаёт safe projection (secret paths omitted);
-- `/api/v1/probes` редактит IP;
-- CSRF `X-CSRF-Token` для state-changing `/api/v1/*`;
-- non-loopback bind требует явного env guard.
+- subscription URL, VLESS UUID/URI, Reality credentials и Telegram token не
+  возвращаются через API;
+- client IP/MAC редактируются на backend до отправки в privacy mode;
+- `/api/v1/settings` отдаёт safe projection;
+- CSRF обязателен для state-changing запросов;
+- production UI не использует simulation fallback.
 
-## Размер production build
+## Подтверждённое состояние
 
-Последняя проверенная сборка:
+Typecheck, Vitest, production build, API tests и desktop/mobile browser smoke
+выполняются локально. Текущая переработка UI и новые topology/privacy/manual
+VLESS endpoints ещё не устанавливались на роутер и не наследуют старый
+hardware PASS.
 
-```text
-index.html  ~0.40 kB
-CSS         ~10 kB (gzip ~2.8 kB)
-JS          ~56 kB (gzip ~19 kB)
-```
+Остаются read-only или disabled:
 
-Нормально для роутера: статические файлы внутри Go binary.
-
-## Что ещё надо доделать
-
-- аппаратная проверка Telegram delivery и external SOCKS endpoint; UI уже
-  разделяет уведомления и внешнюю транспортную зависимость;
-- реальные edit controls для devices;
-- подтверждение опасных операций отдельным modal;
-- отдельные состояния disabled/read-only для каждого role-specific control;
-- группировка интерфейсов и графики скорости вместо базовой таблицы counters;
-- live topology из `ubus`/DHCP leases/wireless clients;
-- отображение recovery status (`/api/v1/system`).
+- изменение настроек устройства без отдельного backend API;
+- произвольные update/uninstall действия из Web UI;
+- автоматический throughput test VLESS;
+- TLS termination самой панели.

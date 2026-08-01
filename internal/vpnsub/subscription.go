@@ -60,8 +60,13 @@ func (s *SubscriptionService) Prepare(ctx context.Context, cfg *config.Config) (
 		return PreparedBundle{}, err
 	}
 
-	subscriptionURLs, err := ReadSubscriptionURLFiles(cfg.Xray.SubscriptionSecretFile)
-	if err != nil {
+	subscriptionURLs := []string{}
+	if info, statErr := os.Lstat(cfg.Xray.SubscriptionSecretFile); statErr == nil && info.Size() > 0 {
+		subscriptionURLs, err = ReadSubscriptionURLFiles(cfg.Xray.SubscriptionSecretFile)
+		if err != nil {
+			return PreparedBundle{}, errors.New("VPN subscription secret file is invalid")
+		}
+	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 		return PreparedBundle{}, errors.New("VPN subscription secret file is invalid")
 	}
 	maxBytes := cfg.Policy.MaxSubscriptionBytes
@@ -82,6 +87,18 @@ func (s *SubscriptionService) Prepare(ctx context.Context, cfg *config.Config) (
 		}
 		totalBytes += fetched.Bytes
 		downloadPaths = append(downloadPaths, downloadPath)
+	}
+	manualPath := ManualServersPath(cfg.Storage.StateDir)
+	if info, statErr := os.Lstat(manualPath); statErr == nil && info.Size() > 0 {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return PreparedBundle{}, errors.New("manual VLESS store is unsafe")
+		}
+		if _, err := ListManualServers(manualPath); err != nil {
+			return PreparedBundle{}, errors.New("manual VLESS store is invalid")
+		}
+		downloadPaths = append(downloadPaths, manualPath)
+	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return PreparedBundle{}, errors.New("manual VLESS store is invalid")
 	}
 	mergedPath := filepath.Join(temporaryDir, "subscription-merged.json")
 	mergedHash, err := mergeSubscriptionFiles(downloadPaths, mergedPath)

@@ -56,8 +56,10 @@ func newOpenWrtFixtureRunner() *fakeOpenWrtRunner {
 	put(commandRules4, "", `[{"priority":0,"table":"local"},{"priority":32766,"table":"main"}]`)
 	put(commandRules6, "", `[{"priority":0,"table":"local"},{"priority":32766,"table":"main"}]`)
 	put(commandWirelessStatus, "", `{"radio0":{"up":true,"interfaces":[{"section":"default_radio0","ifname":"radio-ap0","config":{"mode":"ap","ssid":"Test WiFi","network":["home_net"],"encryption":"sae-mixed","disabled":false,"isolate":false}}]}}`)
-	put(commandNeighbors, "", `[{"dst":"192.0.2.10","dev":"port-a","lladdr":"02:11:22:33:44:55","state":["REACHABLE"]}]`)
-	put(commandDHCPLeases, "", "1893456000 02:11:22:33:44:55 192.0.2.10 workstation *\n")
+	put(commandWirelessClients, "radio-ap0", `{"clients":{"02:11:22:33:44:66":{"authorized":true,"signal":-54,"signal_avg":-52,"connected_time":120,"rx":{"bytes":700},"tx":{"bytes":900}}}}`)
+	put(commandBridgeFDB, "", `[{"mac":"02:11:22:33:44:55","dev":"port-a","master":"home0","state":"reachable"}]`)
+	put(commandNeighbors, "", `[{"dst":"192.0.2.10","dev":"home0","lladdr":"02:11:22:33:44:55","state":["REACHABLE"]},{"dst":"192.0.2.20","dev":"home0","lladdr":"02:11:22:33:44:66","state":["REACHABLE"]}]`)
+	put(commandDHCPLeases, "", "1893456000 02:11:22:33:44:55 192.0.2.10 workstation *\n1893456000 02:11:22:33:44:66 192.0.2.20 phone *\n")
 	put(commandODHCPDHosts, "", "")
 	put(commandFlowSoftware, "", "1\n")
 	put(commandFlowHardware, "", "1\n")
@@ -103,12 +105,18 @@ func TestOpenWrtProviderCollectsLiveFactsWithoutExposingWANIP(t *testing.T) {
 		t.Fatalf("board facts were not parsed: %#v", system)
 	}
 	devices := provider.Devices(nil)
-	if len(devices) != 1 || devices[0]["interface"] != "port-a" || devices[0]["connected"] != true {
+	if len(devices) != 2 || devices[0]["interface"] != "radio-ap0" || devices[0]["kind"] != "wifi" || devices[1]["interface"] != "port-a" || devices[1]["kind"] != "ethernet" {
 		t.Fatalf("device evidence was not merged: %#v", devices)
 	}
 	deviceJSON, _ := json.Marshal(devices)
-	if strings.Contains(string(deviceJSON), "02:11:22:33:44:55") || !strings.Contains(string(deviceJSON), "**:**:**:**:44:55") {
-		t.Fatalf("raw LAN MAC leaked or mask missing: %s", deviceJSON)
+	if strings.Contains(string(deviceJSON), "02:11:22:33:44:55") || strings.Contains(string(deviceJSON), "192.0.2.10") ||
+		!strings.Contains(string(deviceJSON), "**:**:**:**:44:55") || !strings.Contains(string(deviceJSON), "192.0.*.*") {
+		t.Fatalf("raw LAN address leaked or mask missing: %s", deviceJSON)
+	}
+	revealed := provider.DevicesWithPrivacy(nil, true)
+	revealedJSON, _ := json.Marshal(revealed)
+	if !strings.Contains(string(revealedJSON), "02:11:22:33:44:55") || !strings.Contains(string(revealedJSON), "192.0.2.10") || !strings.Contains(string(revealedJSON), "Test WiFi") {
+		t.Fatalf("explicit address reveal did not return live inventory: %s", revealedJSON)
 	}
 
 	diagnostics := provider.Diagnostics(nil)
@@ -201,6 +209,7 @@ func TestFixedOpenWrtCommandsRejectUntrustedParameters(t *testing.T) {
 	}{
 		{commandDeviceStatus, "eth0;reboot"},
 		{commandDeviceStatus, "../../etc/shadow"},
+		{commandWirelessClients, "wlan0;reboot"},
 		{commandInterfaceDump, "wan;reboot"},
 		{commandProcess, "xray --config /tmp/evil"},
 		{commandComponentPresent, "../../xray"},

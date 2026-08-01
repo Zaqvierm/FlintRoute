@@ -38,8 +38,8 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/health` | unauthenticated local watchdog health |
 | `/api/v1/auth/login` `setup` `logout` `me` | session lifecycle |
 | `/api/v1/overview` | provider overview |
-| `/api/v1/topology` | topology |
-| `/api/v1/devices` | LAN/guest/remote clients |
+| `/api/v1/topology` | topology assembled from ubus, leases, neighbours, bridge FDB and wireless stations |
+| `/api/v1/devices` | LAN/guest/remote clients; addresses are masked unless `privacy=revealed` is explicitly requested |
 | `/api/v1/services` | configured and dynamically observed services |
 | `/api/v1/services/classify` | create or edit a domain rule through a draft ChangeSet; optional `allowed_paths` preserves the user-defined fallback order |
 | `/api/v1/discovery` | current discovery mode, limits, circuit-breaker state and suggestions |
@@ -66,6 +66,7 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/zapret/adaptive/unpin` | clear the manual pin without changing unrelated bundles |
 | `/api/v1/xray/subscription/secret` | store up to five subscription sources without returning their URLs |
 | `/api/v1/xray/subscription/prepare` | merge and verify VPN subscriptions; candidate check only offers activation, explicit managed mode creates one ChangeSet with mode, bundle and routes |
+| `/api/v1/xray/manual-servers` | list safe metadata, add or delete manual VLESS outbounds; UUID and source URI are never returned |
 | `/api/v1/events` | persisted history merged with live epoch |
 | `/api/v1/events/stream` | SSE stream |
 | `/api/v1/changes` `GET/POST` | list/create ChangeSet |
@@ -88,6 +89,18 @@ interface; users do not need to construct JSON pointers for either provider.
 Both activation endpoints only create a draft. The standard
 `validate → apply → VerifyManagementPath → VerifyDataPlane → confirm` path is
 still authoritative; a failed proof rolls the transaction back.
+
+Manual VLESS input uses a separate secret store under the Xray state directory.
+The API accepts a `vless://` URI, validates supported transport/security fields,
+and persists only the generated outbound with mode `0600`. Listing returns safe
+metadata only. Subscription and manual outbounds are merged before the same
+candidate health check; adding a manual server does not silently enable managed
+Xray or change routing.
+
+Device privacy is enforced by the provider, not CSS. The default response masks
+IP and MAC before serialization. `privacy=revealed` is an explicit authenticated
+request used by the temporary reveal control; the hidden values are therefore
+absent from the DOM in normal mode.
 
 `/api/v1/lifecycle` различает `router-policy-xray` и штатный OpenWrt-сервис
 `xray`. `inactive` у системного сервиса не считается ошибкой, если production

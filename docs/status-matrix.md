@@ -19,7 +19,7 @@
 | P5 | 85% | Рабочий провайдер OpenWrt и API |
 | P6 | 100% | Постоянное состояние и восстановление после перезагрузки доказаны на Flint 2 |
 | P7 | 70% | Авторизация, fail-closed entropy handling и аудит listener bind |
-| P8 | 35% | Встроенный Web UI, high-level VLESS/Zapret/Smart DNS flows и Advanced ChangeSet mode; общий UX ещё не закончен |
+| P8 | 75% | Карточный Web UI, decision flow, topology/privacy, high-level VLESS/Zapret/Smart DNS и Advanced mode готовы локально; аппаратный UI pass и часть device/update actions ещё нужны |
 | P9 | 60% | Loopback по умолчанию и source-restricted доступ к панели из отдельной upstream-сети проверены; TLS ещё не встроен |
 | P10 | 100% | Clean install, upgrade, rollback timer, compatible downgrade, uninstall и reinstall/reconcile пройдены на Flint 2 |
 | P11 | 85% | Автоматические тесты |
@@ -51,6 +51,8 @@ legacy in-place upgrade на указанном commit не повторялис
 | Opt-in static rules и редактируемый fallback порядок | API tests и UI typecheck/build | требуется пользовательский apply на текущем Flint 2 |
 | TSPU fallback `Zapret → Smart DNS → VLESS → Direct → DROP` | planner test доказывает, что VLESS не вызывается до Smart DNS | требуется проверка с production resolver |
 | Пять VPN subscription slots и объединённая проверка outbound | API/UI/typecheck/build | требуется повторный subscription prepare |
+| Ручной VLESS URI без возврата UUID/URI через API | parser/store/API/UI tests; manual outbound входит в общий candidate bundle | требуется проверка с пользовательским сервером |
+| Карточный UI, decision flow, privacy mode и runtime topology | Vitest, typecheck/build, desktop/mobile browser smoke; Wi-Fi/Ethernet берутся из station/FDB evidence | требуется установка текущего commit и проверка на реальных клиентах |
 | Явный candidate-only → managed Xray | mode, bundle и routes в одном ChangeSet; TPROXY/bypass/blackhole regression tests | требуется повторный apply/confirm и rollback test на текущем Flint 2 |
 | Managed Zapret setup | pinned source/version/SHA, architecture, NFQUEUE, kernel state и nfqws dry-run; high-level API/UI | требуется preflight/apply/confirm на текущем Flint 2 |
 | Top-3 blockcheck import, domain binding и atomic catalog | parser/catalog/CLI tests | calibration runner ещё не запускался |

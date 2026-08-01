@@ -51,7 +51,7 @@ LAN client
 
 ### Presentation plane
 
-Только web UI (Aegis Console): Preact/Vite static bundle, отдаётся из
+Встроенный Web UI: Preact/Vite static bundle, отдаётся из
 `router-policy serve`, не содержит секретов, не вызывает shell/OpenWrt напрямую.
 Все изменения — через `/api/v1/changes`.
 
@@ -138,9 +138,11 @@ route-specific apply-механизмы запрещены архитектур�
 Xray используется напрямую. VPN-провайдер — внешний сервис доступа к
 VPN-серверам по подписке (ключу): отдаёт Xray-конфиг или массив VLESS outbounds.
 Подписка может прийти в трёх формах (object / array of configs / array of
-outbounds) — см. `vpn-subscription.md`. FlintRoute нормализует, дедуплицирует,
+outbounds) — см. `vpn-subscription.md`. Ручной `vless://` URI хранится отдельно
+и входит в тот же candidate bundle. FlintRoute нормализует, дедуплицирует,
 классифицирует и генерирует локальный Xray-конфиг (SOCKS per outbound).
-Секреты (UUID, адреса, REALITY-ключи, URL подписки) вне bbolt/API/UI/SSE.
+UUID, исходный URI, REALITY credentials и URL подписки не возвращаются через
+API/UI/SSE; безопасная инвентаризация может показывать hostname и порт сервера.
 
 ### Zapret/nfqws
 

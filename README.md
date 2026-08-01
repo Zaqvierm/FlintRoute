@@ -89,8 +89,10 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
 - автоматическое обнаружение доменов без заводского каталога сервисов;
 - режимы discovery `observe_only`, `suggest`, `auto_apply_verified` и `locked`;
 - ручные opt-in правила и редактируемый порядок fallback для найденных доменов;
-- настройка Smart DNS с UDP/TCP DNS и HTTP/TLS preflight и пяти VPN-подписок
-  через Web UI;
+- настройка Smart DNS с UDP/TCP DNS и HTTP/TLS preflight, до пяти
+  VPN-подписок и ручных VLESS-серверов через Web UI;
+- карточный интерфейс с подробностями по запросу, потоком сетевых решений,
+  privacy mode и динамической topology из фактических данных OpenWrt;
 - явные managed activation flows для Xray и Zapret без ручного JSON: локальные
   API/UI tests зелёные, повторный аппаратный apply/rollback ещё нужен;
 - импорт top-3 `blockcheck`-кандидатов, привязанных к фактически проверенному
@@ -105,8 +107,9 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
 - Xray и совместимый `nfqws` не входят в пакет и должны быть установлены
   отдельно до включения соответствующих маршрутов; Zapret setup принимает
   только immutable HTTPS source, закреплённые version и SHA-256;
-- заводской конфиг не содержит VPN-подписку и production Smart DNS resolver,
-  поэтому VLESS и Smart DNS после одной установки не становятся рабочими сами;
+- заводской конфиг не содержит VPN-подписку, ручной VLESS URI или production
+  Smart DNS resolver, поэтому VLESS и Smart DNS после одной установки не
+  становятся рабочими сами;
 - штатный профиль `config/default.json` использует нейтральный target `openwrt`,
   но готовый ARM64 package и hardware acceptance пока относятся только к
   GL-MT6000; другое устройство требует отдельной диагностики и доказательства;

@@ -2,6 +2,7 @@ import { render } from 'preact';
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import {
   APIError,
+  addManualVLESSServer,
   activateExternalSOCKS,
   activateZapretSetup,
   changeAction,
@@ -13,7 +14,9 @@ import {
   configureTelegram,
   createChange,
   getChanges,
+  getBackups,
   getDevices,
+  getDiagnostics,
   getDiscovery,
   getExternalSOCKS,
   getEvents,
@@ -21,10 +24,15 @@ import {
   getRevisions,
   getRoutes,
   getSecurity,
+  getSecuritySummary,
   getSmartDNS,
   getServices,
   getSubscriptionSecretStatus,
   getSystem,
+  getSettings,
+  getLifecycle,
+  getManualVLESSServers,
+  getStorage,
   getTelegram,
   getTraffic,
   getTopology,
@@ -40,30 +48,33 @@ import {
   type ChangeOp,
   type DiscoveryStatus,
   type EventItem,
+  type ManualVLESSServer,
+  type RevisionSummary,
   type SessionInfo,
   type TrafficSnapshot
 } from './api';
+import {
+  asArray,
+  asRecord,
+  errorInfo,
+  formatDateTime,
+  groupServices,
+  humanStatus,
+  isAdministrativeEvent,
+  isDecisionEvent,
+  parseResolverInput,
+  statusTone,
+  textValue,
+  toDecisionCard
+} from './view-models';
 import './styles.css';
 
-const screens = [
-  'Обзор',
-  'Карта сети',
-  'Трафик',
-  'Устройства',
-  'Сервисы',
-  'Discovery',
-  'Маршруты',
-  'VLESS-серверы',
-  'Smart DNS',
-  'Zapret',
-  'External SOCKS',
-  'Telegram',
-  'Поток решений',
-  'Диагностика',
-  'Безопасность',
-  'Ревизии',
-  'Advanced'
+const navigation = [
+  { title: 'Главное', screens: ['Обзор', 'Карта сети', 'Устройства', 'Поток решений'] },
+  { title: 'Маршрутизация', screens: ['Сервисы', 'Маршруты', 'VLESS-серверы', 'Smart DNS', 'Zapret', 'External SOCKS', 'Discovery'] },
+  { title: 'Система', screens: ['Трафик', 'Telegram', 'Ревизии и recovery', 'Диагностика', 'Безопасность', 'Advanced'] }
 ];
+const availableScreens = new Set(navigation.flatMap((group) => group.screens));
 
 const unavailableOverview = {
   internet: 'unavailable',
@@ -83,7 +94,14 @@ const unavailableOverview = {
 };
 
 function App() {
-  const [screen, setScreen] = useState('Обзор');
+  const [screen, setScreen] = useState(() => {
+    try {
+      const stored = window.localStorage.getItem('flintroute-screen');
+      return stored && availableScreens.has(stored) ? stored : 'Обзор';
+    } catch {
+      return 'Обзор';
+    }
+  });
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [authError, setAuthError] = useState('');
@@ -98,15 +116,36 @@ function App() {
   const [changes, setChanges] = useState<ChangeSet[]>([]);
   const [security, setSecurity] = useState<any>(null);
   const [system, setSystem] = useState<any>(null);
+  const [diagnostics, setDiagnostics] = useState<any>(null);
+  const [lifecycle, setLifecycle] = useState<any>(null);
+  const [storage, setStorage] = useState<any>(null);
+  const [settings, setSettings] = useState<any>(null);
+  const [backups, setBackups] = useState<any>(null);
+  const [revisions, setRevisions] = useState<RevisionSummary | null>(null);
+  const [securitySummary, setSecuritySummary] = useState<any>(null);
   const [configVersion, setConfigVersion] = useState(0);
   const [traffic, setTraffic] = useState<TrafficView>({ status: 'unavailable', source: 'api-unavailable', collected_at: '', interfaces: [] });
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState('');
+  const [privacyRevealUntil, setPrivacyRevealUntil] = useState(0);
 
-  async function refresh() {
+  function selectScreen(next: string) {
+    setScreen(next);
+    try {
+      window.localStorage.setItem('flintroute-screen', next);
+    } catch {
+      // Storage may be disabled; navigation still works for this session.
+    }
+  }
+
+  async function refresh(revealAddresses = privacyRevealUntil > Date.now()) {
+    setRefreshing(true);
     try {
       const [nextOverview, nextTopology, nextDevices, nextServices, nextRoutes, nextTraffic, nextEvents, nextSystem, nextRevisions, nextDiscovery] = await Promise.all([
         getOverview(),
         getTopology(),
-        getDevices(),
+        getDevices(revealAddresses),
         getServices(),
         getRoutes(),
         getTraffic(),
@@ -123,27 +162,25 @@ function App() {
       setTraffic((previous) => withTrafficRates(previous, nextTraffic));
       setEvents(nextEvents);
       setSystem(nextSystem);
+      setRevisions(nextRevisions);
       setConfigVersion(nextRevisions.config_version);
       setDiscovery(nextDiscovery);
 
       const optionalErrors: string[] = [];
-      if (session?.role === 'administrator') {
-        try {
-          setChanges(await getChanges());
-        } catch (err) {
-          optionalErrors.push(err instanceof Error ? err.message : 'Очередь изменений недоступна');
-        }
-      } else {
-        setChanges([]);
-      }
-      if (session?.role === 'administrator' || session?.role === 'diagnostician') {
-        try {
-          setSecurity(await getSecurity());
-        } catch (err) {
-          optionalErrors.push(err instanceof Error ? err.message : 'Аудит безопасности недоступен');
-        }
-      } else {
-        setSecurity(null);
+      const optional = await Promise.allSettled([
+        getChanges(), getSecurity(), getSecuritySummary(), getDiagnostics(), getLifecycle(), getStorage(), getSettings(), getBackups()
+      ]);
+      const setters = [setChanges, setSecurity, setSecuritySummary, setDiagnostics, setLifecycle, setStorage, setSettings, setBackups];
+      optional.forEach((result, index) => {
+        if (result.status === 'fulfilled') setters[index](result.value as never);
+        else if (!(result.reason instanceof APIError && result.reason.status === 403)) optionalErrors.push(errorInfo(result.reason).message);
+      });
+      if (optional[0].status === 'rejected') setChanges([]);
+      if (optional[1].status === 'rejected') setSecurity(null);
+      setLastUpdated(new Date().toISOString());
+      setLoading(false);
+      if (revealAddresses && privacyRevealUntil <= Date.now()) {
+        setPrivacyRevealUntil(Date.now() + 5 * 60 * 1000);
       }
       setApiError(optionalErrors.join('; '));
     } catch (err) {
@@ -151,6 +188,9 @@ function App() {
         setSession(null);
       }
       setApiError(err instanceof Error ? err.message : 'API недоступен');
+    } finally {
+      setRefreshing(false);
+      setLoading(false);
     }
   }
 
@@ -171,8 +211,10 @@ function App() {
 
   useEffect(() => {
     if (!session) return;
-    refresh();
-    const timer = window.setInterval(refresh, 15000);
+    void refresh(false);
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void refresh(privacyRevealUntil > Date.now());
+    }, 30000);
     let es: EventSource | undefined;
     try {
       es = new EventSource('/api/v1/events/stream');
@@ -199,14 +241,25 @@ function App() {
       window.clearInterval(timer);
       es?.close();
     };
-  }, [session?.user, session?.role]);
+  }, [session?.user, session?.role, privacyRevealUntil]);
+
+  async function togglePrivacy() {
+    if (privacyRevealUntil > Date.now()) {
+      setPrivacyRevealUntil(0);
+      await refresh(false);
+      return;
+    }
+    const until = Date.now() + 5 * 60 * 1000;
+    setPrivacyRevealUntil(until);
+    await refresh(true);
+  }
 
   async function handleLogin(username: string, password: string) {
     setAuthError('');
     try {
       const next = await login(username, password);
       setSession(next);
-      setScreen('Обзор');
+      selectScreen('Обзор');
     } catch (err) {
       if (err instanceof APIError && err.status === 428) {
         setAuthError('Администратор ещё не создан. Используй setup token.');
@@ -222,7 +275,7 @@ function App() {
       await setupAdmin(username, password, setupToken);
       const next = await login(username, password);
       setSession(next);
-      setScreen('Обзор');
+      selectScreen('Обзор');
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : 'Настройка не удалась');
     }
@@ -252,25 +305,28 @@ function App() {
     <div class="shell">
       <aside class="side">
         <div class="brand">
-          <div class="mark">RP</div>
+          <div class="mark">FR</div>
           <div>
-            <strong>Router Policy</strong>
-            <span>{session.user} · {session.role}</span>
+            <strong>{textValue(system?.hostname, 'FlintRoute')}</strong>
+            <span>{textValue(system?.model, 'OpenWrt router')}</span>
           </div>
         </div>
         <nav>
-          {screens.map((s) => (
-            <button class={screen === s ? 'active' : ''} onClick={() => setScreen(s)} key={s}>
-              <span class="nav-dot" />
-              {s}
-            </button>
-          ))}
+          {navigation.map((group) => <section class="nav-group" key={group.title}>
+            <span class="nav-title">{group.title}</span>
+            {group.screens.map((s) => (
+              <button class={screen === s ? 'active' : ''} onClick={() => selectScreen(s)} key={s}>
+                <span class="nav-dot" />{s}
+              </button>
+            ))}
+          </section>)}
         </nav>
       </aside>
       <main>
-        <SessionBar session={session} apiError={apiError} onLogout={handleLogout} />
+        <SessionBar session={session} apiError={apiError} loading={refreshing} lastUpdated={lastUpdated} onRetry={() => refresh()} onLogout={handleLogout} />
+        <PrivacyBar revealed={privacyRevealUntil > Date.now()} revealUntil={privacyRevealUntil} canReveal={session.role === 'administrator'} onToggle={togglePrivacy} />
         <TopBar overview={overview} />
-        <Content screen={screen} session={session} configVersion={configVersion} overview={overview} topology={topology} devices={devices} services={services} discovery={discovery} routes={routes} traffic={traffic} events={events} changes={changes} security={security} system={system} refresh={refresh} />
+        {loading ? <LoadingSkeleton /> : <Content screen={screen} session={session} configVersion={configVersion} overview={overview} topology={topology} devices={devices} services={services} discovery={discovery} routes={routes} traffic={traffic} events={events} changes={changes} security={security} securitySummary={securitySummary} system={system} diagnostics={diagnostics} lifecycle={lifecycle} storage={storage} settings={settings} backups={backups} revisions={revisions} refresh={refresh} />}
       </main>
     </div>
   );
@@ -336,36 +392,44 @@ function AuthShell({ error, onLogin, onSetup }: { error: string; onLogin: (u: st
   );
 }
 
-function SessionBar({ session, apiError, onLogout }: { session: SessionInfo; apiError: string; onLogout: () => void }) {
+function SessionBar({ session, apiError, loading, lastUpdated, onRetry, onLogout }: { session: SessionInfo; apiError: string; loading: boolean; lastUpdated: string; onRetry: () => void; onLogout: () => void }) {
   return (
     <div class={`session-bar ${apiError ? 'warning' : ''}`}>
-      <span>{apiError ? `API: ${apiError}` : `Сессия до ${new Date(session.expires_at).toLocaleTimeString()}`}</span>
-      <button onClick={onLogout}>Выйти</button>
+      <span>{apiError ? `API недоступен: ${apiError}` : loading ? 'Обновляю данные…' : `Обновлено: ${formatDateTime(lastUpdated, 'ещё не обновлялось')}`}</span>
+      <div class="session-actions">{apiError && <button onClick={onRetry}>Повторить</button>}<span>{session.user}</span><button onClick={onLogout}>Выйти</button></div>
     </div>
   );
 }
 
+function PrivacyBar({ revealed, revealUntil, canReveal, onToggle }: { revealed: boolean; revealUntil: number; canReveal: boolean; onToggle: () => void }) {
+  return <div class={`privacy-bar ${revealed ? 'revealed' : ''}`}>
+    <div><b>{revealed ? 'Адреса временно раскрыты' : 'Privacy mode включён'}</b><span>{revealed ? `Снова скроются в ${new Date(revealUntil).toLocaleTimeString()}` : canReveal ? 'IP и MAC скрыты в API и не лежат заранее в DOM.' : 'Полные адреса может временно запросить администратор.'}</span></div>
+    <button disabled={!canReveal} onClick={onToggle}>{revealed ? 'Скрыть сейчас' : canReveal ? 'Показать на 5 минут' : 'Нужны права администратора'}</button>
+  </div>;
+}
+
+function LoadingSkeleton() {
+  return <section class="loading-grid" aria-label="Загрузка"><div /><div /><div /><div /><div /><div /></section>;
+}
+
 function TopBar({ overview }: { overview: any }) {
-  const items = [
+  const candidates = [
     ['Интернет', overview.internet],
-    ['IPv4', overview.external_ipv4],
-    ['IPv6', overview.ipv6],
+    ['Data plane', overview.data_plane],
     ['DNS', overview.dns],
-    ['Zapret', overview.zapret],
-    ['VLESS', overview.vless_working],
-    ['Smart DNS', overview.smart_dns],
-    ['CPU', overview.cpu],
-    ['RAM', overview.memory],
-    ['Temp', overview.temperature]
+    ['Маршрут', overview.current_route ?? overview.route],
+    ['Ошибки', overview.critical_errors ?? overview.errors]
   ];
+  const items = candidates.filter(([, value]) => value !== undefined && value !== null && value !== '');
   return (
     <header class="topbar">
       {items.map(([k, v]) => (
-        <div class="status-pill" key={k}>
+        <div class={`status-pill ${statusTone(v)}`} key={String(k)}>
           <span>{k}</span>
-          <b>{String(v ?? 'недоступно')}</b>
+          <b>{humanStatus(v)}</b>
         </div>
       ))}
+      {!items.length && <div class="status-pill muted"><span>Состояние</span><b>Нет данных</b></div>}
     </header>
   );
 }
@@ -379,11 +443,11 @@ function Content(props: any) {
     case 'Обзор':
       return <OverviewScreen {...props} />;
     case 'Карта сети':
-      return <NetworkMap topology={props.topology} expanded />;
+      return <NetworkMap topology={props.topology} devices={props.devices} system={props.system} expanded />;
     case 'Трафик':
       return <Traffic data={props.traffic} />;
     case 'Устройства':
-      return <Devices devices={props.devices} />;
+      return <Devices devices={props.devices} events={props.events} />;
     case 'Карточка устройства':
       return <DeviceCard device={props.devices[0]} />;
     case 'Сервисы':
@@ -409,19 +473,19 @@ function Content(props: any) {
     case 'External SOCKS':
       return <ExternalSOCKS configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
     case 'Telegram':
-      return <Telegram role={props.session.role} />;
+      return <Telegram role={props.session.role} events={props.events} />;
     case 'Поток решений':
       return <DecisionFlow events={props.events} />;
     case 'Диагностика':
-      return <Diagnostics system={props.system} />;
+      return <Diagnostics system={props.system} diagnostics={props.diagnostics} lifecycle={props.lifecycle} storage={props.storage} />;
     case 'Безопасность':
-      return <Security data={props.security} />;
-    case 'Ревизии':
-      return <Generic title="Ревизии" text="Текущая ревизия конфигурации, staged changes и история откатов." />;
+      return <Security data={props.security} summary={props.securitySummary} />;
+    case 'Ревизии и recovery':
+      return <Recovery revisions={props.revisions} backups={props.backups} lifecycle={props.lifecycle} />;
     case 'Удалённые клиенты':
       return <Generic title="Удалённые клиенты" text="Профили удалённого доступа, лимиты, срок действия и политика маршрутизации." />;
     case 'Настройки':
-      return <Settings />;
+      return <Settings data={props.settings} />;
     case 'Обновление':
       return <Generic title="Обновление" text="Проверка версии, подпись выпуска, checksum, staged install и rollback." />;
     case 'Резервное копирование':
@@ -431,75 +495,117 @@ function Content(props: any) {
   }
 }
 
-function OverviewScreen({ overview, topology, services, events }: any) {
+function OverviewScreen({ overview, topology, devices, system, services, events }: any) {
+  const decisions: Array<ReturnType<typeof toDecisionCard>> = events.filter(isDecisionEvent).slice(-4).reverse().map(toDecisionCard);
   return (
     <section class="dashboard">
       <div class="map-panel">
-        <NetworkMap topology={topology} />
+        <NetworkMap topology={topology} devices={devices} system={system} />
       </div>
       <div class="right-panel">
-        <Card title="Критические сервисы">
-          {services.slice(0, 5).map((s: any) => (
-            <div class="row" key={s.id}>
-              <RouteBadge type={s.category} />
-              <b>{s.id}</b>
-              <span>{s.probe_count} checks</span>
-            </div>
-          ))}
+        <Card title="Сейчас в сети">
+          <div class="metric"><b>{devices.filter((device: any) => device.connected).length}</b><span>активных устройств</span></div>
+          <div class="metric"><b>{groupServices(services).length}</b><span>известных сервисов</span></div>
         </Card>
-        <Card title="Состояние">
-          <div class="row"><b>IPv6 (необязательно)</b><span>{overview.ipv6}</span></div>
-          <div class="row warn"><b>Zapret</b><span>{overview.zapret}</span></div>
-          <div class="row"><b>Data plane</b><span>{overview.data_plane}</span></div>
+        <Card title="Маршрутизация">
+          <StatusLine label="Интернет" value={overview.internet} />
+          <StatusLine label="Data plane" value={overview.data_plane} />
+          <StatusLine label="DNS" value={overview.dns} />
         </Card>
         <Card title="Последние решения">
-          {events.slice(0, 4).map((e: EventItem) => <EventRow event={e} key={e.id} />)}
+          {decisions.map((decision) => <div class="compact-decision" key={decision.id}><b>{decision.domain}</b><span>{decision.device}</span><StatusBadge value={decision.route} /></div>)}
+          {!decisions.length && <EmptyState title="Решений пока нет" text="Они появятся после наблюдения за DNS и маршрутизацией." />}
         </Card>
       </div>
     </section>
   );
 }
 
-function NetworkMap({ topology }: { topology: any; expanded?: boolean }) {
-  const nodes = topology.nodes ?? [];
+function NetworkMap({ topology, devices, system, expanded = false }: { topology: any; devices: any[]; system: any; expanded?: boolean }) {
+  const [selected, setSelected] = useState<any>(null);
+  const nodes = asArray(topology?.nodes).map(asRecord);
   const router = nodes.find((n: any) => n.type === 'router');
+  const online = devices.filter((device) => device.connected);
+  const offline = devices.filter((device) => !device.connected);
+  const ethernet = online.filter((device) => device.kind === 'ethernet');
+  const wifi = online.filter((device) => device.kind === 'wifi');
+  const unknown = online.filter((device) => !['ethernet', 'wifi'].includes(device.kind));
   return (
-    <div class="network">
-      <div class="internet">Internet</div>
-      <div class="router">{router?.label ?? 'OpenWrt router'}</div>
-      <div class="groups">
-        {nodes.filter((n: any) => n.type === 'group').map((n: any) => (
-          <div class="node" key={n.id}>
-            <span>{n.label}</span>
-            <b>{n.clients} clients</b>
-          </div>
-        ))}
+    <section class={`network-map ${expanded ? 'expanded' : ''}`}>
+      <PageHeader title="Карта сети" text="Связи строятся по DHCP, neighbour table, bridge FDB и данным Wi‑Fi станций. Неизвестное не угадывается." />
+      <div class="topology-tree">
+        <div class="topology-node internet-node"><b>Internet</b><StatusBadge value={nodes.find((node) => node.type === 'internet')?.status ?? topology.status} /></div>
+        <div class="topology-link solid" />
+        <button class="topology-node router-node" onClick={() => setSelected({ type: 'router', ...router, ...system })}>
+          <b>{textValue(system?.hostname ?? router?.label, 'OpenWrt router')}</b>
+          <span>{textValue(system?.model, 'Модель не определена')}</span>
+          <StatusBadge value={router?.status ?? topology.status} />
+        </button>
+        <div class="device-branches">
+          <TopologyBranch title="Ethernet" kind="ethernet" devices={ethernet} onOpen={setSelected} />
+          <TopologyBranch title="Wi‑Fi" kind="wifi" devices={wifi} onOpen={setSelected} />
+          {unknown.length > 0 && <TopologyBranch title="Тип не определён" kind="unknown" devices={unknown} onOpen={setSelected} />}
+        </div>
+        {offline.length > 0 && <div class="recent-offline"><b>Недавно отключились</b>{offline.slice(0, 6).map((device) => <button onClick={() => setSelected(device)}>{device.name}</button>)}</div>}
       </div>
-      <div class="flow-line direct" />
-      <div class="flow-line vless" />
-    </div>
+      <p class="source-note">Источник: {textValue(topology.source)} · {formatDateTime(topology.collected_at)}</p>
+      <DetailDrawer title={selected?.type === 'router' ? 'Роутер' : 'Устройство'} open={Boolean(selected)} onClose={() => setSelected(null)}>
+        {selected?.type === 'router' ? <RouterDetails router={selected} /> : <DeviceDetails device={selected} />}
+      </DetailDrawer>
+    </section>
   );
 }
 
-function Devices({ devices }: { devices: any[] }) {
-  return <Grid>{devices.map((d) => <DeviceCard device={d} key={d.id} />)}</Grid>;
+function TopologyBranch({ title, kind, devices, onOpen }: { title: string; kind: string; devices: any[]; onOpen: (device: any) => void }) {
+  return <section class={`topology-branch ${kind}`}><div class={`branch-line ${kind === 'wifi' ? 'dashed' : 'solid'}`} /><h3>{title}<span>{devices.length}</span></h3><div class="branch-devices">
+    {devices.map((device) => <button class={`topology-device ${kind}`} key={device.id} onClick={() => onOpen(device)}>
+      <span class="device-icon">{kind === 'wifi' ? '◌' : kind === 'ethernet' ? '▣' : '?'}</span>
+      <b>{textValue(device.name, 'Неизвестное устройство')}</b><small>{textValue(device.ip, 'Адрес скрыт')}</small>
+      <span>{textValue(device.ssid ?? device.interface, 'Подключение не определено')}</span>
+    </button>)}
+    {!devices.length && <EmptyState title="Нет устройств" text="Подключения этого типа сейчас не обнаружены." />}
+  </div></section>;
 }
 
-function DeviceCard({ device }: { device: any }) {
-  if (!device) return <Generic title="Карточка устройства" text="Нет устройства в выборке." />;
+function Devices({ devices, events }: { devices: any[]; events: EventItem[] }) {
+  const [selected, setSelected] = useState<any>(null);
+  const [filter, setFilter] = useState('all');
+  const visible = devices.filter((device) => filter === 'all' || (filter === 'online' ? device.connected : device.kind === filter));
+  return <section><PageHeader title="Устройства" text="Privacy mode скрывает адреса, но не мешает открыть карточку и понять состояние подключения.">
+    <select value={filter} onChange={(event) => setFilter(event.currentTarget.value)}><option value="all">Все</option><option value="online">Только в сети</option><option value="ethernet">Ethernet</option><option value="wifi">Wi‑Fi</option><option value="unknown">Неизвестный тип</option></select>
+  </PageHeader><Grid>{visible.map((device) => <DeviceCard device={device} onOpen={() => setSelected(device)} key={device.id} />)}</Grid>
+  {!visible.length && <EmptyState title="Устройства не найдены" text="Проверь фильтр или дождись обновления topology data." />}
+  <DetailDrawer title={textValue(selected?.name, 'Устройство')} open={Boolean(selected)} onClose={() => setSelected(null)}><DeviceDetails device={selected} events={events} /></DetailDrawer></section>;
+}
+
+function DeviceCard({ device, onOpen }: { device: any; onOpen?: () => void }) {
+  if (!device) return <EmptyState title="Устройство не выбрано" text="Открой устройство из списка или карты." />;
   return (
-    <Card title={device.name}>
-      <dl class="facts">
-        <dt>Тип</dt><dd>{device.kind}</dd>
-        <dt>IP</dt><dd class="mono">{device.ip}</dd>
-        <dt>MAC</dt><dd class="mono">{device.mac ?? 'masked'}</dd>
-        <dt>Политика</dt><dd>{device.policy}</dd>
-      </dl>
-      <div class="actions">
-        {['Переименовать', 'Закрепить IP', 'Профиль', 'Лимит', 'Отключить интернет', 'Диагностика'].map((a) => <button disabled title="Not implemented">{a}</button>)}
-      </div>
-    </Card>
+    <EntityCard title={textValue(device.name, 'Неизвестное устройство')} status={device.connected ? 'online' : 'offline'} onOpen={onOpen}>
+      <div class="entity-summary"><span>{device.kind === 'wifi' ? 'Wi‑Fi' : device.kind === 'ethernet' ? 'Ethernet' : 'Тип не определён'}</span><b class="mono">{textValue(device.ip, 'Адрес скрыт')}</b></div>
+      <small>{textValue(device.ssid ?? device.interface, 'Интерфейс не определён')}</small>
+      <StatusLine label="Маршрут" value={device.active_route ?? device.policy} />
+    </EntityCard>
   );
+}
+
+function DeviceDetails({ device, events = [] }: { device: any; events?: EventItem[] }) {
+  if (!device) return null;
+  const recent = events.filter((event) => event.device_id === device.id).slice(-5).reverse();
+  return <><InfoGrid items={[
+    ['Hostname', device.name], ['IP', device.ip], ['MAC', device.mac], ['Vendor', device.vendor],
+    ['Подключение', device.kind], ['Interface', device.interface], ['SSID', device.ssid], ['RSSI', device.rssi ? `${device.rssi} dBm` : null],
+    ['Впервые замечено', formatDateTime(device.first_seen)], ['Последняя активность', formatDateTime(device.last_seen ?? device.collected_at)],
+    ['Policy', device.policy], ['Активный маршрут', device.active_route], ['RX', formatBytes(Number(device.rx_bytes ?? 0))], ['TX', formatBytes(Number(device.tx_bytes ?? 0))]
+  ]} />
+  <h3>Последние решения</h3>{recent.map((event) => <EventRow event={event} key={event.id} />)}{!recent.length && <EmptyState title="Решений нет" text="Для этого устройства события пока не зарегистрированы." />}
+  <DisabledActions labels={['Переименовать', 'Закрепить IP', 'Лимит', 'Отключить интернет']} />
+  <RawDisclosure value={device} />
+  </>;
+}
+
+function RouterDetails({ router }: { router: any }) {
+  return <><InfoGrid items={[["Hostname", router.hostname ?? router.label], ["Модель", router.model], ["Firmware", router.firmware], ["Kernel", router.kernel], ["Platform", router.platform], ["Uptime", router.uptime_seconds ? `${router.uptime_seconds} с` : null]]} /><RawDisclosure value={router} /></>;
 }
 
 const serviceColumns = [
@@ -532,18 +638,8 @@ function Services({
   const [moving, setMoving] = useState('');
   const [message, setMessage] = useState('');
   const [editor, setEditor] = useState<{ domain: string; category: string; paths: string[] } | null>(null);
-  const domains = useMemo(() => {
-    const byDomain = new Map<string, any>();
-    for (const service of services) {
-      for (const domain of service.domains ?? []) {
-        const current = byDomain.get(domain);
-        if (!current || service.source === 'configured') {
-          byDomain.set(domain, { ...service, domain });
-        }
-      }
-    }
-    return [...byDomain.values()];
-  }, [services]);
+  const [selectedService, setSelectedService] = useState<any>(null);
+  const grouped = useMemo(() => groupServices(services), [services]);
 
   async function commitRule(domain: string, category: string, paths?: string[]) {
     if (role !== 'administrator' || !configVersion || moving) return;
@@ -656,22 +752,26 @@ function Services({
             }}
           >
             <header><h2>{column.title}</h2><small>{column.hint}</small></header>
-            {domains
-              .filter((item) => serviceColumnFor(item.category) === column.category)
+            {grouped
+              .filter((item) => serviceColumnFor(textValue(item.category, 'DIRECT_ONLY')) === column.category)
               .map((item) => (
                 <ServiceGroup
                   service={item}
-                  key={item.domain}
-                  draggable={role === 'administrator' && !moving}
-                  busy={moving === item.domain}
+                  key={String(item.id)}
+                  draggable={role === 'administrator' && !moving && asArray(item.domains).length === 1}
+                  busy={moving === textValue(asArray(item.domains)[0], '')}
                   onEdit={() => editRule(item)}
+                  onOpen={() => setSelectedService(item)}
                 />
               ))}
-            {!domains.some((item) => serviceColumnFor(item.category) === column.category) && <p class="empty-state">Пока пусто</p>}
+            {!grouped.some((item) => serviceColumnFor(textValue(item.category, 'DIRECT_ONLY')) === column.category) && <p class="empty-state">Пока пусто</p>}
           </section>
         ))}
       </div>
       <p class={message.includes('применено') ? 'action-status ok' : 'action-status'}>{message || 'Домены появляются после наблюдения и проверки. Перетащи карточку, чтобы закрепить правило.'}</p>
+      <DetailDrawer title={textValue(selectedService?.id, 'Сервис')} open={Boolean(selectedService)} onClose={() => setSelectedService(null)}>
+        <ServiceDetails service={selectedService} onEdit={() => selectedService && editRule(selectedService)} />
+      </DetailDrawer>
     </section>
   );
 }
@@ -687,27 +787,38 @@ function ServiceGroup({
   service,
   draggable = false,
   busy = false,
-  onEdit
+  onEdit,
+  onOpen
 }: {
   service: any;
   draggable?: boolean;
   busy?: boolean;
   onEdit?: () => void;
+  onOpen?: () => void;
 }) {
   if (!service) return <Generic title="Группа сервиса" text="Сервис не выбран." />;
   return (
     <article
       class={`service-card ${busy ? 'busy' : ''}`}
       draggable={draggable}
-      onDragStart={(event) => event.dataTransfer?.setData('text/plain', service.domain ?? service.domains?.[0] ?? '')}
+      onDragStart={(event) => event.dataTransfer?.setData('text/plain', service.domains?.[0] ?? '')}
     >
-      <div class="service-card-title"><b class="mono">{service.domain ?? service.id}</b><span class={`source ${service.source}`}>{service.source === 'automatic' ? 'auto' : 'rule'}</span></div>
+      <div class="service-card-title"><b>{textValue(service.id, 'Неизвестный сервис')}</b><span class={`source ${asArray(service.sources).includes('automatic') ? 'automatic' : 'configured'}`}>{asArray(service.sources).includes('automatic') ? 'обнаружен' : 'правило'}</span></div>
+      <small>{asArray(service.domains).length} доменов</small>
       <div class="service-card-route"><RouteBadge type={service.selected_route_type ?? service.category} /><span>{service.status ?? service.selected_route_tag ?? 'ожидает проверки'}</span></div>
       {service.allowed_paths?.length > 0 && <small>{service.allowed_paths.join(' → ')}</small>}
       {typeof service.confidence === 'number' && <small>уверенность {Math.round(service.confidence * 100)}%</small>}
-      {onEdit && <button type="button" class="service-edit" onClick={onEdit}>Настроить правило</button>}
+      <div class="actions"><button type="button" onClick={onOpen}>Открыть</button>{onEdit && <button type="button" class="service-edit" onClick={onEdit}>Настроить</button>}</div>
     </article>
   );
+}
+
+function ServiceDetails({ service, onEdit }: { service: any; onEdit?: () => void }) {
+  if (!service) return null;
+  return <><InfoGrid items={[["Категория", service.category], ["Источник", asArray(service.sources).join(', ')], ["Маршрут", service.selected_route_tag ?? service.selected_route_type], ["Health", service.health], ["Fallback", asArray(service.allowed_paths).join(' → ')], ["Последняя проверка", formatDateTime(service.latest_checked_at)]]} />
+    <h3>Связанные домены</h3><div class="domain-list">{asArray(service.domains).map((domain) => <span class="chip mono">{textValue(domain)}</span>)}</div>
+    <h3>Наследование и исключения</h3><p>{asArray(service.forbidden_paths).length ? `Запрещены: ${asArray(service.forbidden_paths).join(', ')}` : 'Явных конфликтов и исключений нет.'}</p>
+    {onEdit && <button class="primary" onClick={onEdit}>Настроить правило</button>}<RawDisclosure value={service} /></>;
 }
 
 function Policies({ mode }: { mode: string }) {
@@ -807,22 +918,22 @@ function summarizeValue(value: unknown): string {
 }
 
 function Routes({ routes }: { routes: any[] }) {
+  const [selected, setSelected] = useState<any>(null);
   const titles: Record<string, string> = {
     system_default: 'Системный default route',
     direct: 'FlintRoute Direct',
     unclassified: 'Неклассифицированный трафик',
     smart_dns: 'Smart DNS · conditional DNS'
   };
-  return <Grid>{routes.map((route) => (
-    <Card title={titles[route.type] ?? route.tag} key={`${route.type}:${route.tag}`}>
+  return <section><PageHeader title="Маршруты" text="Системный маршрут, управляемые пути FlintRoute и неклассифицированный трафик показаны отдельно." /><Grid>{routes.map((route) => (
+    <EntityCard title={titles[route.type] ?? route.tag} status={route.status || (route.disabled ? 'disabled' : 'configured')} onOpen={() => setSelected(route)} key={`${route.type}:${route.tag}`}>
       <RouteBadge type={route.type} />
-      <div class="row"><b>{route.status || (route.disabled ? 'выключен' : 'настроен')}</b><span>{route.owner}</span><small>{route.managed ? 'управляет FlintRoute' : 'не управляется FlintRoute'}</small></div>
+      <div class="row"><b>{humanStatus(route.status || (route.disabled ? 'выключен' : 'настроен'))}</b><span>{route.managed ? 'Управляет FlintRoute' : 'Системный путь'}</span></div>
       <p>{route.scope}</p>
-      {route.effective_path && <small>Фактический путь: {route.effective_path}</small>}
       {route.type === 'direct' && <div class="row"><b>{route.managed_domains ?? 0}</b><span>доменов под managed Direct</span></div>}
       {route.type === 'smart_dns' && <small>Это выбор DNS-ответа для домена, а не VPN и не туннель.</small>}
-    </Card>
-  ))}</Grid>;
+    </EntityCard>
+  ))}</Grid><DetailDrawer title={titles[selected?.type] ?? selected?.tag ?? 'Маршрут'} open={Boolean(selected)} onClose={() => setSelected(null)}><InfoGrid items={[["Тип", selected?.type], ["Owner", selected?.owner], ["Состояние", selected?.status], ["Фактический путь", selected?.effective_path], ["Scope", selected?.scope], ["Fallback", selected?.fallback], ["Health", selected?.health]]} /><RawDisclosure value={selected} /></DetailDrawer></section>;
 }
 
 function Discovery({ data, configVersion, role, refresh }: { data: DiscoveryStatus | null; configVersion: number; role: SessionInfo['role']; refresh: () => Promise<void> }) {
@@ -948,16 +1059,33 @@ function Vless({
   const [message, setMessage] = useState('');
   const [checkedServers, setCheckedServers] = useState<any[]>([]);
   const [managedAvailable, setManagedAvailable] = useState(false);
+  const [selectedServer, setSelectedServer] = useState<any>(null);
+  const [manualServers, setManualServers] = useState<ManualVLESSServer[]>([]);
+  const [manualURI, setManualURI] = useState('');
+  const [manualEditorOpen, setManualEditorOpen] = useState(false);
 
   useEffect(() => {
     if (role !== 'administrator') return;
-    getSubscriptionSecretStatus()
-      .then((status) => {
-        setPresent(status.present);
-        setConfiguredCount(status.count ?? 0);
-      })
-      .catch(() => setPresent(null));
+    Promise.allSettled([getSubscriptionSecretStatus(), getManualVLESSServers()]).then(([subscription, manual]) => {
+      if (subscription.status === 'fulfilled') {
+        setPresent(subscription.value.present);
+        setConfiguredCount(subscription.value.count ?? 0);
+      } else {
+        setPresent(null);
+      }
+      if (manual.status === 'fulfilled') setManualServers(manual.value.servers);
+    });
   }, [role]);
+
+  async function prepareCandidates(messagePrefix = 'Проверка завершена') {
+    const result = await prepareSubscription(configVersion, false);
+    if (!result.preparation.ready || result.preparation.secrets_printed) {
+      throw new Error('Backend не подтвердил безопасный VLESS bundle.');
+    }
+    setCheckedServers(result.preparation.servers);
+    setManagedAvailable(result.activation.managed_available);
+    setMessage(`${messagePrefix}: ${result.preparation.servers.length} серверов. Маршруты пока не включены — managed Xray подтверждается отдельно.`);
+  }
 
   async function saveAndPrepare() {
     const values = urls.map((value) => value.trim()).filter(Boolean);
@@ -972,15 +1100,43 @@ function Vless({
       setURLs(Array(5).fill(''));
       setPresent(true);
       setConfiguredCount(saved.count);
-      const result = await prepareSubscription(configVersion, false);
-      if (!result.preparation.ready || result.preparation.secrets_printed) {
-        throw new Error('Backend не подтвердил безопасный VLESS bundle.');
-      }
-      setCheckedServers(result.preparation.servers);
-      setManagedAvailable(result.activation.managed_available);
-      setMessage(`Проверено серверов: ${result.preparation.servers.length}. Маршруты пока не включены; подтверди managed Xray отдельно.`);
+      await prepareCandidates('Подписки сохранены и проверены');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Не удалось проверить подписку.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addManualServer() {
+    if (!manualURI.trim()) {
+      setMessage('Вставь полный vless:// URI. UUID останется только в закрытом файле на роутере.');
+      return;
+    }
+    setBusy(true);
+    setMessage('Сохраняю ручной сервер и проверяю его реальный выход…');
+    try {
+      const inventory = await addManualVLESSServer(manualURI.trim());
+      setManualServers(inventory.servers);
+      setManualURI('');
+      setManualEditorOpen(false);
+      await prepareCandidates('Ручной сервер сохранён и проверен');
+    } catch (error) {
+      const info = errorInfo(error);
+      setMessage(`${info.code}: ${info.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshVLESSHealth() {
+    setBusy(true);
+    setMessage('Обновляю задержку и проверяю внешний путь. Это не тест скорости.');
+    try {
+      await prepareCandidates('Health обновлён');
+    } catch (error) {
+      const info = errorInfo(error);
+      setMessage(`${info.code}: ${info.message}`);
     } finally {
       setBusy(false);
     }
@@ -1009,8 +1165,14 @@ function Vless({
     }
   }
 
+  const candidateServers = checkedServers.length ? checkedServers : vless;
+  const checksByTag = new Map(candidateServers.map((server: any) => [server.tag, server]));
+  const subscriptionServers = candidateServers.filter((server: any) => !String(server.tag ?? '').startsWith('manual-'));
+  const manualServerViews = manualServers.map((server) => ({ ...server, tag: server.id, ...asRecord(checksByTag.get(server.id)) }));
+
   return (
     <section>
+      <PageHeader title="VLESS-серверы" text="Подписки и ручные серверы разделены. Ping — задержка проверки, а не скорость канала." />
       <Card title="VPN-подписки">
         <div class="row"><b>Источники</b><span>{present === true ? `${configuredCount} из 5` : present === false ? 'не заданы' : 'статус неизвестен'}</span></div>
         {role === 'administrator' ? (
@@ -1044,22 +1206,36 @@ function Vless({
           </div>
         ) : <p>Импорт подписки доступен администратору.</p>}
       </Card>
+      <section class="server-section"><div class="section-title"><div><h2>Серверы из подписок</h2><p>Карточки обновляются раз в 30 секунд при открытой вкладке. Проверка задержки — лёгкая ручная операция, не замер пропускной способности.</p></div><div class="actions"><button disabled={busy || !configVersion || (!present && manualServers.length === 0)} onClick={refreshVLESSHealth}>Обновить health</button><button onClick={() => setManualEditorOpen((open) => !open)}>+ Добавить свой VPS</button></div></div>
+      {manualEditorOpen && <div class="service-editor manual-vless-editor">
+        <label><span>VLESS URI</span><input type="password" value={manualURI} onInput={(event) => setManualURI((event.target as HTMLInputElement).value)} autocomplete="off" placeholder="vless://UUID@server:443?security=reality&…" /></label>
+        <small>URI и UUID не возвращаются через API и хранятся в закрытом файле. До явного managed activation сервер не меняет маршрутизацию.</small>
+        <button class="primary" disabled={busy || !configVersion} onClick={addManualServer}>{busy ? 'Проверяю…' : 'Сохранить и проверить'}</button>
+      </div>}
       <div class="server-checks">
-        {(checkedServers.length ? checkedServers : vless).map((server: any) => (
-          <article class={`server-check ${(server.status ?? '').toLowerCase()}`} key={server.tag}>
-            <b>{server.tag}</b>
-            <span>{server.status ?? 'настроен'}</span>
-            <small>{server.reason ?? server.socks5 ?? 'ожидает следующей проверки'}</small>
-          </article>
+        {subscriptionServers.map((server: any) => (
+          <EntityCard title={textValue(server.name ?? server.tag, 'VLESS server')} status={server.status ?? server.health} onOpen={() => setSelectedServer({ source: 'subscription', ...server })} key={server.tag}>
+            <InfoGrid items={[["Адрес", server.hostname ?? server.address], ["Местоположение", server.location], ["Protocol / security", `${textValue(server.protocol, 'vless')} / ${textValue(server.security, 'не указано')}`], ["Ping", server.latency_ms ? `${server.latency_ms} мс` : null], ["Роль", server.selected ? 'selected' : server.standby ? 'standby' : server.quarantined ? 'quarantined' : null]]} />
+            {server.reason && <p class="reason">{server.reason}</p>}
+          </EntityCard>
         ))}
-        {!checkedServers.length && !vless.length && <p class="empty-state">Серверов пока нет</p>}
-      </div>
+        {!subscriptionServers.length && <EmptyState title="Серверов из подписок пока нет" text="Добавь HTTPS-подписку и запусти проверку либо используй ручной VLESS ниже." />}
+      </div></section>
+      <section class="server-section"><h2>Добавленные вручную</h2><div class="server-checks">
+        {manualServerViews.map((server: any) => <EntityCard title={textValue(server.name, 'Свой VPS')} status={server.status ?? 'configured'} onOpen={() => setSelectedServer({ source: 'manual', ...server, uri_masked: `vless://••••@${server.address}:${server.port}` })} key={server.id}>
+          <InfoGrid items={[["Адрес", `${server.address}:${server.port}`], ["Транспорт", server.network], ["Security", server.security], ["Ping", server.latency_ms ? `${server.latency_ms} мс` : 'ещё не измерен'], ["Состояние", server.status ?? 'configured']]} />
+          {server.reason && <p class="reason">{humanStatus(server.reason)}</p>}
+        </EntityCard>)}
+        {!manualServerViews.length && <EmptyState title="Ручных серверов нет" text="Нажми «Добавить свой VPS», вставь vless:// URI и дождись проверки пути." />}
+      </div></section>
+      <DetailDrawer title={textValue(selectedServer?.name ?? selectedServer?.tag, 'VLESS server')} open={Boolean(selectedServer)} onClose={() => setSelectedServer(null)}><InfoGrid items={[["Источник", selectedServer?.source], ["Hostname / IP", selectedServer?.hostname ?? selectedServer?.address], ["URI", selectedServer?.uri_masked], ["Местоположение", selectedServer?.location], ["Protocol", selectedServer?.protocol], ["Security", selectedServer?.security], ["Транспорт", selectedServer?.network], ["Ping", selectedServer?.latency_ms ? `${selectedServer.latency_ms} мс` : null], ["Health", selectedServer?.health ?? selectedServer?.status], ["Quarantine", selectedServer?.quarantine_reason ?? selectedServer?.reason], ["Последняя успешная проверка", formatDateTime(selectedServer?.last_success_at)], ["Последнее использование", formatDateTime(selectedServer?.last_used_at)], ["Xray tag", selectedServer?.tag], ["SOCKS port", selectedServer?.socks_port ?? selectedServer?.socks5]]} /><p class="source-note">Ping показывает задержку проверки маршрута. Пропускная способность автоматически не измеряется, чтобы не жечь трафик и CPU роутера.</p><RawDisclosure value={selectedServer} /></DetailDrawer>
     </section>
   );
 }
 
 function RouteType({ title, type, routes }: { title: string; type: string; routes: any[] }) {
-  return <Grid>{routes.filter((r) => r.type === type).map((r) => <Card title={r.tag}><RouteBadge type={type} /><pre>{JSON.stringify(r, null, 2)}</pre></Card>)}</Grid>;
+  const [selected, setSelected] = useState<any>(null);
+  return <section><h2>{title}</h2><Grid>{routes.filter((r) => r.type === type).map((r) => <EntityCard title={r.tag} status={r.status} onOpen={() => setSelected(r)}><RouteBadge type={type} /><p>{humanStatus(r.status)}</p></EntityCard>)}</Grid><DetailDrawer title={selected?.tag ?? title} open={Boolean(selected)} onClose={() => setSelected(null)}><DiagnosticDetails value={selected} /><RawDisclosure value={selected} /></DetailDrawer></section>;
 }
 
 function Zapret({ routes, configVersion, role, refresh }: { routes: any[]; configVersion: number; role: SessionInfo['role']; refresh: () => Promise<void> }) {
@@ -1125,7 +1301,7 @@ function SmartDNS({
 }) {
   const [status, setStatus] = useState<any>(null);
   const [error, setError] = useState('');
-  const [resolvers, setResolvers] = useState([{ ip: '', port: 53 }, { ip: '', port: 53 }]);
+  const [resolvers, setResolvers] = useState(['', '']);
   const [testDomain, setTestDomain] = useState('example.com');
   const [validations, setValidations] = useState<any[]>([]);
   const [busy, setBusy] = useState(false);
@@ -1134,7 +1310,14 @@ function SmartDNS({
     getSmartDNS().then(setStatus).catch((reason) => setError(reason instanceof Error ? reason.message : 'Smart DNS недоступен'));
   }, []);
   async function save() {
-    const values = resolvers.filter((value) => value.ip.trim()).map((value) => ({ ip: value.ip.trim(), port: Number(value.port) }));
+    let values;
+    try {
+      values = resolvers.filter((value) => value.trim()).map(parseResolverInput);
+    } catch (reason) {
+      const info = errorInfo(reason);
+      setMessage(`${info.code}: Проверь IP и необязательный порт.`);
+      return;
+    }
     if (!values.length) {
       setMessage('Укажи хотя бы один публичный IP резолвера и порт.');
       return;
@@ -1152,7 +1335,7 @@ function SmartDNS({
       change = await changeAction(change.id, 'apply');
       if (change.state !== 'awaiting_confirmation') throw new Error(`Smart DNS apply завершился состоянием ${change.state}`);
       change = await changeAction(change.id, 'confirm');
-      setResolvers([{ ip: '', port: 53 }, { ip: '', port: 53 }]);
+      setResolvers(['', '']);
       setMessage(`Smart DNS проверен и применён: ${result.endpoint_count}.`);
       setStatus(await getSmartDNS());
       await refresh();
@@ -1172,14 +1355,10 @@ function SmartDNS({
         <div class="chips">{(status.success_contract ?? []).map((item: string) => <span class="chip">{item}</span>)}</div>
         {role === 'administrator' && (
           <div class="smart-dns-editor">
-            {resolvers.map((resolver, index) => <div class="row" key={index}>
-              <label><span>IP резолвера #{index + 1}</span><input class="mono" value={resolver.ip} placeholder="1.1.1.1" onInput={(event) => {
-                const next = [...resolvers]; next[index] = { ...resolver, ip: (event.target as HTMLInputElement).value }; setResolvers(next);
-              }} /></label>
-              <label><span>Порт</span><input type="number" min="1" max="65535" value={resolver.port} onInput={(event) => {
-                const next = [...resolvers]; next[index] = { ...resolver, port: Number((event.target as HTMLInputElement).value) }; setResolvers(next);
-              }} /></label>
-            </div>)}
+            {resolvers.map((resolver, index) => <label key={index}><span>Резолвер #{index + 1}</span><input class="mono" value={resolver} placeholder={index ? '[2606:4700:4700::1111]:53' : '1.1.1.1'} onInput={(event) => {
+              const next = [...resolvers]; next[index] = (event.target as HTMLInputElement).value; setResolvers(next);
+            }} /></label>)}
+            <small>Порт необязателен. По умолчанию используется 53. Поддерживаются IPv4, IPv4:порт, IPv6 и [IPv6]:порт.</small>
             <label><span>Домен для DNS + HTTP/TLS</span><input class="mono" value={testDomain} placeholder="example.com" onInput={(event) => setTestDomain((event.target as HTMLInputElement).value)} /></label>
             <button class="primary" disabled={busy || !configVersion} onClick={save}>
               {busy ? 'Проверяю…' : 'Проверить и применить'}
@@ -1253,7 +1432,7 @@ function ExternalSOCKS({ configVersion, role, refresh }: { configVersion: number
   </section>;
 }
 
-function Telegram({ role }: { role: SessionInfo['role'] }) {
+function Telegram({ role, events: systemEvents }: { role: SessionInfo['role']; events: EventItem[] }) {
   const [overview, setOverview] = useState<any>(null);
   const [token, setToken] = useState('');
   const [chatID, setChatID] = useState('');
@@ -1280,7 +1459,8 @@ function Telegram({ role }: { role: SessionInfo['role'] }) {
   }
   if (!overview) return <Generic title="Telegram" text={message || 'Загружаю состояние…'} />;
   const state = overview.notifications;
-  return <section class="grid"><Card title="Telegram notifications">
+  const telegramEvents = systemEvents.filter((event) => event.type.startsWith('telegram.') || event.type.startsWith('notification.')).sort((a, b) => Date.parse(b.time) - Date.parse(a.time));
+  return <section><PageHeader title="Telegram" text="Уведомления — отдельная подсистема и не участвуют в routing bootstrap." /><div class="grid"><Card title="Telegram notifications">
     <div class="row"><b>{state.state}</b><span>{state.enabled ? 'включены' : 'выключены'}</span><small>очередь {state.queue_depth}/{state.queue_capacity}, ошибок подряд: {state.consecutive_failures}</small></div>
     {role === 'administrator' && <div class="change-editor">
       <label><span>Bot token {state.token_configured ? '(уже сохранён; пустое поле оставит прежний)' : ''}</span><input type="password" autocomplete="new-password" value={token} onInput={(event) => setToken((event.target as HTMLInputElement).value)} /></label>
@@ -1291,23 +1471,117 @@ function Telegram({ role }: { role: SessionInfo['role'] }) {
       <button class="primary" disabled={busy || !state.enabled} onClick={sendTest}>Отправить тест</button>
       {message && <p class="action-status">{message}</p>}
     </div>}
-  </Card></section>;
+  </Card><Card title="Последние доставки">{telegramEvents.slice(0, 10).map((event) => <EventRow event={event} key={`${event.time}:${event.id}`} />)}{!telegramEvents.length && <EmptyState title="Событий Telegram нет" text="После теста или доставки здесь появится статус без токена и chat ID." />}</Card></div></section>;
 }
 
 function DecisionFlow({ events }: { events: EventItem[] }) {
-  return <Card title="Поток решений">{events.map((e) => <EventRow event={e} key={e.id} />)}</Card>;
+  const [retention, setRetention] = useState(() => Number(localStorage.getItem('decision-retention-minutes') || 30));
+  const [selected, setSelected] = useState<ReturnType<typeof toDecisionCard> | null>(null);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [filters, setFilters] = useState({ device: '', domain: '', service: '', category: '', route: '', status: '', verified: 'all', fallback: 'all' });
+  const cutoff = Date.now() - retention * 60 * 1000;
+  const decisions = events.filter(isDecisionEvent).map(toDecisionCard)
+    .filter((item) => Date.parse(item.time) >= cutoff)
+    .filter((item) => {
+      const has = (value: string, query: string) => !query || value.toLowerCase().includes(query.toLowerCase());
+      return has(`${item.device} ${item.ip}`, filters.device) && has(item.domain, filters.domain) && has(item.service, filters.service) &&
+        has(item.category, filters.category) && has(item.route, filters.route) && has(item.status, filters.status) &&
+        (filters.verified === 'all' || item.verified === (filters.verified === 'yes')) &&
+        (filters.fallback === 'all' || item.fallback === (filters.fallback === 'yes'));
+    }).sort((a, b) => Date.parse(b.time) - Date.parse(a.time));
+  const adminEvents = events.filter(isAdministrativeEvent).sort((a, b) => Date.parse(b.time) - Date.parse(a.time));
+  function updateRetention(value: number) {
+    setRetention(value);
+    localStorage.setItem('decision-retention-minutes', String(value));
+  }
+  return <section><PageHeader title="Поток решений" text="Что запросило устройство, какой путь выбрал FlintRoute и чем закончилась проверка.">
+    <label class="inline-control">Хранить на экране<select value={retention} onChange={(event) => updateRetention(Number(event.currentTarget.value))}><option value="15">15 минут</option><option value="30">30 минут</option><option value="60">1 час</option><option value="120">2 часа</option></select></label>
+    <button onClick={() => setAdminOpen(true)}>Административный журнал</button>
+  </PageHeader>
+  <div class="filter-bar">
+    {([['device', 'Устройство или IP'], ['domain', 'Домен'], ['service', 'Сервис'], ['category', 'Категория'], ['route', 'Маршрут'], ['status', 'Статус']] as const).map(([key, label]) => <label><span>{label}</span><input value={filters[key]} onInput={(event) => setFilters({ ...filters, [key]: event.currentTarget.value })} /></label>)}
+    <label><span>PathVerified</span><select value={filters.verified} onChange={(event) => setFilters({ ...filters, verified: event.currentTarget.value })}><option value="all">Все</option><option value="yes">Да</option><option value="no">Нет</option></select></label>
+    <label><span>Fallback</span><select value={filters.fallback} onChange={(event) => setFilters({ ...filters, fallback: event.currentTarget.value })}><option value="all">Все</option><option value="yes">Был</option><option value="no">Не было</option></select></label>
+  </div>
+  <div class="decision-list">{decisions.map((decision) => <article class="decision-card" key={decision.id}>
+    <header><div><span>{decision.device}{decision.ip ? ` / ${decision.ip}` : ''}</span><time>{new Date(decision.time).toLocaleTimeString()}</time></div><StatusBadge value={decision.status} /></header>
+    <div class="decision-main"><div><small>Домен</small><b>{decision.domain}</b><span>{decision.service}</span></div><div><small>Стратегия</small><b>{decision.strategy}</b><span>{decision.category}</span></div><div><small>Маршрут</small><b>{decision.route}</b><span>{decision.fallback ? `Fallback: ${decision.fallbackPath.join(' → ') || 'да'}` : 'Без fallback'}</span></div></div>
+    <footer><span class={decision.verified ? 'verified' : 'unverified'}>{decision.verified ? 'Путь подтверждён' : 'Путь не подтверждён'}</span><span>{decision.durationMS !== undefined ? `${decision.durationMS} мс` : 'Время не измерено'}</span><button onClick={() => setSelected(decision)}>Открыть</button></footer>
+  </article>)}</div>
+  {!decisions.length && <EmptyState title="Решений за выбранный период нет" text="Сними фильтры или дождись нового сетевого запроса." />}
+  <DetailDrawer title={selected ? `${selected.domain} · ${selected.route}` : 'Решение'} open={Boolean(selected)} onClose={() => setSelected(null)}>
+    {selected && <DecisionDetails decision={selected} />}
+  </DetailDrawer>
+  <DetailDrawer title="Административный журнал" open={adminOpen} onClose={() => setAdminOpen(false)} wide>
+    <p>Технические события apply, verify, rollback и recovery не смешиваются с пользовательскими сетевыми решениями.</p>
+    {adminEvents.map((event) => <EventRow event={event} key={`${event.time}:${event.id}`} />)}
+    {!adminEvents.length && <EmptyState title="Журнал пуст" text="Системных событий ещё нет." />}
+  </DetailDrawer>
+  </section>;
 }
 
-function Diagnostics({ system }: { system: any }) {
-  return <Card title="Диагностика"><pre>{JSON.stringify(system ?? { status: 'requires adapter' }, null, 2)}</pre></Card>;
+function DecisionDetails({ decision }: { decision: ReturnType<typeof toDecisionCard> }) {
+  const d = decision.details;
+  return <><InfoGrid items={[
+    ['Устройство', decision.device], ['IP', decision.ip], ['Время', formatDateTime(decision.time)], ['Домен', decision.domain],
+    ['Сервис', decision.service], ['Категория', decision.category], ['Правило', decision.rule], ['Стратегия', decision.strategy],
+    ['Маршрут', decision.route], ['Fallback', decision.fallbackPath.join(' → ') || (decision.fallback ? 'Выполнен' : 'Нет')],
+    ['PathVerified', decision.verified ? 'Да' : 'Нет'], ['Итог', decision.status], ['Решение заняло', decision.durationMS !== undefined ? `${decision.durationMS} мс` : null],
+    ['DNS', d.dns_status], ['Destination IP', d.destination_ip], ['Probe latency', d.probe_latency_ms ? `${d.probe_latency_ms} мс` : null],
+    ['HTTP/TLS', d.http_status ?? d.tls_status], ['nft mark', d.nft_mark], ['Routing table', d.routing_table], ['Выходной интерфейс', d.egress_interface],
+    ['Xray outbound', d.xray_outbound], ['SOCKS endpoint', d.socks_endpoint], ['Policy ID', d.policy_id], ['Revision', d.revision_id], ['Transaction ID', d.transaction_id]
+  ]} />
+  <h3>Кандидаты</h3><EvidenceList values={decision.candidates} empty="Backend не передал список кандидатов." />
+  <h3>Временная шкала</h3><EvidenceList values={decision.timeline} empty="Подробная временная шкала отсутствует." />
+  <RawDisclosure value={decision.raw} /></>;
 }
 
-function Security({ data }: { data: any }) {
-  return <Card title="Безопасность"><pre>{JSON.stringify(data ?? { status: 'audit unavailable in mock mode' }, null, 2)}</pre></Card>;
+function Diagnostics({ system, diagnostics, lifecycle, storage }: { system: any; diagnostics: any; lifecycle: any; storage: any }) {
+  const sections = [
+    { title: 'Платформа', value: system, summary: `${textValue(system?.hostname, 'Router')} · ${textValue(system?.model)}` },
+    { title: 'Сеть и возможности', value: diagnostics, summary: humanStatus(diagnostics?.status) },
+    { title: 'Lifecycle', value: lifecycle, summary: humanStatus(lifecycle?.status) },
+    { title: 'Хранилище', value: storage, summary: humanStatus(storage?.status) }
+  ];
+  const [selected, setSelected] = useState<any>(null);
+  return <section><PageHeader title="Диагностика" text="Сначала — понятное состояние. Полный технический ответ API открывается отдельно." /><Grid>{sections.map((item) => <EntityCard title={item.title} status={item.value?.status} onOpen={() => setSelected(item)}><p>{item.summary}</p><small>{formatDateTime(item.value?.collected_at)}</small></EntityCard>)}</Grid>
+    <DetailDrawer title={selected?.title ?? 'Диагностика'} open={Boolean(selected)} onClose={() => setSelected(null)}><DiagnosticDetails value={selected?.value} /><RawDisclosure value={selected?.value} /></DetailDrawer></section>;
 }
 
-function Settings() {
-  return <Card title="Настройки"><div class="row"><b>Приватность</b><span>IP и MAC скрываются по умолчанию</span></div><div class="row"><b>Анимации</b><span>можно отключить системной настройкой reduced motion</span></div></Card>;
+function DiagnosticDetails({ value }: { value: any }) {
+  const record = asRecord(value);
+  const capabilities = asRecord(record.capabilities);
+  const rows = Object.entries({ ...record, ...capabilities }).filter(([, item]) => ['string', 'number', 'boolean'].includes(typeof item)).slice(0, 24);
+  return <InfoGrid items={rows.map(([key, item]) => [key.replace(/_/g, ' '), item])} />;
+}
+
+function Security({ data, summary }: { data: any; summary: any }) {
+  const [selected, setSelected] = useState<any>(null);
+  const checks = asArray(data?.checks).map(asRecord);
+  return <section><PageHeader title="Безопасность" text="Каждая проверка объясняет риск и действие. Код можно использовать для поиска в документации и логах." />
+    <div class="security-summary"><StatusBadge value={data?.status ?? summary?.status} /><span>Секреты: {textValue(summary?.secrets, 'скрыты')}</span><span>Auth: {humanStatus(summary?.auth)}</span></div>
+    <Grid>{checks.map((check) => <EntityCard title={textValue(check.name ?? check.id, 'Проверка')} status={check.status ?? check.severity} onOpen={() => setSelected(check)}><StatusLine label="Severity" value={check.severity} /><p>{textValue(check.message ?? check.explanation, 'Описание отсутствует')}</p><small class="mono">{textValue(check.code ?? check.id, 'security_check')}</small></EntityCard>)}</Grid>
+    {!checks.length && <EmptyState title="Подробный аудит недоступен" text="Базовая защита API показана выше. Для полного аудита backend должен разрешить диагностический endpoint." />}
+    <DetailDrawer title={textValue(selected?.name ?? selected?.id, 'Проверка безопасности')} open={Boolean(selected)} onClose={() => setSelected(null)}><InfoGrid items={[["Код", selected?.code ?? selected?.id], ["Severity", selected?.severity], ["Статус", selected?.status], ["Причина", selected?.message ?? selected?.explanation], ["Что делать", selected?.action ?? selected?.required_action]]} /><RawDisclosure value={selected} /></DetailDrawer>
+  </section>;
+}
+
+function Recovery({ revisions, backups, lifecycle }: { revisions: RevisionSummary | null; backups: any; lifecycle: any }) {
+  const [selected, setSelected] = useState<any>(null);
+  const revisionItems = asArray(revisions?.items);
+  const backupItems = asArray(backups?.items);
+  return <section><PageHeader title="Ревизии и recovery" text="Активная конфигурация, история подтверждений и проверенные резервные копии." />
+    <div class="summary-strip"><StatusLine label="Активная revision" value={revisions?.active_revision} /><StatusLine label="Config version" value={revisions?.config_version} /><StatusLine label="Recovery" value={lifecycle?.recovery?.status ?? lifecycle?.status} /></div>
+    <h2>Ревизии</h2><Grid>{revisionItems.map((raw, index) => { const item = asRecord(raw); return <EntityCard title={textValue(item.id ?? item.revision_id, `Revision ${index + 1}`)} status={item.status ?? item.state} onOpen={() => setSelected({ kind: 'revision', ...item })}><p>{formatDateTime(item.committed_at ?? item.created_at)}</p><small>{textValue(item.reason ?? item.description, 'Подтверждённая конфигурация')}</small></EntityCard>; })}</Grid>
+    {!revisionItems.length && <EmptyState title="История ревизий пуста" text="Baseline или первая подтверждённая конфигурация ещё не записана." />}
+    <h2>Резервные копии</h2><Grid>{backupItems.map((raw, index) => { const item = asRecord(raw); return <EntityCard title={textValue(item.operation_id ?? item.id, `Backup ${index + 1}`)} status={item.status ?? (item.verified ? 'verified' : 'unverified')} onOpen={() => setSelected({ kind: 'backup', ...item })}><p>{formatDateTime(item.created_at)}</p><small>{item.total_size ? formatBytes(Number(item.total_size)) : 'Размер не указан'}</small></EntityCard>; })}</Grid>
+    {!backupItems.length && <EmptyState title="Backups не показаны" text="Endpoint может быть недоступен текущей сессии или verified backup ещё не создан." />}
+    <DetailDrawer title={selected?.kind === 'backup' ? 'Резервная копия' : 'Ревизия'} open={Boolean(selected)} onClose={() => setSelected(null)}><DiagnosticDetails value={selected} /><RawDisclosure value={selected} /></DetailDrawer>
+  </section>;
+}
+
+function Settings({ data }: { data?: any }) {
+  return <section><PageHeader title="Настройки" text="Экран read-only: изменение системных параметров пока выполняется в профильных сценариях." /><Grid><EntityCard title="Приватность" status="configured"><p>IP и MAC скрываются в API по умолчанию. Временное раскрытие включается сверху.</p></EntityCard><EntityCard title="Хранение" status={data?.status}><StatusLine label="Events" value={data?.storage?.event_retention_days ? `${data.storage.event_retention_days} дней` : null} /><StatusLine label="Backups" value={data?.storage?.max_state_backups} /></EntityCard><EntityCard title="Обновление" status="not_implemented"><p>Автоматическое обновление из UI не реализовано.</p></EntityCard></Grid><RawDisclosure value={data} /></section>;
 }
 
 function LoginScreen() {
@@ -1320,11 +1594,60 @@ function SetupScreen() {
 }
 
 function Generic({ title, text }: { title: string; text: string }) {
-  return <Card title={title}><p>{text}</p></Card>;
+  return <section><PageHeader title={title} text={text} /><EmptyState title="Пока не реализовано" text="Экран не притворяется рабочим: активных API-действий здесь нет." /></section>;
+}
+
+function PageHeader({ title, text, children }: { title: string; text: string; children?: any }) {
+  return <header class="page-header"><div><h1>{title}</h1><p>{text}</p></div>{children && <div class="page-actions">{children}</div>}</header>;
+}
+
+function EntityCard({ title, status, children, onOpen }: { title: string; status?: unknown; children: any; onOpen?: () => void }) {
+  return <article class="entity-card"><header><h2>{title}</h2>{status !== undefined && <StatusBadge value={status} />}</header><div class="entity-body">{children}</div>{onOpen && <footer><button onClick={onOpen}>Открыть</button></footer>}</article>;
+}
+
+function StatusBadge({ value }: { value: unknown }) {
+  return <span class={`status-badge ${statusTone(value)}`}>{humanStatus(value)}</span>;
+}
+
+function StatusLine({ label, value }: { label: string; value: unknown }) {
+  return <div class="status-line"><span>{label}</span><StatusBadge value={value} /></div>;
+}
+
+function InfoGrid({ items }: { items: Array<[string, unknown]> }) {
+  const visible = items.filter(([, value]) => value !== null && value !== undefined && value !== '');
+  return <dl class="info-grid">{visible.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{textValue(value)}</dd></div>)}</dl>;
+}
+
+function DetailDrawer({ title, open, onClose, children, wide = false }: { title: string; open: boolean; onClose: () => void; children: any; wide?: boolean }) {
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, [open, onClose]);
+  if (!open) return null;
+  return <div class="drawer-backdrop" role="presentation" onClick={onClose}><aside class={`detail-drawer ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-label={title} onClick={(event) => event.stopPropagation()}><header><h2>{title}</h2><button class="icon-button" aria-label="Закрыть" onClick={onClose}>×</button></header><div class="drawer-content">{children}</div></aside></div>;
+}
+
+function RawDisclosure({ value }: { value: unknown }) {
+  return <details class="raw-disclosure"><summary>Открыть сырые данные</summary><pre>{JSON.stringify(value ?? {}, null, 2)}</pre></details>;
+}
+
+function EmptyState({ title, text }: { title: string; text: string }) {
+  return <div class="empty-state"><b>{title}</b><p>{text}</p></div>;
+}
+
+function DisabledActions({ labels }: { labels: string[] }) {
+  return <div class="actions">{labels.map((label) => <button disabled title="Not implemented" key={label}>{label} · не реализовано</button>)}</div>;
+}
+
+function EvidenceList({ values, empty }: { values: unknown[]; empty: string }) {
+  if (!values.length) return <EmptyState title="Нет данных" text={empty} />;
+  return <div class="evidence-list">{values.map((value, index) => { const record = asRecord(value); return <article key={index}><b>{textValue(record.name ?? record.route ?? record.step, `Шаг ${index + 1}`)}</b><span>{humanStatus(record.status ?? record.result)}</span><p>{textValue(record.reason ?? record.message, 'Без дополнительного объяснения')}</p></article>; })}</div>;
 }
 
 function EventRow({ event }: { event: EventItem }) {
-  return <div class={`event ${event.severity}`}><b>{new Date(event.time).toLocaleTimeString()}</b><span>{event.device_id ?? 'system'} · {event.domain ?? event.type} · {event.route ?? 'n/a'}</span><small>{event.reason_code}</small></div>;
+  return <div class={`event ${statusTone(event.severity)}`}><b>{new Date(event.time).toLocaleTimeString()}</b><span>{event.device_id ?? 'system'} · {event.domain ?? event.type} · {event.route ?? 'n/a'}</span><small class="mono">{event.reason_code}</small></div>;
 }
 
 function RouteBadge({ type }: { type: string }) {

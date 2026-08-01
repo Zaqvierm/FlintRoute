@@ -89,6 +89,21 @@ export type SubscriptionPreparation = {
     bypass_mark: string;
   };
 };
+export type ManualVLESSServer = {
+  id: string;
+  name: string;
+  address: string;
+  port: number;
+  protocol: string;
+  security: string;
+  network: string;
+};
+export type ManualVLESSInventory = {
+  servers: ManualVLESSServer[];
+  count: number;
+  capacity: number;
+  changed?: boolean;
+};
 
 export type ZapretSetupRequest = {
   source_url: string;
@@ -225,7 +240,9 @@ export async function logout(): Promise<void> {
 
 export async function getOverview(): Promise<Overview> { return request<Overview>('/overview'); }
 export async function getTopology(): Promise<any> { return request('/topology'); }
-export async function getDevices(): Promise<any[]> { return request('/devices'); }
+export async function getDevices(revealAddresses = false): Promise<any[]> {
+  return request(`/devices?privacy=${revealAddresses ? 'revealed' : 'private'}`);
+}
 export async function getServices(): Promise<any[]> { return request('/services'); }
 export async function classifyService(
   domain: string,
@@ -280,8 +297,14 @@ export async function configureDiscovery(
   });
 }
 export async function getTraffic(): Promise<TrafficSnapshot> { return request('/traffic'); }
-export async function getEvents(): Promise<EventItem[]> { return request('/events'); }
+export async function getEvents(limit = 500): Promise<EventItem[]> { return request(`/events?limit=${limit}`); }
 export async function getSecurity(): Promise<any> { return request('/security/audit'); }
+export async function getSecuritySummary(): Promise<any> { return request('/security'); }
+export async function getDiagnostics(): Promise<any> { return request('/diagnostics'); }
+export async function getLifecycle(): Promise<any> { return request('/lifecycle'); }
+export async function getStorage(): Promise<any> { return request('/storage'); }
+export async function getSettings(): Promise<any> { return request('/settings'); }
+export async function getBackups(): Promise<any> { return request('/backups'); }
 export async function getSystem(): Promise<any> { return request('/system'); }
 export async function getChanges(): Promise<ChangeSet[]> { return request('/changes'); }
 export async function getRevisions(): Promise<RevisionSummary> { return request('/revisions'); }
@@ -293,6 +316,15 @@ export async function saveSubscriptionSecrets(urls: string[]): Promise<Subscript
 }
 export async function prepareSubscription(baseVersion: number, activateManaged = false): Promise<SubscriptionPreparation> {
   return request('/xray/subscription/prepare', { method: 'POST', body: JSON.stringify({ base_version: baseVersion, activate_managed: activateManaged }) });
+}
+export async function getManualVLESSServers(): Promise<ManualVLESSInventory> {
+  return request('/xray/manual-servers');
+}
+export async function addManualVLESSServer(uri: string): Promise<ManualVLESSInventory> {
+  return request('/xray/manual-servers', { method: 'POST', body: JSON.stringify({ uri }) });
+}
+export async function deleteManualVLESSServer(id: string): Promise<ManualVLESSInventory> {
+  return request('/xray/manual-servers', { method: 'DELETE', body: JSON.stringify({ id }) });
 }
 export async function getZapret(): Promise<any> { return request('/zapret'); }
 export async function checkZapretSetup(input: ZapretSetupRequest, baseVersion: number): Promise<{ report: ZapretSetupReport }> {

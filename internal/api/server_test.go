@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -43,6 +44,34 @@ func TestAuthAndOverview(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestDevicesPrivacyIsAppliedBeforeSerialization(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client, _ := login(t, ts.URL)
+
+	response, err := client.Get(ts.URL + "/api/v1/devices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	masked, _ := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if strings.Contains(string(masked), "192.0.2.10") || strings.Contains(string(masked), "02:00:00:00:10:01") {
+		t.Fatalf("default device response leaked full addresses: %s", masked)
+	}
+
+	response, err = client.Get(ts.URL + "/api/v1/devices?privacy=revealed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	revealed, _ := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if !strings.Contains(string(revealed), "192.0.2.10") || !strings.Contains(string(revealed), "02:00:00:00:10:01") {
+		t.Fatalf("explicit reveal did not return device addresses: %s", revealed)
 	}
 }
 

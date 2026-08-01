@@ -24,6 +24,13 @@ type NetworkDiagnosticsProvider interface {
 	NetworkDiagnostics(*config.Config) NetworkDiagnostics
 }
 
+// PrivacyDeviceProvider returns the same device inventory without placing raw
+// client addresses in the default response. The API opts into reveal mode only
+// for an authenticated, short-lived UI request.
+type PrivacyDeviceProvider interface {
+	DevicesWithPrivacy(*config.Config, bool) []map[string]any
+}
+
 type NetworkDiagnostics struct {
 	Status               string    `json:"status"`
 	Reason               string    `json:"reason,omitempty"`
@@ -76,16 +83,16 @@ func (p DevelopmentMockProvider) Topology(*config.Config) map[string]any {
 	return map[string]any{
 		"nodes": []map[string]any{
 			{"id": "internet", "label": "Internet", "type": "internet", "status": "simulation"},
-			{"id": "router", "label": "OpenWrt router", "type": "router", "status": "simulation"},
-			{"id": "ethernet", "label": "Ethernet", "type": "group", "clients": 4},
-			{"id": "wifi24", "label": "Wi-Fi 2.4 GHz", "type": "group", "clients": 7},
-			{"id": "wifi5", "label": "Wi-Fi 5 GHz", "type": "group", "clients": 5},
+			{"id": "router", "label": "OpenWrt development router", "type": "router", "status": "simulation"},
+			{"id": "dev-lan", "label": "lan-dev", "type": "bridge", "status": "UP"},
+			{"id": "dev-workstation", "label": "Workstation", "type": "device", "kind": "ethernet", "status": "simulation", "ip": "192.0.*.*"},
+			{"id": "dev-tv", "label": "TV", "type": "device", "kind": "wifi", "status": "simulation", "ip": "192.0.*.*"},
 		},
 		"edges": []map[string]any{
 			{"from": "internet", "to": "router", "route": "simulation"},
-			{"from": "router", "to": "ethernet", "route": "simulation"},
-			{"from": "router", "to": "wifi24", "route": "simulation"},
-			{"from": "router", "to": "wifi5", "route": "simulation"},
+			{"from": "router", "to": "dev-lan", "route": "simulation"},
+			{"from": "dev-lan", "to": "dev-workstation", "route": "simulation"},
+			{"from": "dev-lan", "to": "dev-tv", "route": "simulation"},
 		},
 		"source":       p.Name(),
 		"status":       "simulation",
@@ -97,9 +104,21 @@ func (p DevelopmentMockProvider) Topology(*config.Config) map[string]any {
 
 func (DevelopmentMockProvider) Devices(*config.Config) []map[string]any {
 	return []map[string]any{
-		{"id": "dev-workstation", "name": "Workstation", "kind": "ethernet", "ip": "192.0.2.10", "mac": "masked", "policy": "simulation", "status": "simulation", "simulation": true},
-		{"id": "dev-tv", "name": "TV", "kind": "wifi5", "ip": "192.0.2.20", "mac": "masked", "policy": "simulation", "status": "simulation", "simulation": true},
+		{"id": "dev-workstation", "name": "Workstation", "kind": "ethernet", "interface": "lan-dev", "connected": true, "ip": "192.0.*.*", "mac": "**:**:**:**:10:01", "policy": "simulation", "status": "simulation", "simulation": true},
+		{"id": "dev-tv", "name": "TV", "kind": "wifi", "interface": "radio-dev", "ssid": "Development Wi-Fi", "rssi": -52, "connected": true, "ip": "192.0.*.*", "mac": "**:**:**:**:20:01", "policy": "simulation", "status": "simulation", "simulation": true},
 	}
+}
+
+func (DevelopmentMockProvider) DevicesWithPrivacy(cfg *config.Config, reveal bool) []map[string]any {
+	items := (DevelopmentMockProvider{}).Devices(cfg)
+	if reveal {
+		items[0]["ip"], items[0]["mac"] = "192.0.2.10", "02:00:00:00:10:01"
+		items[1]["ip"], items[1]["mac"] = "192.0.2.20", "02:00:00:00:20:01"
+	}
+	for _, item := range items {
+		item["addresses_revealed"] = reveal
+	}
+	return items
 }
 
 func (DevelopmentMockProvider) Policies(*config.Config) []map[string]any {
@@ -127,6 +146,8 @@ func (p DevelopmentMockProvider) System(cfg *config.Config) map[string]any {
 	}
 	return map[string]any{
 		"version":             "dev",
+		"hostname":            "openwrt-dev",
+		"model":               "OpenWrt development router",
 		"platform":            platformTarget,
 		"uptime_seconds":      3600,
 		"cpu_load_1m":         0.18,

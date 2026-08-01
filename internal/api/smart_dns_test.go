@@ -14,13 +14,19 @@ import (
 )
 
 func TestNormalizeSmartDNSEndpointRejectsUnsafeAddresses(t *testing.T) {
-	for _, value := range []string{"127.0.0.1:53", "192.168.1.1:53", "192.0.2.53:53", "198.51.100.53:53", "203.0.113.53:53", "not-an-ip:53", "1.1.1.1", "1.1.1.1:0"} {
+	for _, value := range []string{"127.0.0.1:53", "192.168.1.1:53", "192.0.2.53:53", "198.51.100.53:53", "203.0.113.53:53", "not-an-ip:53", "1.1.1.1:0"} {
 		if _, err := normalizeSmartDNSEndpoint(value); err == nil {
 			t.Fatalf("unsafe Smart DNS endpoint was accepted: %s", value)
 		}
 	}
 	if got, err := normalizeSmartDNSEndpoint("1.1.1.1:53"); err != nil || got != "1.1.1.1:53" {
 		t.Fatalf("public Smart DNS endpoint rejected: got=%q err=%v", got, err)
+	}
+	if got, err := normalizeSmartDNSEndpoint("1.1.1.1"); err != nil || got != "1.1.1.1:53" {
+		t.Fatalf("default Smart DNS port was not applied: got=%q err=%v", got, err)
+	}
+	if got, err := normalizeSmartDNSEndpoint("2606:4700:4700::1111"); err != nil || got != "[2606:4700:4700::1111]:53" {
+		t.Fatalf("bare IPv6 Smart DNS endpoint rejected: got=%q err=%v", got, err)
 	}
 }
 
@@ -38,7 +44,7 @@ func TestSmartDNSConfigureCreatesDraft(t *testing.T) {
 	defer ts.Close()
 	client, csrf := login(t, ts.URL)
 
-	request, err := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/smart-dns/configure", strings.NewReader(`{"base_version":1,"resolvers":[{"ip":"9.9.9.9","port":53}],"test_domain":"example.com"}`))
+	request, err := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/smart-dns/configure", strings.NewReader(`{"base_version":1,"resolvers":[{"ip":"9.9.9.9"}],"test_domain":"example.com"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
