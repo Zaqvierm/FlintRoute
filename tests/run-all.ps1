@@ -124,6 +124,12 @@ if ($LASTEXITCODE -ne 0) {
   throw "boot guard service test failed"
 }
 
+Write-Host "== scoped boot guard policy =="
+& $gitSh tests/boot-guard-policy.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "boot guard policy test failed"
+}
+
 Write-Host "== adapter rollback integrity =="
 & $gitSh tests/adapter-rollback.sh
 if ($LASTEXITCODE -ne 0) {

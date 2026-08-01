@@ -28,6 +28,7 @@ case "\${1:-}" in
     printf '{"setup_required":false}\n'
     ;;
   backup) exit 0 ;;
+  internal-verify-state-backup) exit 0 ;;
   *) exit 2 ;;
 esac
 SH
@@ -136,16 +137,56 @@ count=0
 count=$((count + 1))
 printf '%s\n' "$count" > "$HEALTH_COUNTER"
 [ "$count" -ge 3 ] || exit 1
-printf '{"status":"ok"}\n' > "$3"
+printf '{"data":{"active_revision":"rev_1_test","recovery_status":"ok","status":"ok"}}\n' > "$3"
 SH
 chmod +x "$TMP/fake-bin/wget"
+cat > "$TMP/fake-bin/sleep" <<'SH'
+#!/bin/sh
+:
+SH
+chmod +x "$TMP/fake-bin/sleep"
 HEALTH_COUNTER="$TMP/health-attempts"
 PATH="$TMP/fake-bin:$PATH"
 ROUTER_POLICY_INSTALL_LIB_ONLY=1
-export HEALTH_COUNTER PATH ROUTER_POLICY_INSTALL_LIB_ONLY RUNTIME_DIR
+ROUTER_POLICY_HEALTH_ATTEMPTS=3
+export HEALTH_COUNTER PATH ROUTER_POLICY_INSTALL_LIB_ONLY RUNTIME_DIR ROUTER_POLICY_HEALTH_ATTEMPTS
 # shellcheck source=install.sh
 . "$ROOT/install.sh"
 wait_control_health >/dev/null
+[ "$(cat "$HEALTH_COUNTER")" = "3" ]
+
+HEALTH_COUNTER="$TMP/degraded-health-attempts"
+cat > "$TMP/fake-bin/wget" <<'SH'
+#!/bin/sh
+set -eu
+count=0
+[ ! -f "$HEALTH_COUNTER" ] || count=$(cat "$HEALTH_COUNTER")
+count=$((count + 1))
+printf '%s\n' "$count" > "$HEALTH_COUNTER"
+printf '{"data":{"active_revision":"rev_1_test","recovery_status":"error","status":"degraded"}}\n' > "$3"
+SH
+chmod +x "$TMP/fake-bin/wget"
+if wait_control_health >/dev/null 2>&1; then
+  echo "installer accepted degraded control-plane health" >&2
+  exit 1
+fi
+[ "$(cat "$HEALTH_COUNTER")" = "3" ]
+
+HEALTH_COUNTER="$TMP/revision-health-attempts"
+cat > "$TMP/fake-bin/wget" <<'SH'
+#!/bin/sh
+set -eu
+count=0
+[ ! -f "$HEALTH_COUNTER" ] || count=$(cat "$HEALTH_COUNTER")
+count=$((count + 1))
+printf '%s\n' "$count" > "$HEALTH_COUNTER"
+printf '{"data":{"active_revision":"rev_2_changed","recovery_status":"ok","status":"ok"}}\n' > "$3"
+SH
+chmod +x "$TMP/fake-bin/wget"
+if wait_control_health rev_1_expected >/dev/null 2>&1; then
+  echo "installer accepted a changed active revision during upgrade" >&2
+  exit 1
+fi
 [ "$(cat "$HEALTH_COUNTER")" = "3" ]
 
 MODE_TARGET="$TMP/mode-target"
@@ -302,6 +343,7 @@ for service in router-policy router-policy-watchdog router-policy-xray router-po
   cat > "$ROLLBACK_INIT/$service" <<'SH'
 #!/bin/sh
 if [ "${0##*/}" = "router-policy" ] && [ "$1" = "start" ]; then exit 1; fi
+if [ "$1" = "running" ]; then exit 1; fi
 exit 0
 SH
   chmod +x "$ROLLBACK_INIT/$service"
@@ -485,6 +527,8 @@ echo "installer_compatible_downgrade=true"
 echo "installer_failed_upgrade_rollback=true"
 echo "installer_verified_uninstall=true"
 echo "installer_waits_for_control_health=true"
+echo "installer_rejects_degraded_health=true"
+echo "installer_binds_upgrade_health_to_revision=true"
 echo "installer_checks_transaction_dependencies=true"
 echo "installer_uses_portable_mode_check=true"
 echo "installer_blocks_running_legacy_controller=true"

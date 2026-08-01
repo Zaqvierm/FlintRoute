@@ -259,7 +259,6 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) Validate() error {
-	c.normalizeLegacyExternalSOCKS()
 	if c.Version < 2 {
 		return fmt.Errorf("config version must be >=2")
 	}
@@ -326,7 +325,7 @@ func (c *Config) Validate() error {
 		if r.Enabled() && r.Type == "zapret" {
 			hasZapret = true
 		}
-		if r.Enabled() && (r.Type == "vless" || r.Type == "external_socks") {
+		if r.Enabled() && (r.Type == "vless" || r.Type == "external_socks" || r.Type == "tg_ws_proxy") {
 			hasTransparentRoute = true
 			if r.DNSMode != "socks_remote" || r.DNSServer == "" || r.DNSServer != c.Xray.ProbeDNSResolver {
 				return fmt.Errorf("transparent route %s must use the configured SOCKS DNS resolver", r.Tag)
@@ -629,45 +628,6 @@ func portableAbsolutePath(value string) bool {
 	return filepath.IsAbs(value) || strings.HasPrefix(filepath.ToSlash(value), "/")
 }
 
-func (c *Config) normalizeLegacyExternalSOCKS() {
-	const legacyType = "tg_ws_proxy"
-	const legacyTag = "tg-ws-proxy"
-	const currentType = "external_socks"
-	const currentTag = "external-socks"
-	for index := range c.Routes {
-		if c.Routes[index].Type == legacyType {
-			c.Routes[index].Type = currentType
-		}
-		if c.Routes[index].Tag == legacyTag {
-			c.Routes[index].Tag = currentTag
-		}
-	}
-	for name, service := range c.Services {
-		for index, path := range service.AllowedPaths {
-			if path == legacyType {
-				service.AllowedPaths[index] = currentType
-			}
-		}
-		for index, path := range service.ForbiddenPaths {
-			if path == legacyType {
-				service.ForbiddenPaths[index] = currentType
-			}
-		}
-		if service.SelectedRouteTag == legacyTag {
-			service.SelectedRouteTag = currentTag
-		}
-		c.Services[name] = service
-	}
-	for index := range c.Overrides {
-		if c.Overrides[index].RouteType == legacyType {
-			c.Overrides[index].RouteType = currentType
-		}
-		if c.Overrides[index].RouteTag == legacyTag {
-			c.Overrides[index].RouteTag = currentTag
-		}
-	}
-}
-
 func (p Policy) EffectiveDiscoveryMode() string {
 	if p.DiscoveryMode == "" {
 		return "observe_only"
@@ -829,7 +789,7 @@ func (c *Config) validateOverrideSafety(override PolicyOverride, targetType stri
 
 func validRouteType(routeType string) bool {
 	switch routeType {
-	case "direct", "zapret", "smart_dns", "external_socks", "vless", "drop":
+	case "direct", "zapret", "smart_dns", "external_socks", "tg_ws_proxy", "vless", "drop":
 		return true
 	default:
 		return false
@@ -878,7 +838,7 @@ func (c *Config) markForRouteType(routeType string) string {
 		return c.OpenWrt.DirectMark
 	case "zapret":
 		return c.OpenWrt.ZapretMark
-	case "vless", "external_socks":
+	case "vless", "external_socks", "tg_ws_proxy":
 		return c.OpenWrt.XrayMark
 	case "drop":
 		return c.OpenWrt.DropMark
@@ -893,7 +853,7 @@ func (c *Config) tableForRouteType(routeType string) int {
 		return c.OpenWrt.WANRouteTable
 	case "zapret":
 		return c.OpenWrt.ZapretRouteTable
-	case "vless", "external_socks":
+	case "vless", "external_socks", "tg_ws_proxy":
 		return c.OpenWrt.XrayRouteTable
 	default:
 		return 0

@@ -30,7 +30,7 @@ func TestPlatformIPv6FalseKeepsLegacyCanonicalJSON(t *testing.T) {
 	}
 }
 
-func TestValidateMigratesLegacyTelegramProxyRoute(t *testing.T) {
+func TestValidateAcceptsLegacyExternalSOCKSWithoutChangingCommittedJSON(t *testing.T) {
 	cfg := validConfig()
 	cfg.Xray.ProbeDNSResolver = "1.1.1.1:53"
 	cfg.Xray.TransparentPort = 12345
@@ -40,17 +40,19 @@ func TestValidateMigratesLegacyTelegramProxyRoute(t *testing.T) {
 	service.SelectedRouteTag = "tg-ws-proxy"
 	cfg.Services["site"] = service
 	cfg.Overrides = append(cfg.Overrides, PolicyOverride{ID: "legacy", Scope: "service", Service: "site", RouteType: "tg_ws_proxy", RouteTag: "tg-ws-proxy"})
+	before, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if route := cfg.Routes[len(cfg.Routes)-1]; route.Type != "external_socks" || route.Tag != "external-socks" {
-		t.Fatalf("legacy route was not migrated: %+v", route)
+	after, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if service := cfg.Services["site"]; service.SelectedRouteTag != "external-socks" || service.AllowedPaths[len(service.AllowedPaths)-1] != "external_socks" {
-		t.Fatalf("legacy service binding was not migrated: %+v", service)
-	}
-	if override := cfg.Overrides[len(cfg.Overrides)-1]; override.RouteType != "external_socks" || override.RouteTag != "external-socks" {
-		t.Fatalf("legacy override was not migrated: %+v", override)
+	if string(after) != string(before) {
+		t.Fatalf("validation changed immutable legacy JSON:\nold=%s\nnew=%s", before, after)
 	}
 }
 

@@ -172,15 +172,31 @@ install_boot_guard() {
     echo "boot_guard=skipped-no-last-good"
     return 0
   }
-  mkdir -p "$runtime"
-  cat > "$boot_guard_file.tmp" <<'EOF'
-table inet router_policy_boot_guard {
-  chain forward {
-    type filter hook forward priority -400; policy accept;
-    counter drop
+  marks=""
+  for key in direct_mark zapret_mark xray_mark drop_mark; do
+    value="$(sed -n "s/^[[:space:]]*\"$key\"[[:space:]]*:[[:space:]]*\"\(0x[0-9a-fA-F][0-9a-fA-F]*\)\".*/\1/p" "$known_config" 2>/dev/null | head -n 1)"
+    printf '%s\n' "$value" | grep -Eq '^0x[0-9a-fA-F]{1,8}$' || continue
+    case " $marks " in
+      *" $value "*) ;;
+      *) marks="$marks $value" ;;
+    esac
+  done
+  [ -n "$marks" ] || {
+    echo "boot_guard=skipped-no-managed-marks"
+    return 0
   }
-}
-EOF
+  mkdir -p "$runtime"
+  {
+    echo 'table inet router_policy_boot_guard {'
+    echo '  chain forward {'
+    echo '    type filter hook forward priority -4; policy accept;'
+    for mark in $marks; do
+      echo "    meta mark $mark counter drop comment \"rp boot_guard source=meta\""
+      echo "    ct mark $mark counter drop comment \"rp boot_guard source=conntrack\""
+    done
+    echo '  }'
+    echo '}'
+  } > "$boot_guard_file.tmp"
   mv "$boot_guard_file.tmp" "$boot_guard_file"
   "$nft_bin" delete table inet router_policy_boot_guard >/dev/null 2>&1 || true
   "$nft_bin" -f "$boot_guard_file"

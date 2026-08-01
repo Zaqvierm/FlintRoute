@@ -7,6 +7,7 @@ SYSTEM_ROOT="${ROUTER_POLICY_SYSTEM_ROOT:-}"
 PREFIX="${PREFIX:-$SYSTEM_ROOT/usr/lib/router-policy}"
 ETC_DIR="${ETC_DIR:-$SYSTEM_ROOT/etc/router-policy}"
 STATE_DIR="${STATE_DIR:-$ETC_DIR/state}"
+STATE_DATABASE="${STATE_DATABASE:-$STATE_DIR/router-policy.bbolt}"
 RUNTIME_DIR="${RUNTIME_DIR:-$SYSTEM_ROOT/tmp/router-policy}"
 BIN_DIR="${BIN_DIR:-$SYSTEM_ROOT/usr/bin}"
 INIT_DIR="${INIT_DIR:-$SYSTEM_ROOT/etc/init.d}"
@@ -187,6 +188,8 @@ preflight_runtime() {
   fi
   if [ -x "$INIT_DIR/router-policy" ] && run_bounded "$INIT_DIR/router-policy" running >/dev/null 2>&1; then
     wait_control_health
+    PREINSTALL_ACTIVE_REVISION="$(health_json_field active_revision "$RUNTIME_DIR/install-health.json")"
+    export PREINSTALL_ACTIVE_REVISION
     if [ ! -x "$ROUTER_POLICY_BIN" ] || ! run_bounded env ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$ROUTER_POLICY_BIN" maintenance status >/dev/null 2>&1; then
       echo "install blocked: running controller does not support safe maintenance; stop router-policy and its watchdog before retrying" >&2
       return 1
@@ -316,16 +319,24 @@ restore_installation() {
     for service in router-policy-watchdog router-policy; do
       init="$INIT_DIR/$service"
       [ ! -x "$init" ] || run_bounded "$init" stop >/dev/null 2>&1 || service_restore_ok=0
+      if [ -x "$init" ] && run_bounded "$init" running >/dev/null 2>&1; then
+        service_restore_ok=0
+      fi
     done
     if [ -x "$INIT_DIR/router-policy-boot-guard" ]; then
       run_bounded "$INIT_DIR/router-policy-boot-guard" stop >/dev/null 2>&1 || service_restore_ok=0
     fi
+  fi
+  if [ "$service_restore_ok" != "1" ]; then
+    echo "install_rollback=blocked-managed-services-still-running" >&2
+    return 1
   fi
   while IFS='|' read -r presence p; do
     [ "$presence" = "present" ] || [ "$presence" = "absent" ] || continue
     rm -rf "$p"
   done < "$manifest"
   "$TAR_BIN" -C / -xf "$archive"
+  restore_state_database || return 1
   if [ -z "$SYSTEM_ROOT" ] && [ -s "$services" ]; then
     while IFS='|' read -r service enabled running; do
       init="$INIT_DIR/$service"
@@ -361,18 +372,98 @@ restore_installation() {
   echo "install_rollback=restored" >&2
 }
 
+snapshot_state_database() {
+  snapshot="$BACKUP_DIR/install-rollback"
+  presence="$snapshot/state-database.presence"
+  backup_path="$snapshot/router-policy.bbolt"
+  hash_path="$snapshot/router-policy.bbolt.sha256"
+  rm -f "$backup_path" "$hash_path"
+  if [ ! -e "$STATE_DATABASE" ]; then
+    echo "absent" > "$presence"
+    return 0
+  fi
+  [ -f "$STATE_DATABASE" ] && [ ! -L "$STATE_DATABASE" ] || {
+    echo "automatic install rollback unavailable: unsafe state database" >&2
+    return 1
+  }
+  cp "$STATE_DATABASE" "$backup_path.tmp"
+  mv "$backup_path.tmp" "$backup_path"
+  hash_file "$backup_path" > "$hash_path.tmp"
+  mv "$hash_path.tmp" "$hash_path"
+  if [ -x "$ROUTER_POLICY_BIN" ]; then
+    run_bounded env ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$ROUTER_POLICY_BIN" internal-verify-state-backup --path "$backup_path" >/dev/null
+  fi
+  echo "present" > "$presence"
+}
+
+restore_state_database() {
+  snapshot="$BACKUP_DIR/install-rollback"
+  presence="$snapshot/state-database.presence"
+  [ -s "$presence" ] || return 0
+  [ ! -L "$presence" ] || {
+    echo "automatic install rollback unavailable: symlinked state metadata" >&2
+    return 1
+  }
+  case "$(cat "$presence")" in
+    absent)
+      rm -f "$STATE_DATABASE"
+      ;;
+    present)
+      backup_path="$snapshot/router-policy.bbolt"
+      hash_path="$snapshot/router-policy.bbolt.sha256"
+      [ -f "$backup_path" ] && [ ! -L "$backup_path" ] && [ -s "$hash_path" ] && [ ! -L "$hash_path" ] || {
+        echo "automatic install rollback unavailable: invalid state backup" >&2
+        return 1
+      }
+      expected_hash="$(cat "$hash_path")"
+      actual_hash="$(hash_file "$backup_path")" || return 1
+      [ "$expected_hash" = "$actual_hash" ] || {
+        echo "automatic install rollback unavailable: state backup hash mismatch" >&2
+        return 1
+      }
+      if [ -x "$ROUTER_POLICY_BIN" ]; then
+        run_bounded env ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$ROUTER_POLICY_BIN" internal-verify-state-backup --path "$backup_path" >/dev/null
+      fi
+      mkdir -p "$(dirname "$STATE_DATABASE")"
+      cp "$backup_path" "$STATE_DATABASE.restore.$$"
+      chmod 600 "$STATE_DATABASE.restore.$$"
+      mv "$STATE_DATABASE.restore.$$" "$STATE_DATABASE"
+      ;;
+    *)
+      echo "automatic install rollback unavailable: invalid state presence marker" >&2
+      return 1
+      ;;
+  esac
+}
+
 service_was_running() {
   service="$1"
   awk -F '|' -v service="$service" '$1 == service && $3 == "1" { found=1 } END { exit(found ? 0 : 1) }' "$BACKUP_DIR/install-rollback/services.txt" 2>/dev/null
 }
 
+health_json_field() {
+  field="$1"
+  file="$2"
+  tr '{},' '\n' < "$file" | sed -n "s/^[[:space:]]*\"$field\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\"[[:space:]]*$/\1/p" | head -n 1
+}
+
 wait_control_health() {
+  expected_revision="${1:-}"
+  max_attempts="${ROUTER_POLICY_HEALTH_ATTEMPTS:-20}"
+  case "$max_attempts" in *[!0-9]*|'') max_attempts=20 ;; esac
+  [ "$max_attempts" -ge 1 ] && [ "$max_attempts" -le 120 ] || max_attempts=20
   command -v wget >/dev/null 2>&1 || { echo "wget is required to verify the control plane" >&2; return 1; }
   attempt=0
-  while [ "$attempt" -lt 20 ]; do
+  while [ "$attempt" -lt "$max_attempts" ]; do
     if wget -q -O "$RUNTIME_DIR/install-health.json" http://127.0.0.1:8787/api/v1/health; then
-      echo "control_plane_health=ok"
-      return 0
+      health_status="$(health_json_field status "$RUNTIME_DIR/install-health.json")"
+      recovery_status="$(health_json_field recovery_status "$RUNTIME_DIR/install-health.json")"
+      active_revision="$(health_json_field active_revision "$RUNTIME_DIR/install-health.json")"
+      if [ "$health_status" = "ok" ] && [ "$recovery_status" != "error" ] && [ -n "$active_revision" ] && { [ -z "$expected_revision" ] || [ "$active_revision" = "$expected_revision" ]; }; then
+        echo "control_plane_health=ok"
+        echo "control_plane_active_revision=$active_revision"
+        return 0
+      fi
     fi
     attempt=$((attempt + 1))
     sleep 1
@@ -381,12 +472,25 @@ wait_control_health() {
   return 1
 }
 
+stop_control_services_for_upgrade() {
+  [ -z "$SYSTEM_ROOT" ] || return 0
+  for service in router-policy-watchdog router-policy; do
+    service_was_running "$service" || continue
+    init="$INIT_DIR/$service"
+    run_bounded "$init" stop >/dev/null
+    if run_bounded "$init" running >/dev/null 2>&1; then
+      echo "install blocked: $service did not stop cleanly" >&2
+      return 1
+    fi
+  done
+}
+
 restart_running_services() {
   [ -z "$SYSTEM_ROOT" ] || return 0
   if service_was_running router-policy; then
     run_bounded "$INIT_DIR/router-policy" restart
     run_bounded "$INIT_DIR/router-policy" running
-    wait_control_health
+    wait_control_health "${PREINSTALL_ACTIVE_REVISION:-}"
   fi
   for service in router-policy-xray router-policy-zapret; do
     init="$INIT_DIR/$service"
@@ -417,7 +521,7 @@ start_control_services() {
     fi
     run_bounded "$INIT_DIR/$service" running
   done
-  wait_control_health
+    wait_control_health
 }
 
 begin_maintenance() {
@@ -557,8 +661,10 @@ case "$mode" in
     trap 'exit 130' INT HUP
     trap 'exit 143' TERM
     detect
-    backup
     begin_maintenance
+    stop_control_services_for_upgrade
+    snapshot_state_database
+    backup
     install_files
     ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$ROUTER_POLICY_BIN" validate-config
     "$ROUTER_POLICY_BIN" backup register --root "$BACKUP_DIR" --operation "$(basename "$BACKUP_DIR")" --version "$ROUTER_POLICY_VERSION" --reason install --retention-class installer-fallback >/dev/null

@@ -4,6 +4,58 @@ This log records failures that affected hardware validation or could have made a
 release claim unreliable. It contains no credentials, private endpoints or raw
 device dumps.
 
+## 2026-08-01 — upgrade rewrote a committed legacy route in memory
+
+### What was tested
+
+An in-place control-plane upgrade was run against a verified committed revision.
+No new ChangeSet or dataplane candidate was requested. A checked off-router
+backup and an installation rollback snapshot existed before the upgrade.
+
+### What happened
+
+The new controller started but `/api/v1/health` reported `degraded` with
+`active_config_mismatch`. The installer treated the successful HTTP request as
+healthy, disarmed its rollback and returned success. A later manual file restore
+could not verify procd services because ubus stopped accepting clients. After a
+reboot the device did not return Wi-Fi, DHCP or management access, so factory
+recovery through U-Boot was required.
+
+Offline inspection of the pre-upgrade bbolt database proved the first failure.
+The stored active config and revision candidate had the same SHA-256 digest and
+contained the legacy `tg_ws_proxy` route name. The upgraded validator silently
+rewrote that value to `external_socks` after the persisted digest had already
+been checked. Startup recovery then re-serialized the changed in-memory value,
+compared it with the immutable committed digest and rejected its own revision.
+
+The later ubus/procd failure is recorded separately as an unresolved symptom.
+The volatile evidence needed to identify its kernel or service-manager trigger
+was unavailable after management access was lost. The boot guard's previous
+unconditional forwarding drop explains an Internet outage during recovery, but
+does not explain loss of Wi-Fi, DHCP or router-local SSH and is not presented as
+the root cause of those symptoms.
+
+### Fix and verification
+
+Legacy route names are now accepted as compatibility aliases without mutating
+the serialized committed config. Migration to `external_socks` requires a new
+explicit ChangeSet. A restart regression commits a legacy-shaped config and
+verifies that its digest, revision and reconcile result remain unchanged.
+
+Installer health validation now requires `status=ok`, non-error recovery, a
+non-empty active revision and, during upgrade, the same revision observed by
+preflight. The controller and watchdog are stopped under a maintenance lease
+before the state database is copied. Automatic rollback refuses to replace any
+file while a managed controller process may still be running, and restores the
+verified pre-upgrade database before restarting the previous controller.
+
+The boot guard no longer drops every forwarded packet. It blocks only traffic
+carrying configured FlintRoute marks, leaving unclassified OpenWrt forwarding
+and the management plane outside that temporary guard. Unit, race, installer,
+shell integration, frontend, package and secret-scan gates pass locally. The
+hardware upgrade/reboot claim must be renewed with evidence from the fixed
+revision before unattended upgrade is considered verified again.
+
 ## 2026-07-27 — external listener rollback was not armed
 
 ### What was tested
