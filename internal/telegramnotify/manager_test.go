@@ -16,6 +16,22 @@ import (
 
 var testToken = "12345:" + strings.Repeat("x", 24)
 
+func TestStatusEncodesMissingEventTypesAsEmptyArray(t *testing.T) {
+	manager, err := New(Options{SecretFile: filepath.Join(t.TempDir(), "telegram.json")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	public, err := json.Marshal(manager.Status())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(public), `"event_types":[]`) {
+		t.Fatalf("status must expose an empty array, got %s", public)
+	}
+}
+
 func TestConfigureVerifiesAndStoresSecretWithoutExposingIt(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/bot"+testToken+"/") {

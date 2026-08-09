@@ -164,7 +164,7 @@ func (m *Manager) Status() Status {
 	return Status{
 		State: m.state, Enabled: m.config.Enabled,
 		TokenConfigured: m.config.BotToken != "", ChatConfigured: m.config.ChatID != "",
-		EventTypes: append([]string(nil), m.config.EventTypes...), QueueDepth: len(m.queue), QueueCapacity: cap(m.queue),
+		EventTypes: append([]string{}, m.config.EventTypes...), QueueDepth: len(m.queue), QueueCapacity: cap(m.queue),
 		ConsecutiveFailures: m.consecutiveFailures, LastErrorCode: m.lastErrorCode,
 		LastVerifiedAt: m.lastVerifiedAt, LastDeliveryAt: m.lastDeliveryAt, Dropped: m.dropped,
 	}

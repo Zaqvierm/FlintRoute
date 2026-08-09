@@ -64,6 +64,7 @@ import {
   isDecisionEvent,
   parseResolverInput,
   statusTone,
+  stringArray,
   textValue,
   toDecisionCard
 } from './view-models';
@@ -1448,7 +1449,12 @@ function Telegram({ role, events: systemEvents }: { role: SessionInfo['role']; e
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   async function load() {
-    try { const value = await getTelegram(); setOverview(value); setEnabled(value.notifications.enabled); setEvents(value.notifications.event_types); }
+    try {
+      const value = await getTelegram();
+      setOverview(value);
+      setEnabled(Boolean(value.notifications?.enabled));
+      setEvents(stringArray(value.notifications?.event_types));
+    }
     catch (error) { setMessage(error instanceof Error ? error.message : 'Telegram API недоступен'); }
   }
   useEffect(() => { load(); }, []);

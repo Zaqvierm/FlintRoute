@@ -43,6 +43,13 @@ export function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+export function stringArray(value: unknown): string[] {
+  return asArray(value)
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 export function textValue(value: unknown, fallback = 'Недоступно'): string {
   if (value === null || value === undefined || value === '') return fallback;
   if (typeof value === 'boolean') return value ? 'Да' : 'Нет';

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, parseResolverInput, textValue, toDecisionCard } from './view-models';
+import { groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, parseResolverInput, stringArray, textValue, toDecisionCard } from './view-models';
 import type { EventItem } from './api';
 
 describe('safe display values', () => {
@@ -12,6 +12,11 @@ describe('safe display values', () => {
   it('uses human readable health labels', () => {
     expect(humanStatus('NO_MANAGED_POLICIES')).toBe('Нет управляемых правил');
     expect(humanStatus('path.verified')).toBe('Путь подтверждён');
+  });
+
+  it('normalizes nullable API string lists before rendering controls', () => {
+    expect(stringArray(null)).toEqual([]);
+    expect(stringArray([' apply.ok ', null, 4, ''])).toEqual(['apply.ok']);
   });
 });
 
