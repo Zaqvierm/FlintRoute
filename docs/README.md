@@ -16,6 +16,7 @@ FlintRoute не привязан к конкретному поставщику 
 | `probe-route.md` | единый probe contract и route proof |
 | `api.md` | локальный management API и ChangeSet lifecycle |
 | `vpn-subscription.md` | безопасная обработка подписки и Xray bundle |
+| `component-manager.md` | установка, update/rollback внешних компонентов и калибровка |
 | `headless-dataplane.md` | managed Xray TPROXY и Zapret/nfqws lifecycle |
 | `tspu-cache.md` | формат и lifecycle локального TSPU cache |
 | `storage-lifecycle.md` | ownership manifests, stale cleanup, retention и write budget |

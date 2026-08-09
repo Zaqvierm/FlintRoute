@@ -134,10 +134,22 @@ subscription outbounds объединяются в один candidate bundle и 
 повторяет проверку и создаёт одну транзакцию с Xray mode, TPROXY/bypass binding и
 VLESS routes. Подтверждение возможно только после management/data-plane proof.
 
-`Обновить health` запускает лёгкую проверку задержки и выхода вручную. Это не
-speed test: интерфейс не выдаёт ping за пропускную способность и не расходует
-трафик постоянными загрузками. Фоновое обновление общего состояния выполняется
-примерно раз в 30 секунд только при видимой вкладке.
+`Обновить health` запускает лёгкую проверку задержки и выхода. Недавний speedtest
+переиспользуется 24 часа и не запускается на каждом refresh. Ручная кнопка в
+подробностях проверенного logical server скачивает через его loopback SOCKS
+2–16 MiB, показывает bytes/duration и отдельно хранит raw/effective throughput.
+
+## Компоненты и Zapret
+
+Экран `Компоненты` показывает install/version/service/health/update/rollback для
+Xray, Zapret и TG WS Proxy. URL/version/SHA не являются основным сценарием и
+видны только в Advanced.
+
+Экран Zapret устанавливает закреплённый пакет через Component Manager, а затем
+запускает отдельную calibration для выбранного домена. Progress и причина
+concurrency отображаются явно. Upstream blockcheck использует общие nft/NFQUEUE
+ресурсы, поэтому production runner последовательный. Найденные кандидаты не
+включаются молча: apply проходит через ChangeSet и PathVerified.
 
 ## Smart DNS
 
@@ -157,8 +169,11 @@ Security checks, diagnostics, revisions, backups и recovery представл�
 перед apply группирует diff по routing, firewall/data plane и management.
 
 Telegram events отображаются отдельными карточками; настройка уведомлений не
-смешана с routing bootstrap. External SOCKS также остаётся явно внешней
-зависимостью.
+смешана с routing bootstrap. External SOCKS остаётся явно внешней зависимостью.
+Для managed TG WS Proxy есть отдельный экран: порт, необязательный Fake TLS,
+procd/listener/DC health и одноразовая ссылка подключения. UI прямо говорит,
+что TGWS — MTProto proxy для клиента, а не outbound SOCKS и не прозрачный
+перехват трафика телефона.
 
 ## Безопасность
 
@@ -171,14 +186,12 @@ Telegram events отображаются отдельными карточкам
 
 ## Подтверждённое состояние
 
-Typecheck, Vitest, production build, API tests и desktop/mobile browser smoke
-выполняются локально. Текущая переработка UI и новые topology/privacy/manual
-VLESS endpoints ещё не устанавливались на роутер и не наследуют старый
-hardware PASS.
+Typecheck, Vitest, production build и API tests выполняются локально. Текущая
+переработка карты, Component Manager, Zapret calibration и VLESS pool ещё не
+наследуют старый hardware PASS: нужен install/smoke текущего commit.
 
 Остаются read-only или disabled:
 
 - изменение настроек устройства без отдельного backend API;
-- произвольные update/uninstall действия из Web UI;
-- автоматический throughput test VLESS;
+- автоматическое подтверждение TGWS client path без открытия ссылки в Telegram;
 - TLS termination самой панели.

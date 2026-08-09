@@ -21,6 +21,7 @@ import (
 
 	"router-policy/internal/adapter"
 	"router-policy/internal/auth"
+	"router-policy/internal/component"
 	"router-policy/internal/config"
 	"router-policy/internal/discovery"
 	"router-policy/internal/domaincache"
@@ -53,6 +54,9 @@ type Options struct {
 	ZapretSetupChecker     zapret.SetupChecker
 	ExternalSOCKSChecker   externalsocks.Checker
 	TelegramNotifier       *telegramnotify.Manager
+	ComponentManager       ComponentManager
+	ZapretCalibration      *zapret.CalibrationManager
+	VLESSThroughputTester  vpnsub.ThroughputTester
 	ProbeEngineFactory     func(*config.Config) health.ProbeEngine
 	TSPURefresh            TSPURefreshFunc
 	DNSObservationPath     string
@@ -66,6 +70,17 @@ type Options struct {
 
 type SubscriptionPreparer interface {
 	Prepare(context.Context, *config.Config) (vpnsub.PreparedBundle, error)
+}
+
+type ComponentManager interface {
+	List(context.Context) ([]component.Status, error)
+	Status(context.Context, component.Kind, bool) (component.Status, error)
+	Execute(context.Context, component.Request) (component.Result, error)
+}
+
+type TGWSComponentManager interface {
+	TGWSStatus(context.Context) (component.TGWSStatus, error)
+	ConfigureTGWS(context.Context, component.TGWSConfigRequest) (component.TGWSConfigureResult, error)
 }
 
 type TSPURefreshFunc func(context.Context, *config.Config, time.Time) (tspu.Cache, error)
@@ -87,6 +102,9 @@ type Server struct {
 	zapretSetupChecker     zapret.SetupChecker
 	externalSOCKSChecker   externalsocks.Checker
 	telegramNotifier       *telegramnotify.Manager
+	componentManager       ComponentManager
+	zapretCalibration      *zapret.CalibrationManager
+	vlessThroughputTester  vpnsub.ThroughputTester
 	probeEngineFactory     func(*config.Config) health.ProbeEngine
 	tspuRefresh            TSPURefreshFunc
 	tspuDelay              tspuDelayFunc
@@ -247,6 +265,9 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		zapretSetupChecker:     opts.ZapretSetupChecker,
 		externalSOCKSChecker:   externalSOCKSChecker,
 		telegramNotifier:       telegramNotifier,
+		componentManager:       opts.ComponentManager,
+		zapretCalibration:      opts.ZapretCalibration,
+		vlessThroughputTester:  opts.VLESSThroughputTester,
 		probeEngineFactory:     probeEngineFactory,
 		tspuRefresh:            tspuRefresh,
 		tspuDelay:              randomTSPUDelay,
@@ -389,7 +410,7 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 	if active == nil || active.ServiceForDomain(observation.Domain) != "" {
 		return
 	}
-	mode := active.Policy.EffectiveDiscoveryMode()
+	mode, _, _, _ := s.effectiveDiscoverySettings(active)
 	if mode == "locked" {
 		s.publishEvent(Event{Type: "domain.discovery", Severity: "info", ReasonCode: "discovery_locked", Details: map[string]any{"domain": observation.Domain, "query_type": observation.QueryType, "mode": mode}})
 		return
@@ -734,17 +755,24 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/domains", s.requireRole(auth.RoleViewer, s.handleDomains))
 	s.mux.HandleFunc("/api/v1/policies", s.requireRole(auth.RoleViewer, s.handlePolicies))
 	s.mux.HandleFunc("/api/v1/routes", s.requireRole(auth.RoleViewer, s.handleRoutes))
+	s.mux.HandleFunc("/api/v1/components", s.requireRole(auth.RoleViewer, s.handleComponents))
+	s.mux.HandleFunc("/api/v1/components/action", s.requireRole(auth.RoleAdministrator, s.handleComponentAction))
+	s.mux.HandleFunc("/api/v1/components/", s.requireRole(auth.RoleViewer, s.handleComponentStatus))
 	s.mux.HandleFunc("/api/v1/traffic", s.requireRole(auth.RoleViewer, s.handleTraffic))
 	s.mux.HandleFunc("/api/v1/route-health", s.requireRole(auth.RoleViewer, s.handleRouteHealth))
 	s.mux.HandleFunc("/api/v1/proxies", s.requireRole(auth.RoleViewer, s.handleProxies))
 	s.mux.HandleFunc("/api/v1/xray/subscription/secret", s.requireRole(auth.RoleAdministrator, s.handleXraySubscriptionSecret))
 	s.mux.HandleFunc("/api/v1/xray/subscription/prepare", s.requireRole(auth.RoleAdministrator, s.handleXraySubscriptionPrepare))
 	s.mux.HandleFunc("/api/v1/xray/manual-servers", s.requireRole(auth.RoleAdministrator, s.handleXrayManualServers))
+	s.mux.HandleFunc("/api/v1/xray/pool", s.requireRole(auth.RoleViewer, s.handleXrayPool))
+	s.mux.HandleFunc("/api/v1/xray/pool/settings", s.requireRole(auth.RoleAdministrator, s.handleXrayPoolSettings))
+	s.mux.HandleFunc("/api/v1/xray/pool/speedtest", s.requireRole(auth.RoleAdministrator, s.handleXrayPoolSpeedTest))
 	s.mux.HandleFunc("/api/v1/smart-dns", s.requireRole(auth.RoleViewer, s.handleSmartDNS))
 	s.mux.HandleFunc("/api/v1/smart-dns/configure", s.requireRole(auth.RoleAdministrator, s.handleSmartDNSConfigure))
 	s.mux.HandleFunc("/api/v1/zapret", s.requireRole(auth.RoleViewer, s.handleZapret))
 	s.mux.HandleFunc("/api/v1/zapret/setup/check", s.requireRole(auth.RoleAdministrator, s.handleZapretSetupCheck))
 	s.mux.HandleFunc("/api/v1/zapret/setup/activate", s.requireRole(auth.RoleAdministrator, s.handleZapretSetupActivate))
+	s.mux.HandleFunc("/api/v1/zapret/calibration", s.requireRole(auth.RoleAdministrator, s.handleZapretCalibration))
 	s.mux.HandleFunc("/api/v1/zapret/adaptive/runtime", s.requireRole(auth.RoleViewer, s.handleAdaptiveZapretRuntime))
 	s.mux.HandleFunc("/api/v1/zapret/adaptive/evaluate", s.requireRole(auth.RoleAdministrator, s.handleAdaptiveZapretEvaluate))
 	s.mux.HandleFunc("/api/v1/zapret/adaptive/state", s.requireRole(auth.RoleAdministrator, s.handleAdaptiveZapretState))
@@ -756,6 +784,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/external-socks", s.requireRole(auth.RoleViewer, s.handleExternalSOCKS))
 	s.mux.HandleFunc("/api/v1/external-socks/check", s.requireRole(auth.RoleAdministrator, s.handleExternalSOCKSCheck))
 	s.mux.HandleFunc("/api/v1/external-socks/activate", s.requireRole(auth.RoleAdministrator, s.handleExternalSOCKSActivate))
+	s.mux.HandleFunc("/api/v1/tgws", s.requireRole(auth.RoleViewer, s.handleTGWS))
+	s.mux.HandleFunc("/api/v1/tgws/configure", s.requireRole(auth.RoleAdministrator, s.handleTGWSConfigure))
 	s.mux.HandleFunc("/api/v1/diagnostics", s.requireRole(auth.RoleDiagnostician, s.handleDiagnostics))
 	s.mux.HandleFunc("/api/v1/lifecycle", s.requireRole(auth.RoleDiagnostician, s.handleLifecycle))
 	s.mux.HandleFunc("/api/v1/storage", s.requireRole(auth.RoleDiagnostician, s.handleStorage))

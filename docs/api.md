@@ -43,10 +43,14 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/services` | configured and dynamically observed services |
 | `/api/v1/services/classify` | create or edit a domain rule through a draft ChangeSet; optional `allowed_paths` preserves the user-defined fallback order |
 | `/api/v1/discovery` | current discovery mode, limits, circuit-breaker state and suggestions |
-| `/api/v1/discovery/configure` | create a ChangeSet for discovery mode/limits; optionally reset rollback pause |
+| `/api/v1/discovery/configure` | persist control-plane discovery mode/limits without changing the data plane; optionally reset rollback pause |
 | `/api/v1/domains` | domain policy / decision cache |
 | `/api/v1/policies` | policy + overrides |
 | `/api/v1/routes` | system default route, managed route descriptors and unclassified traffic as separate records |
+| `/api/v1/components` `/components/{kind}` | managed Xray, Zapret and TG WS Proxy install/version/service/health status |
+| `/api/v1/components/action` | install, check, check updates, update, restart, rollback or uninstall a pinned component |
+| `/api/v1/tgws` | managed TG WS Proxy status without secret material |
+| `/api/v1/tgws/configure` | create safe config, start procd, verify listener/DC and return one one-time client link |
 | `/api/v1/traffic` | cumulative RX/TX bytes, packets and errors from `/proc/net/dev` |
 | `/api/v1/probes` | persisted probe evidence; `domain`/`service`/`route`/`limit` filters |
 | `/api/v1/route-health` | VLESS health matrix, selected/standby/quarantine roles |
@@ -59,6 +63,7 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/zapret` | managed Zapret/nfqws state and pin status |
 | `/api/v1/zapret/setup/check` | verify pinned source/version/SHA, binary, architecture, NFQUEUE and nfqws dry-run without changing config |
 | `/api/v1/zapret/setup/activate` | repeat preflight and create one managed Zapret ChangeSet with the enabled route |
+| `/api/v1/zapret/calibration` | GET status, POST bounded blockcheck run, DELETE cancellation and owned cleanup |
 | `/api/v1/zapret/adaptive/runtime` | production scheduler budget, fingerprint and live ranking |
 | `/api/v1/zapret/adaptive/evaluate` | bounded profile evaluation and transactional bundle switch |
 | `/api/v1/zapret/adaptive/state` | persisted active profile, cooldown, pin and quarantine state |
@@ -67,6 +72,8 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/xray/subscription/secret` | store up to five subscription sources without returning their URLs |
 | `/api/v1/xray/subscription/prepare` | merge and verify VPN subscriptions; candidate check only offers activation, explicit managed mode creates one ChangeSet with mode, bundle and routes |
 | `/api/v1/xray/manual-servers` | list safe metadata, add or delete manual VLESS outbounds; UUID and source URI are never returned |
+| `/api/v1/xray/pool` `/pool/settings` | logical servers, credential sources, tariff and explainable score |
+| `/api/v1/xray/pool/speedtest` | bounded manual throughput measurement through one verified loopback VLESS SOCKS path |
 | `/api/v1/events` | persisted history merged with live epoch |
 | `/api/v1/events/stream` | SSE stream |
 | `/api/v1/changes` `GET/POST` | list/create ChangeSet |
@@ -114,9 +121,15 @@ allowlisted metadata; subscription URL, VLESS UUID, rollback capability и auth
 tokens не включаются.
 
 Telegram notifications работают отдельно от routing bootstrap; статус строится
-по проверенной конфигурации, а не по наличию пути к secret-файлу. Собственного
-TGWS transport нет: `external_socks` явно обозначает внешний loopback SOCKS5,
-который проверяется до создания ChangeSet. Подробности — в
+по проверенной конфигурации, а не по наличию пути к secret-файлу. Component
+Manager управляет OpenWrt package TG WS Proxy, но этот upstream является
+server-side MTProxy/WebSocket transport и не притворяется локальным SOCKS5
+client. `GET /api/v1/tgws` возвращает состояние без секрета, а
+`POST /api/v1/tgws/configure` атомарно создаёт конфигурацию, включает procd и
+один раз возвращает клиентскую `tg://proxy` ссылку. Проверяются listener и
+доступность Telegram DC; клиентский PASS требует открытия ссылки в Telegram.
+`external_socks` остаётся явным Advanced-маршрутом и проверяется до ChangeSet.
+Подробности — в
 [`telegram-notifications.md`](telegram-notifications.md).
 
 `/api/v1/routes` не называет системный default route управляемым Direct.
@@ -132,6 +145,10 @@ rollback timer. Часовой лимит задаётся policy, management/fi
 не допускаются, а серия rollback открывает circuit breaker. Direct/Drop
 наблюдения автоматически не закрепляются: блокировка и захват прямого трафика
 остаются явным действием администратора.
+
+Смена режима и лимитов Discovery является control-plane настройкой. Она
+сохраняется отдельно от route config и не создаёт ChangeSet, не перезапускает
+dnsmasq и не трогает data plane.
 
 Успешный Smart DNS preflight сохраняет короткоживущий proof для конкретного
 resolver endpoint. Candidate validation и apply требуют непротухший proof;

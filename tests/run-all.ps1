@@ -156,6 +156,10 @@ Write-Host "== Zapret calibration dry-run =="
 if ($LASTEXITCODE -ne 0) {
   throw "Zapret calibration dry-run failed"
 }
+& $gitSh tests/zapret-calibration-runtime.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "Zapret calibration runtime test failed"
+}
 
 Write-Host "== VPN subscription fixtures =="
 .\dist\router-policy.exe subscription-normalize tests\sample-subscription-array.json | ConvertFrom-Json | Out-Null

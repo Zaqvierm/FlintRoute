@@ -45,11 +45,40 @@ type Summary struct {
 }
 
 type ServerStatus struct {
-	Tag       string `json:"tag,omitempty"`
-	SourceTag string `json:"source_tag,omitempty"`
-	Status    string `json:"status"`
-	Reason    string `json:"reason,omitempty"`
-	SOCKS5    string `json:"socks5,omitempty"`
+	Tag           string   `json:"tag,omitempty"`
+	SourceTag     string   `json:"source_tag,omitempty"`
+	LogicalID     string   `json:"logical_id,omitempty"`
+	Name          string   `json:"name,omitempty"`
+	Hostname      string   `json:"hostname,omitempty"`
+	ResolvedIPs   []string `json:"resolved_ips,omitempty"`
+	Port          int      `json:"port,omitempty"`
+	Transport     string   `json:"transport,omitempty"`
+	Security      string   `json:"security,omitempty"`
+	Country       string   `json:"country,omitempty"`
+	CountrySource string   `json:"country_source,omitempty"`
+	SourceCount   int      `json:"source_count,omitempty"`
+	SourceIDs     []string `json:"source_ids,omitempty"`
+	Status        string   `json:"status"`
+	Health        string   `json:"health,omitempty"`
+	Reason        string   `json:"reason,omitempty"`
+	SOCKS5        string   `json:"socks5,omitempty"`
+	Selected      bool     `json:"selected,omitempty"`
+	Standby       bool     `json:"standby,omitempty"`
+	Quarantined   bool     `json:"quarantined,omitempty"`
+	PathVerified  bool     `json:"path_verified,omitempty"`
+	LatencyMS     int64    `json:"latency_ms,omitempty"`
+	AverageMS     int64    `json:"average_latency_ms,omitempty"`
+	JitterMS      int64    `json:"jitter_ms,omitempty"`
+	FailedProbes  int      `json:"failed_probes,omitempty"`
+	LastCheckedAt string   `json:"last_checked_at,omitempty"`
+	MeasuredMbps  float64  `json:"measured_mbps,omitempty"`
+	EffectiveMbps float64  `json:"effective_mbps,omitempty"`
+	TariffMbps    float64  `json:"tariff_mbps,omitempty"`
+	Score         float64  `json:"score,omitempty"`
+	ScoreReason   string   `json:"score_reason,omitempty"`
+	SpeedBytes    int64    `json:"speed_bytes,omitempty"`
+	SpeedDuration int64    `json:"speed_duration_ms,omitempty"`
+	SpeedTestedAt string   `json:"speed_tested_at,omitempty"`
 }
 
 type GeneratedRoute struct {
@@ -75,6 +104,7 @@ type XrayGenerationSummary struct {
 
 type outbound struct {
 	Tag      string `json:"tag"`
+	Remarks  string `json:"remarks,omitempty"`
 	Protocol string `json:"protocol"`
 	Settings struct {
 		VNext []struct {
@@ -98,6 +128,8 @@ type rawOutbound struct {
 	Outbound  outbound
 	Raw       json.RawMessage
 	SourceTag string
+	Identity  string
+	Sources   int
 }
 
 type outboundNormalization struct {
@@ -374,6 +406,17 @@ func prepareRawOutbounds(items []rawOutbound) ([]rawOutbound, outboundNormalizat
 	sort.Strings(meta.DuplicateTags)
 
 	identitySeen := map[string]struct{}{}
+	identityCounts := map[string]int{}
+	for _, item := range items {
+		if item.Outbound.Protocol != "vless" {
+			continue
+		}
+		identity, err := outboundIdentity(item.Raw)
+		if err != nil {
+			return nil, meta, errors.New("invalid outbound JSON")
+		}
+		identityCounts[identity]++
+	}
 	identities := make([]string, 0, len(items))
 	prepared := make([]rawOutbound, 0, len(items))
 	for _, item := range items {
@@ -392,6 +435,8 @@ func prepareRawOutbounds(items []rawOutbound) ([]rawOutbound, outboundNormalizat
 			continue
 		}
 		identitySeen[identity] = struct{}{}
+		item.Identity = identity
+		item.Sources = identityCounts[identity]
 		prepared = append(prepared, item)
 		identities = append(identities, identity)
 	}
@@ -426,16 +471,48 @@ func prepareRawOutbounds(items []rawOutbound) ([]rawOutbound, outboundNormalizat
 }
 
 func outboundIdentity(raw json.RawMessage) (string, error) {
-	var object map[string]json.RawMessage
+	var object map[string]any
 	if err := json.Unmarshal(raw, &object); err != nil {
 		return "", err
 	}
-	delete(object, "tag")
-	canonical, err := json.Marshal(object)
+	protocol, _ := object["protocol"].(string)
+	settings, _ := object["settings"].(map[string]any)
+	vnext, _ := settings["vnext"].([]any)
+	if strings.ToLower(protocol) != "vless" || len(vnext) != 1 {
+		return "", errors.New("logical identity requires one VLESS endpoint")
+	}
+	endpoint, _ := vnext[0].(map[string]any)
+	stream, _ := object["streamSettings"].(map[string]any)
+	identity := map[string]any{
+		"protocol": "vless",
+		"address":  strings.ToLower(strings.TrimSpace(fmt.Sprint(endpoint["address"]))),
+		"port":     endpoint["port"],
+		"stream":   sanitizeTransportIdentity(stream),
+	}
+	if users, ok := endpoint["users"].([]any); ok && len(users) > 0 {
+		if user, ok := users[0].(map[string]any); ok {
+			identity["flow"] = strings.TrimSpace(fmt.Sprint(user["flow"]))
+		}
+	}
+	canonical, err := json.Marshal(identity)
 	if err != nil {
 		return "", err
 	}
 	return sha256Hex(canonical), nil
+}
+
+func sanitizeTransportIdentity(stream map[string]any) map[string]any {
+	allowed := map[string]bool{
+		"network": true, "security": true, "tlsSettings": true, "realitySettings": true,
+		"wsSettings": true, "grpcSettings": true, "httpupgradeSettings": true, "xhttpSettings": true,
+	}
+	clean := make(map[string]any, len(allowed))
+	for key, value := range stream {
+		if allowed[key] {
+			clean[key] = value
+		}
+	}
+	return clean
 }
 
 func collisionSafeTag(base, identity string, used map[string]struct{}) (string, error) {
@@ -578,7 +655,8 @@ func classifyPreparedRawOutbounds(items []rawOutbound) ([]rawOutbound, []ServerS
 		if item.Outbound.Protocol != "vless" {
 			continue
 		}
-		status := ServerStatus{Tag: item.Outbound.Tag, Status: "SUPPORTED"}
+		status := serverStatusFor(item)
+		status.Status = "SUPPORTED"
 		if item.SourceTag != "" && item.SourceTag != item.Outbound.Tag {
 			status.SourceTag = item.SourceTag
 		}

@@ -91,6 +91,14 @@ Verified: every Go package passed.
   `TestDiscoveryRollbackCircuitBreakerStopsFurtherApply` —
   PathVerified, transaction lock, rate limit, rollback timer, operation
   allowlist и rollback circuit breaker обязательны.
+- `TestDiscoveryRuntimeSettingsOverrideConfigWithoutAdapterWork` проверяет, что
+  смена режима и лимитов не создаёт ChangeSet и не вызывает OpenWrt adapter;
+- `TestConfigureTGWSCreatesManagedConfigAndOneTimeLink` проверяет безопасную
+  генерацию конфигурации, запуск сервиса и одноразовую ссылку;
+- `TestConfigureTGWSRestoresFilesWhenServiceStartFails` проверяет возврат старых
+  файлов при неудачном старте;
+- `TestRequestHostAcceptsRouterAddressAndRejectsLoopbackOrInjection` не даёт
+  подставить loopback или управляющие символы в TGWS link.
 - `TestOpenWrtStepNamesMatchTransactionContract`
 
 ## Flow-offloading tests (P3)

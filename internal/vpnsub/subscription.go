@@ -23,6 +23,7 @@ type SubscriptionService struct {
 	CheckerFactory CheckerFactory
 	Parallelism    int
 	CheckAttempts  int
+	SpeedTester    ThroughputTester
 }
 
 func (s *SubscriptionService) Prepare(ctx context.Context, cfg *config.Config) (PreparedBundle, error) {
@@ -78,6 +79,7 @@ func (s *SubscriptionService) Prepare(ctx context.Context, cfg *config.Config) (
 		timeout = 30 * time.Second
 	}
 	downloadPaths := make([]string, 0, len(subscriptionURLs))
+	fetchSummaries := make([]FetchSummary, 0, len(subscriptionURLs))
 	totalBytes := 0
 	for index, subscriptionURL := range subscriptionURLs {
 		downloadPath := filepath.Join(temporaryDir, fmt.Sprintf("subscription-%d.json", index+1))
@@ -87,6 +89,11 @@ func (s *SubscriptionService) Prepare(ctx context.Context, cfg *config.Config) (
 		}
 		totalBytes += fetched.Bytes
 		downloadPaths = append(downloadPaths, downloadPath)
+		fetchSummaries = append(fetchSummaries, fetched)
+	}
+	sources, providerMatches, serverSources, err := analyzeSubscriptionSources(subscriptionURLs, downloadPaths, fetchSummaries, time.Now().UTC())
+	if err != nil {
+		return PreparedBundle{}, err
 	}
 	manualPath := ManualServersPath(cfg.Storage.StateDir)
 	if info, statErr := os.Lstat(manualPath); statErr == nil && info.Size() > 0 {
@@ -107,7 +114,8 @@ func (s *SubscriptionService) Prepare(ctx context.Context, cfg *config.Config) (
 	}
 	manager := Manager{
 		StateDir: cfg.Storage.StateDir, Runner: s.Runner, Checker: checker,
-		Parallelism: s.Parallelism, CheckAttempts: s.CheckAttempts,
+		Parallelism: s.Parallelism, CheckAttempts: s.CheckAttempts, ResolveIPs: resolveServerIPs,
+		SpeedTester: s.SpeedTester, TariffMbps: LoadTariffMbps(cfg.Storage.StateDir),
 	}
 	result, err := manager.PrepareBundle(ctx, mergedPath, cfg.Xray.ProbeSocksBasePort)
 	if err != nil {
@@ -115,6 +123,26 @@ func (s *SubscriptionService) Prepare(ctx context.Context, cfg *config.Config) (
 	}
 	result.SubscriptionHash = mergedHash
 	result.SubscriptionBytes = totalBytes
+	result.Sources = sources
+	result.ProviderMatches = providerMatches
+	result.TariffMbps = LoadTariffMbps(cfg.Storage.StateDir)
+	if info, statErr := os.Lstat(manualPath); statErr == nil && info.Size() > 0 {
+		manualServers, listErr := ListManualServers(manualPath)
+		if listErr != nil {
+			return result, errors.New("manual VLESS store is invalid")
+		}
+		result.Sources = append(result.Sources, SubscriptionSource{ID: "manual", Name: "Manual servers", ProviderID: "manual", ProviderName: "Added manually", Manual: true, ServerCount: len(manualServers)})
+		for _, server := range result.Servers {
+			if strings.HasPrefix(server.Tag, "manual-") {
+				serverSources[server.LogicalID] = []string{"manual"}
+			}
+		}
+	}
+	result.Servers = attachServerSources(result.Servers, serverSources, result.TariffMbps)
+	snapshot := PoolSnapshot{GeneratedAt: time.Now().UTC().Format(time.RFC3339), TariffMbps: result.TariffMbps, Sources: result.Sources, ProviderMatches: result.ProviderMatches, Servers: result.Servers}
+	if err := StorePool(PoolPath(cfg.Storage.StateDir), snapshot); err != nil {
+		return result, err
+	}
 	return result, nil
 }
 

@@ -40,6 +40,7 @@ active_nft="${ACTIVE_NFT:-/etc/router-policy/firewall/router-policy.nft}"
 active_dnsmasq="${ACTIVE_DNSMASQ:-/tmp/dnsmasq.d/router-policy.conf}"
 active_xray="${ACTIVE_XRAY:-/etc/router-policy/xray/active.json}"
 active_zapret="${ACTIVE_ZAPRET:-/etc/router-policy/zapret/nfqws.conf}"
+dns_observation_log="$runtime/dns-observations.log"
 flow_offload_uci_key='firewall.@defaults[0].flow_offloading'
 flow_offload_hw_uci_key='firewall.@defaults[0].flow_offloading_hw'
 
@@ -776,6 +777,44 @@ wait_dnsmasq_ready() {
   done
 }
 
+ensure_dns_observation_log() {
+  configured_log="$(sed -n 's/^log-facility=//p' "$active_dnsmasq" 2>/dev/null | head -n 1)"
+  [ -n "$configured_log" ] || return 0
+  expected_log="$dns_observation_log"
+  if command -v cygpath >/dev/null 2>&1; then
+    configured_log="$(cygpath -m "$configured_log")"
+    expected_log="$(cygpath -m "$expected_log")"
+  fi
+  [ "$configured_log" = "$expected_log" ] || {
+    echo "reason=dns_observation_log_outside_runtime" >&2
+    return 1
+  }
+  [ ! -L "$runtime" ] || {
+    echo "reason=runtime_directory_is_symlink" >&2
+    return 1
+  }
+  mkdir -p "$runtime"
+  [ ! -L "$dns_observation_log" ] || {
+    echo "reason=dns_observation_log_is_symlink" >&2
+    return 1
+  }
+  if [ -e "$dns_observation_log" ]; then
+    [ -f "$dns_observation_log" ] || {
+      echo "reason=dns_observation_log_not_regular" >&2
+      return 1
+    }
+  else
+    : > "$dns_observation_log"
+  fi
+  chmod 600 "$dns_observation_log"
+}
+
+restart_dnsmasq() {
+  ensure_dns_observation_log
+  "$dnsmasq_init" restart
+  wait_dnsmasq_ready
+}
+
 verify_dnsmasq_include_target() {
   configured_confdir="$("$uci_bin" -q get 'dhcp.@dnsmasq[0].confdir' 2>/dev/null || true)"
   active_confdir="${active_dnsmasq%/*}"
@@ -850,8 +889,7 @@ apply_candidate() {
   fi
   ROUTER_POLICY_IP_BIN="$ip_bin" ROUTER_POLICY_UCI_BIN="$uci_bin" "$router_policy_bin" internal-apply-ip-plan --plan "$generated/ip-plan.json" --transaction "$txid" --revision "$revision" --candidate-hash "$candidate_hash"
   reload_project_firewall
-  "$dnsmasq_init" restart
-  wait_dnsmasq_ready
+  restart_dnsmasq
   {
     echo "transaction_id=$txid"
     echo "revision_id=$revision"
@@ -1224,8 +1262,7 @@ committed_deployment_matches() {
 reload_restored_state() {
   snapshot_dir="$1"
   reload_project_firewall
-  "$dnsmasq_init" restart
-  wait_dnsmasq_ready
+  restart_dnsmasq
   restore_service_state "$snapshot_dir" "xray-service.state" "$xray_init" "xray"
   restore_service_state "$snapshot_dir" "zapret-service.state" "$zapret_init" "zapret"
 }
@@ -1328,8 +1365,7 @@ reconcile_tx() {
   restore_service_state "$state/last-good" "zapret-service.state" "$zapret_init" "zapret"
   ROUTER_POLICY_IP_BIN="$ip_bin" ROUTER_POLICY_UCI_BIN="$uci_bin" "$router_policy_bin" internal-apply-ip-plan --plan "$recovery_generated/ip-plan.json" --transaction "$txid" --revision "$revision" --candidate-hash "$recovery_candidate_hash" >/dev/null
   reload_project_firewall
-  "$dnsmasq_init" restart
-  wait_dnsmasq_ready
+  restart_dnsmasq
   clear_boot_guard
   echo "reconcile=ok"
   echo "active_transaction=$txid"

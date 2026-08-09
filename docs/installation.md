@@ -3,8 +3,9 @@
 FlintRoute устанавливается из готового Linux arm64-архива. На роутере не нужны Go,
 Node.js, npm, Git или отдельный `coreutils-stat`: сборка и упаковка выполняются
 на рабочем компьютере, а проверки mode/owner используют штатные BusyBox
-`ls`/`awk`. Xray и совместимый `nfqws` устанавливаются отдельно до первой
-dataplane-транзакции.
+`ls`/`awk`. После запуска control plane Xray, Zapret и TG WS Proxy можно
+установить из Web UI через Component Manager. Он использует только закреплённые
+release assets и проверяет SHA-256 до установки.
 
 Код не проверяет, что устройство обязательно является GL.iNet Flint 2. При этом
 factory config, пути хранения и опубликованное аппаратное evidence рассчитаны на

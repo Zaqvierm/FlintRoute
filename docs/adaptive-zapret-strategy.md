@@ -95,6 +95,14 @@ TSPU-домена calibration runner нормализует отчёт, отбр
 наследуется. Активный managed Zapret без явного maintenance-разрешения runner
 не останавливает.
 
+Component Manager устанавливает закреплённый `v72.13` archive и извлекает
+минимальный blockcheck runtime. Calibration API связывает запуск с verified
+fingerprint production-сети, ограничивает время и возвращает максимум три
+кандидата. `blockcheck.sh` использует общие nft/NFQUEUE/temp resources; полная
+изоляция параллельных workers не доказана, поэтому production concurrency равна
+1. Запустить все варианты одновременно без независимых queue, chains и process
+state было бы гонкой, а не оптимизацией.
+
 ## Service bundle
 
 Один сервис — это не один apex-domain. Bundle описывает весь минимально

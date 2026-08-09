@@ -88,7 +88,14 @@ func TestProductionAdaptiveCycleCollectsActiveAndCandidateEvidence(t *testing.T)
 		t.Fatalf("calibration changed the committed profile: %s", got)
 	}
 
-	if err := persistAdaptiveProbeRuntime(runtime, now.Add(adaptiveProbeCheckpointInterval)); err != nil {
+	// The production server can run its own health cycle while this test drives
+	// synthetic timestamps. Advance from the actual checkpoint instead of the
+	// local synthetic clock so the coalescing boundary stays deterministic.
+	runtime.probeMu.Lock()
+	checkpointAt := runtime.lastProbeCheckpoint.Add(adaptiveProbeCheckpointInterval)
+	err = persistAdaptiveProbeRuntime(runtime, checkpointAt)
+	runtime.probeMu.Unlock()
+	if err != nil {
 		t.Fatal(err)
 	}
 	var persisted persistedAdaptiveProbeRuntime

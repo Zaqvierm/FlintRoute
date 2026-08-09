@@ -235,6 +235,10 @@ flow_offload_baseline_hash="$(hash_file "$flow_offload_baseline")"
 node "$(to_native_path "$ROOT/tests/build-data-plane-evidence.mjs")" "$(to_native_path "$txdir/generated/verification-plan.json")" "$artifact_manifest_hash" "$(to_native_path "$txdir/data-plane-evidence.json")"
 adapter apply-candidate "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 assert_status applied
+[ -f "$RUNTIME_DIR/dns-observations.log" ] && [ ! -L "$RUNTIME_DIR/dns-observations.log" ] || {
+  echo "dnsmasq observation log was not prepared before restart" >&2
+  exit 1
+}
 adapter verify-management "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 assert_status management_verified
 adapter verify-data-plane "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null

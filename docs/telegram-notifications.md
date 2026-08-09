@@ -1,4 +1,4 @@
-# Telegram notifications and external SOCKS
+# Telegram notifications, TG WS Proxy and external SOCKS
 
 Telegram delivery is an optional control-plane subsystem. Routing bootstrap,
 health checks and rollback do not depend on it.
@@ -27,6 +27,24 @@ types are:
 - `auto_apply_blocked`;
 - `storage_critical`.
 
+## Managed TG WS Proxy
+
+Component Manager installs the pinned OpenWrt package from
+`spatiumstas/tg-ws-proxy-go`. Installation alone leaves the service disabled.
+`POST /api/v1/tgws/configure` validates the port and optional Fake TLS domain,
+generates the secret on the router, writes only regular `0600` config files,
+enables the package's procd service, and checks both the local listener and the
+configured Telegram DC.
+
+The secret is absent from status, events and diagnostics. A `tg://proxy` link is
+returned once by the configure response. The router-side checks produce
+`ready_for_client`, not an end-to-end PASS. The user must open the link in a
+Telegram client before `client_path_verified` can become authoritative.
+
+TG WS Proxy is a client-facing MTProto/WebSocket proxy server. It is not a
+SOCKS5 outbound and does not transparently intercept arbitrary Telegram traffic
+from LAN clients.
+
 ## External SOCKS
 
 FlintRoute does not ship or supervise a Telegram WebSocket transport. The route
@@ -44,5 +62,6 @@ Old persisted `tg_ws_proxy` route types and `tg-ws-proxy` tags are normalized to
 `external_socks` and `external-socks` during config validation. No process is
 killed, installed or restarted by this compatibility migration.
 
-Hardware delivery and external transport availability still require a router
-test with operator-provided credentials and endpoint.
+Hardware notification delivery, TGWS client activation and external transport
+availability still require a router test with the corresponding client or
+operator-provided credentials and endpoint.

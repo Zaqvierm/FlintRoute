@@ -20,6 +20,10 @@ const (
 )
 
 type discoveryControlState struct {
+	Configured           bool        `json:"configured,omitempty"`
+	Mode                 string      `json:"mode,omitempty"`
+	MaxNewRulesPerHour   int         `json:"max_new_rules_per_hour,omitempty"`
+	MaxRollbacks         int         `json:"max_consecutive_rollbacks,omitempty"`
 	AppliedAt            []time.Time `json:"applied_at"`
 	ConsecutiveRollbacks int         `json:"consecutive_rollbacks"`
 	PausedReason         string      `json:"paused_reason,omitempty"`
@@ -61,11 +65,11 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := s.currentConfig()
-	state := s.loadDiscoveryState()
+	mode, maxRules, maxRollbacks, state := s.effectiveDiscoverySettings(cfg)
 	writeData(w, r, map[string]any{
-		"mode":                      cfg.Policy.EffectiveDiscoveryMode(),
-		"max_new_rules_per_hour":    cfg.Policy.EffectiveDiscoveryMaxNewRulesPerHour(),
-		"max_consecutive_rollbacks": cfg.Policy.EffectiveDiscoveryMaxConsecutiveRollbacks(),
+		"mode":                      mode,
+		"max_new_rules_per_hour":    maxRules,
+		"max_consecutive_rollbacks": maxRollbacks,
 		"consecutive_rollbacks":     state.ConsecutiveRollbacks,
 		"paused":                    state.PausedReason != "", "paused_reason": state.PausedReason,
 		"applied_last_hour": len(pruneDiscoveryTimes(state.AppliedAt, s.discoveryNow().Add(-time.Hour))),
@@ -92,33 +96,33 @@ func (s *Server) handleDiscoveryConfigure(w http.ResponseWriter, r *http.Request
 		writeError(w, r, http.StatusBadRequest, "invalid_discovery_limits", "base_version and positive bounded discovery limits are required")
 		return
 	}
-	operations := []ChangeOp{
-		{Type: "set", Path: "/policy/discovery_mode", Value: request.Mode},
-		{Type: "set", Path: "/policy/discovery_max_new_rules_per_hour", Value: request.MaxNewRulesPerHour},
-		{Type: "set", Path: "/policy/discovery_max_consecutive_rollbacks", Value: request.MaxConsecutiveRollbacks},
-	}
-	if err := validateDiscoveryOperations(operations); err != nil {
-		writeError(w, r, http.StatusBadRequest, "unsafe_discovery_change", err.Error())
+	_, currentVersion := s.activeIdentity()
+	if request.BaseVersion != currentVersion {
+		writeError(w, r, http.StatusConflict, "base_version_conflict", "base_version does not match current revision")
 		return
 	}
-	change, err := s.createDraftChange("Configure domain discovery", "Change observation and verified auto-apply policy", request.BaseVersion, operations, currentSession(r).User)
-	if err != nil {
-		if errors.Is(err, errBaseVersionConflict) {
-			writeError(w, r, http.StatusConflict, "base_version_conflict", "base_version does not match current revision")
-			return
-		}
-		writeError(w, r, http.StatusInternalServerError, "discovery_change_failed", err.Error())
-		return
-	}
+	state := s.loadDiscoveryState()
+	state.Configured = true
+	state.Mode = request.Mode
+	state.MaxNewRulesPerHour = request.MaxNewRulesPerHour
+	state.MaxRollbacks = request.MaxConsecutiveRollbacks
 	if request.ResetFailures {
-		state := s.loadDiscoveryState()
 		state.ConsecutiveRollbacks = 0
 		state.PausedReason = ""
 		state.LastResult = "manually_reset"
-		state.UpdatedAt = s.discoveryNow()
-		_ = s.store.SaveJSON("discovery", discoveryStateKey, state)
 	}
-	writeData(w, r, map[string]any{"change": change})
+	state.UpdatedAt = s.discoveryNow()
+	if err := s.store.SaveJSON("discovery", discoveryStateKey, state); err != nil {
+		writeError(w, r, http.StatusInternalServerError, "discovery_settings_failed", "discovery settings could not be saved")
+		return
+	}
+	s.publishEvent(Event{Type: "discovery.settings.updated", Severity: "info", ReasonCode: "discovery_runtime_policy_updated", Details: map[string]any{"mode": request.Mode, "max_new_rules_per_hour": request.MaxNewRulesPerHour, "max_consecutive_rollbacks": request.MaxConsecutiveRollbacks}})
+	writeData(w, r, map[string]any{
+		"applied": true, "dataplane_changed": false, "config_version": currentVersion,
+		"mode": request.Mode, "max_new_rules_per_hour": request.MaxNewRulesPerHour,
+		"max_consecutive_rollbacks": request.MaxConsecutiveRollbacks,
+		"paused":                    state.PausedReason != "", "paused_reason": state.PausedReason,
+	})
 }
 
 func validateDiscoveryOperations(operations []ChangeOp) error {
@@ -146,13 +150,12 @@ func (s *Server) discoveryAutoAllowed(cfg *config.Config, check planner.DomainCh
 	if active := s.activeTransaction(""); active != "" {
 		return fmt.Errorf("transaction %s is already active", active)
 	}
-	state := s.loadDiscoveryState()
-	limit := cfg.Policy.EffectiveDiscoveryMaxConsecutiveRollbacks()
+	_, hourlyLimit, limit, state := s.effectiveDiscoverySettings(cfg)
 	if state.ConsecutiveRollbacks >= limit {
 		return fmt.Errorf("automatic apply paused after %d consecutive rollbacks", state.ConsecutiveRollbacks)
 	}
 	recent := pruneDiscoveryTimes(state.AppliedAt, s.discoveryNow().Add(-time.Hour))
-	if len(recent) >= cfg.Policy.EffectiveDiscoveryMaxNewRulesPerHour() {
+	if len(recent) >= hourlyLimit {
 		return errors.New("hourly automatic rule limit reached")
 	}
 	return nil
@@ -170,7 +173,7 @@ func (s *Server) recordDiscoveryAutoResult(result automaticCommitResult) {
 		state.PausedReason = ""
 	} else if result.RolledBack {
 		state.ConsecutiveRollbacks++
-		limit := s.currentConfig().Policy.EffectiveDiscoveryMaxConsecutiveRollbacks()
+		_, _, limit, _ := s.effectiveDiscoverySettings(s.currentConfig())
 		if state.ConsecutiveRollbacks >= limit {
 			state.PausedReason = "consecutive_rollbacks"
 			s.publishEvent(Event{Type: "discovery.auto_apply_paused", Severity: "error", ReasonCode: "consecutive_rollbacks", Details: map[string]any{"count": state.ConsecutiveRollbacks, "limit": limit}})
@@ -185,6 +188,30 @@ func (s *Server) loadDiscoveryState() discoveryControlState {
 		return discoveryControlState{}
 	}
 	return state
+}
+
+func (s *Server) effectiveDiscoverySettings(cfg *config.Config) (string, int, int, discoveryControlState) {
+	state := s.loadDiscoveryState()
+	mode := "observe_only"
+	maxRules := 4
+	maxRollbacks := 3
+	if cfg != nil {
+		mode = cfg.Policy.EffectiveDiscoveryMode()
+		maxRules = cfg.Policy.EffectiveDiscoveryMaxNewRulesPerHour()
+		maxRollbacks = cfg.Policy.EffectiveDiscoveryMaxConsecutiveRollbacks()
+	}
+	if state.Configured {
+		if state.Mode == "observe_only" || state.Mode == "suggest" || state.Mode == "auto_apply_verified" || state.Mode == "locked" {
+			mode = state.Mode
+		}
+		if state.MaxNewRulesPerHour >= 1 && state.MaxNewRulesPerHour <= 1000 {
+			maxRules = state.MaxNewRulesPerHour
+		}
+		if state.MaxRollbacks >= 1 && state.MaxRollbacks <= 100 {
+			maxRollbacks = state.MaxRollbacks
+		}
+	}
+	return mode, maxRules, maxRollbacks, state
 }
 
 func pruneDiscoveryTimes(values []time.Time, cutoff time.Time) []time.Time {

@@ -27,6 +27,7 @@ import (
 	"router-policy/internal/api"
 	"router-policy/internal/artifact"
 	"router-policy/internal/auth"
+	"router-policy/internal/component"
 	"router-policy/internal/config"
 	"router-policy/internal/dataplane"
 	"router-policy/internal/dataplaneproof"
@@ -1302,6 +1303,9 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 	var productionAdapter adapter.Interface
 	var subscriptionPreparer api.SubscriptionPreparer
 	var zapretSetupChecker zapret.SetupChecker
+	var componentManager api.ComponentManager
+	var zapretCalibration *zapret.CalibrationManager
+	var vlessThroughputTester vpnsub.ThroughputTester
 	if development {
 		provider = platform.DevelopmentMockProvider{}
 		productionAdapter = adapter.NewFilesystem(cfg)
@@ -1311,13 +1315,33 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 			return err
 		}
 		if runner, runnerErr := vpnsub.NewExecXrayRunner(); runnerErr == nil {
+			vlessThroughputTester = vpnsub.NewCloudflareThroughputTester()
 			subscriptionPreparer = &vpnsub.SubscriptionService{
 				Runner: runner, Parallelism: cfg.Policy.ParallelServerChecks, CheckAttempts: cfg.Policy.FailAfterConsecutiveErrors,
+				SpeedTester: vlessThroughputTester,
 			}
 		}
 		zapretSetupChecker = zapret.LocalSetupChecker{}
+		componentManager = &component.Manager{
+			StateDir: cfg.Storage.StateDir, RuntimeDir: cfg.Storage.RuntimeDir,
+			Driver: component.OpenWrtDriver{
+				StateDir:   cfg.Storage.StateDir,
+				XrayBinary: cfg.Xray.Binary, XrayService: cfg.Xray.InitScript,
+				ZapretBinary: cfg.Zapret.Binary, ZapretService: cfg.Zapret.InitScript,
+				ZapretRoot: "/usr/lib/router-policy/components/zapret",
+			},
+			Releases: component.GitHubReleaseSource{},
+		}
+		zapretRelease := component.SupportedCatalog()[component.KindZapret]
+		zapretCalibration = zapret.NewCalibrationManager(zapret.ExecCalibrationRunner{
+			Script:     "/usr/lib/router-policy/scripts/calibrate-zapret.sh",
+			Blockcheck: filepath.Join("/usr/lib/router-policy/components/zapret", zapretRelease.Version, "blockcheck.sh"),
+			Config:     cfgPath, RouterPolicyBin: "/usr/bin/router-policy", NFQWSBin: cfg.Zapret.Binary,
+			ZapretInit: cfg.Zapret.InitScript, RuntimeDir: cfg.Storage.RuntimeDir,
+			CatalogOut: "/etc/router-policy/zapret/catalog.json",
+		})
 	}
-	app, err := api.NewServerWithOptions(cfg, api.Options{Provider: provider, ProductionAdapter: productionAdapter, SubscriptionPreparer: subscriptionPreparer, ZapretSetupChecker: zapretSetupChecker, Development: development})
+	app, err := api.NewServerWithOptions(cfg, api.Options{Provider: provider, ProductionAdapter: productionAdapter, SubscriptionPreparer: subscriptionPreparer, ZapretSetupChecker: zapretSetupChecker, ComponentManager: componentManager, ZapretCalibration: zapretCalibration, VLESSThroughputTester: vlessThroughputTester, Development: development})
 	if err != nil {
 		return err
 	}

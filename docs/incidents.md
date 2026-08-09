@@ -523,3 +523,26 @@ instance as running briefly after a successful `stop`; the installer now waits
 up to a bounded 15 seconds for the instance to disappear instead of treating the
 first status sample as final. Installer lifecycle tests cover delayed stop and
 assert controller health before the watchdog is started.
+
+## 2026-08-09 — dnsmasq failed during a control-plane settings change
+
+A hardware run that changed Discovery settings entered the full ChangeSet path.
+The candidate dnsmasq configuration enabled query observations at
+`/tmp/router-policy/dns-observations.log`, but that runtime path was not present
+when dnsmasq restarted. OpenWrt logged `cannot open log ... No such file or
+directory`; the adapter reported `dnsmasq_not_ready` and the transaction rolled
+back.
+
+Two defects were involved:
+
+- Discovery mode and rate limits were incorrectly treated as data-plane config,
+  so a control-plane setting restarted firewall and DNS;
+- the adapter did not prepare and validate the observation log immediately
+  before every dnsmasq restart.
+
+Discovery settings now persist through a dedicated control-plane state update
+without a ChangeSet. The adapter creates only the allowlisted regular runtime
+log, rejects symlink or out-of-runtime targets, and runs the same preparation
+for apply, rollback and recovery. The OpenWrt adapter integration test removes
+the assumption that the observation file already exists. Hardware confirmation
+belongs to the next installation run; this entry does not claim it in advance.

@@ -56,9 +56,10 @@ VLESS outbound получает `SUPPORTED` только если:
 
 ## Deduplicate + retag (`prepareRawOutbounds`)
 
-- **Identity** = SHA-256 от canonical JSON outbound **без поля `tag`**.
-  Повторяющиеся identity → `DeduplicatedVLESS++`, отбрасываются (один и тот же
-  сервер под разными тегами).
+- **Logical identity** = SHA-256 от endpoint, port, flow и transport/security
+  identity. `tag`, UUID и другие credentials в fingerprint не входят. Поэтому
+  один физический узел из двух подписок не показывается дважды, а источники
+  доступа сохраняются отдельно.
 - Истинные коллизии tag (разные серверы, одинаковый tag) → `collisionSafeTag`:
   новый tag = `prefix + "-" + identity[:8..32]`. `SourceTag` сохраняет исходный.
 - `Summary.DuplicateTags`, `DeduplicatedVLESSCount` — метрики нормализации.
@@ -148,6 +149,22 @@ endpoints unreachable), 1 RU rejected, 1 selected (≈656 ms). Bundle hash
 4. **Доказательство маршрута** — SOCKS inbound bound routing rule → VLESS
    outbound tag; `evidence.ValidateRouteProof` требует `SOCKS5Loopback=true` +
    bound `XrayOutboundTag == route.Tag`.
+
+## Logical pool, страна и score
+
+Pool хранит logical server и отдельные subscription sources. Provider identity
+начинается с нормализованного HTTPS origin; сильное пересечение server set между
+разными origin показывается как предложение и никогда не объединяется молча.
+Expiry отображается только если провайдер передал его в metadata.
+
+Страна берётся из названия узла, а при отсутствии надёжного признака — из
+verified egress country route probe. Источник определения показывается отдельно;
+неизвестная страна не угадывается.
+
+Выбор требует PathVerified и учитывает latency, jitter, stability и throughput.
+Throughput ограничивается значением тарифа. Первый замер и ручной повторный тест
+идут через SOCKS конкретного сервера; результат содержит объём и duration и
+переиспользуется 24 часа, чтобы health polling не расходовал трафик.
 
 ## Ограничения текущей проверки
 

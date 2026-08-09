@@ -876,6 +876,7 @@ func (p OpenWrtProvider) System(cfg *config.Config) map[string]any {
 	}
 	return map[string]any{
 		"version":             "dev",
+		"hostname":            snapshot.Board.Hostname,
 		"platform":            target,
 		"model":               snapshot.Board.Model,
 		"board_name":          snapshot.Board.BoardName,
@@ -991,9 +992,14 @@ func (p OpenWrtProvider) Topology(*config.Config) map[string]any {
 	snapshot := p.snapshot()
 	nodes := []map[string]any{
 		{"id": "internet", "label": "Internet", "type": "internet", "status": internetStatus(snapshot)},
-		{"id": "router", "label": nonEmpty(snapshot.Board.Model, "OpenWrt router"), "type": "router", "status": snapshot.Status},
+		{
+			"id": "router", "label": nonEmpty(snapshot.Board.Hostname, "OpenWrt router"), "type": "router", "status": snapshot.Status,
+			"hostname": nilIfEmpty(snapshot.Board.Hostname), "model": nilIfEmpty(snapshot.Board.Model),
+			"firmware": nilIfEmpty(snapshot.Board.Release.Description), "kernel": nilIfEmpty(snapshot.Board.Kernel),
+			"uptime_seconds": snapshot.System.Uptime, "lan_addresses": topologyLANAddresses(snapshot.LANs),
+		},
 	}
-	edges := []map[string]any{{"from": "internet", "to": "router", "status": internetStatus(snapshot)}}
+	edges := make([]map[string]any, 0, len(snapshot.Links)+len(snapshot.DHCPLeases)+4)
 	linkIDs := map[string]string{}
 	for _, link := range snapshot.Links {
 		kind, visible := topologyInterfaceKind(link.IfName, snapshot)
@@ -1003,28 +1009,54 @@ func (p OpenWrtProvider) Topology(*config.Config) map[string]any {
 		id := "interface-" + stableID(link.IfName)
 		linkIDs[link.IfName] = id
 		detail := snapshot.Devices[link.IfName]
-		nodes = append(nodes, map[string]any{
+		node := map[string]any{
 			"id": id, "label": link.IfName, "type": kind,
+			"interface": link.IfName, "master": nilIfEmpty(link.Master),
 			"status": strings.ToUpper(nonEmpty(link.OperState, "UNKNOWN")), "carrier": detail.Carrier,
 			"speed_mbps": detail.Speed, "rx_bytes": maxUint64(link.Stats64.RX.Bytes, detail.Statistics.RXBytes),
-			"tx_bytes": maxUint64(link.Stats64.TX.Bytes, detail.Statistics.TXBytes),
-		})
-		if kind != "wan" {
-			edges = append(edges, map[string]any{"from": "router", "to": id, "status": strings.ToUpper(nonEmpty(link.OperState, "UNKNOWN"))})
+			"tx_bytes": maxUint64(link.Stats64.TX.Bytes, detail.Statistics.TXBytes), "duplex": nilIfEmpty(detail.Duplex),
 		}
+		if radio, section, ssid, networks, ok := topologyWirelessInterface(link.IfName, snapshot); ok {
+			node["radio"], node["section"], node["ssid"], node["networks"] = radio, section, nilIfEmpty(ssid), networks
+		}
+		nodes = append(nodes, node)
+	}
+	for _, link := range snapshot.Links {
+		id := linkIDs[link.IfName]
+		if id == "" {
+			continue
+		}
+		kind, _ := topologyInterfaceKind(link.IfName, snapshot)
+		parent := "router"
+		if master := linkIDs[link.Master]; master != "" {
+			parent = master
+		}
+		if kind == "wan" {
+			edges = append(edges,
+				map[string]any{"from": "internet", "to": id, "status": strings.ToUpper(nonEmpty(link.OperState, "UNKNOWN")), "kind": "wan"},
+				map[string]any{"from": id, "to": "router", "status": strings.ToUpper(nonEmpty(link.OperState, "UNKNOWN")), "kind": "wan"},
+			)
+			continue
+		}
+		edges = append(edges, map[string]any{"from": parent, "to": id, "status": strings.ToUpper(nonEmpty(link.OperState, "UNKNOWN")), "kind": kind})
+	}
+	if !topologyHasWANEdge(edges) {
+		edges = append(edges, map[string]any{"from": "internet", "to": "router", "status": internetStatus(snapshot), "kind": "unknown"})
 	}
 	for _, device := range buildDeviceItems(snapshot, p.Name(), false) {
 		id, _ := device["id"].(string)
 		nodes = append(nodes, map[string]any{
 			"id": id, "label": device["name"], "type": "device", "status": device["status"],
 			"ip": device["ip"], "ip_display": device["ip_display"], "identity_available": device["identity_available"],
-			"kind": device["kind"], "policy": device["policy"],
+			"kind": device["kind"], "interface": device["interface"], "ssid": device["ssid"], "rssi": device["rssi"],
+			"rx_bytes": device["rx_bytes"], "tx_bytes": device["tx_bytes"], "first_seen": device["first_seen"], "last_seen": device["last_seen"],
+			"policy": device["policy"], "active_route": device["active_route"], "connected": device["connected"],
 		})
 		parent := "router"
 		if interfaceName, ok := device["interface"].(string); ok && linkIDs[interfaceName] != "" {
 			parent = linkIDs[interfaceName]
 		}
-		edges = append(edges, map[string]any{"from": parent, "to": id, "status": device["status"]})
+		edges = append(edges, map[string]any{"from": parent, "to": id, "status": device["status"], "kind": device["kind"]})
 	}
 	return map[string]any{
 		"nodes": nodes, "edges": edges, "source": p.Name(), "status": snapshot.Status,
@@ -1491,15 +1523,62 @@ func topologyInterfaceKind(name string, snapshot *openWrtSnapshot) (string, bool
 	}
 	for _, lan := range snapshot.LANs {
 		if name == firstInterface(lan.L3Device, lan.Device) {
-			for _, link := range snapshot.Links {
-				if link.IfName == name && link.Master != "" {
-					return "ethernet", true
-				}
-			}
 			return "bridge", true
 		}
 	}
+	for _, link := range snapshot.Links {
+		if link.IfName == name && link.Master != "" {
+			return "ethernet", true
+		}
+	}
+	for _, entry := range snapshot.BridgeFDB {
+		if entry.Dev == name {
+			return "ethernet", true
+		}
+	}
 	return "", false
+}
+
+func topologyLANAddresses(interfaces []interfaceInfo) []string {
+	addresses := make([]string, 0, len(interfaces)*2)
+	for _, info := range interfaces {
+		for _, address := range append(append([]interfaceAddress(nil), info.IPv4Address...), info.IPv6Address...) {
+			ip := net.ParseIP(strings.TrimSpace(address.Address))
+			bits := 128
+			if ip == nil {
+				continue
+			}
+			if ip.To4() != nil {
+				bits = 32
+			}
+			if address.Mask < 0 || address.Mask > bits {
+				continue
+			}
+			addresses = append(addresses, ip.String()+"/"+strconv.Itoa(address.Mask))
+		}
+	}
+	sort.Strings(addresses)
+	return addresses
+}
+
+func topologyWirelessInterface(name string, snapshot *openWrtSnapshot) (radio, section, ssid string, networks any, ok bool) {
+	for radioName, value := range snapshot.Wireless {
+		for _, iface := range value.Interfaces {
+			if iface.IfName == name {
+				return radioName, iface.Section, iface.Config.SSID, iface.Config.Network, true
+			}
+		}
+	}
+	return "", "", "", nil, false
+}
+
+func topologyHasWANEdge(edges []map[string]any) bool {
+	for _, edge := range edges {
+		if edge["kind"] == "wan" {
+			return true
+		}
+	}
+	return false
 }
 
 func deviceConnection(snapshot *openWrtSnapshot, rawMAC, neighborInterface string) (kind, interfaceName, ssid string, rssi any, rxBytes, txBytes uint64, connectedAt any) {

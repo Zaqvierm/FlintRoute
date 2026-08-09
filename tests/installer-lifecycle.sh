@@ -66,6 +66,9 @@ run_install "$BACKUP_BASE/first" >/dev/null
 grep -F 'v1:auth setup-token --if-needed' "$FAKE_CALL_LOG" >/dev/null
 install_service_sentinels
 
+mkdir -p "$SYSTEM_ROOT/usr/lib/router-policy/components/zapret/v72.13"
+printf 'managed-runtime\n' > "$SYSTEM_ROOT/usr/lib/router-policy/components/zapret/v72.13/blockcheck.sh"
+
 printf '{"local":"preserved"}\n' > "$SYSTEM_ROOT/etc/router-policy/config/default.json"
 printf 'listen_address=192.0.2.1:8787\nallow_firewalled_bind=1\n' > "$SYSTEM_ROOT/etc/router-policy/config/listener.conf"
 write_fake_binary v2 0
@@ -75,6 +78,7 @@ grep -F 'listen_address=192.0.2.1:8787' "$SYSTEM_ROOT/etc/router-policy/config/l
 grep -F 'v2:validate-config' "$FAKE_CALL_LOG" >/dev/null
 grep -F 'v2:auth setup-token --if-needed' "$FAKE_CALL_LOG" >/dev/null
 [ -f "$SYSTEM_ROOT/etc/router-policy/config/factory-default.json" ]
+[ "$(cat "$SYSTEM_ROOT/usr/lib/router-policy/components/zapret/v72.13/blockcheck.sh")" = "managed-runtime" ]
 install_service_sentinels
 
 write_fake_binary v1-downgrade 0
@@ -546,6 +550,7 @@ export UNINSTALL_DNS_READY_COUNTER
 
 echo "installer_clean_install=true"
 echo "installer_idempotent_upgrade=true"
+echo "installer_preserves_managed_component_runtime=true"
 echo "installer_compatible_downgrade=true"
 echo "installer_failed_upgrade_rollback=true"
 echo "installer_verified_uninstall=true"

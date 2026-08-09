@@ -618,7 +618,21 @@ install_files() {
   cp -R "$ROOT/openwrt" "$staged_prefix/"
   chmod +x "$staged_prefix/scripts/"*.sh
   chmod +x "$staged_prefix/openwrt/adapter.sh"
+  if [ -e "$PREFIX/components" ]; then
+    if [ ! -d "$PREFIX/components" ] || [ -L "$PREFIX/components" ]; then
+      echo "refusing unsafe managed component runtime: $PREFIX/components" >&2
+      return 1
+    fi
+    component_links=$(find "$PREFIX/components" -type l -print) || return 1
+    if [ -n "$component_links" ]; then
+      echo "refusing symlink in managed component runtime: $PREFIX/components" >&2
+      return 1
+    fi
+  fi
   [ ! -e "$PREFIX" ] || mv "$PREFIX" "$old_prefix"
+  if [ -d "$old_prefix/components" ]; then
+    mv "$old_prefix/components" "$staged_prefix/components"
+  fi
   mv "$staged_prefix" "$PREFIX"
   rm -rf "$old_prefix"
   atomic_copy "$SOURCE_BINARY" "$ROUTER_POLICY_BIN" 755

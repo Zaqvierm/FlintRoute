@@ -171,3 +171,21 @@ func TestDomainCheckerFailureDoesNotCreateSuggestion(t *testing.T) {
 		t.Fatal("failed observation created a suggestion")
 	}
 }
+
+func TestDiscoveryRuntimeSettingsOverrideConfigWithoutAdapterWork(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, calls := newDiscoveryModeServer(t, "observe_only", true, fake)
+	defer srv.Close()
+	state := discoveryControlState{Configured: true, Mode: "locked", MaxNewRulesPerHour: 9, MaxRollbacks: 5}
+	if err := srv.store.SaveJSON("discovery", discoveryStateKey, state); err != nil {
+		t.Fatal(err)
+	}
+	mode, hourly, rollbacks, loaded := srv.effectiveDiscoverySettings(srv.currentConfig())
+	if mode != "locked" || hourly != 9 || rollbacks != 5 || !loaded.Configured {
+		t.Fatalf("runtime settings were not applied: mode=%s hourly=%d rollbacks=%d state=%+v", mode, hourly, rollbacks, loaded)
+	}
+	srv.discoverDomain(context.Background(), discovery.Observation{Domain: "locked-runtime.example", QueryType: "A"})
+	if *calls != 0 || len(fake.calls) != 0 {
+		t.Fatalf("runtime-only mode touched probe or adapter: checker=%d adapter=%v", *calls, fake.calls)
+	}
+}

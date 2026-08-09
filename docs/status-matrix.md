@@ -15,11 +15,11 @@
 | P1 | 100% | Доказательство маршрута, Smart DNS, VPN/Xray, проверка VLESS и GeoIP |
 | P2 | 100% | TSPU cache, плановое обновление и проверка живых источников на Flint 2 |
 | P3 | 100% | Headless dataplane Direct/Zapret/Drop/VLESS доказан на Flint 2 |
-| P4 | 80% | Telegram delivery и external SOCKS setup реализованы локально; аппаратная проверка ещё не выполнена |
+| P4 | 82% | Telegram delivery, external SOCKS и managed package lifecycle TG WS Proxy реализованы локально; end-to-end transport ещё не подтверждён |
 | P5 | 85% | Рабочий провайдер OpenWrt и API |
 | P6 | 100% | Постоянное состояние и восстановление после перезагрузки доказаны на Flint 2 |
 | P7 | 70% | Авторизация, fail-closed entropy handling и аудит listener bind |
-| P8 | 75% | Карточный Web UI, decision flow, topology/privacy, high-level VLESS/Zapret/Smart DNS и Advanced mode готовы локально; аппаратный UI pass и часть device/update actions ещё нужны |
+| P8 | 82% | Карточный Web UI, dynamic topology, Component Manager, VLESS pool/Zapret calibration и Advanced mode готовы локально; аппаратный UI pass ещё нужен |
 | P9 | 60% | Loopback по умолчанию и source-restricted доступ к панели из отдельной upstream-сети проверены; TLS ещё не встроен |
 | P10 | 100% | Clean install, upgrade, rollback timer, compatible downgrade, uninstall и reinstall/reconcile пройдены на Flint 2 |
 | P11 | 85% | Автоматические тесты |
@@ -52,24 +52,28 @@ legacy in-place upgrade на указанном commit не повторялис
 | TSPU fallback `Zapret → Smart DNS → VLESS → Direct → DROP` | planner test доказывает, что VLESS не вызывается до Smart DNS | требуется проверка с production resolver |
 | Пять VPN subscription slots и объединённая проверка outbound | API/UI/typecheck/build | требуется повторный subscription prepare |
 | Ручной VLESS URI без возврата UUID/URI через API | parser/store/API/UI tests; manual outbound входит в общий candidate bundle | требуется проверка с пользовательским сервером |
-| Карточный UI, decision flow, privacy mode и runtime topology | Vitest, typecheck/build, desktop/mobile browser smoke; Wi-Fi/Ethernet берутся из station/FDB evidence | требуется установка текущего commit и проверка на реальных клиентах |
+| Карточный UI, decision flow, privacy mode и runtime topology | Vitest и typecheck/build; Wi-Fi/Ethernet берутся из station/FDB evidence | требуется установка текущего commit и browser smoke на реальных данных |
 | Явный candidate-only → managed Xray | mode, bundle и routes в одном ChangeSet; TPROXY/bypass/blackhole regression tests | требуется повторный apply/confirm и rollback test на текущем Flint 2 |
 | Managed Zapret setup | pinned source/version/SHA, architecture, NFQUEUE, kernel state и nfqws dry-run; high-level API/UI | требуется preflight/apply/confirm на текущем Flint 2 |
 | Top-3 blockcheck import, domain binding и atomic catalog | parser/catalog/CLI tests | calibration runner ещё не запускался |
+| Component Manager: Xray, Zapret, TG WS Proxy | pinned version/asset/SHA, architecture selection, update/rollback/uninstall tests и UI | требуется install/check/update smoke текущего commit |
+| Logical VLESS pool, credentials dedup, tariff score и bounded speedtest | parser/pool/API/UI tests; health refresh переиспользует speed result 24 часа | требуется подписка и реальный VLESS speedtest |
 | Telegram notifications и `external_socks` | sender/queue/retry, secret store, API/UI, external endpoint preflight и transactional activation | требуется проверка реальной доставки и endpoint на роутере |
 
 ### Блокеры полностью рабочего clean install
 
-- installer устанавливает FlintRoute control plane, но не поставляет Xray и
-  `nfqws`; Zapret setup требует immutable source URL, точную версию и SHA-256
-  уже установленного binary;
+- основной архив не поставляет Xray, `nfqws` и TG WS Proxy. Component Manager
+  устанавливает их после запуска control plane, но требует доступ к pinned
+  GitHub release asset и поддерживаемую архитектуру;
 - VLESS требует пользовательскую VPN-подписку, Smart DNS — проверенные
   production resolver endpoints;
 - готовый package рассчитан на Linux arm64, а hardware acceptance — на
   GL-MT6000; другие OpenWrt target требуют отдельной сборки, диагностики и acceptance;
 - локальные installer tests не доказывают конкретную прошивку или железо;
-- Telegram notifications не входят в routing bootstrap. Собственный TGWS не
-  реализован намеренно: поддерживается явно внешний SOCKS5 endpoint.
+- Telegram notifications не входят в routing bootstrap. TG WS Proxy package
+  управляется FlintRoute, но upstream является server-side transport и не
+  заменяет client-side `external_socks`; end-to-end Telegram path требует
+  отдельной конфигурации и проверки.
 
 ### P14: lifecycle и storage
 

@@ -43,17 +43,20 @@ type OutboundCheck struct {
 }
 
 type PreparedBundle struct {
-	CandidateID       string           `json:"candidate_id"`
-	BundleHash        string           `json:"bundle_hash"`
-	BundlePath        string           `json:"bundle_path"`
-	SubscriptionHash  string           `json:"subscription_hash,omitempty"`
-	SubscriptionBytes int              `json:"subscription_bytes,omitempty"`
-	SelectedTag       string           `json:"selected_tag,omitempty"`
-	Checks            []OutboundCheck  `json:"checks"`
-	Servers           []ServerStatus   `json:"servers"`
-	Routes            []GeneratedRoute `json:"routes"`
-	Ready             bool             `json:"ready"`
-	SecretsPrinted    bool             `json:"secrets_printed"`
+	CandidateID       string               `json:"candidate_id"`
+	BundleHash        string               `json:"bundle_hash"`
+	BundlePath        string               `json:"bundle_path"`
+	SubscriptionHash  string               `json:"subscription_hash,omitempty"`
+	SubscriptionBytes int                  `json:"subscription_bytes,omitempty"`
+	SelectedTag       string               `json:"selected_tag,omitempty"`
+	Checks            []OutboundCheck      `json:"checks"`
+	Servers           []ServerStatus       `json:"servers"`
+	Sources           []SubscriptionSource `json:"sources,omitempty"`
+	ProviderMatches   []ProviderMatch      `json:"provider_matches,omitempty"`
+	TariffMbps        float64              `json:"tariff_mbps,omitempty"`
+	Routes            []GeneratedRoute     `json:"routes"`
+	Ready             bool                 `json:"ready"`
+	SecretsPrinted    bool                 `json:"secrets_printed"`
 }
 
 type Manager struct {
@@ -62,6 +65,9 @@ type Manager struct {
 	Checker       OutboundChecker
 	Parallelism   int
 	CheckAttempts int
+	ResolveIPs    func(context.Context, string) []string
+	SpeedTester   ThroughputTester
+	TariffMbps    float64
 }
 
 func (m *Manager) PrepareBundle(ctx context.Context, subscriptionPath string, basePort int) (PreparedBundle, error) {
@@ -102,6 +108,21 @@ func (m *Manager) PrepareBundle(ctx context.Context, subscriptionPath string, ba
 		return result, errors.New("no verified safe VLESS outbound")
 	}
 	result.SelectedTag = selected.Tag
+	result.Servers = enrichServerInventory(ctx, result.Servers, result.Checks, result.SelectedTag, time.Now().UTC(), m.ResolveIPs)
+	if m.SpeedTester != nil {
+		for index := range result.Servers {
+			if result.Servers[index].Tag != result.SelectedTag {
+				continue
+			}
+			if !reuseRecentSpeedMeasurement(&result.Servers[index], m.StateDir, time.Now().UTC()) {
+				measurement, speedErr := m.SpeedTester.Measure(ctx, result.Servers[index].SOCKS5, SpeedTestBytes(m.TariffMbps))
+				if speedErr == nil {
+					applySpeedMeasurement(&result.Servers[index], measurement)
+				}
+			}
+			break
+		}
+	}
 	if err := process.Stop(ctx); err != nil {
 		return result, errors.New("xray candidate stop failed")
 	}
@@ -136,6 +157,41 @@ func (m *Manager) PrepareBundle(ctx context.Context, subscriptionPath string, ba
 	result.Routes = routes
 	result.Ready = true
 	return result, nil
+}
+
+func reuseRecentSpeedMeasurement(server *ServerStatus, stateDir string, now time.Time) bool {
+	if server == nil || server.LogicalID == "" || stateDir == "" {
+		return false
+	}
+	previous, err := LoadPool(PoolPath(stateDir))
+	if err != nil {
+		return false
+	}
+	for _, item := range previous.Servers {
+		if item.LogicalID != server.LogicalID || item.MeasuredMbps <= 0 || item.SpeedTestedAt == "" {
+			continue
+		}
+		testedAt, err := time.Parse(time.RFC3339, item.SpeedTestedAt)
+		if err != nil || now.Sub(testedAt) < 0 || now.Sub(testedAt) > 24*time.Hour {
+			return false
+		}
+		server.MeasuredMbps = item.MeasuredMbps
+		server.SpeedBytes = item.SpeedBytes
+		server.SpeedDuration = item.SpeedDuration
+		server.SpeedTestedAt = item.SpeedTestedAt
+		return true
+	}
+	return false
+}
+
+func applySpeedMeasurement(server *ServerStatus, measurement SpeedMeasurement) {
+	if server == nil {
+		return
+	}
+	server.MeasuredMbps = measurement.MeasuredMbps
+	server.SpeedBytes = measurement.BytesUsed
+	server.SpeedDuration = measurement.DurationMS
+	server.SpeedTestedAt = measurement.TestedAt
 }
 
 func (m *Manager) checkSupported(ctx context.Context, servers []ServerStatus) []OutboundCheck {

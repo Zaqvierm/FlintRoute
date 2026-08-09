@@ -105,6 +105,44 @@ export type ManualVLESSInventory = {
   changed?: boolean;
 };
 
+export type ComponentKind = 'xray' | 'zapret' | 'tg_ws_proxy';
+export type ComponentAction = 'install' | 'check' | 'check_updates' | 'update' | 'restart' | 'rollback' | 'uninstall';
+export type ComponentStatus = {
+  kind: ComponentKind;
+  installed: boolean;
+  version?: string;
+  latest_supported_version: string;
+  latest_upstream_version?: string;
+  update_available: boolean;
+  update_blocked_reason?: string;
+  architecture?: string;
+  source: string;
+  checksum?: string;
+  service_state: string;
+  health_state: string;
+  health_ready: boolean;
+  health_reason?: string;
+  last_successful_check?: string;
+  last_checked_at?: string;
+  rollback_version?: string;
+  next_actions?: string[];
+  preflight?: Record<string, unknown>;
+};
+export type ComponentResult = {
+  status: ComponentStatus;
+  action: ComponentAction;
+  changed: boolean;
+  rollback_performed: boolean;
+  stages: string[];
+};
+export type VLESSPoolSnapshot = {
+  generated_at?: string;
+  tariff_mbps: number;
+  sources: Array<{ id: string; name: string; provider_id: string; provider_name: string; added_at?: string; expires_at?: string; expiry_known: boolean; server_count: number; manual?: boolean }>;
+  provider_matches?: Array<{ left_provider_id: string; right_provider_id: string; matched_servers: number; compared_servers: number; overlap: number; recommendation: string }>;
+  servers: any[];
+};
+
 export type ZapretSetupRequest = {
   source_url: string;
   provider_version: string;
@@ -122,6 +160,34 @@ export type ZapretSetupReport = {
   dry_run: boolean;
   test_domain: string;
   source_pinned: boolean;
+};
+
+export type ZapretCalibrationCandidate = {
+  profile_id: string;
+  provider: string;
+  provider_version: string;
+  transports: string[];
+  ports: number[];
+  strategy_digest: string;
+  tests?: string[];
+  occurrences?: number;
+};
+
+export type ZapretCalibrationStatus = {
+  id?: string;
+  state: 'idle' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unavailable';
+  stage: string;
+  domain?: string;
+  concurrency: number;
+  concurrency_reason: string;
+  candidate_count: number;
+  candidates?: ZapretCalibrationCandidate[];
+  started_at?: string;
+  finished_at?: string;
+  duration_ms?: number;
+  error_code?: string;
+  error?: string;
+  activation_required: boolean;
 };
 
 export type SmartDNSResolver = { ip: string; port: number };
@@ -176,6 +242,20 @@ export type ExternalSOCKSReport = {
   tls_verified: boolean;
   http_status: number;
   test_domain: string;
+};
+export type TGWSStatus = {
+  installed: boolean;
+  configured: boolean;
+  enabled: boolean;
+  running: boolean;
+  local_listener: boolean;
+  upstream_reachable: boolean;
+  client_path_verified: boolean;
+  port?: number;
+  fake_tls: boolean;
+  state: string;
+  reason?: string;
+  checked_at: string;
 };
 
 export class APIError extends Error {
@@ -256,6 +336,16 @@ export async function classifyService(
   });
 }
 export async function getRoutes(): Promise<any[]> { return request('/routes'); }
+export async function getComponents(): Promise<ComponentStatus[]> {
+  const result = await request<{ components: ComponentStatus[] }>('/components');
+  return result.components;
+}
+export async function getComponent(kind: ComponentKind, upstream = false): Promise<ComponentStatus> {
+  return request(`/components/${kind}${upstream ? '?upstream=1' : ''}`);
+}
+export async function componentAction(kind: ComponentKind, action: ComponentAction, confirmDisruption = false, preserveConfig = true): Promise<ComponentResult> {
+  return request('/components/action', { method: 'POST', body: JSON.stringify({ kind, action, confirm_disruption: confirmDisruption, preserve_config: preserveConfig }) });
+}
 export async function getSmartDNS(): Promise<any> { return request('/smart-dns'); }
 export async function configureSmartDNS(resolvers: SmartDNSResolver[], testDomain: string, baseVersion: number): Promise<{ change: ChangeSet; endpoint_count: number; validations: SmartDNSValidation[] }> {
   return request('/smart-dns/configure', {
@@ -278,13 +368,17 @@ export async function checkExternalSOCKS(endpoint: string, testDomain: string, b
 export async function activateExternalSOCKS(endpoint: string, testDomain: string, baseVersion: number): Promise<{ report: ExternalSOCKSReport; change: ChangeSet }> {
   return request('/external-socks/activate', { method: 'POST', body: JSON.stringify({ endpoint, test_domain: testDomain, base_version: baseVersion }) });
 }
+export async function getTGWS(): Promise<TGWSStatus> { return request('/tgws'); }
+export async function configureTGWS(port: number, fakeTLSDomain: string): Promise<{ status: TGWSStatus; connect_link: string; one_time: boolean }> {
+  return request('/tgws/configure', { method: 'POST', body: JSON.stringify({ port, fake_tls_domain: fakeTLSDomain }) });
+}
 export async function configureDiscovery(
   mode: DiscoveryStatus['mode'],
   maxNewRulesPerHour: number,
   maxConsecutiveRollbacks: number,
   baseVersion: number,
   resetFailures = false
-): Promise<{ change: ChangeSet }> {
+): Promise<{ applied: boolean; dataplane_changed: boolean; config_version: number; mode: DiscoveryStatus['mode'] }> {
   return request('/discovery/configure', {
     method: 'POST',
     body: JSON.stringify({
@@ -326,7 +420,21 @@ export async function addManualVLESSServer(uri: string): Promise<ManualVLESSInve
 export async function deleteManualVLESSServer(id: string): Promise<ManualVLESSInventory> {
   return request('/xray/manual-servers', { method: 'DELETE', body: JSON.stringify({ id }) });
 }
+export async function getVLESSPool(): Promise<VLESSPoolSnapshot> { return request('/xray/pool'); }
+export async function setVLESSTariff(tariffMbps: number): Promise<{ tariff_mbps: number }> {
+  return request('/xray/pool/settings', { method: 'PUT', body: JSON.stringify({ tariff_mbps: tariffMbps }) });
+}
+export async function runVLESSSpeedTest(logicalID: string): Promise<{ server: any; measurement: { measured_mbps: number; bytes_used: number; duration_ms: number; tested_at: string } }> {
+  return request('/xray/pool/speedtest', { method: 'POST', body: JSON.stringify({ logical_id: logicalID }) });
+}
 export async function getZapret(): Promise<any> { return request('/zapret'); }
+export async function getZapretCalibration(): Promise<ZapretCalibrationStatus> { return request('/zapret/calibration'); }
+export async function startZapretCalibration(domain: string, allowManagedRestart = true): Promise<ZapretCalibrationStatus> {
+  return request('/zapret/calibration', { method: 'POST', body: JSON.stringify({ domain, allow_managed_restart: allowManagedRestart }) });
+}
+export async function cancelZapretCalibration(): Promise<ZapretCalibrationStatus> {
+  return request('/zapret/calibration', { method: 'DELETE' });
+}
 export async function checkZapretSetup(input: ZapretSetupRequest, baseVersion: number): Promise<{ report: ZapretSetupReport }> {
   return request('/zapret/setup/check', { method: 'POST', body: JSON.stringify({ ...input, base_version: baseVersion }) });
 }

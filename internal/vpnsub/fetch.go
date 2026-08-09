@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -26,6 +27,8 @@ type FetchSummary struct {
 	SHA256       string `json:"sha256"`
 	Redirects    int    `json:"redirects"`
 	Output       string `json:"output"`
+	ProviderName string `json:"provider_name,omitempty"`
+	ExpiresAt    string `json:"expires_at,omitempty"`
 	SecretsShown bool   `json:"secrets_shown"`
 }
 
@@ -145,8 +148,36 @@ func FetchSubscription(ctx context.Context, client *http.Client, subscriptionURL
 		return FetchSummary{}, err
 	}
 	return FetchSummary{
-		Bytes: len(raw), SHA256: "sha256:" + sha256Hex(raw), Redirects: redirects, Output: outputPath, SecretsShown: false,
+		Bytes: len(raw), SHA256: "sha256:" + sha256Hex(raw), Redirects: redirects, Output: outputPath,
+		ProviderName: safeProviderName(resp.Header.Get("profile-title")), ExpiresAt: subscriptionExpiry(resp.Header.Get("subscription-userinfo")),
+		SecretsShown: false,
 	}, nil
+}
+
+func safeProviderName(value string) string {
+	value = strings.TrimSpace(value)
+	if decoded, err := url.QueryUnescape(value); err == nil {
+		value = decoded
+	}
+	if value == "" || len(value) > 96 || strings.ContainsAny(value, "\r\n\x00") {
+		return ""
+	}
+	return value
+}
+
+func subscriptionExpiry(value string) string {
+	for _, field := range strings.Split(value, ";") {
+		parts := strings.SplitN(strings.TrimSpace(field), "=", 2)
+		if len(parts) != 2 || strings.ToLower(parts[0]) != "expire" {
+			continue
+		}
+		seconds, err := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+		if err != nil || seconds <= 0 {
+			return ""
+		}
+		return time.Unix(seconds, 0).UTC().Format(time.RFC3339)
+	}
+	return ""
 }
 
 func validateSubscriptionURL(value string) (*url.URL, error) {

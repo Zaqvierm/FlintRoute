@@ -36,6 +36,8 @@ probe_route(domain, service, route)
 - **Artifact generator** — nft, dnsmasq, Xray, nfqws, IPv4/IPv6 route/rule из одного конфига (manifest v6)
 - **Auth** — Argon2id, setup token, CSRF, rate limit
 - **VPN-подписка/Xray** — нормализация подписки VPN-провайдера, VLESS health-checks с EWMA и кворумом
+- **Component Manager** — закреплённые Xray, Zapret и TG WS Proxy assets,
+  checksum, update/rollback и component health
 - **TSPU cache** — multi-source, eTLD+1/wildcard matching, ETag/drop-ratio, SHA-256
 - **GeoIP** — MaxMind MMDB, двухсорсный consensus
 - **Dynamic discovery** — перехваченные DNS-запросы попадают в bounded runtime
@@ -64,8 +66,9 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
   Xray, nfqws, nftables и policy rules;
 - production Xray и Zapret работают как отдельные procd-сервисы FlintRoute;
   состояние штатного сервиса `xray` показывается отдельно;
-- production adaptive Zapret calibration, profile switch, cooldown, pin и
-  quarantine проверены на Flint 2;
+- adaptive Zapret profile switch, cooldown, pin и quarantine проверены на
+  Flint 2; новый automatic installer/calibration UI пока требует повторного
+  аппаратного прохода;
 - persistent state в `/etc/router-policy/state` без зависимости от volatile `/var`;
 - clean install, upgrade, restart, `SIGKILL`, watchdog maintenance lease и
   controlled reboot control plane повторно пройдены на factory OpenWrt;
@@ -97,6 +100,9 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
   API/UI tests зелёные, повторный аппаратный apply/rollback ещё нужен;
 - импорт top-3 `blockcheck`-кандидатов, привязанных к фактически проверенному
   домену и fingerprint сети;
+- Component Manager для закреплённых Xray/Zapret/TG WS Proxy release assets;
+- logical VLESS pool с дедупликацией credentials, expiry источников, тарифным
+  score и bounded speedtest через конкретный SOCKS path;
 - расширенная IPv6-матрица на реальных LAN-клиентах;
 - работа под нагрузкой с несколькими клиентами;
 
@@ -104,9 +110,9 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
 
 - готовый архив собирается только для Linux arm64; другие архитектуры требуют
   отдельной сборки;
-- Xray и совместимый `nfqws` не входят в пакет и должны быть установлены
-  отдельно до включения соответствующих маршрутов; Zapret setup принимает
-  только immutable HTTPS source, закреплённые version и SHA-256;
+- Xray, совместимый `nfqws` и TG WS Proxy не входят в основной архив, но теперь
+  устанавливаются Component Manager из закреплённых release assets. Без доступа
+  к GitHub или подходящего asset установка честно блокируется;
 - заводской конфиг не содержит VPN-подписку, ручной VLESS URI или production
   Smart DNS resolver, поэтому VLESS и Smart DNS после одной установки не
   становятся рабочими сами;
@@ -116,8 +122,10 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
 - локальный installer fixture доказывает порядок операций и rollback, но не
   заменяет clean-install pass на конкретном устройстве;
 - Telegram notifications реализованы как отдельная необязательная подсистема с
-  проверкой bot/chat, bounded retry и фильтрами событий. `external_socks` честно
-  оформлен как внешняя loopback-зависимость; FlintRoute не управляет её процессом.
+  проверкой bot/chat, bounded retry и фильтрами событий. TG WS Proxy имеет
+  отдельный managed setup с procd/listener/DC checks и одноразовой клиентской
+  ссылкой. Это MTProto transport для Telegram-клиента, а не outbound SOCKS;
+  `external_socks` остаётся отдельным Advanced-путём.
 
 Baseline revision не захватывает обычный трафик. Пока домен не получил явное
 правило, он остаётся `unclassified` и идёт через системный default route
@@ -208,6 +216,8 @@ router-policy storage migrate --dry-run
 - `docs/adapter-transaction.md` — транзакция адаптера и recovery
 - `docs/api.md` — API, auth, SSE, ChangeSet
 - `docs/vpn-subscription.md` — VPN-провайдер, подписка, Xray генерация
+- `docs/component-manager.md` — установка, update/rollback компонентов,
+  Zapret calibration и граница TG WS Proxy
 - `docs/headless-dataplane.md` — managed Xray TPROXY и Zapret/nfqws lifecycle
 - `docs/tspu-cache.md` — TSPU cache v2
 - `docs/storage-lifecycle.md` — ownership, cleanup, retention и write budget

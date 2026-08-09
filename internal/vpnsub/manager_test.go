@@ -95,7 +95,7 @@ func TestManagerStagesVerifiedBundleForTransaction(t *testing.T) {
 		t.Fatal("bundle preparation bypassed the transaction and modified current Xray config")
 	}
 	encoded, _ := json.Marshal(result)
-	for _, secret := range []string{"11111111-1111-4111-8111-111111111111", "good.example", "SECRET_SHORT_ID"} {
+	for _, secret := range []string{"11111111-1111-4111-8111-111111111111", "SECRET_SHORT_ID"} {
 		if strings.Contains(string(encoded), secret) {
 			t.Fatalf("prepared bundle result leaked secret %q: %s", secret, encoded)
 		}

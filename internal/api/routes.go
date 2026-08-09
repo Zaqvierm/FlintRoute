@@ -49,7 +49,7 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	items = append(items, map[string]any{
 		"type": "unclassified", "tag": "unclassified", "owner": "system", "managed": false,
 		"status": "SYSTEM_DEFAULT", "scope": "domains without a committed FlintRoute policy",
-		"effective_path": "system-default", "discovery_mode": cfg.Policy.EffectiveDiscoveryMode(),
+		"effective_path": "system-default", "discovery_mode": func() string { mode, _, _, _ := s.effectiveDiscoverySettings(cfg); return mode }(),
 	})
 	writeData(w, r, items)
 }
