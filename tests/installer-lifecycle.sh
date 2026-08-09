@@ -267,6 +267,29 @@ fi
 grep -F 'running controller does not support safe maintenance' "$TMP/legacy-controller-preflight.out" >/dev/null
 INIT_DIR="$TMP/no-installed-services"
 
+DELAYED_STOP_INIT="$TMP/delayed-stop-init"
+DELAYED_STOP_STATE="$TMP/delayed-stop-state"
+cat > "$DELAYED_STOP_INIT" <<'SH'
+#!/bin/sh
+case "$1" in
+  stop)
+    printf '2\n' > "$DELAYED_STOP_STATE"
+    ;;
+  running)
+    remaining=$(cat "$DELAYED_STOP_STATE" 2>/dev/null || printf '0')
+    if [ "$remaining" -gt 0 ]; then
+      printf '%s\n' "$((remaining - 1))" > "$DELAYED_STOP_STATE"
+      exit 0
+    fi
+    exit 1
+    ;;
+esac
+SH
+chmod +x "$DELAYED_STOP_INIT"
+export DELAYED_STOP_STATE
+printf '2\n' > "$DELAYED_STOP_STATE"
+wait_service_stopped "$DELAYED_STOP_INIT"
+
 SERVICE_STATE_FIXTURE="$TMP/service-state-fixture"
 mkdir -p "$SERVICE_STATE_FIXTURE/install-rollback"
 cat > "$SERVICE_STATE_FIXTURE/install-rollback/services.txt" <<'EOF'

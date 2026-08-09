@@ -518,5 +518,8 @@ change.
 The installer now starts services that it deliberately stopped instead of
 restarting them. Rollback also skips `stop` for an already inactive control
 service and accepts a boot-guard stop error only when the owned nft table is
-already absent. Installer lifecycle tests assert controller health before the
-watchdog is started.
+already absent. A repeated hardware run also exposed that procd can report an
+instance as running briefly after a successful `stop`; the installer now waits
+up to a bounded 15 seconds for the instance to disappear instead of treating the
+first status sample as final. Installer lifecycle tests cover delayed stop and
+assert controller health before the watchdog is started.

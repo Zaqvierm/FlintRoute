@@ -164,6 +164,19 @@ run_bounded() {
   "$TIMEOUT_BIN" 15 "$@"
 }
 
+wait_service_stopped() {
+  init="$1"
+  attempt=0
+  while [ "$attempt" -lt 15 ]; do
+    if ! run_bounded "$init" running >/dev/null 2>&1; then
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+  return 1
+}
+
 preflight_runtime() {
   [ -z "$SYSTEM_ROOT" ] || return 0
   command -v "$TIMEOUT_BIN" >/dev/null 2>&1 || {
@@ -321,7 +334,7 @@ restore_installation() {
       if [ -x "$init" ] && run_bounded "$init" running >/dev/null 2>&1; then
         run_bounded "$init" stop >/dev/null 2>&1 || service_restore_ok=0
       fi
-      if [ -x "$init" ] && run_bounded "$init" running >/dev/null 2>&1; then
+      if [ -x "$init" ] && ! wait_service_stopped "$init"; then
         service_restore_ok=0
       fi
     done
@@ -484,7 +497,7 @@ stop_control_services_for_upgrade() {
     service_was_running "$service" || continue
     init="$INIT_DIR/$service"
     run_bounded "$init" stop >/dev/null
-    if run_bounded "$init" running >/dev/null 2>&1; then
+    if ! wait_service_stopped "$init"; then
       echo "install blocked: $service did not stop cleanly" >&2
       return 1
     fi
