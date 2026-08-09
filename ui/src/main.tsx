@@ -560,7 +560,7 @@ function TopologyBranch({ title, kind, devices, onOpen }: { title: string; kind:
   return <section class={`topology-branch ${kind}`}><div class={`branch-line ${kind === 'wifi' ? 'dashed' : 'solid'}`} /><h3>{title}<span>{devices.length}</span></h3><div class="branch-devices">
     {devices.map((device) => <button class={`topology-device ${kind}`} key={device.id} onClick={() => onOpen(device)}>
       <span class="device-icon">{kind === 'wifi' ? '◌' : kind === 'ethernet' ? '▣' : '?'}</span>
-      <b>{textValue(device.name, 'Неизвестное устройство')}</b><small>{textValue(device.ip, 'Адрес скрыт')}</small>
+      <b>{textValue(device.name, 'Неизвестное устройство')}</b><small>{deviceAddress(device, 'ip')}</small>
       <span>{textValue(device.ssid ?? device.interface, 'Подключение не определено')}</span>
     </button>)}
     {!devices.length && <EmptyState title="Нет устройств" text="Подключения этого типа сейчас не обнаружены." />}
@@ -582,18 +582,25 @@ function DeviceCard({ device, onOpen }: { device: any; onOpen?: () => void }) {
   if (!device) return <EmptyState title="Устройство не выбрано" text="Открой устройство из списка или карты." />;
   return (
     <EntityCard title={textValue(device.name, 'Неизвестное устройство')} status={device.connected ? 'online' : 'offline'} onOpen={onOpen}>
-      <div class="entity-summary"><span>{device.kind === 'wifi' ? 'Wi‑Fi' : device.kind === 'ethernet' ? 'Ethernet' : 'Тип не определён'}</span><b class="mono">{textValue(device.ip, 'Адрес скрыт')}</b></div>
+      <div class="entity-summary"><span>{device.kind === 'wifi' ? 'Wi‑Fi' : device.kind === 'ethernet' ? 'Ethernet' : 'Тип не определён'}</span><b class="mono">{deviceAddress(device, 'ip')}</b></div>
       <small>{textValue(device.ssid ?? device.interface, 'Интерфейс не определён')}</small>
       <StatusLine label="Маршрут" value={device.active_route ?? device.policy} />
     </EntityCard>
   );
 }
 
+function deviceAddress(device: any, kind: 'ip' | 'mac'): string {
+  if (!device) return 'Адрес отсутствует';
+  const raw = device[kind];
+  const display = device[`${kind}_display`];
+  return textValue(raw ?? display, device.simulation ? 'Simulation: адрес отсутствует' : 'Адрес отсутствует');
+}
+
 function DeviceDetails({ device, events = [] }: { device: any; events?: EventItem[] }) {
   if (!device) return null;
   const recent = events.filter((event) => event.device_id === device.id).slice(-5).reverse();
   return <><InfoGrid items={[
-    ['Hostname', device.name], ['IP', device.ip], ['MAC', device.mac], ['Vendor', device.vendor],
+    ['Hostname', device.name], ['IP', deviceAddress(device, 'ip')], ['MAC', deviceAddress(device, 'mac')], ['Vendor', device.vendor],
     ['Подключение', device.kind], ['Interface', device.interface], ['SSID', device.ssid], ['RSSI', device.rssi ? `${device.rssi} dBm` : null],
     ['Впервые замечено', formatDateTime(device.first_seen)], ['Последняя активность', formatDateTime(device.last_seen ?? device.collected_at)],
     ['Policy', device.policy], ['Активный маршрут', device.active_route], ['RX', formatBytes(Number(device.rx_bytes ?? 0))], ['TX', formatBytes(Number(device.tx_bytes ?? 0))]

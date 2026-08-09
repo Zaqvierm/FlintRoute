@@ -97,8 +97,9 @@ metadata only. Subscription and manual outbounds are merged before the same
 candidate health check; adding a manual server does not silently enable managed
 Xray or change routing.
 
-Device privacy is enforced by the provider, not CSS. The default response masks
-IP and MAC before serialization. `privacy=revealed` is an explicit authenticated
+Device privacy is enforced by the provider, not CSS. In the default response
+raw `ip`/`mac` are `null`; masks exist only in `ip_display`/`mac_display`.
+`privacy=revealed` is an explicit authenticated
 request used by the temporary reveal control; the hidden values are therefore
 absent from the DOM in normal mode.
 
@@ -201,6 +202,8 @@ Production uses fixed-command, read-only OpenWrt provider. `ubus`/`ip`/`uci`/
 `/proc`/`/sys`/`fw4`/`nft`/DHCP leases/process state — без shell fragments из HTTP.
 Каждый ответ несёт source, collection time, freshness/status, `simulation=false`.
 Missing/malformed → unavailable; production не подставляет dev-mock.
+Simulation devices never receive fabricated raw identity, even when reveal is
+requested. `simulation=true` is not accepted as deployment evidence.
 
 Provider доказывает observed config/process state. Он не превращает HTTP 200 или
 имя route в route evidence. Direct/Zapret/Smart DNS/VLESS остаются `UNVERIFIED`

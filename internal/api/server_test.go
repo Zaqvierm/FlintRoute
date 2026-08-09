@@ -60,8 +60,8 @@ func TestDevicesPrivacyIsAppliedBeforeSerialization(t *testing.T) {
 	}
 	masked, _ := io.ReadAll(response.Body)
 	_ = response.Body.Close()
-	if strings.Contains(string(masked), "192.0.2.10") || strings.Contains(string(masked), "02:00:00:00:10:01") {
-		t.Fatalf("default device response leaked full addresses: %s", masked)
+	if strings.Contains(string(masked), "192.0.2.10") || strings.Contains(string(masked), "02:00:00:00:10:01") || !strings.Contains(string(masked), `"ip":null`) || !strings.Contains(string(masked), `"ip_display":"192.0.*.*"`) {
+		t.Fatalf("default device response leaked or confused identity/display fields: %s", masked)
 	}
 
 	response, err = client.Get(ts.URL + "/api/v1/devices?privacy=revealed")
@@ -70,8 +70,8 @@ func TestDevicesPrivacyIsAppliedBeforeSerialization(t *testing.T) {
 	}
 	revealed, _ := io.ReadAll(response.Body)
 	_ = response.Body.Close()
-	if !strings.Contains(string(revealed), "192.0.2.10") || !strings.Contains(string(revealed), "02:00:00:00:10:01") {
-		t.Fatalf("explicit reveal did not return device addresses: %s", revealed)
+	if strings.Contains(string(revealed), "192.0.2.10") || strings.Contains(string(revealed), "02:00:00:00:10:01") || !strings.Contains(string(revealed), `"simulation":true`) || !strings.Contains(string(revealed), `"addresses_revealed":false`) {
+		t.Fatalf("simulation provider fabricated an identity when reveal was requested: %s", revealed)
 	}
 }
 

@@ -33,6 +33,32 @@ sources и запрещает новые RFC1918 literals вне узкого al
 | route tables `100..102`, marks и NFQUEUE `200` | configurable namespace defaults | проверяются на конфликты и входят в canonical config/artifact manifest |
 | `/sbin/ip`, `/bin/ubus`, `/sbin/uci`, `/usr/sbin/nft`, `/sbin/fw4` | OpenWrt runtime contract | фиксированные command paths исключают shell injection; наличие проверяется диагностикой |
 
+## Production и simulation
+
+Production server без флага `--development` всегда создаёт `OpenWrtProvider` и
+`OpenWrt` adapter. `DevelopmentMockProvider` подключается только явным
+development-флагом, всегда возвращает `simulation=true` и не реализует
+`NetworkDiagnosticsProvider`. Поэтому mock evidence не может стать входом для
+production artifact generation: transaction gate отклоняет simulation
+diagnostics.
+
+Device identity теперь отделена от представления:
+
+- `ip` и `mac` содержат только синтаксически валидные raw values и только после
+  короткоживущего административного reveal;
+- в privacy mode raw fields равны `null`, а маски находятся только в
+  `ip_display` и `mac_display`;
+- topology никогда не отдаёт raw client address;
+- simulation devices не имеют raw identity даже при запросе reveal. Значения
+  `192.0.*.*` и `**:**:**:**:xx:xx` остаются только display placeholders и не
+  могут использоваться routing/device selectors.
+
+Regression gate сканирует production Go, shell, PowerShell, OpenWrt init/hotplug,
+JSON, TypeScript/JavaScript, HTML/CSS, UCI и YAML. Он запрещает RFC1918 literals,
+фиксированные `br-lan`/`eth0`/`eth1`, decorative masks в raw `ip`/`mac` и новые
+неописанные GL.iNet references. Исключения узкие: protocol bogon ranges,
+legacy target compatibility и optional vendor diagnostics.
+
 ## Откуда берётся сеть
 
 - logical interfaces, address families и DNS: `ubus network.interface dump`;
@@ -61,6 +87,23 @@ contract имеет один authoritative WAN interface. Это честный 
 | uhttpd probe | стандартный OpenWrt admin HTTP, optional | optional integration | отсутствие не блокирует headless proof | имя GL.iNet удалено из диагностики |
 | package/build | Linux arm64 | критический блокер других архитектур | готового install artifact нет | добавить target matrix на следующем этапе |
 | hardware acceptance | только GL-MT6000/OpenWrt 24.10.4 | критический блокер заявления generic support | совместимость неизвестна | прогнать clean install и recovery matrix на других boards |
+
+Исполняемый provider не ветвится по `board_name`, модели или наличию GL-specific
+UBUS objects. `system board` используется только для отображения hostname/model и
+evidence. Единственная строка `glinet-flint2` в production Go остаётся в
+`config.productionOpenWrtTarget`: она принимает старые committed revisions и
+применяет к ним те же safety checks, что к `openwrt`. Вторая vendor-specific
+точка — необязательное чтение release metadata в `diagnose-openwrt.sh`; отсутствие
+этих файлов не влияет на install, routing, management proof или UI.
+
+Проверки текущего этапа покрывают распространённые `192.168.0.0/24`,
+`192.168.1.0/24`, `192.168.8.0/24`, нестандартную private subnet, произвольные
+logical/L3 interface names, несколько LAN/WAN, отсутствие `br-lan`, отдельный
+IPv6 WAN с честным fail-closed, dynamic DHCP address и generic OpenWrt fixture
+без GL-specific API. Произвольные firewall zone names не являются входом
+provider/artifact: FlintRoute использует обнаруженные L3 interfaces и собственный
+nft namespace. Отдельная mapping-модель зон остаётся задачей следующего
+platform-этапа.
 
 ## Блокеры generic OpenWrt
 

@@ -113,6 +113,14 @@ func TestOpenWrtProviderCollectsLiveFactsWithoutExposingWANIP(t *testing.T) {
 		!strings.Contains(string(deviceJSON), "**:**:**:**:44:55") || !strings.Contains(string(deviceJSON), "192.0.*.*") {
 		t.Fatalf("raw LAN address leaked or mask missing: %s", deviceJSON)
 	}
+	for _, device := range devices {
+		if device["ip"] != nil || device["mac"] != nil {
+			t.Fatalf("privacy response placed decorative text in raw identity fields: %#v", device)
+		}
+		if device["ip_display"] == nil || device["mac_display"] == nil || device["identity_available"] != true {
+			t.Fatalf("privacy display semantics are incomplete: %#v", device)
+		}
+	}
 	revealed := provider.DevicesWithPrivacy(nil, true)
 	revealedJSON, _ := json.Marshal(revealed)
 	if !strings.Contains(string(revealedJSON), "02:11:22:33:44:55") || !strings.Contains(string(revealedJSON), "192.0.2.10") || !strings.Contains(string(revealedJSON), "Test WiFi") {
@@ -128,6 +136,49 @@ func TestOpenWrtProviderCollectsLiveFactsWithoutExposingWANIP(t *testing.T) {
 	if len(topology["nodes"].([]map[string]any)) < 5 || topology["status"] != "OK" {
 		t.Fatalf("topology did not use collected data: %#v", topology)
 	}
+	for _, node := range topology["nodes"].([]map[string]any) {
+		if node["type"] == "device" && node["ip"] != nil {
+			t.Fatalf("topology leaked a raw client identity: %#v", node)
+		}
+	}
+}
+
+func TestDevelopmentProviderNeverFabricatesNetworkIdentity(t *testing.T) {
+	provider := DevelopmentMockProvider{}
+	for _, reveal := range []bool{false, true} {
+		for _, device := range provider.DevicesWithPrivacy(nil, reveal) {
+			if device["simulation"] != true || device["ip"] != nil || device["mac"] != nil || device["identity_available"] != false || device["addresses_revealed"] != false {
+				t.Fatalf("simulation device masquerades as production identity: %#v", device)
+			}
+			if device["ip_display"] == nil || device["mac_display"] == nil {
+				t.Fatalf("simulation display placeholder is missing: %#v", device)
+			}
+		}
+	}
+}
+
+func TestDeviceInventoryTracksDynamicClientAddress(t *testing.T) {
+	runner := newOpenWrtFixtureRunner()
+	provider := NewOpenWrtProvider(WithOpenWrtRunner(runner), WithOpenWrtCacheTTL(0))
+	before := provider.DevicesWithPrivacy(nil, true)
+	if !deviceInventoryContainsIP(before, "192.0.2.10") {
+		t.Fatalf("initial dynamic lease is missing: %#v", before)
+	}
+	runner.outputs[fakeCommandKey(commandDHCPLeases, "")] = []byte("1893456000 02:11:22:33:44:55 192.0.2.77 workstation *\n")
+	runner.outputs[fakeCommandKey(commandNeighbors, "")] = []byte(`[{"dst":"192.0.2.77","dev":"home0","lladdr":"02:11:22:33:44:55","state":["REACHABLE"]}]`)
+	after := provider.DevicesWithPrivacy(nil, true)
+	if deviceInventoryContainsIP(after, "192.0.2.10") || !deviceInventoryContainsIP(after, "192.0.2.77") {
+		t.Fatalf("device inventory retained a stale client address: %#v", after)
+	}
+}
+
+func deviceInventoryContainsIP(items []map[string]any, expected string) bool {
+	for _, item := range items {
+		if item["ip"] == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func TestOpenWrtProviderBuildsVerifiedArtifactNetworkDiagnostics(t *testing.T) {

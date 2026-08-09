@@ -1017,7 +1017,8 @@ func (p OpenWrtProvider) Topology(*config.Config) map[string]any {
 		id, _ := device["id"].(string)
 		nodes = append(nodes, map[string]any{
 			"id": id, "label": device["name"], "type": "device", "status": device["status"],
-			"ip": device["ip"], "kind": device["kind"], "policy": device["policy"],
+			"ip": device["ip"], "ip_display": device["ip_display"], "identity_available": device["identity_available"],
+			"kind": device["kind"], "policy": device["policy"],
 		})
 		parent := "router"
 		if interfaceName, ok := device["interface"].(string); ok && linkIDs[interfaceName] != "" {
@@ -1115,13 +1116,11 @@ func buildDeviceItems(snapshot *openWrtSnapshot, source string, reveal bool) []m
 		id := "device-" + stableID(lease.MAC)
 		seen[lease.IP] = true
 		kind, interfaceName, ssid, rssi, rxBytes, txBytes, connectedAt := deviceConnection(snapshot, lease.MAC, neighbor.Dev)
-		ip, mac := maskIP(lease.IP), maskMAC(lease.MAC)
-		if reveal {
-			ip, mac = lease.IP, strings.ToLower(lease.MAC)
-		}
+		ip, mac, ipDisplay, macDisplay, identityAvailable := deviceAddressView(lease.IP, lease.MAC, reveal)
 		items = append(items, map[string]any{
-			"id": id, "name": name, "kind": kind, "ip": ip,
-			"mac": mac, "mac_hash": hashText(lease.MAC), "interface": interfaceName, "ssid": nilIfEmpty(ssid), "rssi": rssi,
+			"id": id, "name": name, "kind": kind, "ip": ip, "ip_display": ipDisplay,
+			"mac": mac, "mac_display": macDisplay, "mac_hash": hashText(lease.MAC), "identity_available": identityAvailable,
+			"interface": interfaceName, "ssid": nilIfEmpty(ssid), "rssi": rssi,
 			"rx_bytes": rxBytes, "tx_bytes": txBytes, "first_seen": connectedAt, "last_seen": snapshot.CollectedAt,
 			"connected": connected, "neighbor_state": neighbor.State, "lease_expires_at": lease.ExpiresAt,
 			"policy": "UNVERIFIED", "active_route": "UNVERIFIED", "source": source + ":dhcp+neighbor",
@@ -1135,14 +1134,12 @@ func buildDeviceItems(snapshot *openWrtSnapshot, source string, reveal bool) []m
 		}
 		neighbor := neighborsByIP[host.IP]
 		kind, interfaceName, ssid, rssi, rxBytes, txBytes, connectedAt := deviceConnection(snapshot, neighbor.LLAddr, neighbor.Dev)
-		ip, mac := maskIP(host.IP), maskMAC(neighbor.LLAddr)
-		if reveal {
-			ip, mac = host.IP, strings.ToLower(neighbor.LLAddr)
-		}
+		ip, mac, ipDisplay, macDisplay, identityAvailable := deviceAddressView(host.IP, neighbor.LLAddr, reveal)
 		items = append(items, map[string]any{
 			"id": "device-" + stableID(host.IP), "name": nonEmpty(host.Hostname, "IPv6 device"),
-			"kind": kind, "ip": ip, "mac": mac,
-			"mac_hash": hashText(neighbor.LLAddr), "interface": interfaceName, "ssid": nilIfEmpty(ssid), "rssi": rssi,
+			"kind": kind, "ip": ip, "ip_display": ipDisplay, "mac": mac, "mac_display": macDisplay,
+			"mac_hash": hashText(neighbor.LLAddr), "identity_available": identityAvailable,
+			"interface": interfaceName, "ssid": nilIfEmpty(ssid), "rssi": rssi,
 			"rx_bytes": rxBytes, "tx_bytes": txBytes, "first_seen": connectedAt, "last_seen": snapshot.CollectedAt,
 			"connected":      neighborIsConnected(neighbor.State),
 			"neighbor_state": neighbor.State, "policy": "UNVERIFIED", "active_route": "UNVERIFIED",
@@ -1151,9 +1148,29 @@ func buildDeviceItems(snapshot *openWrtSnapshot, source string, reveal bool) []m
 		})
 	}
 	sort.Slice(items, func(i, j int) bool {
-		return fmt.Sprint(items[i]["name"], items[i]["ip"]) < fmt.Sprint(items[j]["name"], items[j]["ip"])
+		return fmt.Sprint(items[i]["name"], items[i]["ip_display"]) < fmt.Sprint(items[j]["name"], items[j]["ip_display"])
 	})
 	return items
+}
+
+func deviceAddressView(ipText, macText string, reveal bool) (ip, mac any, ipDisplay, macDisplay string, identityAvailable bool) {
+	ipDisplay = maskIP(ipText)
+	macDisplay = maskMAC(macText)
+	parsedIP := net.ParseIP(strings.TrimSpace(ipText))
+	parsedMAC, macErr := net.ParseMAC(strings.TrimSpace(macText))
+	identityAvailable = parsedIP != nil
+	if !reveal {
+		return nil, nil, ipDisplay, macDisplay, identityAvailable
+	}
+	if parsedIP != nil {
+		ip = parsedIP.String()
+		ipDisplay = parsedIP.String()
+	}
+	if macErr == nil && len(parsedMAC) == 6 {
+		mac = strings.ToLower(parsedMAC.String())
+		macDisplay = strings.ToLower(parsedMAC.String())
+	}
+	return ip, mac, ipDisplay, macDisplay, identityAvailable
 }
 
 func classifyOpenWrtInterfaces(interfaces []interfaceInfo, routes4, routes6 []routeInfo) (lans, wans, wan6s []interfaceInfo) {
