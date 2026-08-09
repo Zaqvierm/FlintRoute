@@ -500,3 +500,23 @@ switching, safe-fallback pinning, cooldown, corrupted-challenger quarantine,
 reselection blocking, static baseline restoration and Direct/Zapret/VLESS route
 proofs. Automatic production scheduling and live ranking remain a separate
 P13.2 requirement and are not claimed by this result.
+
+## 2026-08-09 — upgrade stopped on a second procd delete
+
+An upgrade from an already running installation stopped after copying the new
+control-plane files. The installer had intentionally stopped `router-policy`,
+then called the new init script with `restart`. On the tested OpenWrt build that
+issued a second `ubus service delete` for an already absent service and returned
+`Not found`. The controller was healthy after procd respawn, but the installer
+reported failure, left maintenance active and did not restart the watchdog.
+
+The recovery path ended maintenance and started the watchdog only after local
+health, active revision, recovery state, ubus and SSH were rechecked. No route,
+nftables or DNS candidate was applied, and the committed revision did not
+change.
+
+The installer now starts services that it deliberately stopped instead of
+restarting them. Rollback also skips `stop` for an already inactive control
+service and accepts a boot-guard stop error only when the owned nft table is
+already absent. Installer lifecycle tests assert controller health before the
+watchdog is started.

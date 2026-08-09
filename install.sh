@@ -318,13 +318,19 @@ restore_installation() {
   if [ -z "$SYSTEM_ROOT" ]; then
     for service in router-policy-watchdog router-policy; do
       init="$INIT_DIR/$service"
-      [ ! -x "$init" ] || run_bounded "$init" stop >/dev/null 2>&1 || service_restore_ok=0
+      if [ -x "$init" ] && run_bounded "$init" running >/dev/null 2>&1; then
+        run_bounded "$init" stop >/dev/null 2>&1 || service_restore_ok=0
+      fi
       if [ -x "$init" ] && run_bounded "$init" running >/dev/null 2>&1; then
         service_restore_ok=0
       fi
     done
     if [ -x "$INIT_DIR/router-policy-boot-guard" ]; then
-      run_bounded "$INIT_DIR/router-policy-boot-guard" stop >/dev/null 2>&1 || service_restore_ok=0
+      run_bounded "$INIT_DIR/router-policy-boot-guard" stop >/dev/null 2>&1 || {
+        if command -v nft >/dev/null 2>&1 && nft list table inet router_policy_boot_guard >/dev/null 2>&1; then
+          service_restore_ok=0
+        fi
+      }
     fi
   fi
   if [ "$service_restore_ok" != "1" ]; then
@@ -488,7 +494,11 @@ stop_control_services_for_upgrade() {
 restart_running_services() {
   [ -z "$SYSTEM_ROOT" ] || return 0
   if service_was_running router-policy; then
-    run_bounded "$INIT_DIR/router-policy" restart
+    # The controller was intentionally stopped before files were replaced.
+    # Calling rc.common restart here issues a second procd delete; some OpenWrt
+    # builds return Not found for that already-absent service and abort a healthy
+    # upgrade. Start the recorded pre-upgrade instance instead.
+    run_bounded "$INIT_DIR/router-policy" start
     run_bounded "$INIT_DIR/router-policy" running
     wait_control_health "${PREINSTALL_ACTIVE_REVISION:-}"
   fi
@@ -508,7 +518,7 @@ restart_running_services() {
     fi
   done
   if service_was_running router-policy-watchdog; then
-    run_bounded "$INIT_DIR/router-policy-watchdog" restart
+    run_bounded "$INIT_DIR/router-policy-watchdog" start
     run_bounded "$INIT_DIR/router-policy-watchdog" running
   fi
 }
