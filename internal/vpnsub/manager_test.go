@@ -154,6 +154,18 @@ func TestCandidateSOCKSVerifierBindsLoopbackInboundToOutboundTag(t *testing.T) {
 	}
 }
 
+func TestManagedXrayRunnerCanBeWiredBeforeComponentInstall(t *testing.T) {
+	runner, err := NewManagedExecXrayRunner("/usr/bin/xray")
+	if err != nil || runner == nil || runner.path != "/usr/bin/xray" {
+		t.Fatalf("managed Xray runner was not wired: runner=%+v err=%v", runner, err)
+	}
+	for _, unsafe := range []string{"xray", "/tmp/xray", "/usr/bin/sh"} {
+		if _, err := NewManagedExecXrayRunner(unsafe); err == nil {
+			t.Fatalf("unsafe managed Xray path accepted: %s", unsafe)
+		}
+	}
+}
+
 func mustRead(t *testing.T, path string) []byte {
 	t.Helper()
 	raw, err := os.ReadFile(path)

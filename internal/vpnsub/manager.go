@@ -385,6 +385,19 @@ func NewExecXrayRunner() (*ExecXrayRunner, error) {
 	return &ExecXrayRunner{path: path}, nil
 }
 
+// NewManagedExecXrayRunner wires the production subscription flow before the
+// component is installed. Component Manager installs Xray later in the same
+// control-plane process, so constructor-time filesystem detection would leave
+// the API unavailable until router-policy itself was restarted.
+func NewManagedExecXrayRunner(path string) (*ExecXrayRunner, error) {
+	switch path {
+	case "/usr/bin/xray", "/usr/sbin/xray", "/opt/bin/xray":
+		return &ExecXrayRunner{path: path}, nil
+	default:
+		return nil, errors.New("managed Xray path is not allowlisted")
+	}
+}
+
 func (r *ExecXrayRunner) Test(ctx context.Context, configPath string) error {
 	if _, err := readSecretFile(configPath, 4<<20); err != nil {
 		return err

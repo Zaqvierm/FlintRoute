@@ -1314,12 +1314,14 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 		if err != nil {
 			return err
 		}
-		if runner, runnerErr := vpnsub.NewExecXrayRunner(); runnerErr == nil {
-			vlessThroughputTester = vpnsub.NewCloudflareThroughputTester()
-			subscriptionPreparer = &vpnsub.SubscriptionService{
-				Runner: runner, Parallelism: cfg.Policy.ParallelServerChecks, CheckAttempts: cfg.Policy.FailAfterConsecutiveErrors,
-				SpeedTester: vlessThroughputTester,
-			}
+		runner, runnerErr := vpnsub.NewManagedExecXrayRunner(cfg.Xray.Binary)
+		if runnerErr != nil {
+			return runnerErr
+		}
+		vlessThroughputTester = vpnsub.NewCloudflareThroughputTester()
+		subscriptionPreparer = &vpnsub.SubscriptionService{
+			Runner: runner, Parallelism: cfg.Policy.ParallelServerChecks, CheckAttempts: cfg.Policy.FailAfterConsecutiveErrors,
+			SpeedTester: vlessThroughputTester,
 		}
 		zapretSetupChecker = zapret.LocalSetupChecker{}
 		componentManager = &component.Manager{
