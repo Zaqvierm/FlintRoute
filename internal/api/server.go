@@ -1052,7 +1052,7 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 			"allowed_paths": svc.AllowedPaths, "forbidden_paths": svc.ForbiddenPaths,
 			"selected_route_tag": svc.SelectedRouteTag,
 			"probe_count":        len(svc.ProbeURLs), "require_non_ru_egress": svc.RequireNonRUEgress,
-			"source": "configured",
+			"source": "configured", "applied": true,
 		})
 	}
 	if s.domainDecisions != nil {
@@ -1082,6 +1082,8 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 				"checked_at":          decision.CheckedAt,
 				"expires_at":          decision.ExpiresAt,
 				"source":              "automatic",
+				"applied":             false,
+				"kind":                "discovery_observation",
 			})
 		}
 	}

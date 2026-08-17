@@ -215,6 +215,31 @@ func TestUnchangedDecisionIsCheckpointedInsteadOfWrittenEveryProbe(t *testing.T)
 	}
 }
 
+func TestLegacyUnselectedObservationIsRemovedOnLoad(t *testing.T) {
+	store := &failingStore{entries: map[string][]byte{}}
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	legacy := Decision{
+		Key: "base:example.com", Scope: "etld_plus_one", Domain: "example.com", ETLDPlusOne: "example.com",
+		Service: "UNKNOWN:example.com", Category: "DIRECT_PREFERRED", Status: "NO_SAFE_ROUTE",
+		AdapterRevision: "rev-1", CheckedAt: now, ExpiresAt: now.Add(24 * time.Hour), LastUsedAt: now,
+	}
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.entries[bucket+"/"+legacy.Key] = raw
+	manager, err := New(store, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.Snapshot(); len(got) != 0 {
+		t.Fatalf("legacy failed observation survived migration: %+v", got)
+	}
+	if len(store.entries) != 0 {
+		t.Fatalf("legacy failed observation remains persisted: %+v", store.entries)
+	}
+}
+
 func openTestStore(t *testing.T) *state.Store {
 	t.Helper()
 	store, err := state.Open(testConfig(t.TempDir()))

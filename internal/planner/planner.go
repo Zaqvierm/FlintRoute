@@ -101,6 +101,11 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 			if cached, valid := cachedCheck(decision, plan, profile, opts.ActiveRevision); valid {
 				return cached, nil
 			}
+			if decision.SelectedRoute == "" {
+				if err := opts.DecisionCache.Discard(decision.Key); err != nil {
+					return DomainCheck{}, fmt.Errorf("discard failed domain observation: %w", err)
+				}
+			}
 		}
 	}
 
@@ -177,17 +182,15 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 	out.ExpiresAt = out.CheckedAt.Add(ttl)
 	out.Confidence = decisionConfidence(out, opts.TSPUResult)
 
-	if profile.unknown && profile.override == nil && opts.DecisionCache != nil && opts.ActiveRevision != "" {
+	if profile.unknown && profile.override == nil && opts.DecisionCache != nil && opts.ActiveRevision != "" && out.Selected != nil {
 		decision := domaincache.Decision{
 			Service: profile.name, Category: out.Category, TSPUStatus: out.TSPUStatus,
 			Status: out.Status, Reason: out.Reason, AdapterRevision: opts.ActiveRevision,
 			Confidence: out.Confidence, Results: out.Results, CheckedAt: out.CheckedAt,
 			ExpiresAt: out.ExpiresAt, LastUsedAt: out.CheckedAt,
 		}
-		if out.Selected != nil {
-			decision.SelectedRoute = out.Selected.Route
-			decision.SelectedType = out.Selected.RouteType
-		}
+		decision.SelectedRoute = out.Selected.Route
+		decision.SelectedType = out.Selected.RouteType
 		if _, err := opts.DecisionCache.Save(profile.domain, decision); err != nil {
 			return out, fmt.Errorf("persist domain decision: %w", err)
 		}
@@ -457,7 +460,7 @@ func cachedCheck(decision domaincache.Decision, plan CandidatePlan, profile serv
 		Results: decision.Results, CheckedAt: decision.CheckedAt, ExpiresAt: decision.ExpiresAt,
 	}
 	if decision.SelectedRoute == "" {
-		return out, decision.Status == "NO_SAFE_ROUTE"
+		return out, false
 	}
 	allowed := false
 	for _, route := range plan.Candidates {

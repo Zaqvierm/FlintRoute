@@ -807,6 +807,8 @@ function Services({
   const [editor, setEditor] = useState<{ domain: string; category: string; paths: string[] } | null>(null);
   const [selectedService, setSelectedService] = useState<any>(null);
   const grouped = useMemo(() => groupServices(services), [services]);
+  const configuredServices = useMemo(() => grouped.filter((item) => Boolean(item.applied) || asArray(item.sources).includes('configured')), [grouped]);
+  const observedServices = useMemo(() => grouped.filter((item) => !Boolean(item.applied) && !asArray(item.sources).includes('configured')), [grouped]);
 
   async function commitRule(domain: string, category: string, paths?: string[]) {
     if (role !== 'administrator' || !configVersion || moving) return;
@@ -875,8 +877,8 @@ function Services({
     <section>
       <div class="service-toolbar">
         <div>
-          <b>Проверенные правила</b>
-          <span>Discovery наблюдает домены сам. Здесь можно вручную закрепить результат.</span>
+          <b>Применённые правила</b>
+          <span>Только правила, которые реально сохранены в активной конфигурации FlintRoute.</span>
         </div>
         <div class="actions">
           <button class="primary" disabled={role !== 'administrator'} onClick={() => editRule()}>+ Новое правило</button>
@@ -936,7 +938,7 @@ function Services({
             }}
           >
             <header><h2>{column.title}</h2><small>{column.hint}</small></header>
-            {grouped
+            {configuredServices
               .filter((item) => serviceColumnFor(textValue(item.category, 'DIRECT_ONLY')) === column.category)
               .map((item) => (
                 <ServiceGroup
@@ -948,10 +950,24 @@ function Services({
                   onOpen={() => setSelectedService(item)}
                 />
               ))}
-            {!grouped.some((item) => serviceColumnFor(textValue(item.category, 'DIRECT_ONLY')) === column.category) && <p class="empty-state">Пока пусто</p>}
+            {!configuredServices.some((item) => serviceColumnFor(textValue(item.category, 'DIRECT_ONLY')) === column.category) && <p class="empty-state">Применённых правил пока нет</p>}
           </section>
         ))}
       </div>
+      {observedServices.length > 0 && <section class="card">
+        <h2>Наблюдения Discovery — не применены</h2>
+        <p>FlintRoute заметил эти домены и проверил доступные пути. Они не меняют маршрутизацию, пока ты явно не закрепишь правило.</p>
+        <div class="grid">
+          {observedServices.map((item) => <ServiceGroup
+            service={item}
+            key={String(item.id)}
+            busy={moving === textValue(asArray(item.domains)[0], '')}
+            onEdit={() => editRule(item)}
+            editLabel="Закрепить правило"
+            onOpen={() => setSelectedService(item)}
+          />)}
+        </div>
+      </section>}
       <p class={message.includes('применено') ? 'action-status ok' : 'action-status'}>{message || 'Домены появляются после наблюдения и проверки. Перетащи карточку, чтобы закрепить правило.'}</p>
       <DetailDrawer title={textValue(selectedService?.id, 'Сервис')} open={Boolean(selectedService)} onClose={() => setSelectedService(null)}>
         <ServiceDetails service={selectedService} onEdit={() => selectedService && editRule(selectedService)} />
@@ -972,34 +988,43 @@ function ServiceGroup({
   draggable = false,
   busy = false,
   onEdit,
+  editLabel = 'Настроить',
   onOpen
 }: {
   service: any;
   draggable?: boolean;
   busy?: boolean;
   onEdit?: () => void;
+  editLabel?: string;
   onOpen?: () => void;
 }) {
   if (!service) return <Generic title="Группа сервиса" text="Сервис не выбран." />;
+  const observation = !Boolean(service.applied) && asArray(service.sources).includes('automatic') && !asArray(service.sources).includes('configured');
+  const selectedRoute = textValue(service.selected_route_tag ?? service.selected_route_type, '');
+  const routeStatus = observation
+    ? (selectedRoute ? `Рекомендация: ${selectedRoute}` : 'Безопасный маршрут пока не подтверждён')
+    : textValue(service.status ?? service.selected_route_tag, 'Ожидает проверки');
   return (
     <article
       class={`service-card ${busy ? 'busy' : ''}`}
       draggable={draggable}
       onDragStart={(event) => event.dataTransfer?.setData('text/plain', service.domains?.[0] ?? '')}
     >
-      <div class="service-card-title"><b>{textValue(service.id, 'Неизвестный сервис')}</b><span class={`source ${asArray(service.sources).includes('automatic') ? 'automatic' : 'configured'}`}>{asArray(service.sources).includes('automatic') ? 'обнаружен' : 'правило'}</span></div>
+      <div class="service-card-title"><b>{textValue(service.id, 'Неизвестный сервис')}</b><span class={`source ${observation ? 'automatic' : 'configured'}`}>{observation ? 'наблюдение' : 'применено'}</span></div>
       <small>{asArray(service.domains).length} доменов</small>
-      <div class="service-card-route"><RouteBadge type={service.selected_route_type ?? service.category} /><span>{service.status ?? service.selected_route_tag ?? 'ожидает проверки'}</span></div>
+      <div class="service-card-route"><RouteBadge type={service.selected_route_type ?? service.category} /><span>{routeStatus}</span></div>
       {service.allowed_paths?.length > 0 && <small>{service.allowed_paths.join(' → ')}</small>}
-      {typeof service.confidence === 'number' && <small>уверенность {Math.round(service.confidence * 100)}%</small>}
-      <div class="actions"><button type="button" onClick={onOpen}>Открыть</button>{onEdit && <button type="button" class="service-edit" onClick={onEdit}>Настроить</button>}</div>
+      {typeof service.confidence === 'number' && service.confidence > 0 && selectedRoute && <small>уверенность выбора {Math.round(service.confidence * 100)}%</small>}
+      {observation && <small>Не применено к трафику</small>}
+      <div class="actions"><button type="button" onClick={onOpen}>Открыть</button>{onEdit && <button type="button" class="service-edit" onClick={onEdit}>{editLabel}</button>}</div>
     </article>
   );
 }
 
 function ServiceDetails({ service, onEdit }: { service: any; onEdit?: () => void }) {
   if (!service) return null;
-  return <><InfoGrid items={[["Категория", service.category], ["Источник", asArray(service.sources).join(', ')], ["Маршрут", service.selected_route_tag ?? service.selected_route_type], ["Health", service.health], ["Fallback", asArray(service.allowed_paths).join(' → ')], ["Последняя проверка", formatDateTime(service.latest_checked_at)]]} />
+  const observation = !Boolean(service.applied) && asArray(service.sources).includes('automatic') && !asArray(service.sources).includes('configured');
+  return <><InfoGrid items={[["Состояние", observation ? 'Наблюдение — не применено' : 'Правило применено'], ["Категория", service.category], ["Источник", asArray(service.sources).join(', ')], ["Маршрут", service.selected_route_tag ?? service.selected_route_type], ["Health", service.health], ["Fallback", asArray(service.allowed_paths).join(' → ')], ["Последняя проверка", formatDateTime(service.latest_checked_at)]]} />
     <h3>Связанные домены</h3><div class="domain-list">{asArray(service.domains).map((domain) => <span class="chip mono">{textValue(domain)}</span>)}</div>
     <h3>Наследование и исключения</h3><p>{asArray(service.forbidden_paths).length ? `Запрещены: ${asArray(service.forbidden_paths).join(', ')}` : 'Явных конфликтов и исключений нет.'}</p>
     {onEdit && <button class="primary" onClick={onEdit}>Настроить правило</button>}<RawDisclosure value={service} /></>;

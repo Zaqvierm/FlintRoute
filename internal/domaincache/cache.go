@@ -70,7 +70,21 @@ func New(store Store, maxEntries int) (*Manager, error) {
 	}
 	for _, raw := range rawEntries {
 		var decision Decision
-		if err := json.Unmarshal(raw, &decision); err != nil || validateDecision(decision) != nil {
+		if err := json.Unmarshal(raw, &decision); err != nil {
+			return nil, errors.New("invalid persisted domain decision")
+		}
+		// Older builds persisted failed probes as if they were reusable route
+		// decisions. A failure is an observation, not a routing decision: keeping
+		// it here can suppress a fresh probe until the TTL expires.
+		if decision.SelectedRoute == "" {
+			if decision.Key != "" {
+				if err := store.Delete(bucket, decision.Key); err != nil && !errors.Is(err, state.ErrNotFound) {
+					return nil, err
+				}
+			}
+			continue
+		}
+		if validateDecision(decision) != nil {
 			return nil, errors.New("invalid persisted domain decision")
 		}
 		manager.decisions[decision.Key] = decision
@@ -200,6 +214,23 @@ func (m *Manager) Snapshot() []Decision {
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Key < result[j].Key })
 	return result
+}
+
+func (m *Manager) Discard(key string) error {
+	if m == nil {
+		return errors.New("domain decision cache is unavailable")
+	}
+	if !strings.HasPrefix(key, "exact:") && !strings.HasPrefix(key, "base:") {
+		return errors.New("invalid domain decision key")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.store.Delete(bucket, key); err != nil && !errors.Is(err, state.ErrNotFound) {
+		return err
+	}
+	delete(m.decisions, key)
+	delete(m.checkpoints, key)
+	return nil
 }
 
 func (m *Manager) pruneLocked(now time.Time) error {

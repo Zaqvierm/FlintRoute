@@ -201,6 +201,7 @@ export function groupServices(items: unknown[]): Array<Record<string, unknown>> 
       id,
       domains: [...domains].sort(),
       sources: [...sources].sort(),
+      applied: current.applied === true || item.applied === true || source === 'configured',
       health: item.status ?? current.health ?? 'UNVERIFIED',
       latest_checked_at: item.checked_at ?? current.latest_checked_at
     });

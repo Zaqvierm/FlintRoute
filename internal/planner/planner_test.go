@@ -139,6 +139,34 @@ func TestUnknownDomainDirectSuccessIsCachedAndReused(t *testing.T) {
 	}
 }
 
+func TestUnknownDomainFailureIsNotCached(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cache := openDecisionCache(t, cfg)
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	prober := &scriptedProber{results: map[string]probe.RouteResult{}}
+	opts := Options{
+		RouteProber: prober, DecisionCache: cache, ActiveRevision: "rev-active",
+		Now: func() time.Time { return now },
+	}
+	first, err := CheckDomain(context.Background(), cfg, "unreachable.example", "", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != "NO_SAFE_ROUTE" || first.Confidence != 0 || first.Selected != nil {
+		t.Fatalf("unexpected failed decision: %+v", first)
+	}
+	if got := cache.Snapshot(); len(got) != 0 {
+		t.Fatalf("failed observation was persisted as a route decision: %+v", got)
+	}
+	firstCalls := len(prober.calls)
+	if _, err := CheckDomain(context.Background(), cfg, "unreachable.example", "", opts); err != nil {
+		t.Fatal(err)
+	}
+	if len(prober.calls) <= firstCalls {
+		t.Fatalf("failed observation suppressed a fresh probe: before=%d after=%d", firstCalls, len(prober.calls))
+	}
+}
+
 func TestUnknownBaselineUsesSystemDefaultBeforeManagedDirect(t *testing.T) {
 	cfg := discoveryConfig(t)
 	cfg.Routes[0].RequiresAdapter = true

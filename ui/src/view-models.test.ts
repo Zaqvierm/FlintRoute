@@ -52,6 +52,15 @@ describe('service view model', () => {
     expect(grouped).toHaveLength(1);
     expect(grouped[0].domains).toEqual(['discord.com', 'discord.gg', 'discord.media']);
     expect(grouped[0].sources).toEqual(['automatic', 'configured']);
+    expect(grouped[0].applied).toBe(true);
+  });
+
+  it('keeps a discovery-only item explicitly unapplied', () => {
+    const [observed] = groupServices([
+      { id: 'UNKNOWN:example.com', category: 'DIRECT_PREFERRED', domains: ['example.com'], source: 'automatic', applied: false, status: 'SELECTED', confidence: 0.8 }
+    ]);
+    expect(observed.applied).toBe(false);
+    expect(observed.sources).toEqual(['automatic']);
   });
 });
 
