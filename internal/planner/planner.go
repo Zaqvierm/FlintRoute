@@ -490,24 +490,15 @@ func optionNow(opts Options) time.Time {
 	return time.Now().UTC()
 }
 
-func decisionConfidence(check DomainCheck, match tspu.Match) float64 {
+func decisionConfidence(check DomainCheck, _ tspu.Match) float64 {
 	if check.Selected == nil {
 		return 0
 	}
-	confidence := 0.8
-	if check.Selected.RouteType == "drop" {
-		confidence = 0.95
-	}
-	if match.Status == "MATCH" && match.Confidence > confidence {
-		confidence = match.Confidence
-	}
-	if match.Status == "STALE_MATCH" {
-		confidence *= 0.7
-	}
-	if confidence > 1 {
-		return 1
-	}
-	return confidence
+	// Route selection is binary: a candidate is selected only after the full
+	// success contract (route OK, service OK and PathVerified) has passed.
+	// TSPU source confidence is classification metadata and must not dilute or
+	// inflate the verification state of the selected route.
+	return 1
 }
 
 func unknownExpectedCodes() []int {

@@ -1081,6 +1081,25 @@ func TestIdenticalApplyIsNoopWithoutNewDeploymentWork(t *testing.T) {
 	if status != http.StatusOK || first.State != "committed" {
 		t.Fatalf("first commit failed: status=%d change=%+v", status, first)
 	}
+	response, err := http.Get(ts.URL + "/api/v1/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var healthEnvelope Envelope
+	if err := json.NewDecoder(response.Body).Decode(&healthEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	healthRaw, _ := json.Marshal(healthEnvelope.Data)
+	var health struct {
+		ActiveRevision string `json:"active_revision"`
+	}
+	if err := json.Unmarshal(healthRaw, &health); err != nil {
+		t.Fatal(err)
+	}
+	if health.ActiveRevision != first.RevisionID {
+		t.Fatalf("health exposed stale revision after commit: got=%s want=%s", health.ActiveRevision, first.RevisionID)
+	}
 
 	beforePrepare := fake.callCount("prepare")
 	beforeApply := fake.callCount("apply_candidate")

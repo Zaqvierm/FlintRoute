@@ -18,6 +18,7 @@ export type DecisionCard = {
   verified: boolean;
   status: string;
   durationMS?: number;
+  probeLatencyMS?: number;
   candidates: unknown[];
   timeline: unknown[];
   details: Record<string, unknown>;
@@ -78,7 +79,7 @@ export function humanStatus(value: unknown): string {
     available: 'Доступно',
     'route available': 'Интернет доступен',
     selected: 'Маршрут выбран',
-    'no safe route': 'Нет подтверждённого маршрута',
+    'no safe route': 'Ни один безопасный маршрут не прошёл проверку',
     verified: 'Путь подтверждён',
     configured: 'Настроено',
     'not configured': 'Не настроено',
@@ -155,7 +156,8 @@ export function toDecisionCard(event: EventItem): DecisionCard {
     .filter(Boolean);
   const route = first(details, ['route_label'], event.route || first(details, ['route', 'selected_route', 'route_type'], 'Не выбран'));
   const status = first(details, ['final_status', 'http_status', 'status', 'result'], event.reason_code || event.type);
-  const duration = Number(details.decision_duration_ms ?? details.duration_ms ?? details.latency_ms);
+  const duration = Number(details.decision_duration_ms ?? details.duration_ms);
+  const probeLatency = Number(details.probe_latency_ms ?? details.latency_ms);
   return {
     id: `${event.time}:${event.id}`,
     time: event.time,
@@ -172,6 +174,7 @@ export function toDecisionCard(event: EventItem): DecisionCard {
     verified: bool(details, ['path_verified', 'verified', 'data_plane_verified']),
     status: humanStatus(status),
     durationMS: Number.isFinite(duration) ? duration : undefined,
+    probeLatencyMS: Number.isFinite(probeLatency) ? probeLatency : undefined,
     candidates: asArray(details.candidates),
     timeline: asArray(details.timeline ?? details.evidence_timeline),
     details,

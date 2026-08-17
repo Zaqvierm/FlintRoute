@@ -199,6 +199,16 @@ func TestSystemDefaultResultBindsToCurrentRevision(t *testing.T) {
 	}
 }
 
+func TestVerifiedRouteDoesNotExposeArbitraryPartialConfidence(t *testing.T) {
+	check := DomainCheck{Selected: &probe.RouteResult{Route: "vless", RouteType: "vless", PathVerified: true, ServiceOK: true}}
+	if confidence := decisionConfidence(check, tspu.Match{}); confidence != 1 {
+		t.Fatalf("verified route confidence=%v, want 1", confidence)
+	}
+	if confidence := decisionConfidence(DomainCheck{}, tspu.Match{Status: "MATCH", Confidence: 0.9}); confidence != 0 {
+		t.Fatalf("unselected route confidence=%v, want 0", confidence)
+	}
+}
+
 func TestCachedNoMatchDecisionIsInvalidatedByFreshTSPUMatch(t *testing.T) {
 	cfg := discoveryConfig(t)
 	cache := openDecisionCache(t, cfg)

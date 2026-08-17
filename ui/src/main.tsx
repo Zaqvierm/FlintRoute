@@ -1014,7 +1014,7 @@ function ServiceGroup({
       <small>{asArray(service.domains).length} доменов</small>
       <div class="service-card-route"><RouteBadge type={service.selected_route_type ?? service.category} /><span>{routeStatus}</span></div>
       {service.allowed_paths?.length > 0 && <small>{service.allowed_paths.join(' → ')}</small>}
-      {typeof service.confidence === 'number' && service.confidence > 0 && selectedRoute && <small>уверенность выбора {Math.round(service.confidence * 100)}%</small>}
+      {selectedRoute && <small title="Маршрут показывается выбранным только после проверки DNS, приложения и фактического сетевого пути.">маршрут подтверждён</small>}
       {observation && <small>Не применено к трафику</small>}
       <div class="actions"><button type="button" onClick={onOpen}>Открыть</button>{onEdit && <button type="button" class="service-edit" onClick={onEdit}>{editLabel}</button>}</div>
     </article>
@@ -2079,7 +2079,7 @@ function DecisionDetails({ decision }: { decision: ReturnType<typeof toDecisionC
     ['Сервис', decision.service], ['Категория', decision.category], ['Правило', decision.rule], ['Стратегия', decision.strategy],
     ['Маршрут', decision.route], ['Fallback', decision.fallbackPath.join(' → ') || (decision.fallback ? 'Выполнен' : 'Нет')],
     ['PathVerified', decision.verified ? 'Да' : 'Нет'], ['Итог', decision.status], ['Решение заняло', decision.durationMS !== undefined ? `${decision.durationMS} мс` : null],
-    ['DNS', d.dns_status], ['Destination IP', d.destination_ip], ['Probe latency', d.probe_latency_ms ? `${d.probe_latency_ms} мс` : null],
+    ['DNS', d.dns_status], ['Destination IP', d.destination_ip], ['Задержка маршрута', decision.probeLatencyMS !== undefined ? `${decision.probeLatencyMS} мс` : null],
     ['HTTP/TLS', d.http_status ?? d.tls_status], ['nft mark', d.nft_mark], ['Routing table', d.routing_table], ['Выходной интерфейс', d.egress_interface],
     ['Xray outbound', d.xray_outbound], ['SOCKS endpoint', d.socks_endpoint], ['Policy ID', d.policy_id], ['Revision', d.revision_id], ['Transaction ID', d.transaction_id]
   ]} />

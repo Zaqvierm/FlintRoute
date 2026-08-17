@@ -171,6 +171,9 @@ func (a *OpenWrt) execute(ctx context.Context, command string, start time.Time, 
 			res.OK = false
 			res.Status = "UNVERIFIED"
 			res.Reason = "complete data-plane evidence is not available"
+			if reason, ok := evidence["reason"].(string); ok && reason != "" {
+				res.Reason = reason
+			}
 		} else {
 			res.OK = res.DataPlaneVerified
 		}

@@ -1112,7 +1112,13 @@ func serviceForClassifyRequest(request serviceClassifyRequest) (string, config.S
 		return "", config.Service{}, err
 	}
 	category := strings.ToUpper(strings.TrimSpace(request.Category))
-	service := config.Service{Domains: []string{domain}}
+	service := config.Service{
+		Domains: []string{domain},
+		ProbeURLs: []config.ProbeCheck{{
+			Name: "https", URL: "https://" + domain + "/", Required: true,
+			ExpectedCodes: []int{200, 204, 301, 302, 303, 307, 308, 401, 403, 404, 405}, BodyMode: "optional",
+		}},
+	}
 	switch category {
 	case "GEO_LOCKED":
 		service.Category = category
@@ -1843,6 +1849,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	recovery := s.currentRecoveryStatus()
+	s.mu.Lock()
+	activeRevision := s.activeRevision
+	s.mu.Unlock()
+	if activeRevision == "" {
+		activeRevision = recovery.RevisionID
+	}
 	status := "ok"
 	if recovery.Status == "starting" {
 		status = "starting"
@@ -1852,7 +1864,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeData(w, r, map[string]any{
 		"status": status, "provider": s.provider.Name(), "simulation": s.provider.Simulation(),
 		"recovery_status": recovery.Status, "recovery_reason_code": recovery.ReasonCode,
-		"recovery_reason": recovery.Reason, "active_revision": recovery.RevisionID,
+		"recovery_reason": recovery.Reason, "active_revision": activeRevision,
 		"time": time.Now().UTC().Format(time.RFC3339),
 	})
 }

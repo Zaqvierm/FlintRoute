@@ -66,6 +66,9 @@ func TestManualServiceRulePreservesUserFallbackOrder(t *testing.T) {
 	if category != "GEO_LOCKED" || service.Domains[0] != "chatgpt.com" {
 		t.Fatalf("normalized rule mismatch: category=%q service=%+v", category, service)
 	}
+	if len(service.ProbeURLs) != 1 || service.ProbeURLs[0].URL != "https://chatgpt.com/" || !service.ProbeURLs[0].Required {
+		t.Fatalf("manual rule has no production probe target: %v", service.ProbeURLs)
+	}
 	if got := service.AllowedPaths; len(got) != 2 || got[0] != "vless" || got[1] != "smart_dns" {
 		t.Fatalf("user fallback order changed: %v", got)
 	}

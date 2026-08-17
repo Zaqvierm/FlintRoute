@@ -14,7 +14,7 @@ describe('safe display values', () => {
     expect(humanStatus('path.verified')).toBe('Путь подтверждён');
     expect(humanStatus('ROUTE_AVAILABLE')).toBe('Интернет доступен');
     expect(humanStatus('not_installed')).toBe('Не установлен');
-    expect(humanStatus('NO_SAFE_ROUTE')).toBe('Нет подтверждённого маршрута');
+    expect(humanStatus('NO_SAFE_ROUTE')).toBe('Ни один безопасный маршрут не прошёл проверку');
   });
 
   it('does not render zero-value timestamps as year one', () => {
@@ -95,5 +95,11 @@ describe('decision cards', () => {
     expect(card.fallback).toBe(true);
     expect(card.durationMS).toBe(43);
     expect(card.route).toBe('Direct (системный маршрут)');
+  });
+
+  it('does not pass route latency off as total decision duration', () => {
+    const card = toDecisionCard({ ...event, details: { latency_ms: 75, path_verified: true } });
+    expect(card.durationMS).toBeUndefined();
+    expect(card.probeLatencyMS).toBe(75);
   });
 });
