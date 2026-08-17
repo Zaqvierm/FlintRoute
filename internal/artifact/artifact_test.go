@@ -850,6 +850,18 @@ func TestProofPlanDoesNotRequireDisabledIPv6(t *testing.T) {
 	}
 }
 
+func TestRoutesUsedByPoliciesExcludesConfiguredButUnusedRoutes(t *testing.T) {
+	routes := []config.Route{{Type: "direct", Tag: "direct"}, {Type: "smart_dns", Tag: "smart"}}
+	if got := routesUsedByPolicies(routes, nil); len(got) != 0 {
+		t.Fatalf("configuration-only candidate unexpectedly requires route proof: %+v", got)
+	}
+	policies := []domainPolicy{{Domain: "example.com", Route: routes[1]}}
+	got := routesUsedByPolicies(routes, policies)
+	if len(got) != 1 || got[0].Tag != "smart" {
+		t.Fatalf("active policy route was not selected: %+v", got)
+	}
+}
+
 func writeFlowDiagnostics(t *testing.T, root, status string, software, hardware bool) {
 	t.Helper()
 	diagnostics := fmt.Sprintf(`{"status":"VERIFIED","source":"flow-offload-fixture","simulation":true,"wan_interface":"wan","lan_interfaces":["br-lan"],"ipv4_gateway":"192.0.2.1","ipv6_gateway":"2001:db8::1","ipv6_available":true,"transparent_proxy_mode":"tproxy","flow_offloading_status":%q,"software_flow_offloading":%t,"hardware_flow_offloading":%t,"collected_at":"1969-01-01T00:00:00Z","expires_at":"2999-01-01T00:00:00Z"}`, status, software, hardware)

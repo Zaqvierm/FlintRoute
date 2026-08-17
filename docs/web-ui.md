@@ -7,6 +7,17 @@
 отдельной «упрощённой» и «администраторской» версии экрана. Права API по-прежнему
 ограничивают опасные действия, но структура навигации для всех одна.
 
+## Быстрая настройка
+
+Первый пользовательский сценарий состоит из пяти шагов: проверка базовой сети,
+выбор способов маршрутизации, настройка источников, выбор сервисов и финальная
+проверка. Состояние вычисляется из реальных API компонентов, VLESS pool, Smart
+DNS, TG WS Proxy, маршрутов и Discovery. Wizard не объявляет успех только по
+сохранённой форме: для управляемого пути требуется готовый компонент или
+подтверждённый сервер. Direct-only и автоматический выбор сервисов требуют
+явного выбора пользователя. Прогресс сохраняется в локальном UI state и
+переживает refresh или reboot; все шаги остаются доступны из основного меню.
+
 ## Сборка и запуск
 
 - TypeScript, Preact и Vite;
@@ -136,8 +147,9 @@ VLESS routes. Подтверждение возможно только посл�
 
 `Обновить health` запускает лёгкую проверку задержки и выхода. Недавний speedtest
 переиспользуется 24 часа и не запускается на каждом refresh. Ручная кнопка в
-подробностях проверенного logical server скачивает через его loopback SOCKS
-2–16 MiB, показывает bytes/duration и отдельно хранит raw/effective throughput.
+подробностях проверенного logical server временно запускает проверенный candidate
+bundle, скачивает через его loopback SOCKS 2–16 MiB, затем останавливает candidate.
+UI показывает bytes/duration и отдельно хранит raw/effective throughput.
 
 ## Компоненты и Zapret
 
@@ -148,8 +160,10 @@ Xray, Zapret и TG WS Proxy. URL/version/SHA не являются основн�
 Экран Zapret устанавливает закреплённый пакет через Component Manager, а затем
 запускает отдельную calibration для выбранного домена. Progress и причина
 concurrency отображаются явно. Upstream blockcheck использует общие nft/NFQUEUE
-ресурсы, поэтому production runner последовательный. Найденные кандидаты не
-включаются молча: apply проходит через ChangeSet и PathVerified.
+ресурсы, поэтому production runner последовательный. Во время запуска UI
+показывает число реально завершённых вариантов; total не выдумывается, если
+upstream не публикует его заранее. Найденные кандидаты не включаются молча:
+apply проходит через ChangeSet и PathVerified.
 
 ## Smart DNS
 
@@ -186,9 +200,12 @@ procd/listener/DC health и одноразовая ссылка подключе
 
 ## Подтверждённое состояние
 
-Typecheck, Vitest, production build и API tests выполняются локально. Текущая
-переработка карты, Component Manager, Zapret calibration и VLESS pool ещё не
-наследуют старый hardware PASS: нужен install/smoke текущего commit.
+Typecheck, Vitest, production build и API tests выполняются локально. Текущий
+пакет установлен на свежий factory OpenWrt: control plane, baseline revision,
+source-restricted Web listener и реальные Overview/Topology/Routes страницы
+работают без simulation provider. После factory recovery управляемые Xray,
+Zapret, TG WS Proxy, Smart DNS и subscription pool ещё не настроены, поэтому их
+старый hardware PASS не переносится на текущую установку автоматически.
 
 Остаются read-only или disabled:
 

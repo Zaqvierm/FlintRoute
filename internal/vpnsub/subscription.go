@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"router-policy/internal/config"
+	"router-policy/internal/xraybundle"
 )
 
 type CheckerFactory func(*config.Config, config.Service) OutboundChecker
@@ -139,11 +142,85 @@ func (s *SubscriptionService) Prepare(ctx context.Context, cfg *config.Config) (
 		}
 	}
 	result.Servers = attachServerSources(result.Servers, serverSources, result.TariffMbps)
-	snapshot := PoolSnapshot{GeneratedAt: time.Now().UTC().Format(time.RFC3339), TariffMbps: result.TariffMbps, Sources: result.Sources, ProviderMatches: result.ProviderMatches, Servers: result.Servers}
+	snapshot := PoolSnapshot{GeneratedAt: time.Now().UTC().Format(time.RFC3339), BundleHash: result.BundleHash, TariffMbps: result.TariffMbps, Sources: result.Sources, ProviderMatches: result.ProviderMatches, Servers: result.Servers}
 	if err := StorePool(PoolPath(cfg.Storage.StateDir), snapshot); err != nil {
 		return result, err
 	}
 	return result, nil
+}
+
+// MeasureServer starts the content-addressed candidate bundle for the duration
+// of one bounded measurement. Pool SOCKS listeners are candidate resources and
+// must never be assumed to survive Prepare.
+func (s *SubscriptionService) MeasureServer(ctx context.Context, cfg *config.Config, logicalID string) (SpeedMeasurement, ServerStatus, error) {
+	if s == nil || s.Runner == nil || s.SpeedTester == nil || cfg == nil || cfg.Storage.StateDir == "" {
+		return SpeedMeasurement{}, ServerStatus{}, errors.New("managed VLESS speed measurement is not configured")
+	}
+	snapshot, err := LoadPool(PoolPath(cfg.Storage.StateDir))
+	if err != nil {
+		return SpeedMeasurement{}, ServerStatus{}, errors.New("VLESS pool cannot be read; run server verification again")
+	}
+	index := -1
+	for current := range snapshot.Servers {
+		if snapshot.Servers[current].LogicalID == logicalID {
+			index = current
+			break
+		}
+	}
+	if index < 0 || !snapshot.Servers[index].PathVerified {
+		return SpeedMeasurement{}, ServerStatus{}, errors.New("selected VLESS server does not have a verified path")
+	}
+	host, _, splitErr := net.SplitHostPort(snapshot.Servers[index].SOCKS5)
+	address, parseErr := netip.ParseAddr(host)
+	if splitErr != nil || parseErr != nil || !address.IsLoopback() {
+		return SpeedMeasurement{}, ServerStatus{}, errors.New("selected VLESS server is not bound to a loopback SOCKS endpoint")
+	}
+	var process CandidateProcess
+	stopped := false
+	defer func() {
+		if process != nil && !stopped {
+			_ = process.Stop(context.Background())
+		}
+	}()
+	if cfg.Xray.ActivationMode != "managed" {
+		if snapshot.BundleHash == "" {
+			return SpeedMeasurement{}, ServerStatus{}, errors.New("VLESS pool has no verified bundle; run server verification again")
+		}
+		if _, err := xraybundle.Load(cfg.Storage.StateDir, snapshot.BundleHash); err != nil {
+			return SpeedMeasurement{}, ServerStatus{}, errors.New("verified VLESS bundle is unavailable or corrupt")
+		}
+		bundlePath, err := xraybundle.Path(cfg.Storage.StateDir, snapshot.BundleHash)
+		if err != nil {
+			return SpeedMeasurement{}, ServerStatus{}, errors.New("verified VLESS bundle path is invalid")
+		}
+		if err := s.Runner.Test(ctx, bundlePath); err != nil {
+			return SpeedMeasurement{}, ServerStatus{}, errors.New("verified VLESS bundle failed Xray validation")
+		}
+		process, err = s.Runner.StartCandidate(ctx, bundlePath)
+		if err != nil {
+			return SpeedMeasurement{}, ServerStatus{}, errors.New("VLESS measurement candidate could not start")
+		}
+		if err := s.Runner.WaitReady(ctx, snapshot.Servers); err != nil {
+			return SpeedMeasurement{}, ServerStatus{}, errors.New("VLESS measurement candidate did not become ready")
+		}
+	}
+	measurement, err := s.SpeedTester.Measure(ctx, snapshot.Servers[index].SOCKS5, SpeedTestBytes(snapshot.TariffMbps))
+	if err != nil {
+		return SpeedMeasurement{}, ServerStatus{}, err
+	}
+	if process != nil {
+		if err := process.Stop(ctx); err != nil {
+			return SpeedMeasurement{}, ServerStatus{}, errors.New("VLESS measurement candidate could not stop cleanly")
+		}
+		stopped = true
+	}
+	applySpeedMeasurement(&snapshot.Servers[index], measurement)
+	snapshot.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+	snapshot.Servers = RefreshPoolScores(snapshot.Servers, snapshot.TariffMbps)
+	if err := StorePool(PoolPath(cfg.Storage.StateDir), snapshot); err != nil {
+		return SpeedMeasurement{}, ServerStatus{}, errors.New("VLESS measurement succeeded but the pool could not be updated")
+	}
+	return measurement, snapshot.Servers[index], nil
 }
 
 func mergeSubscriptionFiles(paths []string, outputPath string) (string, error) {

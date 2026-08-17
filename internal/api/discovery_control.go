@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -12,12 +13,90 @@ import (
 	"router-policy/internal/config"
 	"router-policy/internal/discovery"
 	"router-policy/internal/planner"
+	"router-policy/internal/probe"
 )
 
 const (
 	discoveryStateKey       = "control"
 	maxDiscoverySuggestions = 256
+	discoveryDedupeWindow   = 30 * time.Second
 )
+
+func (s *Server) beginDiscoveryObservation(domain string, now time.Time) bool {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if domain == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.discoveryInFlight[domain] {
+		return false
+	}
+	if last := s.discoveryRecent[domain]; !last.IsZero() && now.Sub(last) < discoveryDedupeWindow {
+		return false
+	}
+	s.discoveryInFlight[domain] = true
+	return true
+}
+
+func (s *Server) finishDiscoveryObservation(domain string, observedAt time.Time) {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	s.mu.Lock()
+	delete(s.discoveryInFlight, domain)
+	s.discoveryRecent[domain] = observedAt
+	if len(s.discoveryRecent) > maxDiscoverySuggestions*2 {
+		cutoff := observedAt.Add(-discoveryDedupeWindow)
+		for name, seenAt := range s.discoveryRecent {
+			if seenAt.Before(cutoff) {
+				delete(s.discoveryRecent, name)
+			}
+		}
+	}
+	s.mu.Unlock()
+}
+
+func discoveryCandidateDetails(results []probe.RouteResult) []map[string]any {
+	items := make([]map[string]any, 0, len(results))
+	for _, result := range results {
+		items = append(items, map[string]any{
+			"route": result.Route, "route_type": result.RouteType, "status": result.Status,
+			"path_verified": result.PathVerified, "service_ok": result.ServiceOK,
+			"reason": result.ReasonCode, "latency_ms": result.LatencyMS,
+			"dns_resolver": result.DNSResolver, "resolved_ip": result.ResolvedIP,
+			"connected_ip": result.ConnectedIP, "interface": result.Interface,
+		})
+	}
+	return items
+}
+
+func discoveryRouteLabel(result probe.RouteResult) string {
+	if result.Route == "system-default" {
+		return "Direct (системный маршрут)"
+	}
+	switch result.RouteType {
+	case "direct":
+		return "Direct"
+	case "smart_dns":
+		return "Smart DNS"
+	case "vless":
+		return "VLESS"
+	case "zapret":
+		return "Zapret"
+	case "drop":
+		return "Блокировка"
+	default:
+		return result.Route
+	}
+}
+
+func discoveryHTTPStatus(result probe.RouteResult) string {
+	for _, check := range result.Checks {
+		if check.HTTPCode > 0 {
+			return fmt.Sprintf("HTTP %d", check.HTTPCode)
+		}
+	}
+	return ""
+}
 
 type discoveryControlState struct {
 	Configured           bool        `json:"configured,omitempty"`
@@ -72,9 +151,28 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 		"max_consecutive_rollbacks": maxRollbacks,
 		"consecutive_rollbacks":     state.ConsecutiveRollbacks,
 		"paused":                    state.PausedReason != "", "paused_reason": state.PausedReason,
-		"applied_last_hour": len(pruneDiscoveryTimes(state.AppliedAt, s.discoveryNow().Add(-time.Hour))),
-		"suggestions":       s.discoverySuggestions(100),
+		"applied_last_hour":  len(pruneDiscoveryTimes(state.AppliedAt, s.discoveryNow().Add(-time.Hour))),
+		"suggestions":        s.discoverySuggestions(100),
+		"observation_source": s.discoveryObservationStatus(),
 	})
+}
+
+func (s *Server) discoveryObservationStatus() map[string]any {
+	if strings.TrimSpace(s.dnsObservationPath) == "" {
+		return map[string]any{"status": "unavailable", "reason": "dns_observation_path_not_configured"}
+	}
+	info, err := os.Stat(s.dnsObservationPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]any{"status": "waiting", "reason": "dns_observation_log_not_created"}
+		}
+		return map[string]any{"status": "unavailable", "reason": "dns_observation_log_unreadable"}
+	}
+	status := "listening"
+	if info.Size() > 0 && time.Since(info.ModTime()) <= 5*time.Minute {
+		status = "receiving"
+	}
+	return map[string]any{"status": status, "bytes": info.Size(), "last_updated": info.ModTime().UTC()}
 }
 
 func (s *Server) handleDiscoveryConfigure(w http.ResponseWriter, r *http.Request) {

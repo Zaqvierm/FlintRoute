@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -44,6 +45,46 @@ func TestDiscoveryObserveOnlyNeverCreatesSuggestionOrChange(t *testing.T) {
 	srv.discoverDomain(context.Background(), discovery.Observation{Domain: "observe.example", QueryType: "A"})
 	if *calls != 1 || len(srv.discoverySuggestions(10)) != 0 || len(fake.calls) != 0 {
 		t.Fatalf("observe_only changed state: calls=%d suggestions=%d adapter=%v", *calls, len(srv.discoverySuggestions(10)), fake.calls)
+	}
+}
+
+func TestDiscoveryDebouncesAAndAAAAForSameDomain(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, calls := newDiscoveryModeServer(t, "observe_only", true, fake)
+	defer srv.Close()
+	srv.discoverDomain(context.Background(), discovery.Observation{Domain: "dual-stack.example", QueryType: "A"})
+	srv.discoverDomain(context.Background(), discovery.Observation{Domain: "dual-stack.example", QueryType: "AAAA"})
+	if *calls != 1 {
+		t.Fatalf("one DNS lookup produced %d domain checks", *calls)
+	}
+}
+
+func TestDiscoveryCandidateDetailsExcludeProxySecrets(t *testing.T) {
+	items := discoveryCandidateDetails([]probe.RouteResult{{
+		Route: "vless-one", RouteType: "vless", Status: "OK", PathVerified: true, ServiceOK: true,
+		XrayOutboundTag: "secret-bearing-tag",
+	}})
+	if len(items) != 1 {
+		t.Fatalf("candidate details=%+v", items)
+	}
+	if _, ok := items[0]["xray_outbound"]; ok {
+		t.Fatal("Xray outbound leaked into decision event")
+	}
+}
+
+func TestDiscoveryObservationStatusDistinguishesWaitingAndReceiving(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, _ := newDiscoveryModeServer(t, "observe_only", true, fake)
+	defer srv.Close()
+	srv.dnsObservationPath = t.TempDir() + "/dns.log"
+	if status := srv.discoveryObservationStatus()["status"]; status != "waiting" {
+		t.Fatalf("missing observation log status=%v", status)
+	}
+	if err := os.WriteFile(srv.dnsObservationPath, []byte("query[A] example.test from 192.0.2.2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if status := srv.discoveryObservationStatus()["status"]; status != "receiving" {
+		t.Fatalf("active observation log status=%v", status)
 	}
 }
 

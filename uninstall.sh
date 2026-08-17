@@ -21,7 +21,7 @@ UCI_BIN="${UCI_BIN:-uci}"
 PIDOF_BIN="${PIDOF_BIN:-pidof}"
 NSLOOKUP_BIN="${NSLOOKUP_BIN:-nslookup}"
 SLEEP_BIN="${SLEEP_BIN:-sleep}"
-SERVICES="router-policy-boot-guard router-policy-watchdog router-policy router-policy-xray router-policy-zapret"
+SERVICES="router-policy-dns-observer router-policy-boot-guard router-policy-watchdog router-policy router-policy-xray router-policy-zapret"
 mode="${1:---dry-run}"
 
 deactivate_committed_dataplane() {
@@ -150,7 +150,7 @@ if [ "${ROUTER_POLICY_UNINSTALL_LIB_ONLY:-0}" = "1" ]; then
 fi
 
 if [ "$mode" = "--dry-run" ]; then
-  echo "would_stop_services=router-policy-boot-guard router-policy-watchdog router-policy router-policy-xray router-policy-zapret"
+  echo "would_stop_services=router-policy-dns-observer router-policy-boot-guard router-policy-watchdog router-policy router-policy-xray router-policy-zapret"
   echo "would_remove_prefix=$PREFIX"
   echo "would_keep_backup=$BACKUP_DIR"
   exit 0
@@ -215,7 +215,7 @@ if [ -z "$SYSTEM_ROOT" ]; then
   done
 fi
 
-rm -f "$INIT_DIR/router-policy" "$INIT_DIR/router-policy-boot-guard" "$INIT_DIR/router-policy-watchdog" "$INIT_DIR/router-policy-xray" "$INIT_DIR/router-policy-zapret"
+rm -f "$INIT_DIR/router-policy" "$INIT_DIR/router-policy-dns-observer" "$INIT_DIR/router-policy-boot-guard" "$INIT_DIR/router-policy-watchdog" "$INIT_DIR/router-policy-xray" "$INIT_DIR/router-policy-zapret"
 rm -f "$HOTPLUG_IFACE_DIR/95-router-policy" "$HOTPLUG_FIREWALL_DIR/95-router-policy"
 rm -f "$ETC_DIR/firewall/router-policy.nft" "$NFTABLES_DIR/router-policy.nft" "$DNSMASQ_DIR/router-policy.conf"
 rm -f "$BIN_DIR/router-policy"

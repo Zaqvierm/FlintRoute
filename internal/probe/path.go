@@ -113,6 +113,33 @@ func (v errorProofVerifier) Verify(context.Context, PathProofRequest) (evidence.
 	return evidence.RouteResult{}, v.err
 }
 
+func isSystemDefaultRoute(route config.Route) bool {
+	return route.Type == "direct" && route.Tag == "system-default" && route.AdapterMode == "system_default" && !route.RequiresAdapter
+}
+
+type multiplexPathProofVerifier struct {
+	managed PathProofVerifier
+	system  PathProofVerifier
+}
+
+func (v multiplexPathProofVerifier) Begin(ctx context.Context, start PathProofStart) (PathProofSession, error) {
+	if isSystemDefaultRoute(start.Route) {
+		return PathProofSession{StartedAt: start.StartedAt}, nil
+	}
+	starter, ok := v.managed.(PathProofStarter)
+	if !ok {
+		return PathProofSession{StartedAt: start.StartedAt}, nil
+	}
+	return starter.Begin(ctx, start)
+}
+
+func (v multiplexPathProofVerifier) Verify(ctx context.Context, request PathProofRequest) (evidence.RouteResult, error) {
+	if isSystemDefaultRoute(request.Route) {
+		return v.system.Verify(ctx, request)
+	}
+	return v.managed.Verify(ctx, request)
+}
+
 type BoundEvidenceVerifier struct {
 	PlanPath        string
 	EvidencePath    string

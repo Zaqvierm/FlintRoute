@@ -4,6 +4,58 @@ This log records failures that affected hardware validation or could have made a
 release claim unreliable. It contains no credentials, private endpoints or raw
 device dumps.
 
+## 2026-08-17 — startup recovery exceeded the installer health window
+
+### What happened
+
+During an upgrade the new controller entered committed-dataplane recovery before
+opening its HTTP listener. The installer allowed only 20 health attempts, timed
+out while recovery was still running and started file rollback before the new
+process had reached a stable service state. Management later became unavailable
+and the router required factory recovery through U-Boot.
+
+The blocking startup path and the too-short health window are confirmed defects.
+The loss of router-local Wi-Fi, DHCP and management is not attributed to either
+defect as a proven root cause because volatile OpenWrt evidence was unavailable
+after access was lost.
+
+### Fix and verification boundary
+
+Production startup now opens the HTTP control plane first and runs committed
+recovery in a tracked, bounded background task. Health reports `starting` until
+reconcile finishes, and policy schedulers start only after recovery succeeds.
+The installer health window is 120 seconds and still requires `status=ok`, the
+expected active revision and a non-error recovery result before disarming
+rollback.
+
+Unit and full local gates cover a deliberately blocked reconcile while the
+health endpoint remains responsive. A clean install on factory OpenWrt created
+one baseline revision and started the controller successfully. The original
+in-place upgrade with a committed dataplane has not yet been repeated on
+hardware, so unattended upgrade remains unconfirmed.
+
+## 2026-08-17 — clean baseline had no DNS observation source
+
+### What happened
+
+The clean-install baseline correctly avoided a dataplane apply, but DNS query
+logging was bundled only with generated dataplane artifacts. Discovery started
+in `observe_only` and watched its runtime file, while dnsmasq had no matching
+`log-facility`; no observation file existed and new domains could not enter the
+decision pipeline.
+
+### Fix and verification boundary
+
+The control-plane service now installs an observation-only dnsmasq include when
+no committed include exists. It enables query logging to tmpfs but contains no
+domain server rules, marks, nftables state, routes or flow-offloading changes.
+The helper rejects symlink targets, validates the include before installation,
+restarts dnsmasq only when the bootstrap file is first created and never
+overwrites an existing managed include. Local shell and full integration gates
+cover creation, idempotence and preservation of managed content. Hardware proof
+requires a LAN-client query to appear in Discovery after the updated package is
+installed.
+
 ## 2026-08-01 — upgrade rewrote a committed legacy route in memory
 
 ### What was tested
@@ -546,3 +598,25 @@ log, rejects symlink or out-of-runtime targets, and runs the same preparation
 for apply, rollback and recovery. The OpenWrt adapter integration test removes
 the assumption that the observation file already exists. Hardware confirmation
 belongs to the next installation run; this entry does not claim it in advance.
+
+## 2026-08-17 — DNS observer restarted DHCP/DNS late during boot
+
+A controlled reboot returned SSH and the FlintRoute HTTP listener, but that
+check did not prove that LAN clients had Wi-Fi, DHCP and working forwarding.
+The initial report that the router was unreachable was later withdrawn. The
+read-only post-boot inventory showed both access points enabled, LAN and WAN up,
+the system default route intact and dnsmasq running.
+
+The boot log still confirmed an unsafe sequence. `/etc/rc.d/S95router-policy`
+created the observation include after Wi-Fi was already enabled, sent SIGTERM
+to dnsmasq and restarted it. Because the include lives in a tmpfs confdir, this
+happened on every reboot and created a needless DHCP/DNS outage window. No
+dataplane transaction or route change was involved.
+
+DNS observation bootstrap now has its own one-shot init service at S18, before
+the normal dnsmasq startup. The control-plane service no longer invokes it.
+Normal boot never restarts dnsmasq; only an explicit first live activation may
+request one bounded restart, followed by a DNS readiness check. Bootstrap and
+installer lifecycle tests cover the no-restart boot path. Hardware verification
+of this new ordering is still pending and must include a real LAN client, not
+only SSH or the control-plane health endpoint.

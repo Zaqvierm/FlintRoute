@@ -45,7 +45,7 @@ run_install() {
 }
 
 install_service_sentinels() {
-  for service in router-policy-boot-guard router-policy router-policy-watchdog router-policy-xray router-policy-zapret; do
+  for service in router-policy-dns-observer router-policy-boot-guard router-policy router-policy-watchdog router-policy-xray router-policy-zapret; do
     cat > "$SYSTEM_ROOT/etc/init.d/$service" <<'SH'
 #!/bin/sh
 printf '%s\n' "$0:$*" >> "$SERVICE_CONTROL_LOG"

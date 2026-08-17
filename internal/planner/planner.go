@@ -278,6 +278,21 @@ func buildCandidates(cfg *config.Config, profile serviceProfile, opts Options) C
 	order := orderForService(profile.service.Category, tspuStatus, cfg.Policy.TSPUStalePolicy)
 	var candidates []config.Route
 	seen := map[string]bool{}
+	// Unknown traffic is still owned by OpenWrt until a FlintRoute policy is
+	// committed. Probe that real system path first instead of pretending the
+	// managed Direct mark/table already exists on a clean baseline.
+	if profile.unknown {
+		for _, route := range cfg.RoutesByType("direct") {
+			if route.Enabled() && route.RequiresAdapter {
+				candidates = append(candidates, config.Route{
+					Type: "direct", Tag: "system-default", Priority: route.Priority - 1,
+					AdapterMode: "system_default", ForbidProxy: true,
+				})
+				seen["system-default"] = true
+				break
+			}
+		}
+	}
 	selectedRoute, selectedRouteOK := cfg.RouteByTag(profile.service.SelectedRouteTag)
 	if profile.service.SelectedRouteTag != "" {
 		if !selectedRouteOK || !config.PathAllowed(profile.service, selectedRoute, cfg.Policy) {
@@ -391,10 +406,14 @@ func tspuStartsWithZapret(status, stalePolicy string) bool {
 }
 
 func bindResultToCandidate(result probe.RouteResult, route config.Route, activeRevision string) probe.RouteResult {
+	if route.AdapterMode == "system_default" && result.PathVerified && result.AdapterRevision == "" {
+		result.AdapterRevision = activeRevision
+	}
 	reason := ""
 	if result.Route != route.Tag || result.RouteType != route.Type {
 		reason = "probe_route_identity_mismatch"
-	} else if activeRevision != "" && result.AdapterRevision != activeRevision {
+	} else if activeRevision != "" && result.AdapterRevision != activeRevision &&
+		(result.PathVerified || result.Status == "OK" || result.Status == "DEGRADED") {
 		reason = "probe_adapter_revision_mismatch"
 	} else if (result.Status == "OK" || result.Status == "DEGRADED") && (!result.PathVerified || !result.ServiceOK) {
 		reason = "probe_success_without_complete_evidence"

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, parseResolverInput, stringArray, textValue, toDecisionCard } from './view-models';
+import { formatDateTime, groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, parseResolverInput, stringArray, textValue, toDecisionCard } from './view-models';
 import type { EventItem } from './api';
 
 describe('safe display values', () => {
@@ -12,6 +12,13 @@ describe('safe display values', () => {
   it('uses human readable health labels', () => {
     expect(humanStatus('NO_MANAGED_POLICIES')).toBe('Нет управляемых правил');
     expect(humanStatus('path.verified')).toBe('Путь подтверждён');
+    expect(humanStatus('ROUTE_AVAILABLE')).toBe('Интернет доступен');
+    expect(humanStatus('not_installed')).toBe('Не установлен');
+    expect(humanStatus('NO_SAFE_ROUTE')).toBe('Нет подтверждённого маршрута');
+  });
+
+  it('does not render zero-value timestamps as year one', () => {
+    expect(formatDateTime('0001-01-01T00:00:00Z')).toBe('Нет данных');
   });
 
   it('normalizes nullable API string lists before rendering controls', () => {
@@ -72,11 +79,12 @@ describe('decision cards', () => {
   });
 
   it('creates a user-facing card with detailed evidence kept behind open', () => {
-    const card = toDecisionCard(event);
+    const card = toDecisionCard({ ...event, details: { ...event.details, route_label: 'Direct (системный маршрут)' } });
     expect(card.device).toBe('Phone');
     expect(card.service).toBe('YouTube');
     expect(card.verified).toBe(true);
     expect(card.fallback).toBe(true);
     expect(card.durationMS).toBe(43);
+    expect(card.route).toBe('Direct (системный маршрут)');
   });
 });

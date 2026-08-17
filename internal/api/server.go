@@ -61,6 +61,7 @@ type Options struct {
 	TSPURefresh            TSPURefreshFunc
 	DNSObservationPath     string
 	Development            bool
+	DeferRecovery          bool
 	ManagementProofs       *managementproof.Manager
 	RequireManagementProof bool
 	SmartDNSValidator      SmartDNSValidator
@@ -134,6 +135,9 @@ type Server struct {
 	discoveryNow           func() time.Time
 	domainChecker          DomainChecker
 	discoverySuggestionMap map[string]discoverySuggestion
+	discoveryRecent        map[string]time.Time
+	discoveryInFlight      map[string]bool
+	deferRecovery          bool
 	schedulerOnce          sync.Once
 	schedulerCancel        context.CancelFunc
 	schedulerWG            sync.WaitGroup
@@ -233,7 +237,7 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 	}
 	dnsObservationPath := opts.DNSObservationPath
 	if dnsObservationPath == "" {
-		dnsObservationPath = filepath.Join(activeConfig.Storage.RuntimeDir, "dns-observations.log")
+		dnsObservationPath = config.DNSObservationPath(activeConfig.Storage.RuntimeDir)
 	}
 	broker, err := NewEventBroker(512)
 	if err != nil {
@@ -290,6 +294,9 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		discoveryNow:           discoveryNow,
 		domainChecker:          domainChecker,
 		discoverySuggestionMap: map[string]discoverySuggestion{},
+		discoveryRecent:        map[string]time.Time{},
+		discoveryInFlight:      map[string]bool{},
+		deferRecovery:          opts.DeferRecovery,
 	}
 	s.adaptiveZapret, err = buildAdaptiveRuntime(activeConfig, stateStore)
 	if err != nil {
@@ -309,7 +316,12 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		_ = stateStore.Close()
 		return nil, fmt.Errorf("refresh adaptive Zapret after recovery: %w", err)
 	}
-	s.recoverCommittedDataplane(context.Background())
+	if opts.DeferRecovery {
+		now := time.Now().UTC()
+		s.recovery = recoveryStatus{Status: "starting", RevisionID: activeRevision, StartedAt: now}
+	} else {
+		s.recoverCommittedDataplane(context.Background())
+	}
 	return s, nil
 }
 
@@ -348,34 +360,51 @@ func (s *Server) StartScheduler(ctx context.Context) {
 		s.schedulerCancel = cancel
 		s.mu.Unlock()
 
-		interval := time.Duration(s.cfg.Policy.HealthCheckIntervalSeconds) * time.Second
-		if interval <= 0 {
-			interval = 5 * time.Minute
+		if s.deferRecovery {
+			s.schedulerWG.Add(1)
+			go func() {
+				defer s.schedulerWG.Done()
+				recoveryCtx, cancelRecovery := context.WithTimeout(schedulerCtx, 90*time.Second)
+				defer cancelRecovery()
+				s.recoverCommittedDataplane(recoveryCtx)
+				if schedulerCtx.Err() == nil && s.currentRecoveryStatus().Status != "error" {
+					s.startOperationalSchedulers(schedulerCtx)
+				}
+			}()
+			return
 		}
-		s.schedulerWG.Add(1)
-		go func() {
-			defer s.schedulerWG.Done()
-			s.runHealthCycle(schedulerCtx)
-			ticker := time.NewTicker(interval)
-			defer ticker.Stop()
-			maintenance := time.NewTicker(6 * time.Hour)
-			defer maintenance.Stop()
-			for {
-				select {
-				case <-schedulerCtx.Done():
-					return
-				case <-ticker.C:
-					s.runHealthCycle(schedulerCtx)
-				case <-maintenance.C:
-					if err := s.store.Maintain(time.Now().UTC()); err != nil {
-						s.publishEvent(Event{Type: "storage.maintenance_failed", Severity: "error", ReasonCode: "bbolt_maintenance_failed", Details: map[string]any{"error": err.Error()}})
-					}
+		s.startOperationalSchedulers(schedulerCtx)
+	})
+}
+
+func (s *Server) startOperationalSchedulers(schedulerCtx context.Context) {
+	interval := time.Duration(s.cfg.Policy.HealthCheckIntervalSeconds) * time.Second
+	if interval <= 0 {
+		interval = 5 * time.Minute
+	}
+	s.schedulerWG.Add(1)
+	go func() {
+		defer s.schedulerWG.Done()
+		s.runHealthCycle(schedulerCtx)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		maintenance := time.NewTicker(6 * time.Hour)
+		defer maintenance.Stop()
+		for {
+			select {
+			case <-schedulerCtx.Done():
+				return
+			case <-ticker.C:
+				s.runHealthCycle(schedulerCtx)
+			case <-maintenance.C:
+				if err := s.store.Maintain(time.Now().UTC()); err != nil {
+					s.publishEvent(Event{Type: "storage.maintenance_failed", Severity: "error", ReasonCode: "bbolt_maintenance_failed", Details: map[string]any{"error": err.Error()}})
 				}
 			}
-		}()
-		s.startTSPUScheduler(schedulerCtx)
-		s.startDNSDiscovery(schedulerCtx)
-	})
+		}
+	}()
+	s.startTSPUScheduler(schedulerCtx)
+	s.startDNSDiscovery(schedulerCtx)
 }
 
 func (s *Server) startTSPUScheduler(ctx context.Context) {
@@ -410,6 +439,11 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 	if active == nil || active.ServiceForDomain(observation.Domain) != "" {
 		return
 	}
+	startedAt := s.discoveryNow()
+	if !s.beginDiscoveryObservation(observation.Domain, startedAt) {
+		return
+	}
+	defer s.finishDiscoveryObservation(observation.Domain, startedAt)
 	mode, _, _, _ := s.effectiveDiscoverySettings(active)
 	if mode == "locked" {
 		s.publishEvent(Event{Type: "domain.discovery", Severity: "info", ReasonCode: "discovery_locked", Details: map[string]any{"domain": observation.Domain, "query_type": observation.QueryType, "mode": mode}})
@@ -444,12 +478,47 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 	details := map[string]any{
 		"domain": check.Domain, "category": check.Category, "status": check.Status,
 		"confidence": check.Confidence, "tspu_status": check.TSPUStatus, "query_type": observation.QueryType, "mode": mode,
+		"service": check.Service, "decision_duration_ms": s.discoveryNow().Sub(startedAt).Milliseconds(),
+		"candidates": discoveryCandidateDetails(check.Results),
+	}
+	if client := net.ParseIP(strings.TrimSpace(observation.Client)); client != nil {
+		clientIP := client.String()
+		details["client_ip"] = clientIP
+		if privacyProvider, ok := s.provider.(platform.PrivacyDeviceProvider); ok {
+			for _, device := range privacyProvider.DevicesWithPrivacy(active, true) {
+				if fmt.Sprint(device["ip"]) != clientIP {
+					continue
+				}
+				details["device_name"] = fmt.Sprint(device["name"])
+				details["device_id"] = fmt.Sprint(device["id"])
+				break
+			}
+		}
+	}
+	attempted := make([]string, 0, len(check.Results))
+	for _, result := range check.Results {
+		attempted = append(attempted, discoveryRouteLabel(result))
+	}
+	if len(attempted) > 0 {
+		details["fallback_sequence"] = attempted
+		details["fallback_performed"] = len(attempted) > 1
 	}
 	if check.Selected != nil {
 		details["route"] = check.Selected.Route
+		details["route_label"] = discoveryRouteLabel(*check.Selected)
 		details["route_type"] = check.Selected.RouteType
 		details["path_verified"] = check.Selected.PathVerified
 		details["route_reason"] = check.Selected.ReasonCode
+		details["destination_ip"] = check.Selected.ConnectedIP
+		if details["destination_ip"] == "" {
+			details["destination_ip"] = check.Selected.ResolvedIP
+		}
+		details["probe_latency_ms"] = check.Selected.LatencyMS
+		details["http_status"] = discoveryHTTPStatus(*check.Selected)
+		details["tls_status"] = map[bool]string{true: "TLS OK", false: "TLS не подтверждён"}[check.Selected.TLSOK]
+		details["dns_status"] = map[bool]string{true: "DNS resolved", false: "DNS не подтверждён"}[check.Selected.DNSOK]
+		details["egress_interface"] = check.Selected.Interface
+		details["routing_table"] = check.Selected.RouteTable
 	}
 	s.publishEvent(Event{Type: "route.decision", Severity: "info", ReasonCode: "domain_observed_and_classified", Details: details})
 	if mode == "observe_only" {
@@ -1028,10 +1097,11 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 }
 
 type serviceClassifyRequest struct {
-	Domain       string   `json:"domain"`
-	Category     string   `json:"category"`
-	AllowedPaths []string `json:"allowed_paths,omitempty"`
-	BaseVersion  int64    `json:"base_version"`
+	Domain                     string   `json:"domain"`
+	Category                   string   `json:"category"`
+	AllowedPaths               []string `json:"allowed_paths,omitempty"`
+	BaseVersion                int64    `json:"base_version"`
+	AllowDisableFlowOffloading bool     `json:"allow_disable_flow_offloading,omitempty"`
 }
 
 func serviceForClassifyRequest(request serviceClassifyRequest) (string, config.Service, error) {
@@ -1113,11 +1183,15 @@ func (s *Server) handleServiceClassify(w http.ResponseWriter, r *http.Request) {
 	}
 	domain := service.Domains[0]
 	id := "user_" + strings.NewReplacer(".", "_", "-", "_").Replace(tspu.ETLDPlusOne(domain))
+	operations := []ChangeOp{{Type: "set", Path: "/services/" + id, Value: service}}
+	if request.AllowDisableFlowOffloading {
+		operations = append(operations, ChangeOp{Type: "set", Path: "/openwrt/flow_offloading_policy", Value: "disable"})
+	}
 	change, err := s.createDraftChange(
 		"Change route class for "+domain,
 		"Persist the selected route class for an observed domain",
 		request.BaseVersion,
-		[]ChangeOp{{Type: "set", Path: "/services/" + id, Value: service}},
+		operations,
 		currentSession(r).User,
 	)
 	if err != nil {
@@ -1196,13 +1270,17 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 	for _, route := range routes {
 		health, observed := healthByTag[route.Tag]
 		status := route.Status
+		resolverConfigured := route.DNSServer != "" && !strings.Contains(route.DNSServer, "PLACEHOLDER")
+		validation, validationOK := s.loadSmartDNSValidation(route.DNSServer)
 		if observed {
 			status = health.State
-			if health.State == "healthy" {
-				ready++
+		}
+		if !route.Disabled && resolverConfigured && ((observed && health.State == "healthy") || (!observed && validationOK)) {
+			ready++
+			if !observed {
+				status = "validated"
 			}
 		}
-		resolverConfigured := route.DNSServer != "" && !strings.Contains(route.DNSServer, "PLACEHOLDER")
 		if !route.Disabled && resolverConfigured {
 			configured++
 		}
@@ -1218,7 +1296,7 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 			host, port, _ := net.SplitHostPort(route.DNSServer)
 			item["resolver_ip"] = host
 			item["resolver_port"] = port
-			if validation, ok := s.loadSmartDNSValidation(route.DNSServer); ok {
+			if validationOK {
 				item["last_validation"] = validation
 			}
 		}
@@ -1764,7 +1842,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	recovery := s.currentRecoveryStatus()
 	status := "ok"
-	if recovery.Status == "error" {
+	if recovery.Status == "starting" {
+		status = "starting"
+	} else if recovery.Status == "error" {
 		status = "degraded"
 	}
 	writeData(w, r, map[string]any{

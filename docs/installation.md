@@ -64,9 +64,11 @@ sh install.sh --install --enable-services
 ```
 
 Команда устанавливает ARM64-бинарник, OpenWrt adapter, init-скрипты и hotplug
-hooks. `router-policy`, boot guard и watchdog включаются для следующей загрузки;
-control plane и watchdog запускаются сразу. Xray и nfqws не включаются вслепую:
-ими управляет подтверждённая dataplane-транзакция.
+hooks. DNS observer, `router-policy`, boot guard и watchdog включаются для
+следующей загрузки; control plane и watchdog запускаются сразу. Одноразовый
+observer bootstrap выполняется до штатного dnsmasq и не перезапускает DHCP/DNS
+в конце загрузки. Xray и nfqws не включаются вслепую: ими управляет
+подтверждённая dataplane-транзакция.
 
 Установщик также ставит `scripts/calibrate-zapret.sh`. Заводского домена для
 `blockcheck` нет: после установки калибровка имеет состояние
@@ -142,15 +144,20 @@ unattended production upgrade.
 ChangeSet/transaction, не вызывает OpenWrt adapter, не запускает Xray/`nfqws` и
 не меняет route или flow offloading. Повторный запуск использует тот же baseline;
 любое существующее, частичное или повреждённое revision state не
-перезаписывается. Этот bootstrap проверен локально и ещё требует повторного
-first-start/reboot pass на OpenWrt.
+перезаписывается. Observation-only dnsmasq include включает журналирование
+запросов в tmpfs, но не добавляет доменные правила и не перехватывает трафик.
+На boot include создаётся отдельным ранним init-шагом до запуска dnsmasq.
+Baseline first start и observation от LAN-клиента проверены на factory OpenWrt;
+повторный reboot пакета после исправления порядка запуска остаётся отдельным
+аппаратным gate.
 
 - не устанавливает Xray и `nfqws`;
 - не добавляет VPN-подписку и не выбирает production Smart DNS resolver;
 - не подтверждает совместимость с произвольным OpenWrt-устройством;
-- не устанавливает собственный TGWS transport; для `external_socks` нужен
-  заранее запущенный loopback SOCKS5 endpoint. Telegram bot/chat настраиваются
-  отдельно после установки.
+- не включает TG WS Proxy автоматически; managed transport устанавливается и
+  настраивается отдельно через Component Manager. `external_socks` остаётся
+  Advanced-интеграцией для уже существующего SOCKS5 endpoint. Telegram bot/chat
+  настраиваются отдельно после установки.
 
 То есть control plane устанавливается чисто и транзакционно, но полноценные
 Zapret/VLESS/Smart DNS маршруты требуют внешних бинарников, пользовательской

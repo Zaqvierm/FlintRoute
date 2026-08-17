@@ -1,5 +1,6 @@
 import { render } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import QRCode from 'qrcode';
 import {
   APIError,
   addManualVLESSServer,
@@ -85,11 +86,38 @@ import {
 import './styles.css';
 
 const navigation = [
-  { title: 'Главное', screens: ['Обзор', 'Карта сети', 'Устройства', 'Поток решений'] },
-  { title: 'Маршрутизация', screens: ['Сервисы', 'Маршруты', 'Компоненты', 'VLESS-серверы', 'Smart DNS', 'Zapret', 'TG WS Proxy', 'External SOCKS', 'Discovery'] },
+  { title: 'Главное', screens: ['Быстрая настройка', 'Обзор', 'Карта сети', 'Устройства', 'Поток решений'] },
+  { title: 'Маршрутизация', screens: ['Сервисы', 'Маршруты', 'Компоненты', 'VLESS-серверы', 'Smart DNS', 'Zapret', 'TG WS Proxy', 'Discovery'] },
   { title: 'Система', screens: ['Трафик', 'Telegram', 'Ревизии и recovery', 'Диагностика', 'Безопасность', 'Advanced'] }
 ];
-const availableScreens = new Set(navigation.flatMap((group) => group.screens));
+const availableScreens = new Set([...navigation.flatMap((group) => group.screens), 'External SOCKS']);
+
+function humanChangeBlock(reason?: string): string {
+  const messages: Record<string, string> = {
+    flow_offloading_incompatible: 'Аппаратное ускорение пакетов мешает выборочной маршрутизации. Разреши FlintRoute отключить flow offloading и повтори.',
+    transparent_activation_unverified: 'Для этого правила нужен управляемый Xray. Сначала открой VLESS-серверы и явно включи managed Xray.',
+    lan_interfaces_unverified: 'FlintRoute не смог надёжно определить LAN-интерфейсы. Сеть не изменена; открой диагностику.',
+    wan_interface_unverified: 'FlintRoute не смог надёжно определить выход в интернет. Сеть не изменена; открой диагностику.'
+  };
+  return messages[reason ?? ''] ?? `Правило проверено, но применять его пока небезопасно${reason ? `: ${reason}` : ''}. Сеть не изменена.`;
+}
+
+function humanChangeFailure(change: ChangeSet): string {
+  if (change.state === 'requires_device') return humanChangeBlock(change.artifact_block_reason);
+  if (change.state === 'rolled_back') return 'Проверка нового правила не прошла. FlintRoute восстановил предыдущую рабочую конфигурацию; интернет не должен пострадать.';
+  if (change.state === 'failed') return 'Не удалось применить правило. FlintRoute остановил изменение и сохранил прежнюю конфигурацию.';
+  return `Правило не применено. Техническое состояние: ${change.state}. Открой подробности для диагностики.`;
+}
+
+function humanSmartDNSReason(reason?: string): string {
+  const messages: Record<string, string> = {
+    route_nft_counter_did_not_advance: 'DNS-сервер доступен, но FlintRoute пока не увидел трафик через новое правило.',
+    smart_dns_socket_mark_or_policy_missing: 'DNS-сервер доступен, но правило маршрутизации не подтвердилось на роутере.',
+    probe_adapter_revision_mismatch: 'Старая проверка относится к предыдущей конфигурации. Нужна свежая проверка пути.',
+    dnsmasq_not_ready: 'dnsmasq не принял новую конфигурацию. FlintRoute восстановил предыдущую.'
+  };
+  return messages[reason ?? ''] ?? (reason ? `Проверка пути не пройдена: ${reason}.` : 'Конфигурация сохранена, но путь ещё не подтверждён.');
+}
 
 const unavailableOverview = {
   internet: 'unavailable',
@@ -180,6 +208,16 @@ function App() {
       setRevisions(nextRevisions);
       setConfigVersion(nextRevisions.config_version);
       setDiscovery(nextDiscovery);
+      if (nextRevisions.config_version <= 1 && nextServices.length === 0) {
+        try {
+          if (window.localStorage.getItem('flintroute-first-run-complete') !== '1' && window.localStorage.getItem('flintroute-first-run-opened') !== '1') {
+            window.localStorage.setItem('flintroute-first-run-opened', '1');
+            selectScreen('Быстрая настройка');
+          }
+        } catch {
+          // The wizard remains available from navigation when storage is disabled.
+        }
+      }
 
       const optionalErrors: string[] = [];
       const optional = await Promise.allSettled([
@@ -454,7 +492,8 @@ function Content(props: any) {
     case 'Вход':
       return <LoginScreen />;
     case 'Первичная настройка':
-      return <SetupScreen />;
+    case 'Быстрая настройка':
+      return <SetupScreen {...props} />;
     case 'Обзор':
       return <OverviewScreen {...props} />;
     case 'Карта сети':
@@ -494,7 +533,7 @@ function Content(props: any) {
     case 'Telegram':
       return <Telegram role={props.session.role} events={props.events} />;
     case 'Поток решений':
-      return <DecisionFlow events={props.events} />;
+      return <DecisionFlow events={props.events} discovery={props.discovery} />;
     case 'Диагностика':
       return <Diagnostics system={props.system} diagnostics={props.diagnostics} lifecycle={props.lifecycle} storage={props.storage} />;
     case 'Безопасность':
@@ -775,14 +814,31 @@ function Services({
     setMessage(`Меняю правило для ${domain}…`);
     let changeID = '';
     try {
-      const created = await classifyService(domain, category, configVersion, paths);
+      let created = await classifyService(domain, category, configVersion, paths);
       changeID = created.change.id;
-      await changeAction(changeID, 'validate');
+      let validated = await changeAction(changeID, 'validate');
+      if (validated.artifact_block_reason === 'flow_offloading_incompatible') {
+        await changeAction(changeID, 'rollback');
+        changeID = '';
+        const accepted = window.confirm(
+          'Аппаратное ускорение пакетов мешает выборочной маршрутизации. FlintRoute может безопасно отключить flow offloading в той же транзакции и восстановит прежнее состояние при ошибке. Продолжить?'
+        );
+        if (!accepted) {
+          setMessage('Правило не применено. Для выборочной маршрутизации нужно разрешить FlintRoute отключить flow offloading. Интернет не изменён.');
+          return;
+        }
+        created = await classifyService(domain, category, configVersion, paths, true);
+        changeID = created.change.id;
+        validated = await changeAction(changeID, 'validate');
+      }
+      if (validated.artifacts_ready === false) {
+        throw new Error(humanChangeBlock(validated.artifact_block_reason));
+      }
       const applied = await changeAction(changeID, 'apply');
       if (applied.state === 'awaiting_confirmation') {
         await changeAction(changeID, 'confirm');
       } else if (applied.state !== 'committed') {
-        throw new Error(`Изменение остановилось в состоянии ${applied.state}`);
+        throw new Error(humanChangeFailure(applied));
       }
       setMessage(`${domain}: правило применено`);
       setEditor(null);
@@ -1057,7 +1113,9 @@ function Routes({ routes, navigate }: { routes: any[]; navigate: (screen: string
   }];
   const smartDNSRoutes = withVLESS.filter((route) => route.type === 'smart_dns');
   const configuredSmartDNS = smartDNSRoutes.filter((route) => !route.disabled && String(route.status).toUpperCase() !== 'NOT_CONFIGURED');
-  const routeItems = withVLESS.filter((route) => route.type !== 'smart_dns');
+  const primaryTypes = new Set(['direct', 'zapret', 'vless', 'drop']);
+  const routeItems = withVLESS.filter((route) => primaryTypes.has(route.type));
+  const systemItems = withVLESS.filter((route) => ['system_default', 'unclassified', 'external_socks'].includes(route.type));
   if (smartDNSRoutes.length) {
     routeItems.push({
       type: 'smart_dns', tag: 'smart-dns', status: configuredSmartDNS.length ? 'CONFIGURED' : 'NOT_CONFIGURED',
@@ -1066,20 +1124,21 @@ function Routes({ routes, navigate }: { routes: any[]; navigate: (screen: string
     });
   }
   const titles: Record<string, string> = {
-    system_default: 'Системный default route',
-    direct: 'FlintRoute Direct',
-    unclassified: 'Неклассифицированный трафик',
-    smart_dns: 'Smart DNS · conditional DNS'
+    system_default: 'Обычный маршрут роутера',
+    direct: 'Direct',
+    unclassified: 'Трафик без правила',
+    smart_dns: 'Smart DNS',
+    external_socks: 'Внешний SOCKS5'
   };
   const actions: Record<string, [string, string]> = {
     direct: ['Настроить правила', 'Сервисы'], drop: ['Настроить блокировку', 'Сервисы'],
     zapret: ['Настроить Zapret', 'Zapret'], smart_dns: ['Настроить Smart DNS', 'Smart DNS'],
     vless: ['Открыть VLESS-серверы', 'VLESS-серверы'], external_socks: ['Настроить внешний SOCKS', 'External SOCKS']
   };
-  return <section><PageHeader title="Маршруты" text="Системный маршрут, управляемые пути FlintRoute и неклассифицированный трафик показаны отдельно." /><Grid>{routeItems.map((route) => (
+  return <section><PageHeader title="Маршруты" text="Главные способы открыть сервис. FlintRoute покажет, что работает, кто это использует и что настроить дальше." /><Grid>{routeItems.map((route) => (
     <EntityCard title={titles[route.type] ?? route.tag} status={route.status || (route.disabled ? 'disabled' : 'configured')} onOpen={() => setSelected(route)} key={`${route.type}:${route.tag}`}>
       <RouteBadge type={route.type} />
-      <div class="row"><b>{humanStatus(route.status || (route.disabled ? 'выключен' : 'настроен'))}</b><span>{route.managed ? 'Управляет FlintRoute' : 'Системный путь'}</span></div>
+      <div class="row"><b>{humanStatus(route.status || (route.disabled ? 'выключен' : 'настроен'))}</b><span>{route.managed ? 'FlintRoute управляет этим путём' : 'Требует настройки'}</span></div>
       <p>{route.scope}</p>
       {route.type === 'direct' && <div class="row"><b>{route.managed_domains ?? 0}</b><span>доменов под managed Direct</span></div>}
       {route.type === 'smart_dns' && <small>Это выбор DNS-ответа для домена, а не VPN и не туннель.</small>}
@@ -1087,7 +1146,14 @@ function Routes({ routes, navigate }: { routes: any[]; navigate: (screen: string
       {route.type === 'vless' && !activeVLESS && <small>VLESS недоступен: нет проверенных серверов.</small>}
       {actions[route.type] && <button class="route-action" onClick={() => navigate(actions[route.type][1])}>{actions[route.type][0]}</button>}
     </EntityCard>
-  ))}</Grid><DetailDrawer title={titles[selected?.type] ?? selected?.tag ?? 'Маршрут'} open={Boolean(selected)} onClose={() => setSelected(null)}><InfoGrid items={[["Тип", selected?.type], ["Owner", selected?.owner], ["Состояние", selected?.status], ["Фактический путь", selected?.effective_path], ["Scope", selected?.scope], ["Fallback", selected?.fallback], ["Health", selected?.health]]} /><RawDisclosure value={selected} /></DetailDrawer></section>;
+  ))}</Grid>
+  <details class="raw-disclosure"><summary>Системные и дополнительные пути</summary>
+    <p>Обычный маршрут роутера обслуживает трафик без правил. Внешний SOCKS5 нужен только если у тебя уже есть отдельный прокси, которым FlintRoute не управляет.</p>
+    <Grid>{systemItems.map((route) => <EntityCard title={titles[route.type] ?? route.tag} status={route.status} onOpen={() => setSelected(route)} key={`${route.type}:${route.tag}`}>
+      <p>{route.scope}</p>{route.type === 'external_socks' && <button onClick={() => navigate('External SOCKS')}>Добавить внешний SOCKS5</button>}
+    </EntityCard>)}</Grid>
+  </details>
+  <DetailDrawer title={titles[selected?.type] ?? selected?.tag ?? 'Маршрут'} open={Boolean(selected)} onClose={() => setSelected(null)}><InfoGrid items={[["Тип", selected?.type], ["Owner", selected?.owner], ["Состояние", selected?.status], ["Фактический путь", selected?.effective_path], ["Scope", selected?.scope], ["Fallback", selected?.fallback], ["Health", selected?.health]]} /><RawDisclosure value={selected} /></DetailDrawer></section>;
 }
 
 const componentNames: Record<ComponentKind, string> = {
@@ -1211,6 +1277,10 @@ function Discovery({ data, configVersion, role, refresh }: { data: DiscoveryStat
   }
   if (!data) return <Generic title="Discovery" text="Загружаю состояние…" />;
   return <section class="grid">
+    <Card title="Наблюдение за доменами">
+      <div class="row"><b>{data.observation_source?.status === 'receiving' ? 'Вижу DNS-запросы' : data.observation_source?.status === 'listening' ? 'Жду новые запросы' : 'DNS-запросы не поступают'}</b><span>{humanStatus(data.observation_source?.status)}</span><small>{data.observation_source?.last_updated ? `последний запрос: ${formatDateTime(data.observation_source.last_updated)}` : data.observation_source?.reason ?? 'Источник ещё не создал журнал'}</small></div>
+      <p>{data.observation_source?.status === 'waiting' || data.observation_source?.status === 'unavailable' ? 'FlintRoute пока не получает наблюдения от DNS. Проверь, что клиент использует DNS роутера.' : 'Открывай сайты с устройства в LAN или Wi-Fi — новые домены появятся в Потоке решений.'}</p>
+    </Card>
     <Card title="Режим discovery">
       <div class="row"><b>{data.mode}</b><span>{data.paused ? `остановлен: ${data.paused_reason}` : 'активен'}</span><small>{data.applied_last_hour} правил за последний час</small></div>
       <p>observe_only только журналирует; suggest добавляет предложения; auto_apply_verified применяет лишь PathVerified; locked не запускает проверки.</p>
@@ -1634,6 +1704,7 @@ function Zapret({ routes, configVersion, role, refresh }: { routes: any[]; confi
     </Card>
     {calibration && calibration.state !== 'idle' && <Card title="Подбор стратегии">
       <div class="row"><b>{humanStatus(calibration.state)}</b><span>{humanStatus(calibration.stage)}</span><small>{calibration.domain} · {calibration.duration_ms ? `${Math.round(calibration.duration_ms / 1000)} сек` : 'идёт'}</small></div>
+      {calibration.state === 'running' && <div class="row"><b>Проверено вариантов</b><span>{calibration.checks_completed ?? 0}{calibration.checks_total ? ` / ${calibration.checks_total}` : ''}</span><small>Upstream сам определяет число безопасных комбинаций для этой платформы.</small></div>}
       {calibration.error && <p class="reason">{calibration.error_code}: {calibration.error}</p>}
       {(calibration.candidates ?? []).map((candidate, index) => <div class="row" key={candidate.profile_id}><b>Кандидат {index + 1}</b><span>{candidate.provider} {candidate.provider_version}</span><small>{candidate.transports.join(' + ')} · {candidate.occurrences ?? 0} подтверждений</small></div>)}
       {calibration.activation_required && <p>Профили записаны в проверенный каталог. Выбор не применяется молча: ниже нужно явно включить managed Zapret одной транзакцией.</p>}
@@ -1672,6 +1743,7 @@ function SmartDNS({
     getSmartDNS().then(setStatus).catch((reason) => setError(reason instanceof Error ? reason.message : 'Smart DNS недоступен'));
   }, []);
   async function save() {
+    let changeID = '';
     let values;
     try {
       values = resolvers.filter((value) => value.trim()).map(parseResolverInput);
@@ -1693,16 +1765,22 @@ function SmartDNS({
     try {
       const result = await configureSmartDNS(values, testDomain.trim(), configVersion);
       setValidations(result.validations ?? []);
+      changeID = result.change.id;
       let change = await changeAction(result.change.id, 'validate');
+      if (change.artifacts_ready === false) throw new Error(humanChangeBlock(change.artifact_block_reason));
       change = await changeAction(change.id, 'apply');
-      if (change.state !== 'awaiting_confirmation') throw new Error(`Smart DNS apply завершился состоянием ${change.state}`);
+      if (change.state !== 'awaiting_confirmation') throw new Error(humanChangeFailure(change));
       change = await changeAction(change.id, 'confirm');
+      changeID = '';
       setResolvers(['']);
       setMessage(`Smart DNS проверен и применён: ${result.endpoint_count}.`);
       setStatus(await getSmartDNS());
       await refresh();
     } catch (reason) {
-      setMessage(reason instanceof Error ? reason.message : 'Smart DNS не прошёл проверку.');
+      if (changeID) {
+        try { await changeAction(changeID, 'rollback'); } catch { /* preserve the original error */ }
+      }
+      setMessage(reason instanceof Error ? reason.message : 'Smart DNS не прошёл проверку. Предыдущая конфигурация сохранена.');
     } finally {
       setBusy(false);
     }
@@ -1712,7 +1790,8 @@ function SmartDNS({
   return (
     <section class="grid">
       <Card title="Состояние Smart DNS">
-        <div class="row"><b>{status.ready ?? 0}</b><span>готовых резолверов</span><small>{status.configured ? 'настроен' : 'не настроен'}</small></div>
+        <div class="row"><b>{status.configured_count ?? 0}</b><span>DNS-серверов настроено</span><small>{status.ready ?? 0} с актуальной проверкой пути</small></div>
+        {status.configured && !status.ready && <p class="action-status">DNS-серверы сохранены, но маршрут пока не подтверждён. {humanSmartDNSReason(status.routes?.[0]?.health?.last_reason)}</p>}
         <h4>Проверка успеха</h4>
         <div class="chips">{(status.success_contract ?? []).map((item: string) => <span class="chip">{item}</span>)}</div>
         {role === 'administrator' && (
@@ -1738,6 +1817,8 @@ function SmartDNS({
       {(status.routes ?? []).map((route: any) => (
         <Card title={route.tag} key={route.tag}>
           <div class="row"><RouteBadge type="smart_dns" /><b>{route.status || 'не проверен'}</b><span>{route.resolver_configured ? 'endpoint задан' : 'нужен endpoint'}</span></div>
+          {route.last_validation && <div class="row"><b>{route.last_validation.result?.udp?.safe ? 'UDP OK' : 'UDP FAIL'}</b><b>{route.last_validation.result?.tcp?.safe ? 'TCP OK' : 'TCP FAIL'}</b><b>{route.last_validation.result?.tls_ok ? 'TLS OK' : 'TLS FAIL'}</b><b>{route.last_validation.result?.http_ok ? `HTTP ${route.last_validation.result.http_status}` : 'HTTP FAIL'}</b></div>}
+          {route.health?.last_reason && <p>{humanSmartDNSReason(route.health.last_reason)}</p>}
           <small>{route.connect_to_resolved_ip ? 'HTTP/TLS проверяется по адресу из ответа DNS' : 'Маршрут выключен: resolver ещё не проверен'}</small>
           <small>Conditional DNS, не VPN.</small>
         </Card>
@@ -1800,6 +1881,7 @@ function TGWS({ role, navigate }: { role: SessionInfo['role']; navigate: (screen
   const [port, setPort] = useState(1443);
   const [fakeTLS, setFakeTLS] = useState('');
   const [connectLink, setConnectLink] = useState('');
+  const [connectQR, setConnectQR] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   async function load() {
@@ -1813,6 +1895,16 @@ function TGWS({ role, navigate }: { role: SessionInfo['role']; navigate: (screen
     }
   }
   useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    let cancelled = false;
+    setConnectQR('');
+    if (connectLink) {
+      void QRCode.toDataURL(connectLink, { width: 256, margin: 2, errorCorrectionLevel: 'M' })
+        .then((value) => { if (!cancelled) setConnectQR(value); })
+        .catch(() => { if (!cancelled) setMessage('Ссылка готова, но QR-код построить не удалось. Используй кнопку «Открыть в Telegram».'); });
+    }
+    return () => { cancelled = true; };
+  }, [connectLink]);
   async function configure() {
     setBusy(true);
     setConnectLink('');
@@ -1855,6 +1947,7 @@ function TGWS({ role, navigate }: { role: SessionInfo['role']; navigate: (screen
       </Card>}
       {connectLink && <Card title="Одноразовая ссылка подключения">
         <p>Ссылка содержит секрет. Она показывается только сейчас и не попадёт в обычный API или журнал.</p>
+        {connectQR && <img src={connectQR} width="256" height="256" alt="QR-код для подключения Telegram к TG WS Proxy" />}
         <div class="actions"><a class="button primary" href={connectLink}>Открыть в Telegram</a><button onClick={() => void navigator.clipboard.writeText(connectLink)}>Копировать</button></div>
       </Card>}
     </div>
@@ -1908,7 +2001,7 @@ function Telegram({ role, events: systemEvents }: { role: SessionInfo['role']; e
   </Card><Card title="Последние доставки">{telegramEvents.slice(0, 10).map((event) => <EventRow event={event} key={`${event.time}:${event.id}`} />)}{!telegramEvents.length && <EmptyState title="Событий Telegram нет" text="После теста или доставки здесь появится статус без токена и chat ID." />}</Card></div></section>;
 }
 
-function DecisionFlow({ events }: { events: EventItem[] }) {
+function DecisionFlow({ events, discovery }: { events: EventItem[]; discovery: DiscoveryStatus | null }) {
   const [retention, setRetention] = useState(() => Number(localStorage.getItem('decision-retention-minutes') || 30));
   const [selected, setSelected] = useState<ReturnType<typeof toDecisionCard> | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
@@ -1942,7 +2035,7 @@ function DecisionFlow({ events }: { events: EventItem[] }) {
     <div class="decision-main"><div><small>Домен</small><b>{decision.domain}</b><span>{decision.service}</span></div><div><small>Стратегия</small><b>{decision.strategy}</b><span>{decision.category}</span></div><div><small>Маршрут</small><b>{decision.route}</b><span>{decision.fallback ? `Fallback: ${decision.fallbackPath.join(' → ') || 'да'}` : 'Без fallback'}</span></div></div>
     <footer><span class={decision.verified ? 'verified' : 'unverified'}>{decision.verified ? 'Путь подтверждён' : 'Путь не подтверждён'}</span><span>{decision.durationMS !== undefined ? `${decision.durationMS} мс` : 'Время не измерено'}</span><button onClick={() => setSelected(decision)}>Открыть</button></footer>
   </article>)}</div>
-  {!decisions.length && <EmptyState title="Решений за выбранный период нет" text="Сними фильтры или дождись нового сетевого запроса." />}
+  {!decisions.length && <EmptyState title="Решений за выбранный период нет" text={discovery?.observation_source?.status === 'waiting' || discovery?.observation_source?.status === 'unavailable' ? 'Discovery не получает DNS-запросы. Открой раздел Discovery и проверь DNS клиента.' : 'Discovery наблюдает трафик. Открой новый сайт с устройства в LAN или Wi-Fi.'} />}
   <DetailDrawer title={selected ? `${selected.domain} · ${selected.route}` : 'Решение'} open={Boolean(selected)} onClose={() => setSelected(null)}>
     {selected && <DecisionDetails decision={selected} />}
   </DetailDrawer>
@@ -2022,9 +2115,105 @@ function LoginScreen() {
   return <Card title="Вход"><p>Локальный администратор. Сессия защищается HttpOnly cookie и CSRF-токеном.</p><button class="primary">Войти локально</button></Card>;
 }
 
-function SetupScreen() {
-  const steps = ['Администратор', 'Платформа', 'Сеть', 'VPN-подписка', 'VLESS', 'Smart DNS', 'Zapret', 'Telegram', 'IPv6', 'Политики', 'Приватность', 'Уведомления', 'Backup', 'Test apply', 'Confirm'];
-  return <Card title="Первичная настройка">{steps.map((s, i) => <div class="row"><b>{i + 1}</b><span>{s}</span><small>{i < 3 ? 'ready' : 'requires input'}</small></div>)}</Card>;
+function SetupScreen({ overview, services, routes, discovery, navigate }: any) {
+  const [state, setState] = useState<any>({ loading: true, components: [], pool: null, smartDNS: null, tgws: null, zapret: null, error: '' });
+  const [directOnly, setDirectOnly] = useState(() => {
+    try { return window.localStorage.getItem('flintroute-first-run-direct') === '1'; } catch { return false; }
+  });
+  const [automaticServices, setAutomaticServices] = useState(() => {
+    try { return window.localStorage.getItem('flintroute-first-run-services-auto') === '1'; } catch { return false; }
+  });
+
+  async function load() {
+    setState((old: any) => ({ ...old, loading: true, error: '' }));
+    const results = await Promise.allSettled([getComponents(), getVLESSPool(), getSmartDNS(), getTGWS(), getZapret()]);
+    const value = (index: number, fallback: any) => results[index].status === 'fulfilled' ? (results[index] as PromiseFulfilledResult<any>).value : fallback;
+    const failed = results.filter((item) => item.status === 'rejected');
+    setState({
+      loading: false,
+      components: value(0, []),
+      pool: value(1, null),
+      smartDNS: value(2, null),
+      tgws: value(3, null),
+      zapret: value(4, null),
+      error: failed.length ? 'Часть проверок недоступна. Повтори после восстановления соединения.' : ''
+    });
+  }
+
+  useEffect(() => { void load(); }, []);
+
+  const routerReady = !['unavailable', 'failed', 'error'].includes(String(overview?.internet ?? '').toLowerCase())
+    && !['unavailable', 'failed', 'error'].includes(String(overview?.dns ?? '').toLowerCase());
+  const components = asArray(state.components).map(asRecord);
+  const xray = components.find((item) => item.kind === 'xray');
+  const zapretComponent = components.find((item) => item.kind === 'zapret');
+  const tgwsComponent = components.find((item) => item.kind === 'tg_ws_proxy');
+  const verifiedServers = asArray(state.pool?.servers).filter((raw) => Boolean(asRecord(raw).path_verified)).length;
+  const smartReady = Number(state.smartDNS?.ready_resolvers ?? state.smartDNS?.ready ?? 0) > 0;
+  const tgwsReady = Boolean(state.tgws?.client_path_verified);
+  const zapretReady = Boolean(state.zapret?.ready ?? zapretComponent?.health_ready);
+  const providerChosen = directOnly || verifiedServers > 0 || smartReady || tgwsReady || zapretReady;
+  const serviceChoiceDone = automaticServices || asArray(services).length > 0;
+  const setupReady = routerReady && providerChosen && serviceChoiceDone;
+
+  function chooseDirect() {
+    setDirectOnly(true);
+    try { window.localStorage.setItem('flintroute-first-run-direct', '1'); } catch { /* current session still works */ }
+  }
+  function chooseAutomatic() {
+    setAutomaticServices(true);
+    try { window.localStorage.setItem('flintroute-first-run-services-auto', '1'); } catch { /* current session still works */ }
+  }
+  function finish() {
+    if (!setupReady) return;
+    try { window.localStorage.setItem('flintroute-first-run-complete', '1'); } catch { /* overview is still reachable */ }
+    navigate('Обзор');
+  }
+
+  return <section>
+    <PageHeader title="Быстрая настройка" text="Пять шагов: проверить роутер, выбрать способы подключения, добавить источники, назначить сервисы и убедиться, что выбранные пути работают.">
+      <button onClick={() => void load()} disabled={state.loading}>{state.loading ? 'Проверяю…' : 'Проверить снова'}</button>
+    </PageHeader>
+    {state.error && <div class="inline-error"><b>Не все проверки завершены</b><span>{state.error}</span><button onClick={() => void load()}>Повторить</button></div>}
+    <div class="setup-progress">{[
+      ['1', 'Роутер', routerReady],
+      ['2', 'Маршруты', providerChosen],
+      ['3', 'Источники', providerChosen],
+      ['4', 'Сервисы', serviceChoiceDone],
+      ['5', 'Проверка', setupReady]
+    ].map(([number, label, done]) => <div class={done ? 'done' : ''} key={String(number)}><b>{number}</b><span>{label}</span></div>)}</div>
+    <Grid>
+      <EntityCard title="1. Проверка роутера" status={routerReady ? 'ready' : 'unverified'} onOpen={() => navigate('Диагностика')}>
+        <StatusLine label="Интернет" value={overview?.internet} /><StatusLine label="DNS" value={overview?.dns} />
+        <p>{routerReady ? 'Базовая сеть работает. FlintRoute может переходить к настройке маршрутов.' : 'Базовая сеть не подтверждена. Открой диагностику и исправь проблему до применения правил.'}</p>
+      </EntityCard>
+      <EntityCard title="2. Способы подключения" status={providerChosen ? 'configured' : 'not_configured'} onOpen={() => navigate('Компоненты')}>
+        <StatusLine label="Zapret" value={zapretReady ? 'ready' : zapretComponent?.installed ? 'requires_config' : 'not_installed'} />
+        <StatusLine label="Xray / VLESS" value={verifiedServers > 0 ? `${verifiedServers} verified` : xray?.installed ? 'requires_config' : 'not_installed'} />
+        <StatusLine label="TG WS Proxy" value={tgwsReady ? 'verified' : tgwsComponent?.installed ? 'requires_config' : 'not_installed'} />
+        {!providerChosen && <button onClick={chooseDirect}>Пока использовать только обычный интернет</button>}
+      </EntityCard>
+      <EntityCard title="3. Источники и проверка" status={providerChosen ? 'ready' : 'not_configured'} onOpen={() => navigate(verifiedServers ? 'VLESS-серверы' : 'Компоненты')}>
+        <StatusLine label="VLESS-серверы" value={verifiedServers ? `${verifiedServers} подтверждено` : 'не добавлены'} />
+        <StatusLine label="Smart DNS" value={smartReady ? 'ready' : 'not_configured'} />
+        <StatusLine label="Telegram proxy" value={tgwsReady ? 'verified' : 'not_configured'} />
+        <p>Добавляй только нужные способы. FlintRoute не заставляет ставить всё подряд.</p>
+      </EntityCard>
+      <EntityCard title="4. Что нужно открыть" status={serviceChoiceDone ? 'configured' : 'not_configured'} onOpen={() => navigate('Сервисы')}>
+        <p>{asArray(services).length ? `Настроено сервисов: ${asArray(services).length}.` : 'Можно закрепить Discord, ChatGPT, YouTube и другие сервисы за подходящими маршрутами.'}</p>
+        {!serviceChoiceDone && <button onClick={chooseAutomatic}>Пока выбирать автоматически</button>}
+        <StatusLine label="Discovery" value={discovery?.mode ?? 'observe_only'} />
+      </EntityCard>
+      <EntityCard title="5. Финальная проверка" status={setupReady ? 'ready' : 'unverified'} onOpen={() => navigate('Маршруты')}>
+        <StatusLine label="Обычный интернет" value={routerReady ? 'ready' : 'unverified'} />
+        <StatusLine label="Выбранные маршруты" value={providerChosen ? 'configured' : 'not_configured'} />
+        <StatusLine label="Правила сервисов" value={serviceChoiceDone ? 'configured' : 'not_configured'} />
+        <button class="primary" disabled={!setupReady} onClick={finish}>Завершить настройку</button>
+        {!setupReady && <p>Кнопка станет доступна, когда базовая сеть работает и выбран хотя бы Direct либо один проверенный управляемый путь.</p>}
+      </EntityCard>
+    </Grid>
+    <details class="raw-disclosure"><summary>Что уже есть в системе</summary><InfoGrid items={[["Direct", routes?.find((r: any) => r.type === 'system_default')?.status ?? overview?.internet], ["Zapret", zapretReady ? 'ready' : 'not_configured'], ["VLESS", verifiedServers], ["Smart DNS", smartReady ? 'ready' : 'not_configured'], ["TG WS Proxy", tgwsReady ? 'verified' : 'not_configured']]} /></details>
+  </section>;
 }
 
 function Generic({ title, text }: { title: string; text: string }) {

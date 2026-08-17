@@ -50,11 +50,61 @@ type activePathBinding struct {
 }
 
 func NewActiveOpenWrtEngine(cfg *config.Config, allowSimulation bool) *Engine {
-	verifier, err := NewActiveOpenWrtPathVerifier(cfg, allowSimulation)
-	if err != nil {
-		return NewEngine(errorProofVerifier{err: err})
+	managed, managedErr := NewActiveOpenWrtPathVerifier(cfg, allowSimulation)
+	var managedVerifier PathProofVerifier = managed
+	var commands OpenWrtCommands
+	if managedErr != nil {
+		managedVerifier = errorProofVerifier{err: managedErr}
+		var commandsErr error
+		commands, commandsErr = NewExecOpenWrtCommands()
+		if commandsErr != nil {
+			return NewEngine(managedVerifier)
+		}
+	} else {
+		commands = managed.commands
 	}
-	return NewEngine(verifier)
+	return NewEngine(multiplexPathProofVerifier{
+		managed: managedVerifier,
+		system:  systemDefaultPathVerifier{commands: commands},
+	})
+}
+
+type systemDefaultPathVerifier struct {
+	commands OpenWrtCommands
+}
+
+func (v systemDefaultPathVerifier) Verify(ctx context.Context, request PathProofRequest) (evidence.RouteResult, error) {
+	if !isSystemDefaultRoute(request.Route) {
+		return evidence.RouteResult{}, errors.New("system_default_route_identity_mismatch")
+	}
+	observation := request.Observation
+	if observation.Domain == "" || observation.ConnectedIP == "" || observation.LocalIP == "" {
+		return evidence.RouteResult{}, errors.New("system_default_socket_observation_missing")
+	}
+	if observation.SocketMark != "" {
+		return evidence.RouteResult{}, errors.New("system_default_probe_was_marked")
+	}
+	kernelRoute, err := v.commands.RouteGet(ctx, observation.ConnectedIP, "")
+	if err != nil {
+		return evidence.RouteResult{}, fmt.Errorf("system_default_route_get_failed: %w", err)
+	}
+	if kernelRoute.Interface == "" {
+		return evidence.RouteResult{}, errors.New("system_default_interface_missing")
+	}
+	return evidence.RouteResult{
+		Domain: observation.Domain, RouteTag: request.Route.Tag, RouteType: request.Route.Type,
+		RouteTable: kernelRoute.Table, Interface: kernelRoute.Interface,
+		DNSResolver: observation.DNSResolver, DNSProtocol: observation.DNSProtocol,
+		ResolvedIP: firstString(observation.ResolvedIPs), ConnectedIP: observation.ConnectedIP,
+		ConnectedPort: observation.ConnectedPort, LocalIP: observation.LocalIP,
+		AddressFamily: observation.AddressFamily, Transport: observation.Transport,
+		HostPreserved: observation.HostPreserved, SNIPreserved: observation.SNIPreserved,
+		TLSResult: observation.TLSResult, HTTPResult: observation.HTTPResult, ContentResult: observation.ContentResult,
+		ExternalIPHash: observation.ExternalIPHash, ExternalCountry: observation.ExternalCountry,
+		LatencyMS:  observation.CompletedAt.Sub(observation.StartedAt).Milliseconds(),
+		ReasonCode: "system_default_path_verified", Status: "OK", EvidenceSource: "kernel-route-get",
+		CheckedAt: time.Now().UTC(),
+	}, nil
 }
 
 func NewActiveOpenWrtPathVerifier(cfg *config.Config, allowSimulation bool) (*OpenWrtPathVerifier, error) {

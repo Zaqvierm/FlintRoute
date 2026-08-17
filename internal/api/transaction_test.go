@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -243,6 +244,55 @@ func TestFlowOffloadingDisableChangeSetIsExplicitlyWarned(t *testing.T) {
 	}
 	if candidate.Config.OpenWrt.FlowOffloadingPolicy != "disable" {
 		t.Fatalf("candidate lost explicit flow offloading policy: %+v", candidate.Config.OpenWrt)
+	}
+}
+
+func TestServiceClassifyCanExplicitlyDisableFlowOffloading(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer srv.Close()
+	defer ts.Close()
+
+	body := `{"domain":"example.com","category":"GEO_LOCKED","allowed_paths":["smart_dns","vless","drop"],"base_version":1,"allow_disable_flow_offloading":true}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/classify", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("classify status=%d body=%s", resp.StatusCode, raw)
+	}
+	var env Envelope
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(env.Data)
+	var result struct {
+		Change ChangeSet `json:"change"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	change := result.Change
+	if len(change.Operations) != 2 {
+		t.Fatalf("expected service and flow-offloading operations, got %+v", change.Operations)
+	}
+	foundService := false
+	foundFlowOffloading := false
+	for _, operation := range change.Operations {
+		switch operation.Path {
+		case "/services/user_example_com":
+			foundService = true
+		case "/openwrt/flow_offloading_policy":
+			foundFlowOffloading = operation.Value == "disable"
+		}
+	}
+	if !foundService || !foundFlowOffloading {
+		t.Fatalf("explicit auto-fix operations are incomplete: %+v", change.Operations)
 	}
 }
 
@@ -918,6 +968,96 @@ func TestRestartKeepsManagementAvailableWhenCommittedReconcileFails(t *testing.T
 	}
 	if health.Status != "degraded" || health.RecoveryStatus != "error" {
 		t.Fatalf("recovery failure was hidden from health endpoint: %+v", health)
+	}
+}
+
+type blockingRecoveryAdapter struct {
+	*fakeAdapter
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (a *blockingRecoveryAdapter) Reconcile(ctx context.Context, target adapter.RecoveryTarget) adapter.StepResult {
+	a.once.Do(func() { close(a.started) })
+	select {
+	case <-ctx.Done():
+		now := time.Now().UTC()
+		return adapter.StepResult{Step: "reconcile", Status: "ERROR", Reason: ctx.Err().Error(), StartedAt: now, FinishedAt: now}
+	case <-a.release:
+		return a.fakeAdapter.Reconcile(ctx, target)
+	}
+}
+
+func TestDeferredRecoveryKeepsHealthEndpointAvailableDuringReconcile(t *testing.T) {
+	cfg := testAPIConfig(t)
+	fake := newFakeAdapter()
+	srv, ts, client, csrf, authStore := newTransactionHTTP(t, cfg, fake)
+	change := createValidatedChange(t, client, csrf, ts.URL, "GEO_LOCKED")
+	change, status := postAction(t, client, csrf, ts.URL, change.ID, "apply", `{}`)
+	if status != http.StatusOK || change.State != "awaiting_confirmation" {
+		t.Fatalf("apply status=%d change=%+v", status, change)
+	}
+	change, status = postAction(t, client, csrf, ts.URL, change.ID, "confirm", `{}`)
+	if status != http.StatusOK || change.State != "committed" {
+		t.Fatalf("confirm status=%d change=%+v", status, change)
+	}
+	ts.Close()
+	if err := srv.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	blocking := &blockingRecoveryAdapter{fakeAdapter: fake, started: make(chan struct{}), release: make(chan struct{})}
+	restarted, err := NewServerWithOptions(cfg, Options{
+		Auth: authStore, Provider: platform.DevelopmentMockProvider{}, ProductionAdapter: blocking,
+		Development: true, DeferRecovery: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	if recovery := restarted.currentRecoveryStatus(); recovery.Status != "starting" || recovery.RevisionID != change.RevisionID {
+		t.Fatalf("deferred recovery did not expose startup state: %+v", recovery)
+	}
+	httpServer := httptest.NewServer(restarted.Handler())
+	defer httpServer.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	restarted.StartScheduler(ctx)
+	select {
+	case <-blocking.started:
+	case <-time.After(time.Second):
+		t.Fatal("deferred reconcile did not start")
+	}
+	response, err := http.Get(httpServer.URL + "/api/v1/health")
+	if err != nil {
+		t.Fatalf("health endpoint was blocked by recovery: %v", err)
+	}
+	var env Envelope
+	if err := json.NewDecoder(response.Body).Decode(&env); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	raw, _ := json.Marshal(env.Data)
+	var health struct {
+		Status         string `json:"status"`
+		RecoveryStatus string `json:"recovery_status"`
+		ActiveRevision string `json:"active_revision"`
+	}
+	if err := json.Unmarshal(raw, &health); err != nil {
+		t.Fatal(err)
+	}
+	if health.Status != "starting" || health.RecoveryStatus != "starting" || health.ActiveRevision != change.RevisionID {
+		t.Fatalf("health concealed deferred recovery: %+v", health)
+	}
+	close(blocking.release)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && restarted.currentRecoveryStatus().Status == "starting" {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if recovery := restarted.currentRecoveryStatus(); recovery.Status != "ok" {
+		t.Fatalf("deferred recovery did not complete: %+v", recovery)
 	}
 }
 

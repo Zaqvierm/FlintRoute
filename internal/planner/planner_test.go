@@ -139,6 +139,38 @@ func TestUnknownDomainDirectSuccessIsCachedAndReused(t *testing.T) {
 	}
 }
 
+func TestUnknownBaselineUsesSystemDefaultBeforeManagedDirect(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cfg.Routes[0].RequiresAdapter = true
+	cfg.Routes[0].AdapterMode = "direct"
+	cfg.Routes[0].Mark = "0x41"
+	plan, err := BuildCandidates(cfg, "new.example", "", Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Candidates) < 2 {
+		t.Fatalf("candidate list is incomplete: %+v", plan.Candidates)
+	}
+	system := plan.Candidates[0]
+	if system.Tag != "system-default" || system.Type != "direct" || system.AdapterMode != "system_default" || system.RequiresAdapter || system.Mark != "" {
+		t.Fatalf("first unknown-domain candidate is not an unmarked system path: %+v", system)
+	}
+	if plan.Candidates[1].Tag != "direct" || !plan.Candidates[1].RequiresAdapter {
+		t.Fatalf("managed Direct candidate was lost: %+v", plan.Candidates)
+	}
+}
+
+func TestSystemDefaultResultBindsToCurrentRevision(t *testing.T) {
+	route := config.Route{Type: "direct", Tag: "system-default", AdapterMode: "system_default"}
+	result := bindResultToCandidate(probe.RouteResult{
+		Route: route.Tag, RouteType: route.Type, Status: "OK", ApplicationStatus: "OK",
+		PathVerified: true, ServiceOK: true,
+	}, route, "rev-active")
+	if result.Status != "OK" || result.AdapterRevision != "rev-active" || !result.PathVerified {
+		t.Fatalf("system default proof was not bound to the active revision: %+v", result)
+	}
+}
+
 func TestCachedNoMatchDecisionIsInvalidatedByFreshTSPUMatch(t *testing.T) {
 	cfg := discoveryConfig(t)
 	cache := openDecisionCache(t, cfg)
@@ -335,6 +367,17 @@ func TestWrongRevisionCannotBeSelected(t *testing.T) {
 	}
 	if result.Selected == nil || result.Selected.Route != "smart-one" || result.Results[0].Status != "UNVERIFIED" || result.Results[0].ReasonCode != "probe_adapter_revision_mismatch" {
 		t.Fatalf("wrong revision evidence was accepted: %+v", result)
+	}
+}
+
+func TestFailedProbeKeepsItsRealReasonWhenNoRevisionProofExists(t *testing.T) {
+	reason := "route_nft_counter_did_not_advance"
+	result := bindResultToCandidate(probe.RouteResult{
+		Route: "smart-one", RouteType: "smart_dns", Status: "UNVERIFIED",
+		ReasonCode: reason, Reason: &reason,
+	}, config.Route{Tag: "smart-one", Type: "smart_dns"}, "rev-active")
+	if result.ReasonCode != reason {
+		t.Fatalf("real probe failure was hidden by revision mismatch: %+v", result)
 	}
 }
 

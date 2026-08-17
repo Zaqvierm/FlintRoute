@@ -8,9 +8,33 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"time"
 )
+
+func (r ExecCalibrationRunner) Progress() (int, int) {
+	matches, _ := filepath.Glob(filepath.Join(r.RuntimeDir, "zapret-calibration.*", "blockcheck.log"))
+	var selected string
+	var selectedTime time.Time
+	for _, path := range matches {
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > 4<<20 {
+			continue
+		}
+		if selected == "" || info.ModTime().After(selectedTime) {
+			selected, selectedTime = path, info.ModTime()
+		}
+	}
+	if selected == "" {
+		return 0, 0
+	}
+	raw, err := os.ReadFile(selected)
+	if err != nil {
+		return 0, 0
+	}
+	return countCompletedCalibrationChecks(raw), 0
+}
 
 func (r ExecCalibrationRunner) Run(ctx context.Context, request CalibrationRequest) ([]byte, error) {
 	if err := r.validatePaths(); err != nil {

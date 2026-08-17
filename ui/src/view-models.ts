@@ -75,6 +75,10 @@ export function humanStatus(value: unknown): string {
     online: 'В сети',
     offline: 'Не в сети',
     healthy: 'Работает',
+    available: 'Доступно',
+    'route available': 'Интернет доступен',
+    selected: 'Маршрут выбран',
+    'no safe route': 'Нет подтверждённого маршрута',
     verified: 'Путь подтверждён',
     configured: 'Настроено',
     'not configured': 'Не настроено',
@@ -84,6 +88,10 @@ export function humanStatus(value: unknown): string {
     failed: 'Ошибка',
     error: 'Ошибка',
     stopped: 'Остановлено',
+    absent: 'Не установлен',
+    'not installed': 'Не установлен',
+    'requires device': 'Нужна проверка на роутере',
+    lowerlayerdown: 'Кабель не подключён',
     simulation: 'Тестовые данные',
     'system default': 'Системный маршрут',
     'no managed policies': 'Нет управляемых правил',
@@ -145,7 +153,7 @@ export function toDecisionCard(event: EventItem): DecisionCard {
   const fallbackPath = asArray(details.fallback_path ?? details.fallback_sequence)
     .map((value) => textValue(value, ''))
     .filter(Boolean);
-  const route = event.route || first(details, ['route', 'selected_route', 'route_type'], 'Не выбран');
+  const route = first(details, ['route_label'], event.route || first(details, ['route', 'selected_route', 'route_type'], 'Не выбран'));
   const status = first(details, ['final_status', 'http_status', 'status', 'result'], event.reason_code || event.type);
   const duration = Number(details.decision_duration_ms ?? details.duration_ms ?? details.latency_ms);
   return {
@@ -232,5 +240,5 @@ export function errorInfo(error: unknown): { code: string; message: string } {
 export function formatDateTime(value: unknown, fallback = 'Нет данных'): string {
   if (typeof value !== 'string' || !value) return fallback;
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? fallback : date.toLocaleString('ru-RU');
+  return Number.isNaN(date.getTime()) || date.getUTCFullYear() < 2000 ? fallback : date.toLocaleString('ru-RU');
 }

@@ -25,8 +25,8 @@ TAR_BIN="${TAR_BIN:-tar}"
 UBUS_BIN="${UBUS_BIN:-ubus}"
 TIMEOUT_BIN="${TIMEOUT_BIN:-timeout}"
 SERVICES="router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
-ENABLE_SERVICES="router-policy-boot-guard $SERVICES"
-INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $INIT_DIR/router-policy $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/config/listener.conf $ETC_DIR/secrets/vpn-subscription-url $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
+ENABLE_SERVICES="router-policy-dns-observer router-policy-boot-guard $SERVICES"
+INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $INIT_DIR/router-policy $INIT_DIR/router-policy-dns-observer $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/config/listener.conf $ETC_DIR/secrets/vpn-subscription-url $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
 
 mode=""
 enable_services=0
@@ -468,9 +468,9 @@ health_json_field() {
 
 wait_control_health() {
   expected_revision="${1:-}"
-  max_attempts="${ROUTER_POLICY_HEALTH_ATTEMPTS:-20}"
-  case "$max_attempts" in *[!0-9]*|'') max_attempts=20 ;; esac
-  [ "$max_attempts" -ge 1 ] && [ "$max_attempts" -le 120 ] || max_attempts=20
+  max_attempts="${ROUTER_POLICY_HEALTH_ATTEMPTS:-120}"
+  case "$max_attempts" in *[!0-9]*|'') max_attempts=120 ;; esac
+  [ "$max_attempts" -ge 1 ] && [ "$max_attempts" -le 120 ] || max_attempts=120
   command -v wget >/dev/null 2>&1 || { echo "wget is required to verify the control plane" >&2; return 1; }
   attempt=0
   while [ "$attempt" -lt "$max_attempts" ]; do
@@ -618,6 +618,7 @@ install_files() {
   cp -R "$ROOT/openwrt" "$staged_prefix/"
   chmod +x "$staged_prefix/scripts/"*.sh
   chmod +x "$staged_prefix/openwrt/adapter.sh"
+  chmod +x "$staged_prefix/openwrt/ensure-dns-observer.sh"
   if [ -e "$PREFIX/components" ]; then
     if [ ! -d "$PREFIX/components" ] || [ -L "$PREFIX/components" ]; then
       echo "refusing unsafe managed component runtime: $PREFIX/components" >&2
@@ -657,6 +658,7 @@ install_files() {
     [ -e "$secret" ] && chmod 600 "$secret"
   done
   atomic_copy "$ROOT/openwrt/init.d/router-policy" "$INIT_DIR/router-policy" 755
+  atomic_copy "$ROOT/openwrt/init.d/router-policy-dns-observer" "$INIT_DIR/router-policy-dns-observer" 755
   atomic_copy "$ROOT/openwrt/init.d/router-policy-boot-guard" "$INIT_DIR/router-policy-boot-guard" 755
   atomic_copy "$ROOT/openwrt/init.d/router-policy-watchdog" "$INIT_DIR/router-policy-watchdog" 755
   atomic_copy "$ROOT/openwrt/init.d/router-policy-xray" "$INIT_DIR/router-policy-xray" 755
@@ -665,12 +667,22 @@ install_files() {
   atomic_copy "$ROOT/openwrt/hotplug/firewall/95-router-policy" "$HOTPLUG_FIREWALL_DIR/95-router-policy" 755
 }
 
+activate_dns_observer() {
+  [ -z "$SYSTEM_ROOT" ] || return 0
+  observer="$PREFIX/openwrt/ensure-dns-observer.sh"
+  [ -x "$observer" ] || {
+    echo "install blocked: DNS observation bootstrap helper is unavailable" >&2
+    return 1
+  }
+  "$observer" --reload-if-needed
+}
+
 dry_run() {
   detect
   echo "would_backup=$BACKUP_DIR"
   echo "would_install_prefix=$PREFIX"
   echo "would_install_config=$ETC_DIR/config/default.json"
-  echo "would_install_services=router-policy-boot-guard router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
+  echo "would_install_services=router-policy-dns-observer router-policy-boot-guard router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
   echo "would_not_enable_services_without=--enable-services"
   echo "would_not_activate_without=--activate --yes"
   echo "would_install_zapret_calibration_runner=$PREFIX/scripts/calibrate-zapret.sh"
@@ -703,6 +715,9 @@ case "$mode" in
     snapshot_state_database
     backup
     install_files
+    if [ "$enable_services" = "1" ]; then
+      activate_dns_observer
+    fi
     ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$ROUTER_POLICY_BIN" validate-config
     "$ROUTER_POLICY_BIN" backup register --root "$BACKUP_DIR" --operation "$(basename "$BACKUP_DIR")" --version "$ROUTER_POLICY_VERSION" --reason install --retention-class installer-fallback >/dev/null
     "$ROUTER_POLICY_BIN" backup prune --root "$BACKUP_ROOT" --max 2 --max-bytes 134217728 --apply >/dev/null
@@ -710,11 +725,12 @@ case "$mode" in
     ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$ROUTER_POLICY_BIN" auth setup-token --if-needed
     restart_running_services
     if [ "$enable_services" = "1" ]; then
+      run_bounded "$INIT_DIR/router-policy-dns-observer" enable
       run_bounded "$INIT_DIR/router-policy-boot-guard" enable
       run_bounded "$INIT_DIR/router-policy" enable
       run_bounded "$INIT_DIR/router-policy-watchdog" enable
       start_control_services
-      echo "services_enabled=router-policy-boot-guard router-policy router-policy-watchdog"
+      echo "services_enabled=router-policy-dns-observer router-policy-boot-guard router-policy router-policy-watchdog"
       echo "control_services_running=router-policy router-policy-watchdog"
       echo "dataplane_services_boot_enabled=false"
     else

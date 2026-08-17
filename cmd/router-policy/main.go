@@ -1341,7 +1341,7 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 			CatalogOut: "/etc/router-policy/zapret/catalog.json",
 		})
 	}
-	app, err := api.NewServerWithOptions(cfg, api.Options{Provider: provider, ProductionAdapter: productionAdapter, SubscriptionPreparer: subscriptionPreparer, ZapretSetupChecker: zapretSetupChecker, ComponentManager: componentManager, ZapretCalibration: zapretCalibration, VLESSThroughputTester: vlessThroughputTester, Development: development})
+	app, err := api.NewServerWithOptions(cfg, api.Options{Provider: provider, ProductionAdapter: productionAdapter, SubscriptionPreparer: subscriptionPreparer, ZapretSetupChecker: zapretSetupChecker, ComponentManager: componentManager, ZapretCalibration: zapretCalibration, VLESSThroughputTester: vlessThroughputTester, Development: development, DeferRecovery: !development})
 	if err != nil {
 		return err
 	}

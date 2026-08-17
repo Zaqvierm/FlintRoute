@@ -115,7 +115,7 @@ func routeProofParallelism(cfg *config.Config, requested, routes int) int {
 
 func collectRoutes(ctx context.Context, opts Options, required []artifact.RouteProof, parallelism int) ([]collectedRoute, error) {
 	if len(required) == 0 {
-		return nil, errors.New("verification plan has no required routes")
+		return []collectedRoute{}, nil
 	}
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

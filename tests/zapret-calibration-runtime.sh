@@ -94,4 +94,31 @@ fi
 grep -F 'bounded diagnostic tail follows' "$TMP/failed.log" >/dev/null
 grep -F 'provider probe failed at TLS check' "$TMP/failed.log" >/dev/null
 [ ! -e "$RUNTIME/zapret-calibration.lock" ]
+
+cat >"$TMP/blockcheck-timeout.sh" <<'SH'
+#!/bin/sh
+echo 'last bounded strategy'
+exit 124
+SH
+chmod +x "$TMP/blockcheck-timeout.sh"
+if PATH="$BIN:$PATH" \
+  TIMEOUT_BIN=fake-timeout \
+  ROUTER_POLICY_CONFIG="$TMP/config.json" \
+  ROUTER_POLICY_BIN="$BIN/router-policy" \
+  NFQWS_BIN="$BIN/nfqws" \
+  ZAPRET_INIT="$BIN/zapret-init" \
+  ROUTER_POLICY_RUNTIME_DIR="$RUNTIME" \
+  ZAPRET_CATALOG_OUT="$TMP/catalog/catalog.json" \
+  BLOCKCHECK_TIMEOUT=30 \
+  sh "$ROOT/scripts/calibrate-zapret.sh" --apply \
+    --domain observed.example \
+    --bundle-id auto-observed \
+    --network-fingerprint sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --blockcheck "$TMP/blockcheck-timeout.sh" >"$TMP/timeout.json" 2>"$TMP/timeout.log"; then
+  echo "timed out blockcheck unexpectedly passed" >&2
+  exit 1
+fi
+grep -F 'upstream blockcheck timed out after 30s' "$TMP/timeout.log" >/dev/null
+grep -F 'last bounded strategy' "$TMP/timeout.log" >/dev/null
+[ ! -e "$RUNTIME/zapret-calibration.lock" ]
 echo "zapret_calibration_resolves_timeout_from_path=true"

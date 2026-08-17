@@ -2,6 +2,7 @@ package zapret
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,18 @@ type calibrationRunnerFunc func(context.Context, CalibrationRequest) ([]byte, er
 func (f calibrationRunnerFunc) Run(ctx context.Context, request CalibrationRequest) ([]byte, error) {
 	return f(ctx, request)
 }
+
+type progressCalibrationRunner struct {
+	completed int
+	release   chan struct{}
+}
+
+func (r *progressCalibrationRunner) Run(context.Context, CalibrationRequest) ([]byte, error) {
+	<-r.release
+	return nil, context.Canceled
+}
+
+func (r *progressCalibrationRunner) Progress() (int, int) { return r.completed, 0 }
 
 func TestCalibrationManagerCompletesWithBoundedCandidates(t *testing.T) {
 	raw := []byte(`{"catalog":{"version":1,"profiles":[{"id":"auto-a","provider":"nfqws-v1","provider_version":"72.13","binary_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","route_type":"zapret","ip_families":["ipv4"],"transports":["tcp"],"ports":[443],"queue":200,"safety":"reviewed","strategy_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","strategy":"--qnum=200"}],"bundles":[]},"evidence":[{"profile_id":"auto-a","tests":["https_tls12"],"occurrences":3}]}`)
@@ -70,5 +83,33 @@ func TestCalibrationCommandErrorKeepsBoundedPrintableTail(t *testing.T) {
 	}
 	if !strings.HasSuffix(message, strings.Repeat("x", 240)) {
 		t.Fatalf("expected bounded tail, got %q", message)
+	}
+}
+
+func TestCalibrationCommandErrorClassifiesUpstreamTimeout(t *testing.T) {
+	err := calibrationCommandError([]byte("upstream blockcheck timed out after 2400s; bounded diagnostic tail follows\nlast strategy"))
+	if !strings.Contains(err.Error(), "last strategy") || !errors.Is(err, errCalibrationUpstreamTimeout) {
+		t.Fatalf("timeout classification was lost: %v", err)
+	}
+}
+
+func TestCalibrationStatusReportsLiveCompletedChecks(t *testing.T) {
+	runner := &progressCalibrationRunner{completed: 17, release: make(chan struct{})}
+	manager := NewCalibrationManager(runner)
+	request := CalibrationRequest{Domain: "example.com", BundleID: "auto-example", NetworkFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+	if _, err := manager.Start(request); err != nil {
+		t.Fatal(err)
+	}
+	status := manager.Status()
+	if status.ChecksCompleted != 17 || status.ChecksTotal != 0 {
+		t.Fatalf("unexpected live progress: %+v", status)
+	}
+	close(runner.release)
+}
+
+func TestCompletedCalibrationCheckCounterIgnoresAttempts(t *testing.T) {
+	raw := []byte("[attempt 1] AVAILABLE\n!!!!! AVAILABLE !!!!!\n[attempt 2] timeout\nUNAVAILABLE code=28\n")
+	if got := countCompletedCalibrationChecks(raw); got != 2 {
+		t.Fatalf("completed checks=%d", got)
 	}
 }

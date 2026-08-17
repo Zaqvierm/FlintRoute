@@ -40,7 +40,11 @@ active_nft="${ACTIVE_NFT:-/etc/router-policy/firewall/router-policy.nft}"
 active_dnsmasq="${ACTIVE_DNSMASQ:-/tmp/dnsmasq.d/router-policy.conf}"
 active_xray="${ACTIVE_XRAY:-/etc/router-policy/xray/active.json}"
 active_zapret="${ACTIVE_ZAPRET:-/etc/router-policy/zapret/nfqws.conf}"
-dns_observation_log="$runtime/dns-observations.log"
+if [ "$runtime" = "/tmp/router-policy" ]; then
+  dns_observation_log="${DNS_OBSERVATION_LOG:-/var/run/dnsmasq/router-policy-observations.log}"
+else
+  dns_observation_log="${DNS_OBSERVATION_LOG:-$runtime/dns-observations.log}"
+fi
 flow_offload_uci_key='firewall.@defaults[0].flow_offloading'
 flow_offload_hw_uci_key='firewall.@defaults[0].flow_offloading_hw'
 
@@ -794,6 +798,11 @@ ensure_dns_observation_log() {
     return 1
   }
   mkdir -p "$runtime"
+  log_parent="${dns_observation_log%/*}"
+  [ -d "$log_parent" ] && [ ! -L "$log_parent" ] || {
+    echo "reason=dns_observation_log_parent_invalid" >&2
+    return 1
+  }
   [ ! -L "$dns_observation_log" ] || {
     echo "reason=dns_observation_log_is_symlink" >&2
     return 1
@@ -806,7 +815,18 @@ ensure_dns_observation_log() {
   else
     : > "$dns_observation_log"
   fi
-  chmod 600 "$dns_observation_log"
+  dnsmasq_group="$(id -g dnsmasq 2>/dev/null || true)"
+  if [ -n "$dnsmasq_group" ]; then
+    chown "0:$dnsmasq_group" "$dns_observation_log"
+    if [ "$log_parent" = "$runtime" ]; then
+      chown "0:$dnsmasq_group" "$runtime"
+      chmod 710 "$runtime"
+    fi
+    chmod 620 "$dns_observation_log"
+  else
+    chmod 700 "$runtime"
+    chmod 600 "$dns_observation_log"
+  fi
 }
 
 restart_dnsmasq() {

@@ -243,8 +243,9 @@ func Generate(cfg *config.Config, root string, binding Binding, generatedAt time
 	if err != nil {
 		return Manifest{}, "", err
 	}
-	proofs := buildProofPlan(cfg, routes)
-	ipPlan := buildIPPlan(cfg, binding, proofs, hasPolicyTraffic(domainPolicies), generatedAt.UTC())
+	allProofs := buildProofPlan(cfg, routes)
+	proofs := buildProofPlan(cfg, routesUsedByPolicies(routes, domainPolicies))
+	ipPlan := buildIPPlan(cfg, binding, allProofs, hasPolicyTraffic(domainPolicies), generatedAt.UTC())
 	dnsProxies, err := buildDNSProxyPlans(cfg, routes, domainPolicies)
 	if err != nil {
 		return Manifest{}, "", err
@@ -314,6 +315,20 @@ func Generate(cfg *config.Config, root string, binding Binding, generatedAt time
 		return Manifest{}, "", err
 	}
 	return manifest, manifestHash, nil
+}
+
+func routesUsedByPolicies(routes []config.Route, policies []domainPolicy) []config.Route {
+	used := make(map[string]bool, len(policies))
+	for _, policy := range policies {
+		used[policy.Route.Tag] = true
+	}
+	selected := make([]config.Route, 0, len(used))
+	for _, route := range routes {
+		if used[route.Tag] {
+			selected = append(selected, route)
+		}
+	}
+	return selected
 }
 
 func Verify(root string, expected Binding, expectedManifestHash string) (Manifest, error) {
@@ -391,7 +406,7 @@ func renderFiles(cfg *config.Config, binding Binding, routes []config.Route, pro
 	if err != nil {
 		return nil, err
 	}
-	verifyPlan, err := json.MarshalIndent(VerificationPlan{Binding: binding, RequiredRouteProof: proofs, RequireDNSLeakCheck: true, RequireIPv6LeakCheck: true, RequireManagementLAN: true}, "", "  ")
+	verifyPlan, err := json.MarshalIndent(VerificationPlan{Binding: binding, RequiredRouteProof: proofs, RequireDNSLeakCheck: len(proofs) > 0, RequireIPv6LeakCheck: len(proofs) > 0, RequireManagementLAN: true}, "", "  ")
 	if err != nil {
 		return nil, err
 	}
@@ -568,7 +583,7 @@ func renderDNSMasq(cfg *config.Config, binding Binding, plan IPPlan, domainPolic
 	b.WriteString("# DROP domains use local NXDOMAIN and are never forwarded upstream.\n")
 	b.WriteString("stop-dns-rebind\n")
 	if cfg.Policy.UnknownDomainBackgroundCheck {
-		observationLog := filepath.Join(cfg.Storage.RuntimeDir, "dns-observations.log")
+		observationLog := config.DNSObservationPath(cfg.Storage.RuntimeDir)
 		if !filepath.IsAbs(observationLog) || strings.ContainsAny(observationLog, "\r\n\t #") {
 			return "", errors.New("DNS observation log path is unsafe")
 		}

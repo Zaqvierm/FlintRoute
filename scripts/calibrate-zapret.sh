@@ -8,7 +8,7 @@ ZAPRET_INIT="${ZAPRET_INIT:-/etc/init.d/router-policy-zapret}"
 RUNTIME_DIR="${ROUTER_POLICY_RUNTIME_DIR:-/tmp/router-policy}"
 CATALOG_OUT="${ZAPRET_CATALOG_OUT:-/etc/router-policy/zapret/catalog.json}"
 TIMEOUT_BIN="${TIMEOUT_BIN:-timeout}"
-BLOCKCHECK_TIMEOUT="${BLOCKCHECK_TIMEOUT:-1800}"
+BLOCKCHECK_TIMEOUT="${BLOCKCHECK_TIMEOUT:-2400}"
 QUEUE_NUM="${ZAPRET_QUEUE_NUM:-200}"
 
 mode="dry-run"
@@ -142,14 +142,22 @@ fi
 provider_version=$("$TIMEOUT_BIN" 10 "$NFQWS_BIN" --version 2>&1 | sed -n '1p' | tr -cd 'A-Za-z0-9._+-' | cut -c1-64)
 [ -n "$provider_version" ] || { echo "unable to determine nfqws version" >&2; exit 1; }
 
-if ! (
+set +e
+(
   cd "$(dirname "$blockcheck_script")"
   BATCH=1 IPVS=4 REPEATS=3 SCANLEVEL=standard SKIP_TPWS=1 DOMAINS="$domain" \
     "$TIMEOUT_BIN" "$BLOCKCHECK_TIMEOUT" sh "$blockcheck_script" >"$report" 2>&1
-); then
-  echo "upstream blockcheck failed; bounded diagnostic tail follows" >&2
+)
+blockcheck_status=$?
+set -e
+if [ "$blockcheck_status" -ne 0 ]; then
+  if [ "$blockcheck_status" -eq 124 ]; then
+    echo "upstream blockcheck timed out after ${BLOCKCHECK_TIMEOUT}s; bounded diagnostic tail follows" >&2
+  else
+    echo "upstream blockcheck failed with exit ${blockcheck_status}; bounded diagnostic tail follows" >&2
+  fi
   tail -n 12 "$report" | tr '\r\n\t' '   ' | cut -c1-1024 >&2
-  exit 1
+  exit "$blockcheck_status"
 fi
 
 ROUTER_POLICY_CONFIG="$CONFIG" "$TIMEOUT_BIN" 30 "$ROUTER_POLICY_BIN" zapret-blockcheck-import \

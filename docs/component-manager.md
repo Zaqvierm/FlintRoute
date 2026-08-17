@@ -43,10 +43,13 @@ Zapret нельзя молча удалить при активных маршр
 fingerprint текущей production-сети. Она не меняет маршрут автоматически.
 
 Upstream `blockcheck.sh` использует общие firewall, NFQUEUE и временные ресурсы.
-Надёжной полной изоляции 28 параллельных workers в этом контракте нет, поэтому
-production runner использует один worker. Это медленнее, зато не создаёт гонки
-за nft/NFQUEUE и не рискует management path. Результат ограничен тремя
-проверенными кандидатами; raw shell strategy не возвращается через API.
+Число комбинаций определяется его версией, режимом scan и capabilities роутера;
+FlintRoute не рисует фиксированное «28». Надёжной полной изоляции параллельных
+workers в этом контракте нет, поэтому production runner использует один worker.
+UI показывает число реально завершённых вариантов из bounded runtime-log. Это
+медленнее, зато не создаёт гонки за nft/NFQUEUE и не рискует management path.
+Результат ограничен тремя проверенными кандидатами; raw shell strategy не
+возвращается через API.
 
 Выбранный профиль включается только обычным ChangeSet:
 
@@ -69,8 +72,11 @@ preflight -> apply -> management proof -> data-plane proof -> confirm/rollback
 
 Первый verified candidate может получить bounded speed measurement. Результат
 переиспользуется 24 часа: обычный health refresh не скачивает тестовый файл
-повторно. Ручной speedtest идёт через loopback SOCKS конкретного logical server,
-использует 2–16 MiB и сохраняет raw/effective throughput, bytes и duration.
+повторно. Ручной speedtest не доверяет сохранённому адресу временного listener:
+он проверяет content-addressed bundle, поднимает отдельный candidate Xray,
+дожидается loopback SOCKS конкретного logical server, выполняет измерение и
+обязательно останавливает candidate. Тест использует 2–16 MiB и сохраняет
+raw/effective throughput, bytes и duration.
 
 ## TG WS Proxy
 

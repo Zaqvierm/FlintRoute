@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/http"
@@ -9,11 +10,16 @@ import (
 	"sort"
 	"time"
 
+	"router-policy/internal/config"
 	"router-policy/internal/vpnsub"
 )
 
 type vlessSpeedTestRequest struct {
 	LogicalID string `json:"logical_id"`
+}
+
+type managedVLESSSpeedMeasurer interface {
+	MeasureServer(context.Context, *config.Config, string) (vpnsub.SpeedMeasurement, vpnsub.ServerStatus, error)
 }
 
 func (s *Server) handleXrayPool(w http.ResponseWriter, r *http.Request) {
@@ -113,6 +119,16 @@ func (s *Server) handleXrayPoolSpeedTest(w http.ResponseWriter, r *http.Request)
 	}
 	s.subscriptionMu.Lock()
 	defer s.subscriptionMu.Unlock()
+	if measurer, ok := s.subscriptionPreparer.(managedVLESSSpeedMeasurer); ok {
+		measurement, server, err := measurer.MeasureServer(r.Context(), cfg, request.LogicalID)
+		if err != nil {
+			writeError(w, r, http.StatusBadGateway, "vless_speedtest_failed", err.Error())
+			return
+		}
+		s.publishEvent(Event{Type: "xray.pool.speedtest", Severity: "info", ReasonCode: "vless_speed_measured", Details: map[string]any{"logical_id": request.LogicalID, "bytes_used": measurement.BytesUsed, "duration_ms": measurement.DurationMS}})
+		writeData(w, r, map[string]any{"server": server, "measurement": measurement})
+		return
+	}
 	path := vpnsub.PoolPath(cfg.Storage.StateDir)
 	snapshot, err := vpnsub.LoadPool(path)
 	if err != nil {

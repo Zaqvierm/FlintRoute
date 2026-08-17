@@ -70,7 +70,7 @@ if (!$shellcheck) {
   if ($localSc) { $shellcheck = $localSc }
 }
 if ($shellcheck -and (Test-Path -LiteralPath $shellcheck)) {
-  $shellFiles = Get-ChildItem -Recurse -File -Include *.sh,router-policy,router-policy-boot-guard,router-policy-watchdog,router-policy-xray,router-policy-zapret,95-router-policy,install.sh,uninstall.sh |
+  $shellFiles = Get-ChildItem -Recurse -File -Include *.sh,router-policy,router-policy-dns-observer,router-policy-boot-guard,router-policy-watchdog,router-policy-xray,router-policy-zapret,95-router-policy,install.sh,uninstall.sh |
     Where-Object { $_.FullName -notmatch '\\.tools\\|\\.git\\|\\.local\\|\\dist\\|\\node_modules\\' }
   & $shellcheck -x @($shellFiles.FullName)
   if ($LASTEXITCODE -ne 0) {
@@ -116,6 +116,12 @@ Write-Host "== content-aware install =="
 & $gitSh tests/content-aware-install.sh
 if ($LASTEXITCODE -ne 0) {
   throw "content-aware install test failed"
+}
+
+Write-Host "== DNS observation bootstrap =="
+& $gitSh tests/dns-observer-bootstrap.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "DNS observation bootstrap test failed"
 }
 
 Write-Host "== bounded boot guard service =="

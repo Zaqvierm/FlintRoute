@@ -44,7 +44,7 @@ func exerciseDropProbe(ctx context.Context, cfg *config.Config, route config.Rou
 }
 
 func installRouteSocketMark(dialer *net.Dialer, cfg *config.Config, route config.Route, observed *uint32) bool {
-	if cfg == nil || cfg.Platform.Target == "test" || route.SOCKS5 != "" || !socketMarkAvailable() {
+	if cfg == nil || cfg.Platform.Target == "test" || route.SOCKS5 != "" || isSystemDefaultRoute(route) || !socketMarkAvailable() {
 		return false
 	}
 	value := route.Mark

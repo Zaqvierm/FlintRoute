@@ -1,0 +1,20 @@
+#!/bin/sh /etc/rc.common
+# shellcheck disable=SC2034
+
+# dnsmasq normally starts at S19. Seed its tmpfs confdir immediately before it
+# so discovery logging is active without restarting DHCP/DNS late in boot.
+START=18
+STOP=89
+
+start() {
+  observer=/usr/lib/router-policy/openwrt/ensure-dns-observer.sh
+  if [ ! -x "$observer" ]; then
+    logger -t router-policy-dns-observer "bootstrap helper is unavailable"
+    return 1
+  fi
+  output="$("$observer" 2>&1)" || {
+    logger -t router-policy-dns-observer "bootstrap failed: $output"
+    return 1
+  }
+  logger -t router-policy-dns-observer "$output"
+}

@@ -18,6 +18,8 @@ import (
 
 const calibrationConcurrencyReason = "upstream blockcheck uses shared nft, NFQUEUE and temporary resources"
 
+var errCalibrationUpstreamTimeout = errors.New("upstream Zapret blockcheck timed out")
+
 type CalibrationRequest struct {
 	Domain              string `json:"domain"`
 	BundleID            string `json:"bundle_id"`
@@ -46,6 +48,8 @@ type CalibrationStatus struct {
 	Concurrency          int                    `json:"concurrency"`
 	ConcurrencyReason    string                 `json:"concurrency_reason"`
 	CandidateCount       int                    `json:"candidate_count"`
+	ChecksCompleted      int                    `json:"checks_completed,omitempty"`
+	ChecksTotal          int                    `json:"checks_total,omitempty"`
 	Candidates           []CalibrationCandidate `json:"candidates,omitempty"`
 	StartedAt            time.Time              `json:"started_at,omitempty"`
 	FinishedAt           time.Time              `json:"finished_at,omitempty"`
@@ -57,6 +61,10 @@ type CalibrationStatus struct {
 
 type CalibrationRunner interface {
 	Run(context.Context, CalibrationRequest) ([]byte, error)
+}
+
+type CalibrationProgressProvider interface {
+	Progress() (completed int, total int)
 }
 
 // ExecCalibrationRunner is implemented per platform. Production uses the
@@ -83,7 +91,7 @@ type CalibrationManager struct {
 }
 
 func NewCalibrationManager(runner CalibrationRunner) *CalibrationManager {
-	return &CalibrationManager{Runner: runner, Timeout: 35 * time.Minute}
+	return &CalibrationManager{Runner: runner, Timeout: 42 * time.Minute}
 }
 
 func (m *CalibrationManager) now() time.Time {
@@ -117,7 +125,7 @@ func (m *CalibrationManager) Start(request CalibrationRequest) (CalibrationStatu
 	runID := calibrationRunID(request, now)
 	timeout := m.Timeout
 	if timeout <= 0 || timeout > 45*time.Minute {
-		timeout = 35 * time.Minute
+		timeout = 42 * time.Minute
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	m.cancel = cancel
@@ -138,6 +146,17 @@ func (m *CalibrationManager) Status() CalibrationStatus {
 	defer m.mu.Unlock()
 	if m.current.State == "" {
 		return CalibrationStatus{State: "idle", Stage: "ready", Concurrency: 1, ConcurrencyReason: calibrationConcurrencyReason}
+	}
+	if (m.current.State == "running" || m.current.State == "queued") && m.Runner != nil {
+		if progress, ok := m.Runner.(CalibrationProgressProvider); ok {
+			completed, total := progress.Progress()
+			if completed > m.current.ChecksCompleted {
+				m.current.ChecksCompleted = completed
+			}
+			if total > 0 {
+				m.current.ChecksTotal = total
+			}
+		}
 	}
 	return cloneCalibrationStatus(m.current)
 }
@@ -164,7 +183,9 @@ func (m *CalibrationManager) run(ctx context.Context, request CalibrationRequest
 	}
 	if runErr != nil {
 		status.State, status.Stage, status.ErrorCode, status.Error = "failed", "failed", "zapret_calibration_failed", safeCalibrationError(runErr)
-		if errors.Is(ctx.Err(), context.Canceled) {
+		if errors.Is(runErr, errCalibrationUpstreamTimeout) {
+			status.ErrorCode, status.Error = "zapret_calibration_timeout", "upstream blockcheck exceeded the 40 minute bounded runtime"
+		} else if errors.Is(ctx.Err(), context.Canceled) {
 			status.State, status.Stage, status.ErrorCode, status.Error = "cancelled", "cancelled", "zapret_calibration_cancelled", "calibration was cancelled and cleanup was requested"
 		} else if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			status.ErrorCode, status.Error = "zapret_calibration_timeout", "calibration exceeded the bounded runtime"
@@ -265,10 +286,25 @@ func calibrationCommandError(output []byte) error {
 	if value == "" {
 		return errors.New("Zapret calibration command failed without diagnostic output")
 	}
+	upstreamTimeout := strings.Contains(value, "upstream blockcheck timed out")
 	if len(value) > 240 {
 		value = value[len(value)-240:]
 	}
+	if upstreamTimeout {
+		return fmt.Errorf("%w: %s", errCalibrationUpstreamTimeout, value)
+	}
 	return fmt.Errorf("Zapret calibration command failed: %s", value)
+}
+
+func countCompletedCalibrationChecks(raw []byte) int {
+	completed := 0
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "UNAVAILABLE") || strings.Contains(line, "!!!!! AVAILABLE !!!!!") {
+			completed++
+		}
+	}
+	return completed
 }
 
 func cloneCalibrationStatus(status CalibrationStatus) CalibrationStatus {

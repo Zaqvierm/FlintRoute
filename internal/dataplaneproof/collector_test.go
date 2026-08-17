@@ -239,3 +239,10 @@ func writeJSON(t *testing.T, path string, value any) {
 		t.Fatal(err)
 	}
 }
+
+func TestCollectRoutesAllowsConfigurationOnlyPlan(t *testing.T) {
+	collected, err := collectRoutes(context.Background(), Options{}, nil, 1)
+	if err != nil || len(collected) != 0 {
+		t.Fatalf("configuration-only collection=%+v err=%v", collected, err)
+	}
+}

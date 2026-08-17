@@ -178,6 +178,38 @@ func TestOpenWrtPathVerifierRejectsSimulationByDefault(t *testing.T) {
 	}
 }
 
+func TestSystemDefaultPathVerifierUsesUnmarkedKernelRoute(t *testing.T) {
+	commands := &fakeOpenWrtCommands{routeTable: 254}
+	verifier := systemDefaultPathVerifier{commands: commands}
+	started := time.Now().UTC()
+	proof, err := verifier.Verify(context.Background(), PathProofRequest{
+		Route: config.Route{Type: "direct", Tag: "system-default", AdapterMode: "system_default"},
+		Observation: PathObservation{
+			Domain: "example.test", ResolvedIPs: []string{"203.0.113.10"}, ConnectedIP: "203.0.113.10",
+			ConnectedPort: 443, LocalIP: "192.0.2.2", AddressFamily: "ipv4", Transport: "direct",
+			HostPreserved: true, SNIPreserved: true, TLSResult: "OK", HTTPResult: "OK", ContentResult: "OK",
+			StartedAt: started, CompletedAt: started.Add(25 * time.Millisecond),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proof.Status != "OK" || proof.RouteTag != "system-default" || proof.Interface != "wan" || proof.RouteTable != 254 || proof.EvidenceSource != "kernel-route-get" {
+		t.Fatalf("incomplete system default proof: %+v", proof)
+	}
+}
+
+func TestSystemDefaultPathVerifierRejectsMarkedProbe(t *testing.T) {
+	verifier := systemDefaultPathVerifier{commands: &fakeOpenWrtCommands{routeTable: 254}}
+	_, err := verifier.Verify(context.Background(), PathProofRequest{
+		Route:       config.Route{Type: "direct", Tag: "system-default", AdapterMode: "system_default"},
+		Observation: PathObservation{Domain: "example.test", ConnectedIP: "203.0.113.10", LocalIP: "192.0.2.2", SocketMark: "0x41"},
+	})
+	if err == nil {
+		t.Fatal("marked probe was accepted as system default evidence")
+	}
+}
+
 func TestVerifySOCKSBindingRequiresInboundRuleAndVLESSOutbound(t *testing.T) {
 	root := t.TempDir()
 	valid := `{"inbounds":[{"tag":"socks-vless-a","listen":"127.0.0.1","port":12000,"protocol":"socks"}],"outbounds":[{"tag":"vless-a","protocol":"vless"}],"routing":{"rules":[{"type":"field","inboundTag":["socks-vless-a"],"outboundTag":"vless-a"}]}}`

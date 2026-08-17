@@ -15,7 +15,15 @@ import (
 	"golang.org/x/net/proxy"
 )
 
-const cloudflareDownloadEndpoint = "https://speed.cloudflare.com/__down"
+const (
+	cloudflareDownloadEndpoint = "https://speed.cloudflare.com/__down"
+	telenorDownloadEndpoint    = "https://hyperspeed.telenor.dk/download/100MB.bin"
+)
+
+type speedTarget struct {
+	Endpoint string
+	UseRange bool
+}
 
 type SpeedMeasurement struct {
 	MeasuredMbps float64 `json:"measured_mbps"`
@@ -31,6 +39,7 @@ type ThroughputTester interface {
 type CloudflareThroughputTester struct {
 	Endpoint string
 	Timeout  time.Duration
+	measure  func(context.Context, string, int64, speedTarget, time.Duration) (SpeedMeasurement, error)
 }
 
 func NewCloudflareThroughputTester() CloudflareThroughputTester {
@@ -49,20 +58,42 @@ func (t CloudflareThroughputTester) Measure(ctx context.Context, socksAddress st
 	if err != nil || !address.IsLoopback() {
 		return SpeedMeasurement{}, errors.New("speed test requires a loopback candidate SOCKS endpoint")
 	}
-	endpoint := t.Endpoint
-	if endpoint == "" {
-		endpoint = cloudflareDownloadEndpoint
+	targets := []speedTarget{{Endpoint: cloudflareDownloadEndpoint}, {Endpoint: telenorDownloadEndpoint, UseRange: true}}
+	if t.Endpoint != "" {
+		targets = []speedTarget{{Endpoint: t.Endpoint}}
 	}
-	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Scheme != "https" || parsed.Hostname() != "speed.cloudflare.com" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return SpeedMeasurement{}, errors.New("speed test endpoint is not allowlisted")
-	}
-	values := parsed.Query()
-	values.Set("bytes", strconv.FormatInt(bytesToRead, 10))
-	parsed.RawQuery = values.Encode()
 	timeout := t.Timeout
 	if timeout <= 0 || timeout > time.Minute {
 		timeout = 20 * time.Second
+	}
+	measure := t.measure
+	if measure == nil {
+		measure = measureSpeedTarget
+	}
+	var failures []error
+	for _, target := range targets {
+		measurement, err := measure(ctx, socksAddress, bytesToRead, target, timeout)
+		if err == nil {
+			return measurement, nil
+		}
+		failures = append(failures, err)
+	}
+	return SpeedMeasurement{}, fmt.Errorf("VLESS speed test failed on all allowlisted endpoints: %w", errors.Join(failures...))
+}
+
+func measureSpeedTarget(ctx context.Context, socksAddress string, bytesToRead int64, target speedTarget, timeout time.Duration) (SpeedMeasurement, error) {
+	parsed, err := url.Parse(target.Endpoint)
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return SpeedMeasurement{}, errors.New("speed test endpoint is not allowlisted")
+	}
+	switch {
+	case parsed.Hostname() == "speed.cloudflare.com" && parsed.Path == "/__down" && !target.UseRange:
+		values := parsed.Query()
+		values.Set("bytes", strconv.FormatInt(bytesToRead, 10))
+		parsed.RawQuery = values.Encode()
+	case parsed.Hostname() == "hyperspeed.telenor.dk" && parsed.Path == "/download/100MB.bin" && target.UseRange:
+	default:
+		return SpeedMeasurement{}, errors.New("speed test endpoint is not allowlisted")
 	}
 	baseDialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: -1}
 	socksDialer, err := proxy.SOCKS5("tcp", socksAddress, nil, baseDialer)
@@ -87,16 +118,19 @@ func (t CloudflareThroughputTester) Measure(ctx context.Context, socksAddress st
 	}
 	request.Header.Set("Accept-Encoding", "identity")
 	request.Header.Set("User-Agent", "FlintRoute speed measurement")
+	if target.UseRange {
+		request.Header.Set("Range", fmt.Sprintf("bytes=0-%d", bytesToRead-1))
+	}
 	started := time.Now()
 	response, err := client.Do(request)
 	if err != nil {
 		return SpeedMeasurement{}, errors.New("VLESS speed test request failed")
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
+	if response.StatusCode != http.StatusOK && !(target.UseRange && response.StatusCode == http.StatusPartialContent) {
 		return SpeedMeasurement{}, fmt.Errorf("VLESS speed test returned HTTP %d", response.StatusCode)
 	}
-	read, err := io.Copy(io.Discard, io.LimitReader(response.Body, bytesToRead+1))
+	read, err := io.CopyN(io.Discard, response.Body, bytesToRead)
 	if err != nil {
 		return SpeedMeasurement{}, errors.New("VLESS speed test download failed")
 	}

@@ -39,6 +39,7 @@ type ProviderMatch struct {
 
 type PoolSnapshot struct {
 	GeneratedAt     string               `json:"generated_at"`
+	BundleHash      string               `json:"bundle_hash,omitempty"`
 	TariffMbps      float64              `json:"tariff_mbps"`
 	Sources         []SubscriptionSource `json:"sources"`
 	ProviderMatches []ProviderMatch      `json:"provider_matches,omitempty"`

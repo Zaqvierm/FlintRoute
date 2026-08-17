@@ -29,6 +29,8 @@ export type ChangeSet = {
   revision_id?: string;
   transaction_id?: string;
   adapter_status?: string;
+  artifacts_ready?: boolean;
+  artifact_block_reason?: string;
   operations: ChangeOp[];
   validation: Array<{ level: string; code: string; message: string }>;
   diff: Array<{ type: string; path: string; value?: unknown }>;
@@ -181,6 +183,8 @@ export type ZapretCalibrationStatus = {
   concurrency: number;
   concurrency_reason: string;
   candidate_count: number;
+  checks_completed?: number;
+  checks_total?: number;
   candidates?: ZapretCalibrationCandidate[];
   started_at?: string;
   finished_at?: string;
@@ -211,6 +215,12 @@ export type DiscoveryStatus = {
   paused: boolean;
   paused_reason?: string;
   suggestions: Array<Record<string, unknown>>;
+  observation_source: {
+    status: 'receiving' | 'listening' | 'waiting' | 'unavailable';
+    reason?: string;
+    bytes?: number;
+    last_updated?: string;
+  };
 };
 export type TelegramStatus = {
   state: 'not_configured' | 'configured' | 'verified' | 'degraded' | 'failed';
@@ -328,11 +338,18 @@ export async function classifyService(
   domain: string,
   category: string,
   baseVersion: number,
-  allowedPaths?: string[]
+  allowedPaths?: string[],
+  allowDisableFlowOffloading = false
 ): Promise<{ change: ChangeSet }> {
   return request('/services/classify', {
     method: 'POST',
-    body: JSON.stringify({ domain, category, allowed_paths: allowedPaths, base_version: baseVersion })
+    body: JSON.stringify({
+      domain,
+      category,
+      allowed_paths: allowedPaths,
+      base_version: baseVersion,
+      allow_disable_flow_offloading: allowDisableFlowOffloading
+    })
   });
 }
 export async function getRoutes(): Promise<any[]> { return request('/routes'); }
