@@ -215,11 +215,14 @@ export function humanStatus(value: unknown): string {
 }
 
 export function statusTone(value: unknown): Tone {
-  const raw = textValue(value, '').toLowerCase();
+  const raw = textValue(value, '').toLowerCase().replace(/[._-]+/g, ' ').trim();
+  // Check negative/uncertain states before positive substrings.  Otherwise
+  // `not_configured`, `unverified`, and `no_verified_route` all contain
+  // `configured`/`verified` and were incorrectly painted green.
+  if (!raw || /unavailable|not configured|not installed|absent|disabled|unsupported/.test(raw)) return 'muted';
+  if (/fail|error|blocked|dropped|rollback|critical|offline|no safe route/.test(raw)) return 'bad';
+  if (/warn|degrad|stale|unverified|pending|await|unknown|requires device|no verified route/.test(raw)) return 'warn';
   if (/ok|ready|running|online|verified|healthy|committed|configured|200/.test(raw)) return 'ok';
-  if (/fail|error|blocked|dropped|rollback|critical|offline/.test(raw)) return 'bad';
-  if (/warn|degrad|stale|unverified|pending|await|unknown/.test(raw)) return 'warn';
-  if (!raw || /unavailable|not.configured|disabled|unsupported/.test(raw)) return 'muted';
   return 'info';
 }
 

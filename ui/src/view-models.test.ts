@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decisionVerificationPresentation, formatDateTime, groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, onboardingProgress, onboardingRouterReady, parseResolverInput, recoveryMutationAllowed, serviceColumnFor, stringArray, textValue, toDecisionCard, verificationPresentationLabel } from './view-models';
+import { decisionVerificationPresentation, formatDateTime, groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, onboardingProgress, onboardingRouterReady, parseResolverInput, recoveryMutationAllowed, serviceColumnFor, statusTone, stringArray, textValue, toDecisionCard, verificationPresentationLabel } from './view-models';
 import type { EventItem } from './api';
 
 describe('safe display values', () => {
@@ -15,6 +15,13 @@ describe('safe display values', () => {
     expect(humanStatus('ROUTE_AVAILABLE')).toBe('Интернет доступен');
     expect(humanStatus('not_installed')).toBe('Не установлен');
     expect(humanStatus('NO_SAFE_ROUTE')).toBe('Ни один безопасный маршрут не прошёл проверку');
+  });
+
+  it('does not paint negative states green because they contain positive words', () => {
+    expect(statusTone('not_configured')).not.toBe('ok');
+    expect(statusTone('unverified')).not.toBe('ok');
+    expect(statusTone('no_verified_route')).not.toBe('ok');
+    expect(statusTone('ready')).toBe('ok');
   });
 
   it('does not render zero-value timestamps as year one', () => {
