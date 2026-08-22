@@ -7,7 +7,7 @@ function envelope(data: unknown, status = 200) {
   return { status, contentType: 'application/json', body: JSON.stringify({ data }) };
 }
 
-export async function mockAPI(page: Page, options: { securityFailure?: boolean; recoveryStatus?: string; bootstrapRequired?: boolean } = {}) {
+export async function mockAPI(page: Page, options: { securityFailure?: boolean; recoveryStatus?: string; bootstrapRequired?: boolean; decisionState?: 'verifying' | 'no_safe_route' } = {}) {
   const onboarding = {
     completed: false,
     can_complete: false,
@@ -39,7 +39,28 @@ export async function mockAPI(page: Page, options: { securityFailure?: boolean; 
     }
     if (path === '/services') return route.fulfill(envelope(options.bootstrapRequired ? [] : [{ id: 'Discord', name: 'Discord', category: 'TELEGRAM', domains: ['discord.com'], route: 'VLESS' }]));
     if (path === '/routes') return route.fulfill(envelope([{ type: 'system_default', tag: 'Direct', status: 'ready' }]));
-    if (path === '/events') return route.fulfill(envelope([]));
+    if (path === '/events') {
+      if (!options.decisionState) return route.fulfill(envelope([]));
+      const terminal = options.decisionState === 'no_safe_route';
+      return route.fulfill(envelope([{
+        id: 1,
+        time: new Date().toISOString(),
+        type: 'route.decision',
+        severity: 'info',
+        device_id: 'phone',
+        domain: 'example.com',
+        route: 'Direct',
+        details: {
+          device_name: 'Phone', device_ip: rawIP, service_name: 'Unknown', category: 'UNKNOWN',
+          path_verified: false,
+          probe_state: terminal ? 'no_safe_route' : 'verifying',
+          verification_state: terminal ? 'terminal_no_safe_route' : 'in_progress',
+          policy_state: 'observed',
+          status: terminal ? 'NO_SAFE_ROUTE' : 'VERIFYING',
+          decision_duration_ms: terminal ? 4200 : 120
+        }
+      }]));
+    }
     if (path === '/traffic') return route.fulfill(envelope({ status: 'ready', source: 'fixture', collected_at: new Date().toISOString(), interfaces: [] }));
     if (path === '/onboarding') {
       if (route.request().method() === 'POST') {
@@ -169,5 +190,18 @@ test.describe('FlintRoute UI v2', () => {
     await expect.poll(() => servicesSeen).toBe(true);
     await page.getByRole('button', { name: 'Обзор', exact: true }).first().click();
     await expect.poll(() => servicesAborted, { timeout: 5_000 }).toBe(true);
+  });
+
+  test('keeps verifying decisions separate from terminal no-safe-route failures', async ({ page }) => {
+    await mockAPI(page, { decisionState: 'verifying' });
+    await page.goto('/?screen=Поток решений');
+    await expect(page.getByText('Проверяется…')).toBeVisible();
+    await expect(page.getByText('Безопасный маршрут не найден')).toHaveCount(0);
+  });
+
+  test('shows no-safe-route only after a terminal exhausted decision', async ({ page }) => {
+    await mockAPI(page, { decisionState: 'no_safe_route' });
+    await page.goto('/?screen=Поток решений');
+    await expect(page.getByText('Безопасный маршрут не найден')).toBeVisible();
   });
 });
