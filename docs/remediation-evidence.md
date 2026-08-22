@@ -7,7 +7,7 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 
 - Base review SHA: `d45a779dfa9dc024b426cef358d3df4d32478897`
 - Branch: `remediation/transaction-and-privilege-boundaries`
-- Code verification SHA: `163b17cec7e0d1445fa4360ac2dce8ceaf997974` (recovery
+- Code verification SHA: `3173e32c6e040794bdf73078e013908aabc18c38` (recovery
   fence, route-verification semantics, bounded Zapret modes, truthful UI/browser
   coverage, screen-specific request budget, refresh cancellation, and robust
   Zapret process ownership). This document may be advanced by docs-only
@@ -37,9 +37,9 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | legacy shell atomic write | `tests/shell-library.sh` | PASS (mode check is Linux-only; Windows reports `NOT RUN LOCALLY`) | local/mock |
 | boot guard | `tests/boot-guard-policy.sh`, `tests/boot-guard-service.sh` | PASS | local/mock |
 | privileged helper boundary | `tests/helper-service.sh`, `go test ./internal/helper` | PASS | local/mock |
-| nft transition | `tests/nft-transition-namespace.sh` | PASS — [run 32574915080](https://github.com/Zaqvierm/FlintRoute/actions/runs/32574915080), exact code SHA `163b17cec7e0d1445fa4360ac2dce8ceaf997974` | Linux namespace |
+| nft transition | `tests/nft-transition-namespace.sh` | PASS — [run 32575449189](https://github.com/Zaqvierm/FlintRoute/actions/runs/32575449189), exact code SHA `3173e32c6e040794bdf73078e013908aabc18c38` | Linux namespace |
 | hotplug boundedness | `tests/hotplug-bounded.sh` | PASS | local/mock |
-| Zapret cleanup | `tests/zapret-calibration-runtime.sh` | PASS — [run 32574915074](https://github.com/Zaqvierm/FlintRoute/actions/runs/32574915074), exact code SHA `163b17cec7e0d1445fa4360ac2dce8ceaf997974` | Linux process/procfs |
+| Zapret cleanup | `tests/zapret-calibration-runtime.sh` | PASS — [run 32575449237](https://github.com/Zaqvierm/FlintRoute/actions/runs/32575449237), exact code SHA `3173e32c6e040794bdf73078e013908aabc18c38` | Linux process/procfs |
 | SSRF and decompression limits | `go test ./internal/remotefetch ./internal/vpnsub ./internal/tspu ./internal/geoip` | PASS | local |
 | Xray typed input | `go test ./internal/vpnsub` | PASS | local |
 | resource budget | `go test ./internal/api ./internal/probe` | PASS | local |
@@ -49,11 +49,11 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | unknown route latency scoring | `TestSelectBestDoesNotTreatUnknownLatencyAsZero` | PASS | local |
 | frontend build | `npm run build` | PASS | local |
 | frontend tests | `npm test` | PASS (32 tests) | local |
-| browser smoke/responsive | `npm run browser:test` | PASS (8 tests; 10 viewport matrix); [CI run 32574604648](https://github.com/Zaqvierm/FlintRoute/actions/runs/32574604648) | local Chromium + Linux CI |
+| browser smoke/responsive | `npm run browser:test` | PASS (8 tests; 10 viewport matrix); [CI run 32575449236](https://github.com/Zaqvierm/FlintRoute/actions/runs/32575449236) | local Chromium + Linux CI |
 | ShellCheck | `.tools/shellcheck-v0.11.0/shellcheck.exe -x <tracked shell files>` | PASS | local |
 | race/vet | `go test -race ./...`, `go vet ./...` | PASS | local |
 
-The full local runner at the recorded code SHA completed in 295.3 seconds with
+The full local runner at the recorded code SHA completed in 328 seconds with
 `all_tests_ok=true`. Its Linux-only namespace/process-group steps were
 honestly reported as `NOT RUN LOCALLY`; the independent GitHub runs above are
 the Linux evidence. The earlier `e04778e` nft run failed because the fixture's
@@ -68,6 +68,9 @@ instead of braced positional parameters, and a release-file race. The current
 before ownership validation, resumes it only after the PGID check, and then
 performs owned cleanup. Those failures remain recorded here; they are not
 being hidden behind a retry.
+
+The final lint-only follow-up `3173e32` makes the shell-library regression
+portable on Windows; its mode assertion remains explicitly Linux-only.
 
 The UI refresh budget is explicit: a Services-screen refresh requests only the
 always-on overview/system/health snapshots plus services and revisions. The
