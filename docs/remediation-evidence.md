@@ -126,11 +126,18 @@ discarded after navigation. The full local runner at this exact SHA passed in
 also passed. Linux-only namespace/process-group checks remain `NOT RUN LOCALLY`
 on Windows.
 
-Current CI for this exact SHA:
+The prior code-SHA CI runs for this frontend/test state were:
 
 - nft transition safety: [run 32578063407](https://github.com/Zaqvierm/FlintRoute/actions/runs/32578063407)
 - Zapret process-group safety: [run 32578063499](https://github.com/Zaqvierm/FlintRoute/actions/runs/32578063499)
 - UI browser/responsive: [run 32578063388](https://github.com/Zaqvierm/FlintRoute/actions/runs/32578063388)
+
+The latest confirmation runs were triggered by docs-only head `097bb2f`; no
+code changed after `91193d7`:
+
+- nft transition safety: [run 32578987502](https://github.com/Zaqvierm/FlintRoute/actions/runs/32578987502)
+- Zapret process-group safety: [run 32578987408](https://github.com/Zaqvierm/FlintRoute/actions/runs/32578987408)
+- UI browser/responsive: [run 32578987494](https://github.com/Zaqvierm/FlintRoute/actions/runs/32578987494)
 
 ## Known limitation
 
