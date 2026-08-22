@@ -167,6 +167,20 @@ seconds. The production bundle is 185.15 kB JS (58.04 kB gzip) and 26.52 kB
 CSS (6.28 kB gzip). Linux-only namespace/process-group checks remain
 `NOT RUN LOCALLY` on Windows.
 
+The required Linux/CI checks for the exact code head passed:
+
+- nft transition safety: [run 32580143066](https://github.com/Zaqvierm/FlintRoute/actions/runs/32580143066)
+- Zapret process-group safety: [run 32580143067](https://github.com/Zaqvierm/FlintRoute/actions/runs/32580143067)
+- UI browser/responsive: [run 32580143064](https://github.com/Zaqvierm/FlintRoute/actions/runs/32580143064)
+
+The following docs-only head `c6bfb273255b98538f0e97239b146cf856c35602`
+also reran all three workflows successfully; it did not change the code
+covered by the exact SHA above:
+
+- nft transition safety: [run 32580583726](https://github.com/Zaqvierm/FlintRoute/actions/runs/32580583726)
+- Zapret process-group safety: [run 32580583820](https://github.com/Zaqvierm/FlintRoute/actions/runs/32580583820)
+- UI browser/responsive: [run 32580583755](https://github.com/Zaqvierm/FlintRoute/actions/runs/32580583755)
+
 ## Known limitation
 
 The packaged helper boundary is tested, but the production `router-policy`
