@@ -729,10 +729,11 @@ EOF
 
 rollback_timeout() {
   value="$(sed -n 's/^rollback_timeout_seconds=//p' "$binding_file" 2>/dev/null | head -n 1)"
+  # The binding is the typed transaction contract.  Never parse candidate JSON
+  # in shell: formatting changes must not alter the rollback safety decision.
   if ! printf '%s\n' "$value" | grep -Eq '^[0-9]+$' || [ "$value" -lt 1 ] || [ "$value" -gt 3600 ]; then
-    value="$(sed -n 's/.*"rollback_timeout_seconds"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$candidate" 2>/dev/null | head -n 1)"
+    value=120
   fi
-  [ -n "$value" ] || value=120
   echo "$value"
 }
 
