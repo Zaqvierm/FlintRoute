@@ -216,6 +216,22 @@ regression proves a verified discovery result causes zero adapter calls and no
 persisted service, even with a safe recovery baseline. Targeted API tests,
 race tests and `go vet` passed; hardware remains unverified.
 
+At code/docs head `c803c06a8152a51232deee7cf33705ec06d86915`, the local gate was
+rerun after this hardening. `gofmt` was clean, full `tests/run-all.ps1` passed
+with `all_tests_ok=true` in 742.8 seconds, full `go test -race ./...` passed in
+84.8 seconds, and `go vet ./...` passed. The OpenWrt adapter integration fixture
+passed with `openwrt_adapter_integration_ok=true` (377.7 seconds). The runner
+explicitly reported Linux-only Zapret process-group and nft namespace checks as
+`NOT RUN LOCALLY` on Windows; those are covered by the required CI workflows,
+not by a mock PASS. CI for this exact head passed:
+
+- nft transition safety: [run 32581995540](https://github.com/Zaqvierm/FlintRoute/actions/runs/32581995540)
+- Zapret process-group safety: [run 32581995601](https://github.com/Zaqvierm/FlintRoute/actions/runs/32581995601)
+- UI browser/responsive: [run 32581995554](https://github.com/Zaqvierm/FlintRoute/actions/runs/32581995554)
+
+The code remains local-only with respect to hardware: no SSH, install, apply,
+reboot, or Flint 2 validation was performed for this head.
+
 ## Known limitation
 
 The packaged helper boundary is tested, but the production `router-policy`
