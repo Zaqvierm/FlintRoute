@@ -134,6 +134,9 @@ routes_baseline="$run_dir/routes.before"
 rules_baseline="$run_dir/rules.before"
 report="$run_dir/blockcheck.log"
 result="$run_dir/import.json"
+blockcheck_pid_file="$run_dir/blockcheck.pid"
+blockcheck_status_file="$run_dir/blockcheck.status"
+blockcheck_release_file="$run_dir/blockcheck.release"
 maintenance_started=0
 zapret_was_running=0
 blockcheck_pid=""
@@ -424,18 +427,48 @@ export ROUTER_POLICY_CALIBRATION_RUN_ID="$calibration_run_id"
 set +e
 # shellcheck disable=SC2016 # the child shell expands its positional arguments.
 setsid sh -c '
+  # setsid may fork when its caller is already a process-group leader.  The
+  # background PID is then the short-lived launcher, not the isolated child;
+  # publish the child PID from inside the new session instead of trusting $!.
+  printf "%s\\n" "$$" > "$11"
+  i=0
+  while [ ! -e "$13" ] && [ "$i" -lt 100 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if [ ! -e "$13" ]; then
+    printf "%s\\n" 125 > "$12"
+    exit 125
+  fi
   cd "$1"
   NFQWS="$8" NFQWS_BIN="$8" ROUTER_POLICY_CALIBRATION_RUN_ID="$9" \
     BATCH=1 IPVS=4 REPEATS=3 SCANLEVEL="${10}" SKIP_TPWS=1 SKIP_DNSCHECK="$2" DOMAINS="$3" \
     "$4" "$5" sh "$6" >"$7" 2>&1
-' sh "$(dirname "$blockcheck_script")" "$skip_dnscheck" "$domain" "$TIMEOUT_BIN" "$BLOCKCHECK_TIMEOUT" "$blockcheck_script" "$report" "$NFQWS_BIN" "$calibration_run_id" "$scan_level" &
-blockcheck_pid=$!
+  status=$?
+  printf "%s\\n" "$status" > "$12"
+  exit "$status"
+' sh "$(dirname "$blockcheck_script")" "$skip_dnscheck" "$domain" "$TIMEOUT_BIN" "$BLOCKCHECK_TIMEOUT" "$blockcheck_script" "$report" "$NFQWS_BIN" "$calibration_run_id" "$scan_level" "$blockcheck_pid_file" "$blockcheck_status_file" "$blockcheck_release_file" &
+blockcheck_launcher_pid=$!
+i=0
+while [ ! -s "$blockcheck_pid_file" ] && [ "$i" -lt 10 ]; do
+  sleep 1
+  i=$((i + 1))
+done
+blockcheck_pid=$(cat "$blockcheck_pid_file" 2>/dev/null || true)
+case "$blockcheck_pid" in
+  ""|*[!0-9]*)
+    echo "unable to determine isolated calibration process" >&2
+    kill "$blockcheck_launcher_pid" 2>/dev/null || true
+    wait "$blockcheck_launcher_pid" 2>/dev/null || true
+    exit 1
+    ;;
+esac
 blockcheck_pgid=$(proc_pgid "$blockcheck_pid" 2>/dev/null || true)
 case "$blockcheck_pgid" in
   ""|0|*[!0-9]*)
     echo "unable to determine calibration process group" >&2
     kill -TERM "$blockcheck_pid" 2>/dev/null || true
-    wait "$blockcheck_pid" 2>/dev/null || true
+    wait "$blockcheck_launcher_pid" 2>/dev/null || true
     exit 1
     ;;
 esac
@@ -443,14 +476,27 @@ controller_pgid=$(proc_pgid "$$" 2>/dev/null || true)
 [ "$blockcheck_pgid" != "$controller_pgid" ] || {
   echo "calibration process group is not isolated from the controller" >&2
   kill -TERM "$blockcheck_pid" 2>/dev/null || true
-  wait "$blockcheck_pid" 2>/dev/null || true
+  wait "$blockcheck_launcher_pid" 2>/dev/null || true
   exit 1
 }
 blockcheck_start=$(proc_start_time "$blockcheck_pid" 2>/dev/null || true)
 blockcheck_exe=$(proc_executable "$blockcheck_pid")
 printf '%s|%s|%s|%s|%s\n' "$blockcheck_pid" "$blockcheck_start" "$blockcheck_exe" "$blockcheck_pgid" "$calibration_run_id" > "$process_manifest"
-wait "$blockcheck_pid"
-blockcheck_status=$?
+: > "$blockcheck_release_file"
+wait "$blockcheck_launcher_pid" 2>/dev/null || true
+i=0
+while [ ! -s "$blockcheck_status_file" ] && [ "$i" -lt 30 ]; do
+  process_group_exists "$blockcheck_pgid" || break
+  sleep 1
+  i=$((i + 1))
+done
+blockcheck_status=$(cat "$blockcheck_status_file" 2>/dev/null || true)
+case "$blockcheck_status" in
+  ""|*[!0-9]*)
+    echo "calibration process exited without a semantic status" >&2
+    exit 1
+    ;;
+esac
 blockcheck_pid=""
 set -e
 if [ "$blockcheck_status" -ne 0 ]; then

@@ -108,4 +108,26 @@ test.describe('FlintRoute UI v2', () => {
     expect(apiPaths.filter((path) => path === '/services')).toHaveLength(1);
     expect(apiPaths.length).toBeLessThanOrEqual(8);
   });
+
+  test('aborts an in-flight screen refresh when navigation changes', async ({ page }) => {
+    let servicesSeen = false;
+    let servicesAborted = false;
+    await mockAPI(page);
+    await page.route('**/api/v1/services', async (route) => {
+      servicesSeen = true;
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        await route.fulfill(envelope([{ id: 'Discord', name: 'Discord', category: 'TELEGRAM', domains: ['discord.com'], route: 'VLESS' }]));
+      } catch {
+        servicesAborted = true;
+      }
+    });
+    page.on('requestfailed', (request) => {
+      if (new URL(request.url()).pathname === '/api/v1/services') servicesAborted = true;
+    });
+    await page.goto('/?screen=Сервисы');
+    await expect.poll(() => servicesSeen).toBe(true);
+    await page.getByRole('button', { name: 'Обзор', exact: true }).first().click();
+    await expect.poll(() => servicesAborted, { timeout: 5_000 }).toBe(true);
+  });
 });
