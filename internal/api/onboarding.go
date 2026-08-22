@@ -63,6 +63,11 @@ func onboardingStepStatus(value onboardingState, name string) string {
 	return step.Status
 }
 
+func onboardingStepCompleted(value onboardingState, name string) bool {
+	status := onboardingStepStatus(value, name)
+	return status == "accepted" || status == "skipped"
+}
+
 func onboardingOverviewReady(value map[string]any) bool {
 	internet := onboardingStatus(value["internet"])
 	dns := onboardingStatus(value["dns"])
@@ -107,9 +112,9 @@ func (s *Server) onboardingResponse(value onboardingState) map[string]any {
 		steps["router"] = onboardingStep{Status: "needs_attention"}
 	}
 	canComplete := routerReady &&
-		onboardingStepStatus(value, "methods") != "pending" &&
-		onboardingStepStatus(value, "sources") != "pending" &&
-		onboardingStepStatus(value, "services") != "pending"
+		onboardingStepCompleted(value, "methods") &&
+		onboardingStepCompleted(value, "sources") &&
+		onboardingStepCompleted(value, "services")
 	return map[string]any{
 		"version":      value.Version,
 		"steps":        steps,

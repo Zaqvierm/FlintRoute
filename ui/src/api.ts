@@ -388,8 +388,8 @@ export async function classifyService(
   });
 }
 export async function getRoutes(signal?: AbortSignal): Promise<any[]> { return request('/routes', { signal }); }
-export async function getComponents(): Promise<ComponentStatus[]> {
-  const result = await request<{ components: ComponentStatus[] }>('/components');
+export async function getComponents(signal?: AbortSignal): Promise<ComponentStatus[]> {
+  const result = await request<{ components: ComponentStatus[] }>('/components', { signal });
   return result.components;
 }
 export async function getComponent(kind: ComponentKind, upstream = false): Promise<ComponentStatus> {
@@ -398,7 +398,7 @@ export async function getComponent(kind: ComponentKind, upstream = false): Promi
 export async function componentAction(kind: ComponentKind, action: ComponentAction, confirmDisruption = false, preserveConfig = true): Promise<ComponentResult> {
   return request('/components/action', { method: 'POST', body: JSON.stringify({ kind, action, confirm_disruption: confirmDisruption, preserve_config: preserveConfig }) });
 }
-export async function getSmartDNS(): Promise<any> { return request('/smart-dns'); }
+export async function getSmartDNS(signal?: AbortSignal): Promise<any> { return request('/smart-dns', { signal }); }
 export async function configureSmartDNS(resolvers: SmartDNSResolver[], testDomain: string, baseVersion: number): Promise<{ change: ChangeSet; endpoint_count: number; validations: SmartDNSValidation[] }> {
   return request('/smart-dns/configure', {
     method: 'POST',
@@ -420,7 +420,7 @@ export async function checkExternalSOCKS(endpoint: string, testDomain: string, b
 export async function activateExternalSOCKS(endpoint: string, testDomain: string, baseVersion: number): Promise<{ report: ExternalSOCKSReport; change: ChangeSet }> {
   return request('/external-socks/activate', { method: 'POST', body: JSON.stringify({ endpoint, test_domain: testDomain, base_version: baseVersion }) });
 }
-export async function getTGWS(): Promise<TGWSStatus> { return request('/tgws'); }
+export async function getTGWS(signal?: AbortSignal): Promise<TGWSStatus> { return request('/tgws', { signal }); }
 export async function configureTGWS(port: number, fakeTLSDomain: string): Promise<{ status: TGWSStatus; connect_link: string; one_time: boolean }> {
   return request('/tgws/configure', { method: 'POST', body: JSON.stringify({ port, fake_tls_domain: fakeTLSDomain }) });
 }
@@ -472,14 +472,14 @@ export async function addManualVLESSServer(uri: string): Promise<ManualVLESSInve
 export async function deleteManualVLESSServer(id: string): Promise<ManualVLESSInventory> {
   return request('/xray/manual-servers', { method: 'DELETE', body: JSON.stringify({ id }) });
 }
-export async function getVLESSPool(): Promise<VLESSPoolSnapshot> { return request('/xray/pool'); }
+export async function getVLESSPool(signal?: AbortSignal): Promise<VLESSPoolSnapshot> { return request('/xray/pool', { signal }); }
 export async function setVLESSTariff(tariffMbps: number): Promise<{ tariff_mbps: number }> {
   return request('/xray/pool/settings', { method: 'PUT', body: JSON.stringify({ tariff_mbps: tariffMbps }) });
 }
 export async function runVLESSSpeedTest(logicalID: string): Promise<{ server: any; measurement: { measured_mbps: number; bytes_used: number; duration_ms: number; tested_at: string } }> {
   return request('/xray/pool/speedtest', { method: 'POST', body: JSON.stringify({ logical_id: logicalID }) });
 }
-export async function getZapret(): Promise<any> { return request('/zapret'); }
+export async function getZapret(signal?: AbortSignal): Promise<any> { return request('/zapret', { signal }); }
 export async function getZapretCalibration(): Promise<ZapretCalibrationStatus> { return request('/zapret/calibration'); }
 export async function startZapretCalibration(domain: string, allowManagedRestart = true, mode: 'quick' | 'exhaustive' = 'quick'): Promise<ZapretCalibrationStatus> {
   return request('/zapret/calibration', { method: 'POST', body: JSON.stringify({ domain, mode, allow_managed_restart: allowManagedRestart }) });

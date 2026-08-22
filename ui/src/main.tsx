@@ -2275,10 +2275,21 @@ function LoginScreen() {
 
 function SetupScreen({ overview, services, routes, discovery, onboarding, onboardingAction, navigate }: any) {
   const [state, setState] = useState<any>({ loading: true, components: [], pool: null, smartDNS: null, tgws: null, zapret: null, error: '' });
+  const requestRef = useRef<AbortController | null>(null);
 
   async function load() {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     setState((old: any) => ({ ...old, loading: true, error: '' }));
-    const results = await Promise.allSettled([getComponents(), getVLESSPool(), getSmartDNS(), getTGWS(), getZapret()]);
+    const results = await Promise.allSettled([
+      getComponents(controller.signal),
+      getVLESSPool(controller.signal),
+      getSmartDNS(controller.signal),
+      getTGWS(controller.signal),
+      getZapret(controller.signal)
+    ]);
+    if (controller.signal.aborted || requestRef.current !== controller) return;
     const value = (index: number, fallback: any) => results[index].status === 'fulfilled' ? (results[index] as PromiseFulfilledResult<any>).value : fallback;
     const failed = results.filter((item) => item.status === 'rejected');
     setState({
@@ -2292,7 +2303,10 @@ function SetupScreen({ overview, services, routes, discovery, onboarding, onboar
     });
   }
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => () => {
+    requestRef.current?.abort();
+    requestRef.current = null;
+  }, []);
 
   const routerReady = onboardingRouterReady(onboarding, overview);
   const components = asArray(state.components).map(asRecord);

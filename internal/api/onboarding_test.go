@@ -95,3 +95,24 @@ func TestOnboardingOverviewReadyRequiresProofStates(t *testing.T) {
 		})
 	}
 }
+
+func TestOnboardingStepCompletionRejectsUnknownStatuses(t *testing.T) {
+	for _, status := range []string{"", "pending", "verified", "bogus", "completed"} {
+		t.Run("methods_"+status, func(t *testing.T) {
+			value := defaultOnboardingState()
+			value.Steps["methods"] = onboardingStep{Status: status}
+			if onboardingStepCompleted(value, "methods") {
+				t.Fatalf("unknown onboarding status %q was treated as complete", status)
+			}
+		})
+	}
+	for _, status := range []string{"accepted", "skipped"} {
+		t.Run("accepted_"+status, func(t *testing.T) {
+			value := defaultOnboardingState()
+			value.Steps["methods"] = onboardingStep{Status: status}
+			if !onboardingStepCompleted(value, "methods") {
+				t.Fatalf("explicit onboarding status %q was not treated as complete", status)
+			}
+		})
+	}
+}

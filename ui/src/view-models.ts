@@ -47,9 +47,10 @@ export function onboardingProgress(input: {
   serviceCount?: number;
   canComplete?: boolean;
 }): OnboardingProgress {
-  const methodsDone = textValue(input.methodsStatus, 'pending') !== 'pending';
-  const sourcesDone = textValue(input.sourcesStatus, 'pending') !== 'pending';
-  const serviceChoiceDone = (input.serviceCount ?? 0) > 0 || textValue(input.servicesStatus, 'pending') !== 'pending';
+  const stepDone = (value: unknown) => ['accepted', 'skipped', 'automatic'].includes(textValue(value, 'pending').trim().toLowerCase());
+  const methodsDone = stepDone(input.methodsStatus);
+  const sourcesDone = stepDone(input.sourcesStatus);
+  const serviceChoiceDone = (input.serviceCount ?? 0) > 0 || stepDone(input.servicesStatus);
   const providerReady = (input.verifiedServers ?? 0) > 0 || Boolean(input.smartReady || input.tgwsReady || input.zapretReady) || methodsDone;
   return { methodsDone, sourcesDone, serviceChoiceDone, providerReady, setupReady: input.canComplete === true };
 }

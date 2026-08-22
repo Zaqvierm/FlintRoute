@@ -95,6 +95,14 @@ describe('onboarding truthfulness', () => {
     expect(progress.setupReady).toBe(true);
   });
 
+  it('does not treat an unknown persisted step status as complete', () => {
+    const progress = onboardingProgress({ methodsStatus: 'corrupted', sourcesStatus: 'verified', servicesStatus: 'pending' });
+    expect(progress.methodsDone).toBe(false);
+    expect(progress.sourcesDone).toBe(false);
+    expect(progress.serviceChoiceDone).toBe(false);
+    expect(progress.setupReady).toBe(false);
+  });
+
   it('uses the backend router gate and never treats simulation as ready', () => {
     expect(onboardingRouterReady({ router_ready: false }, { internet: 'ROUTE_AVAILABLE', dns: 'AVAILABLE' })).toBe(false);
     expect(onboardingRouterReady({ router_ready: true }, { internet: 'simulation', dns: 'simulation' })).toBe(true);
