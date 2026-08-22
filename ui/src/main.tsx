@@ -89,7 +89,9 @@ import {
   statusTone,
   stringArray,
   textValue,
-  toDecisionCard
+  toDecisionCard,
+  decisionVerificationPresentation,
+  verificationPresentationLabel
 } from './view-models';
 import {
   AlertCenter,
@@ -1112,7 +1114,17 @@ function ServiceGroup({
 function ServiceDetails({ service, onEdit }: { service: any; onEdit?: () => void }) {
   if (!service) return null;
   const observation = !Boolean(service.applied) && asArray(service.sources).includes('automatic') && !asArray(service.sources).includes('configured');
-  return <><InfoGrid items={[["Политика", observation ? (service.policy_state === 'suggested' ? 'Предложено — не применено' : 'Наблюдение — не применено') : 'Применена'], ["Классификация", service.classification_state === 'classified' ? service.category : 'Не определена'], ["Уверенность классификации", Number(service.confidence) > 0 ? service.confidence : 'Нет достаточных данных'], ["Проверка пути", service.probe_state === 'verified_candidate' ? 'Кандидат прошёл проверку' : 'Безопасный путь не найден'], ["Источник", asArray(service.sources).join(', ')], [observation ? "Кандидат маршрута" : "Маршрут", service.selected_route_tag ?? service.selected_route_type], ["Health", service.health], ["Fallback", asArray(service.allowed_paths).join(' → ')], ["Последняя проверка", formatDateTime(service.latest_checked_at)]]} />
+  const serviceVerificationState = textValue(service.probe_state, '').toLowerCase().replace(/[._-]+/g, ' ');
+  const serviceVerification = serviceVerificationState === 'verified candidate'
+    ? 'verified'
+    : serviceVerificationState === 'verifying' || serviceVerificationState === 'in progress'
+      ? 'checking'
+      : serviceVerificationState === 'no safe route' || textValue(service.verification_state, '').toLowerCase().replace(/[._-]+/g, ' ') === 'terminal no safe route'
+        ? 'no_safe_route'
+        : service.policy_state === 'observed' && serviceVerificationState === 'not run observe only'
+          ? 'observed'
+          : 'unverified';
+  return <><InfoGrid items={[["Политика", observation ? (service.policy_state === 'suggested' ? 'Предложено — не применено' : 'Наблюдение — не применено') : 'Применена'], ["Классификация", service.classification_state === 'classified' ? service.category : 'Не определена'], ["Уверенность классификации", Number(service.confidence) > 0 ? service.confidence : 'Нет достаточных данных'], ["Проверка пути", verificationPresentationLabel(serviceVerification as Parameters<typeof verificationPresentationLabel>[0])], ["Источник", asArray(service.sources).join(', ')], [observation ? "Кандидат маршрута" : "Маршрут", service.selected_route_tag ?? service.selected_route_type], ["Health", service.health], ["Fallback", asArray(service.allowed_paths).join(' → ')], ["Последняя проверка", formatDateTime(service.latest_checked_at)]]} />
     <h3>Связанные домены</h3><div class="domain-list">{asArray(service.domains).map((domain) => <span class="chip mono">{textValue(domain)}</span>)}</div>
     <h3>Наследование и исключения</h3><p>{asArray(service.forbidden_paths).length ? `Запрещены: ${asArray(service.forbidden_paths).join(', ')}` : 'Явных конфликтов и исключений нет.'}</p>
     {onEdit && <button class="primary" onClick={onEdit}>Настроить правило</button>}<RawDisclosure value={service} /></>;
@@ -2189,7 +2201,7 @@ function DecisionFlow({ events, discovery }: { events: EventItem[]; discovery: D
   <div class="decision-list">{decisions.map((decision) => <article class="decision-card" key={decision.id}>
     <header><div><span>{decision.device}{decision.ip ? ` / ${decision.ip}` : ''}</span><time>{new Date(decision.time).toLocaleTimeString()}</time></div><StatusBadge value={decision.policyState === 'suggested' ? 'Предложение — не применено' : decision.policyState === 'pending_auto_apply' ? 'Ожидает автоматического применения' : decision.status} /></header>
     <div class="decision-main"><div><small>Домен</small><b>{decision.domain}</b><span>{decision.service}</span></div><div><small>Стратегия</small><b>{decision.strategy}</b><span>{decision.category}</span></div><div><small>Маршрут</small><b>{decision.route}</b><span>{decision.fallback ? `Fallback: ${decision.fallbackPath.join(' → ') || 'да'}` : 'Без fallback'}</span></div></div>
-    <footer><span class={decision.verified ? 'verified' : 'unverified'}>{decision.verified ? (decision.policyState === 'applied' ? 'Путь применён и подтверждён' : 'Кандидат прошёл проверку пути') : 'Безопасный путь не найден'}</span><span>{decision.durationMS !== undefined ? `${decision.durationMS} мс` : 'Время не измерено'}</span><button onClick={() => setSelected(decision)}>Открыть</button></footer>
+    {(() => { const presentation = decisionVerificationPresentation(decision); return <footer><span class={presentation === 'verified' ? 'verified' : presentation === 'no_safe_route' ? 'unverified' : 'pending'}>{verificationPresentationLabel(presentation)}</span><span>{decision.durationMS !== undefined ? `${decision.durationMS} мс` : 'Время не измерено'}</span><button onClick={() => setSelected(decision)}>Открыть</button></footer>; })()}
   </article>)}</div>
   {!decisions.length && <EmptyState title="Решений за выбранный период нет" text={discovery?.observation_source?.status === 'waiting' || discovery?.observation_source?.status === 'unavailable' ? 'Discovery не получает DNS-запросы. Открой раздел Discovery и проверь DNS клиента.' : 'Discovery наблюдает трафик. Открой новый сайт с устройства в LAN или Wi-Fi.'} />}
   <DetailDrawer title={selected ? `${selected.domain} · ${selected.route}` : 'Решение'} open={Boolean(selected)} onClose={() => setSelected(null)}>

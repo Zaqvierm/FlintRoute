@@ -125,6 +125,8 @@ export type DecisionCard = {
   raw: EventItem;
 };
 
+export type VerificationPresentation = 'verified' | 'checking' | 'no_safe_route' | 'observed' | 'unverified';
+
 const decisionTypes = new Set([
   'route.decision',
   'domain.decision',
@@ -295,6 +297,33 @@ export function toDecisionCard(event: EventItem): DecisionCard {
     details,
     raw: event
   };
+}
+
+/**
+ * A missing PathVerified bit is not, by itself, proof that every candidate
+ * failed.  Keep the user-facing state aligned with the planner state machine:
+ * VERIFYING is in progress, observe-only is passive, and NO_SAFE_ROUTE is
+ * terminal only after the planner reports exhaustion.
+ */
+export function decisionVerificationPresentation(decision: Pick<DecisionCard, 'verified' | 'probeState' | 'policyState' | 'details'>): VerificationPresentation {
+  if (decision.verified) return 'verified';
+  const probeState = textValue(decision.probeState, '').toLowerCase().replace(/[._-]+/g, ' ');
+  const verificationState = textValue(decision.details.verification_state, '').toLowerCase().replace(/[._-]+/g, ' ');
+  const rawStatus = textValue(decision.details.status ?? decision.details.final_status, '').toLowerCase().replace(/[._-]+/g, ' ');
+  if (['verifying', 'in progress', 'waiting for verification', 'waiting'].includes(probeState) || verificationState === 'in progress') return 'checking';
+  if (probeState === 'no safe route' || verificationState === 'terminal no safe route' || rawStatus === 'no safe route') return 'no_safe_route';
+  if (probeState === 'not run observe only' || verificationState === 'not run observe only') return 'observed';
+  return 'unverified';
+}
+
+export function verificationPresentationLabel(presentation: VerificationPresentation): string {
+  switch (presentation) {
+    case 'verified': return 'Путь подтверждён';
+    case 'checking': return 'Проверяется…';
+    case 'no_safe_route': return 'Безопасный маршрут не найден';
+    case 'observed': return 'Наблюдение — проверка не запускалась';
+    default: return 'Путь пока не подтверждён';
+  }
 }
 
 export function groupServices(items: unknown[]): Array<Record<string, unknown>> {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatDateTime, groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, onboardingProgress, onboardingRouterReady, parseResolverInput, recoveryMutationAllowed, serviceColumnFor, stringArray, textValue, toDecisionCard } from './view-models';
+import { decisionVerificationPresentation, formatDateTime, groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, onboardingProgress, onboardingRouterReady, parseResolverInput, recoveryMutationAllowed, serviceColumnFor, stringArray, textValue, toDecisionCard, verificationPresentationLabel } from './view-models';
 import type { EventItem } from './api';
 
 describe('safe display values', () => {
@@ -186,5 +186,29 @@ describe('decision cards', () => {
     });
     expect(card.service).toBe('chess.com');
     expect(card.category).toBe('direct');
+  });
+
+  it('does not call an in-progress probe a terminal no-safe-route failure', () => {
+    const card = toDecisionCard({
+      ...event,
+      details: { ...event.details, path_verified: false, probe_state: 'verifying', verification_state: 'in_progress', status: 'VERIFYING' }
+    });
+    expect(decisionVerificationPresentation(card)).toBe('checking');
+    expect(verificationPresentationLabel(decisionVerificationPresentation(card))).toBe('Проверяется…');
+  });
+
+  it('keeps observe-only passive and reserves no-safe-route for terminal exhaustion', () => {
+    const observed = toDecisionCard({
+      ...event,
+      details: { ...event.details, path_verified: false, probe_state: 'not_run_observe_only', policy_state: 'observed' }
+    });
+    expect(decisionVerificationPresentation(observed)).toBe('observed');
+
+    const exhausted = toDecisionCard({
+      ...event,
+      details: { ...event.details, path_verified: false, probe_state: 'no_safe_route', verification_state: 'terminal_no_safe_route', status: 'NO_SAFE_ROUTE' }
+    });
+    expect(decisionVerificationPresentation(exhausted)).toBe('no_safe_route');
+    expect(verificationPresentationLabel(decisionVerificationPresentation(exhausted))).toBe('Безопасный маршрут не найден');
   });
 });
