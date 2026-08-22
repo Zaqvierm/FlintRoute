@@ -8,6 +8,21 @@ function envelope(data: unknown, status = 200) {
 }
 
 export async function mockAPI(page: Page, options: { securityFailure?: boolean; recoveryStatus?: string; bootstrapRequired?: boolean } = {}) {
+  const onboarding = {
+    completed: false,
+    can_complete: false,
+    router_ready: true,
+    steps: {
+      methods: { status: 'pending' },
+      sources: { status: 'pending' },
+      services: { status: 'pending' },
+      verification: { status: 'pending' }
+    }
+  };
+  const onboardingSnapshot = () => ({
+    ...onboarding,
+    can_complete: Object.values(onboarding.steps).slice(0, 3).every((step) => step.status !== 'pending')
+  });
   await page.route('**/api/v1/**', async (route: Route) => {
     const url = new URL(route.request().url());
     const path = url.pathname.replace('/api/v1', '');
@@ -26,7 +41,18 @@ export async function mockAPI(page: Page, options: { securityFailure?: boolean; 
     if (path === '/routes') return route.fulfill(envelope([{ type: 'system_default', tag: 'Direct', status: 'ready' }]));
     if (path === '/events') return route.fulfill(envelope([]));
     if (path === '/traffic') return route.fulfill(envelope({ status: 'ready', source: 'fixture', collected_at: new Date().toISOString(), interfaces: [] }));
-    if (path === '/onboarding') return route.fulfill(envelope({ completed: false, can_complete: false, steps: { methods: { status: 'pending' }, sources: { status: 'pending' }, services: { status: 'pending' } } }));
+    if (path === '/onboarding') {
+      if (route.request().method() === 'POST') {
+        const body = route.request().postDataJSON() as { step?: string; action?: string };
+        if (body.step === 'complete' && onboardingSnapshot().can_complete && body.action === 'complete') {
+          onboarding.completed = true;
+          onboarding.steps.verification = { status: 'verified' };
+        } else if (body.step && body.step in onboarding.steps && body.step !== 'verification') {
+          onboarding.steps[body.step as 'methods' | 'sources' | 'services'] = { status: body.action === 'skip' ? 'skipped' : 'accepted' };
+        }
+      }
+      return route.fulfill(envelope(onboardingSnapshot()));
+    }
     if (path === '/revisions') return route.fulfill(envelope({ active_revision: 'fixture', config_version: options.bootstrapRequired ? 1 : 2, items: [] }));
     if (path === '/discovery') return route.fulfill(envelope({ mode: 'observe_only', observation_source: { status: 'waiting' }, suggestions: [] }));
     if (path === '/components') return route.fulfill(envelope({ components: [] }));
@@ -94,6 +120,19 @@ test.describe('FlintRoute UI v2', () => {
     await page.goto('/?screen=Обзор');
     await expect.poll(() => new URL(page.url()).searchParams.get('screen')).toBe('Быстрая настройка');
     await expect(page.getByRole('heading', { name: 'Быстрая настройка' })).toBeVisible();
+  });
+
+  test('completes the backend-driven fast start flow', async ({ page }) => {
+    await mockAPI(page, { bootstrapRequired: true });
+    await page.goto('/?screen=Обзор');
+    await expect(page.getByRole('heading', { name: 'Быстрая настройка' })).toBeVisible();
+    await page.getByRole('button', { name: 'Пока использовать только обычный интернет' }).click();
+    await expect(page.getByRole('button', { name: 'Пока выбирать автоматически' })).toBeVisible();
+    await page.getByRole('button', { name: 'Пока выбирать автоматически' }).click();
+    const finish = page.getByRole('button', { name: 'Завершить настройку' });
+    await expect(finish).toBeEnabled();
+    await finish.click();
+    await expect(page).toHaveURL(/screen=%D0%9E%D0%B1%D0%B7%D0%BE%D1%80/);
   });
 
   test('loads screen-specific data instead of polling the whole dashboard', async ({ page }) => {
