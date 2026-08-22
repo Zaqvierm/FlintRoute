@@ -7,7 +7,7 @@ function envelope(data: unknown, status = 200) {
   return { status, contentType: 'application/json', body: JSON.stringify({ data }) };
 }
 
-export async function mockAPI(page: Page, options: { securityFailure?: boolean; recoveryStatus?: string; bootstrapRequired?: boolean; decisionState?: 'verifying' | 'no_safe_route'; changeState?: 'requires_device' } = {}) {
+export async function mockAPI(page: Page, options: { securityFailure?: boolean; recoveryStatus?: string; bootstrapRequired?: boolean; decisionState?: 'verifying' | 'no_safe_route'; changeState?: 'requires_device'; objectStatuses?: boolean } = {}) {
   const onboarding = {
     completed: false,
     can_complete: false,
@@ -28,7 +28,7 @@ export async function mockAPI(page: Page, options: { securityFailure?: boolean; 
     const path = url.pathname.replace('/api/v1', '');
     if (path === '/auth/me') return route.fulfill(envelope({ user: 'admin', role: 'administrator', csrf_token: 'test-csrf' }));
     if (path === '/health') return route.fulfill(envelope({ status: 'ready', recovery_status: options.recoveryStatus ?? 'ok', recovery_reason: options.recoveryStatus && options.recoveryStatus !== 'ok' ? 'Восстановление ещё не подтверждено.' : '', checked_at: new Date().toISOString() }));
-    if (path === '/overview') return route.fulfill(envelope({ internet: 'route_available', data_plane: 'ready', dns: 'ready', current_route: 'Direct', critical_errors: [], freshness: 'live' }));
+    if (path === '/overview') return route.fulfill(envelope({ internet: options.objectStatuses ? { status: 'route_available' } : 'route_available', data_plane: options.objectStatuses ? { state: 'ready' } : 'ready', dns: options.objectStatuses ? { status: 'ready' } : 'ready', current_route: options.objectStatuses ? { tag: 'Direct' } : 'Direct', critical_errors: [], freshness: 'live' }));
     if (path === '/topology') {
       const hidden = url.searchParams.get('privacy') === 'hidden';
       return route.fulfill(envelope({ status: 'ready', source: 'fixture', collected_at: new Date().toISOString(), freshness: 'live', nodes: [{ type: 'internet', status: 'online' }, { type: 'router', hostname: 'fixture-router', model: 'fixture-model' }], edges: [], raw_ip: hidden ? undefined : rawIP, raw_mac: hidden ? undefined : rawMAC }));
@@ -38,7 +38,7 @@ export async function mockAPI(page: Page, options: { securityFailure?: boolean; 
       return route.fulfill(envelope(hidden ? [{ id: 'phone', name: 'Phone', connected: true, kind: 'wifi', ip_display: 'IP скрыт', mac_display: 'MAC скрыт' }] : [{ id: 'phone', name: 'Phone', connected: true, kind: 'wifi', ip: rawIP, mac: rawMAC }]));
     }
     if (path === '/services') return route.fulfill(envelope(options.bootstrapRequired ? [] : [{ id: 'Discord', name: 'Discord', category: 'TELEGRAM', domains: ['discord.com'], route: 'VLESS', applied: true, source: 'configured', health: 'ready' }]));
-    if (path === '/routes') return route.fulfill(envelope([{ type: 'system_default', tag: 'Direct', status: 'ready' }]));
+    if (path === '/routes') return route.fulfill(envelope([{ type: 'system_default', tag: 'Direct', status: options.objectStatuses ? { status: 'ready' } : 'ready' }]));
     if (path === '/events') {
       if (!options.decisionState) return route.fulfill(envelope([]));
       const terminal = options.decisionState === 'no_safe_route';
@@ -61,7 +61,7 @@ export async function mockAPI(page: Page, options: { securityFailure?: boolean; 
         }
       }]));
     }
-    if (path === '/traffic') return route.fulfill(envelope({ status: 'ready', source: 'fixture', collected_at: new Date().toISOString(), interfaces: [] }));
+    if (path === '/traffic') return route.fulfill(envelope({ status: options.objectStatuses ? { state: 'ready' } : 'ready', source: options.objectStatuses ? { name: 'fixture' } : 'fixture', collected_at: new Date().toISOString(), interfaces: [] }));
     if (path === '/onboarding') {
       if (route.request().method() === 'POST') {
         const body = route.request().postDataJSON() as { step?: string; action?: string };
@@ -75,7 +75,7 @@ export async function mockAPI(page: Page, options: { securityFailure?: boolean; 
       return route.fulfill(envelope(onboardingSnapshot()));
     }
     if (path === '/revisions') return route.fulfill(envelope({ active_revision: 'fixture', config_version: options.bootstrapRequired ? 1 : 2, items: [] }));
-    if (path === '/discovery') return route.fulfill(envelope({ mode: 'observe_only', observation_source: { status: 'waiting' }, suggestions: [] }));
+    if (path === '/discovery') return route.fulfill(envelope({ mode: options.objectStatuses ? { value: 'observe_only' } : 'observe_only', observation_source: { status: options.objectStatuses ? { state: 'waiting' } : 'waiting' }, suggestions: [] }));
     if (path === '/components') return route.fulfill(envelope({ components: [] }));
     if (path === '/xray/pool') return route.fulfill(envelope({ tariff_mbps: 300, sources: [], servers: [] }));
     if (path === '/smart-dns') return route.fulfill(envelope({ configured_count: 0, ready: 0, routes: [] }));
@@ -155,6 +155,13 @@ test.describe('FlintRoute UI v2', () => {
     await page.getByRole('button', { name: 'Обзор', exact: true }).first().click();
     await page.getByRole('button', { name: 'Сервисы', exact: true }).first().click();
     await expect(page.locator('.status-badge.warn').filter({ hasText: 'устарели' })).toBeVisible();
+  });
+
+  test('never renders object statuses as [object Object]', async ({ page }) => {
+    await mockAPI(page, { objectStatuses: true });
+    await page.goto('/?screen=Discovery');
+    await expect(page.getByRole('heading', { name: /discovery/i }).first()).toBeVisible();
+    await expect(page.locator('body')).not.toContainText('[object Object]');
   });
 
   test('fails closed when recovery is not proven safe', async ({ page }) => {
