@@ -7,10 +7,10 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 
 - Base review SHA: `d45a779dfa9dc024b426cef358d3df4d32478897`
 - Branch: `remediation/transaction-and-privilege-boundaries`
-- Code verification SHA: `bb14af679e379a518636f0504b1fd52cd2f9a322` (recovery
+- Code verification SHA: `91193d722f0768215ee24e3bf5a8b1eae9dc3d46` (recovery
   fence, route-verification semantics, bounded Zapret modes, truthful UI/browser
-  coverage, screen-specific request budget, refresh cancellation, and robust
-  Zapret process ownership). This document may be advanced by docs-only
+  coverage, screen-specific request budget, refresh cancellation, backend-gated
+  onboarding, and robust Zapret process ownership). This document may be advanced by docs-only
   commits; the code evidence remains bound to this SHA.
 - Verification scope: the exact code SHA recorded here; older evidence is not
   inherited by this follow-up.
@@ -31,7 +31,7 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | recovery mutation allowlist | `go test ./internal/api -run 'TestRecovery|TestAutomaticDomainCommit|TestHealthScheduler'` | PASS | local |
 | recovery status persistence failure | `TestRecoveryStatusPersistenceFailureInstallsMemoryFence` | PASS | local |
 | concurrent recovery/apply fence | `TestRecoveryTransitionExcludesConcurrentMutation` | PASS | local |
-| frontend recovery mutation fence | `npm run test`, `npm run browser:test` (`recovery=starting`) | PASS (33 unit tests; 8 browser tests) | local Chromium |
+| frontend recovery mutation fence | `npm run test`, `npm run browser:test` (`recovery=starting`) | PASS (34 unit tests; 8 browser tests) | local Chromium |
 | immutable bootstrap | `tests/openwrt-adapter-integration.sh` | PASS | local/mock |
 | installer parent modes | `tests/installer-lifecycle.sh` | PASS | local/mock |
 | legacy shell atomic write | `tests/shell-library.sh` | PASS (mode check is Linux-only; Windows reports `NOT RUN LOCALLY`) | local/mock |
@@ -49,12 +49,12 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | route latency vs verification duration | probe/API separation tests | PASS | local |
 | unknown route latency scoring | `TestSelectBestDoesNotTreatUnknownLatencyAsZero` | PASS | local |
 | frontend build | `npm run build` | PASS | local |
-| frontend tests | `npm test` | PASS (33 tests) | local |
+| frontend tests | `npm test` | PASS (34 tests) | local |
 | browser smoke/responsive | `npm run browser:test` | PASS (8 tests; 10 viewport matrix); [CI run 32575449236](https://github.com/Zaqvierm/FlintRoute/actions/runs/32575449236) | local Chromium + Linux CI |
 | ShellCheck | `.tools/shellcheck-v0.11.0/shellcheck.exe -x <tracked shell files>` | PASS | local |
 | race/vet | `go test -race ./...`, `go vet ./...` | PASS | local |
 
-The full local runner at the recorded code SHA completed in 318.6 seconds with
+The full local runner at the recorded code SHA completed in 376.3 seconds with
 `all_tests_ok=true`. Its Linux-only namespace/process-group steps were
 honestly reported as `NOT RUN LOCALLY`; the independent GitHub runs above are
 the Linux evidence. The earlier `e04778e` nft run failed because the fixture's
@@ -108,7 +108,7 @@ that prior head; the latest local follow-up is recorded below.
 
 ## Latest local follow-up
 
-At `bb14af679e379a518636f0504b1fd52cd2f9a322`, onboarding readiness is
+At `91193d722f0768215ee24e3bf5a8b1eae9dc3d46`, onboarding readiness is
 fail-closed: only explicit route/DNS proof states pass; simulation,
 unverified, missing-upstream, and unknown statuses do not. The UI consumes the
 backend `router_ready` boolean when present and has a tested explicit-status
@@ -117,12 +117,14 @@ coercion. Incomplete Fast Start is now resumable from backend state: stale
 localStorage screen/opened flags cannot suppress the wizard, and invalid or
 old URLs are redirected only after backend onboarding/revision state is read.
 The browser regression explicitly seeds the stale `flintroute-first-run-opened`
-flag and still observes the backend-required wizard. The full local runner
-was executed at the immediately preceding code SHA `6e183f88f01c0f1d00724303a6b8879cd20a172a`
-in 318.6 seconds; the only subsequent code change is this browser fixture.
-The focused frontend gate and the current CI runs for `bb14af6` passed with
-`all_tests_ok=true`; Linux-only namespace/process-group checks remain
-`NOT RUN LOCALLY` on Windows.
+flag and still observes the backend-required wizard. Persisted onboarding step
+statuses now use an explicit accepted/skipped allowlist in both backend and UI;
+corrupt values cannot unlock completion. Fast Start component, VLESS, Smart
+DNS, TGWS and Zapret reads are AbortController-bound and stale results are
+discarded after navigation. The full local runner at this exact SHA passed in
+376.3 seconds with `all_tests_ok=true`; the focused frontend gate and race gate
+also passed. Linux-only namespace/process-group checks remain `NOT RUN LOCALLY`
+on Windows.
 
 Current CI for this exact SHA:
 
