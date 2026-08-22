@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatDateTime, groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, onboardingProgress, parseResolverInput, recoveryMutationAllowed, serviceColumnFor, stringArray, textValue, toDecisionCard } from './view-models';
+import { formatDateTime, groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, onboardingProgress, onboardingRouterReady, parseResolverInput, recoveryMutationAllowed, serviceColumnFor, stringArray, textValue, toDecisionCard } from './view-models';
 import type { EventItem } from './api';
 
 describe('safe display values', () => {
@@ -93,6 +93,13 @@ describe('onboarding truthfulness', () => {
     expect(progress.sourcesDone).toBe(true);
     expect(progress.serviceChoiceDone).toBe(true);
     expect(progress.setupReady).toBe(true);
+  });
+
+  it('uses the backend router gate and never treats simulation as ready', () => {
+    expect(onboardingRouterReady({ router_ready: false }, { internet: 'ROUTE_AVAILABLE', dns: 'AVAILABLE' })).toBe(false);
+    expect(onboardingRouterReady({ router_ready: true }, { internet: 'simulation', dns: 'simulation' })).toBe(true);
+    expect(onboardingRouterReady({}, { internet: 'simulation', dns: 'simulation' })).toBe(false);
+    expect(onboardingRouterReady({}, { internet: { status: 'ROUTE_AVAILABLE' }, dns: { state: 'AVAILABLE' } })).toBe(true);
   });
 });
 

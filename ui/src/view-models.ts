@@ -55,6 +55,25 @@ export function onboardingProgress(input: {
 }
 
 /**
+ * The backend boolean is authoritative.  The fallback exists only while the
+ * first response is loading or for older compatible providers; it accepts an
+ * explicit healthy status instead of coercing objects to "[object Object]" or
+ * treating simulation/unverified diagnostics as readiness proof.
+ */
+export function onboardingRouterReady(onboarding: unknown, overview: unknown): boolean {
+  const state = asRecord(onboarding);
+  if (typeof state.router_ready === 'boolean') return state.router_ready;
+  const snapshot = asRecord(overview);
+  return statusAllowed(snapshot.internet, ['route available', 'available', 'online', 'ok', 'ready']) &&
+    statusAllowed(snapshot.dns, ['available', 'online', 'ok', 'ready']);
+}
+
+function statusAllowed(value: unknown, allowed: string[]): boolean {
+  const normalized = textValue(value, '').trim().toLowerCase().replace(/[._-]+/g, ' ');
+  return allowed.includes(normalized);
+}
+
+/**
  * UI-side mirror of the backend mutation fence.  Unknown, missing, starting,
  * failed and recovery-required states are deliberately unsafe.  A
  * not_required state is only safe when the backend supplied a bound baseline;

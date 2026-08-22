@@ -81,6 +81,7 @@ import {
   humanStatus,
   isAdministrativeEvent,
   isDecisionEvent,
+  onboardingRouterReady,
   onboardingProgress,
   parseResolverInput,
   recoveryMutationAllowed,
@@ -2298,8 +2299,7 @@ function SetupScreen({ overview, services, routes, discovery, onboarding, onboar
 
   useEffect(() => { void load(); }, []);
 
-  const routerReady = !['unavailable', 'failed', 'error'].includes(String(overview?.internet ?? '').toLowerCase())
-    && !['unavailable', 'failed', 'error'].includes(String(overview?.dns ?? '').toLowerCase());
+  const routerReady = onboardingRouterReady(onboarding, overview);
   const components = asArray(state.components).map(asRecord);
   const xray = components.find((item) => item.kind === 'xray');
   const zapretComponent = components.find((item) => item.kind === 'zapret');

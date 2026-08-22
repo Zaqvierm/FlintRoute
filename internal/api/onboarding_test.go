@@ -6,7 +6,22 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"router-policy/internal/config"
+	"router-policy/internal/platform"
 )
+
+type onboardingReadyProvider struct {
+	platform.DevelopmentMockProvider
+}
+
+func (p onboardingReadyProvider) Overview(cfg *config.Config) map[string]any {
+	value := p.DevelopmentMockProvider.Overview(cfg)
+	value["internet"] = "ROUTE_AVAILABLE"
+	value["dns"] = "AVAILABLE"
+	value["simulation"] = false
+	return value
+}
 
 func postOnboarding(t *testing.T, client *http.Client, csrf, base, step, action string) int {
 	t.Helper()
@@ -27,6 +42,7 @@ func postOnboarding(t *testing.T, client *http.Client, csrf, base, step, action 
 func TestOnboardingStateIsBackendPersistedAndCannotCompleteFromBrowserHint(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
+	srv.provider = onboardingReadyProvider{}
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client, csrf := login(t, ts.URL)
@@ -56,5 +72,26 @@ func TestOnboardingStateIsBackendPersistedAndCannotCompleteFromBrowserHint(t *te
 	}
 	if got := srv.loadOnboardingState(); !got.Completed || got.Steps["methods"].Status != "skipped" {
 		t.Fatalf("onboarding state was not durably persisted: %+v", got)
+	}
+}
+
+func TestOnboardingOverviewReadyRequiresProofStates(t *testing.T) {
+	tests := []struct {
+		name     string
+		overview map[string]any
+		want     bool
+	}{
+		{name: "verified route and dns", overview: map[string]any{"internet": "ROUTE_AVAILABLE", "dns": "AVAILABLE"}, want: true},
+		{name: "simulation is not proof", overview: map[string]any{"internet": "simulation", "dns": "simulation"}, want: false},
+		{name: "unverified is not proof", overview: map[string]any{"internet": "UNVERIFIED", "dns": "UNVERIFIED"}, want: false},
+		{name: "missing upstream is not proof", overview: map[string]any{"internet": "ROUTE_AVAILABLE", "dns": "NO_UPSTREAM"}, want: false},
+		{name: "nested statuses are supported", overview: map[string]any{"internet": map[string]any{"status": "ok"}, "dns": map[string]any{"state": "ready"}}, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := onboardingOverviewReady(test.overview); got != test.want {
+				t.Fatalf("onboardingOverviewReady(%v)=%v, want %v", test.overview, got, test.want)
+			}
+		})
 	}
 }

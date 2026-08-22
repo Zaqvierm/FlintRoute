@@ -64,13 +64,34 @@ func onboardingStepStatus(value onboardingState, name string) string {
 }
 
 func onboardingOverviewReady(value map[string]any) bool {
-	for _, key := range []string{"internet", "dns"} {
-		status := strings.ToLower(strings.TrimSpace(fmt.Sprint(value[key])))
-		if status == "" || status == "failed" || status == "error" || status == "unavailable" || status == "not_ready" {
-			return false
+	internet := onboardingStatus(value["internet"])
+	dns := onboardingStatus(value["dns"])
+	return onboardingStatusAllowed(internet, "route_available", "available", "online", "ok", "ready") &&
+		onboardingStatusAllowed(dns, "available", "online", "ok", "ready")
+}
+
+// The onboarding gate is deliberately an allowlist.  A simulation fixture,
+// an unknown provider status, or a diagnostic that merely says "unverified"
+// must never be treated as proof that the router is ready for the next step.
+func onboardingStatus(value any) string {
+	if record, ok := value.(map[string]any); ok {
+		for _, key := range []string{"status", "state", "value", "label"} {
+			if nested, exists := record[key]; exists {
+				return onboardingStatus(nested)
+			}
+		}
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(fmt.Sprint(value)))
+}
+
+func onboardingStatusAllowed(status string, allowed ...string) bool {
+	for _, candidate := range allowed {
+		if status == candidate {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 func (s *Server) onboardingResponse(value onboardingState) map[string]any {
