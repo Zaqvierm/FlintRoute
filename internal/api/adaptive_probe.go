@@ -302,7 +302,15 @@ func (s *Server) runScheduledAdaptiveProbe(ctx context.Context, active *config.C
 	if lease.ProfileID == activeProfile {
 		result, probeErr = s.probeAdaptiveTarget(ctx, active, engine, runtime, bundle, lease.Key)
 	} else {
-		result, probeErr = s.calibrateAdaptiveCandidate(ctx, active, runtime, bundle, lease)
+		// Background scheduling is observation-only.  Candidate calibration used
+		// to call applyChangeSet (and then roll it back) just to probe a profile;
+		// that gave a health loop production mutation authority.  Candidate
+		// calibration is now an explicit maintenance operation with its own
+		// isolation/approval boundary.
+		s.publishEvent(Event{Type: "zapret.adaptive_probe", Severity: "info", ReasonCode: "adaptive_candidate_deferred", Details: map[string]any{
+			"bundle_id": bundle.ID, "profile_id": lease.ProfileID, "requires_maintenance": true,
+		}})
+		return
 	}
 	finishedAt = time.Now().UTC()
 	if finishedAt.Before(lease.ScheduledAt) {
@@ -329,11 +337,12 @@ func (s *Server) runScheduledAdaptiveProbe(ctx context.Context, active *config.C
 		"success": observation.Success, "path_verified": observation.PathVerified,
 		"attempts": score.Attempts, "production_ready": score.ProductionReady,
 	}})
-	ranking, err := runtime.ranker.Rank(lease.Key, nil, finishedAt)
-	if err != nil {
-		return
-	}
-	_, _ = s.evaluateAdaptiveZapret(context.WithoutCancel(ctx), adaptiveEvaluateRequest{Key: lease.Key, Ranking: ranking}, finishedAt)
+	// Ranking is evidence only.  A background health cycle must not mutate the
+	// production dataplane; an explicit route-selection/maintenance operation
+	// owns any subsequent ChangeSet.
+	s.publishEvent(Event{Type: "zapret.adaptive_probe", Severity: "info", ReasonCode: "adaptive_evaluation_deferred", Details: map[string]any{
+		"bundle_id": lease.Key.BundleID, "profile_id": lease.ProfileID, "requires_explicit_apply": true,
+	}})
 }
 
 func (s *Server) probeAdaptiveTarget(ctx context.Context, cfg *config.Config, engine health.ProbeEngine, runtime *adaptiveRuntime, bundle zapret.ServiceBundle, key zapret.DecisionKey) (probe.RouteResult, error) {

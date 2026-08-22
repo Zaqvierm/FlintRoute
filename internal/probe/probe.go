@@ -26,6 +26,8 @@ import (
 	localgeoip "router-policy/internal/geoip"
 )
 
+const maxRouteProbeTargets = 4
+
 type RouteResult struct {
 	Domain                 string                `json:"domain"`
 	Service                string                `json:"service"`
@@ -310,13 +312,7 @@ func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check
 		return res
 	}
 
-	targets := make([]netip.Addr, 0, len(ips))
-	for _, ip := range ips {
-		if family == "ipv4" && !ip.Is4() || family == "ipv6" && !ip.Is6() {
-			continue
-		}
-		targets = append(targets, ip)
-	}
+	targets := routeProbeTargets(ips, family)
 	if len(targets) == 0 {
 		res.Reason = "dns_address_family_unavailable"
 		return res
@@ -369,6 +365,20 @@ func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check
 		res.Reason = lastReason
 	}
 	return res
+}
+
+func routeProbeTargets(ips []netip.Addr, family string) []netip.Addr {
+	targets := make([]netip.Addr, 0, minInt(len(ips), maxRouteProbeTargets))
+	for _, ip := range ips {
+		if family == "ipv4" && !ip.Is4() || family == "ipv6" && !ip.Is6() {
+			continue
+		}
+		targets = append(targets, ip)
+		if len(targets) == maxRouteProbeTargets {
+			break
+		}
+	}
+	return targets
 }
 
 func resolveForRoute(ctx context.Context, cfg *config.Config, route config.Route, host string) ([]netip.Addr, string, string, error) {

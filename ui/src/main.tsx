@@ -172,6 +172,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState('');
+  const refreshInFlight = useRef<Promise<void> | null>(null);
   const [privacyHidden, setPrivacyHidden] = useState(() => {
     try { return window.localStorage.getItem('flintroute-address-privacy') === 'hidden'; } catch { return false; }
   });
@@ -186,6 +187,11 @@ function App() {
   }
 
   async function refresh(hideAddresses = privacyHidden) {
+    // One dashboard refresh is enough.  A slow router must not accumulate
+    // overlapping command batches when the timer, SSE reconnect, or a user
+    // click happens at the same time.
+    if (refreshInFlight.current) return refreshInFlight.current;
+    const operation = (async () => {
     setRefreshing(true);
     try {
       const [nextOverview, nextTopology, nextDevices, nextServices, nextRoutes, nextTraffic, nextEvents, nextSystem, nextRevisions, nextDiscovery] = await Promise.all([
@@ -244,6 +250,13 @@ function App() {
     } finally {
       setRefreshing(false);
       setLoading(false);
+    }
+    })();
+    refreshInFlight.current = operation;
+    try {
+      await operation;
+    } finally {
+      if (refreshInFlight.current === operation) refreshInFlight.current = null;
     }
   }
 

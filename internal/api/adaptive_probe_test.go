@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -81,8 +82,11 @@ func TestProductionAdaptiveCycleCollectsActiveAndCandidateEvidence(t *testing.T)
 		t.Fatalf("adaptive observations were checkpointed too frequently: %+v", coalesced)
 	}
 	candidate, err := runtime.ranker.Snapshot(key, "profile-b", now.Add(2*time.Minute))
-	if err != nil || candidate.Attempts != 1 || candidate.Successes != 1 {
-		t.Fatalf("candidate calibration observation missing: score=%+v err=%v events=%+v", candidate, err, srv.broker.Recent(0, 50))
+	if err != nil || candidate.Attempts != 0 || candidate.Successes != 0 {
+		t.Fatalf("background candidate calibration must be deferred without mutation: score=%+v err=%v events=%+v", candidate, err, srv.broker.Recent(0, 50))
+	}
+	if !strings.Contains(fmt.Sprint(srv.broker.Recent(0, 100)), "adaptive_candidate_deferred") {
+		t.Fatal("candidate calibration deferral was not observable")
 	}
 	if got := profileForBundle(srv.currentConfig().Zapret.AdaptiveAssignments, "discord"); got != "profile-a" {
 		t.Fatalf("calibration changed the committed profile: %s", got)
@@ -102,7 +106,7 @@ func TestProductionAdaptiveCycleCollectsActiveAndCandidateEvidence(t *testing.T)
 	if err := srv.store.LoadJSON(adaptiveProbeBucket, adaptiveProbeKey, &persisted); err != nil {
 		t.Fatal(err)
 	}
-	if len(persisted.Observations) != 2 || persisted.CatalogDigest != runtime.catalogDigest {
+	if len(persisted.Observations) != 1 || persisted.CatalogDigest != runtime.catalogDigest {
 		t.Fatalf("adaptive runtime persistence mismatch: %+v", persisted)
 	}
 	raw, err := json.Marshal(persisted)

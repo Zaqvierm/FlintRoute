@@ -6,10 +6,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -247,6 +250,74 @@ func TestDiscoveryStormIsBoundedAndDrainsToBaseline(t *testing.T) {
 	if got := len(srv.discoveryQueue); got != 0 {
 		t.Fatalf("discovery queue did not return to baseline: %d", got)
 	}
+}
+
+func TestProbeBudgetAndRuntimeResourcesReturnToBaseline(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Policy.ProbeBudget = 4
+	cfg.Policy.DiscoveryQueueLimit = 32
+	srv, err := NewServerWithOptions(cfg, Options{
+		Provider: platform.DevelopmentMockProvider{}, ProductionAdapter: newFakeAdapter(),
+		Development: true, DeferRecovery: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineGoroutines := runtime.NumGoroutine()
+	baselineFDs, hasFDs := processFDCount()
+
+	var active, maxActive atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case srv.probeBudget <- struct{}{}:
+				current := active.Add(1)
+				for {
+					old := maxActive.Load()
+					if current <= old || maxActive.CompareAndSwap(old, current) {
+						break
+					}
+				}
+				time.Sleep(time.Millisecond)
+				active.Add(-1)
+				<-srv.probeBudget
+			case <-time.After(time.Second):
+				t.Error("probe job waited longer than bounded budget")
+			}
+		}()
+	}
+	wg.Wait()
+	if got := maxActive.Load(); got > int32(cfg.Policy.ProbeBudget) {
+		t.Fatalf("active route jobs=%d want<=%d", got, cfg.Policy.ProbeBudget)
+	}
+	if got := len(srv.probeBudget); got != 0 {
+		t.Fatalf("probe budget did not return to baseline: %d tokens held", got)
+	}
+	srv.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > baselineGoroutines+2 && time.Now().Before(deadline) {
+		runtime.Gosched()
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := runtime.NumGoroutine(); got > baselineGoroutines+2 {
+		t.Fatalf("goroutines did not return near baseline: before=%d after=%d", baselineGoroutines, got)
+	}
+	if hasFDs {
+		if got, ok := processFDCount(); ok && got > baselineFDs {
+			t.Fatalf("process fd count grew after bounded storm: before=%d after=%d", baselineFDs, got)
+		}
+	}
+}
+
+func processFDCount() (int, bool) {
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		return 0, false
+	}
+	return len(entries), true
 }
 
 func TestSubscriptionRefreshDelayUsesProviderExpiry(t *testing.T) {

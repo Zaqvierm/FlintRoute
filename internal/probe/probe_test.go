@@ -41,6 +41,22 @@ func TestPreferIPv4KeepsEveryAddressAndMovesIPv4First(t *testing.T) {
 	}
 }
 
+func TestRouteProbeTargetsAreFamilyFilteredAndBounded(t *testing.T) {
+	input := make([]netip.Addr, 0, 12)
+	for i := 1; i <= 8; i++ {
+		input = append(input, netip.MustParseAddr(fmt.Sprintf("198.51.100.%d", i)))
+	}
+	for i := 1; i <= 4; i++ {
+		input = append(input, netip.MustParseAddr(fmt.Sprintf("2001:db8::%x", i)))
+	}
+	if got := routeProbeTargets(input, "ipv4"); len(got) != maxRouteProbeTargets {
+		t.Fatalf("ipv4 route probe fan-out=%d want=%d", len(got), maxRouteProbeTargets)
+	}
+	if got := routeProbeTargets(input, "ipv6"); len(got) != maxRouteProbeTargets {
+		t.Fatalf("ipv6 route probe fan-out=%d want=%d", len(got), maxRouteProbeTargets)
+	}
+}
+
 func TestProbeHTTP200WithMarker(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)

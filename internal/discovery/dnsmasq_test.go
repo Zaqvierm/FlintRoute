@@ -71,3 +71,25 @@ func TestWatcherReadsAppendedQueriesAndHandlesTruncate(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestWatcherNeverTruncatesWriterOwnedOversizedLog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dns.log")
+	content := make([]byte, 0, 128)
+	for i := 0; i < 20; i++ {
+		content = append(content, []byte("dnsmasq: query[A] oversized.example from 192.0.2.10\n")...)
+	}
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	watcher := Watcher{Path: path, MaxBytes: 32, Emit: func(context.Context, Observation) {}}
+	if _, _, err := watcher.readFrom(context.Background(), 0, 32); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != int64(len(content)) {
+		t.Fatalf("reader truncated dnsmasq-owned log: got %d want %d", info.Size(), len(content))
+	}
+}

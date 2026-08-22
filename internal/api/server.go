@@ -152,6 +152,7 @@ type Server struct {
 	revalidationMu         sync.Mutex
 	revalidationNext       map[string]time.Time
 	deferRecovery          bool
+	hotplugEventDigest     string
 	schedulerOnce          sync.Once
 	schedulerCancel        context.CancelFunc
 	schedulerWG            sync.WaitGroup
@@ -445,6 +446,7 @@ func (s *Server) startOperationalSchedulers(schedulerCtx context.Context) {
 	}()
 	s.startTSPUScheduler(schedulerCtx)
 	s.startSubscriptionScheduler(schedulerCtx)
+	s.startHotplugObserver(schedulerCtx)
 	s.startDNSDiscovery(schedulerCtx)
 	s.startRouteFailureScheduler(schedulerCtx)
 	s.startFailedRouteRecoveryScheduler(schedulerCtx)

@@ -254,27 +254,12 @@ func validateDiscoveryOperations(operations []ChangeOp) error {
 }
 
 func (s *Server) discoveryAutoAllowed(cfg *config.Config, check planner.DomainCheck) error {
-	if check.Selected == nil || !check.Selected.PathVerified {
-		return errors.New("selected route has no PathVerified evidence")
-	}
-	if check.Selected.RouteType == "direct" || check.Selected.RouteType == "drop" {
-		return errors.New("Direct and Drop observations are not automatically persisted")
-	}
-	if cfg.OpenWrt.RollbackTimeoutSeconds <= 0 {
-		return errors.New("automatic apply requires a rollback timer")
-	}
-	if active := s.activeTransaction(""); active != "" {
-		return fmt.Errorf("transaction %s is already active", active)
-	}
-	_, hourlyLimit, limit, state := s.effectiveDiscoverySettings(cfg)
-	if state.ConsecutiveRollbacks >= limit {
-		return fmt.Errorf("automatic apply paused after %d consecutive rollbacks", state.ConsecutiveRollbacks)
-	}
-	recent := pruneDiscoveryTimes(state.AppliedAt, s.discoveryNow().Add(-time.Hour))
-	if len(recent) >= hourlyLimit {
-		return errors.New("hourly automatic rule limit reached")
-	}
-	return nil
+	// DNS observations may not invoke the full ChangeSet/dataplane path. Until
+	// route-only assignment exists, auto_apply_verified remains non-mutating and
+	// leaves the verified result as a suggestion.
+	_ = cfg
+	_ = check
+	return errors.New("automatic_route_assignment_unavailable")
 }
 
 func (s *Server) recordDiscoveryAutoResult(result automaticCommitResult) {

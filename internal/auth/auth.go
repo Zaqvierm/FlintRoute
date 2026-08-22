@@ -30,21 +30,22 @@ const (
 )
 
 const (
-	defaultSessionTTL         = 12 * time.Hour
-	maxSessionsTotal          = 64
-	maxSessionsPerUser        = 8
-	maxLoginFailures          = 12
-	setupTokenTTL             = 30 * time.Minute
-	setupTokenMaxUses         = 1
-	minPasswordLen            = 12
-	argonMemoryKB      uint32 = 16 * 1024
-	argonTime          uint32 = 1
-	argonThreads       uint8  = 1
-	argonKeyLen               = 32
-	maxArgonMemoryKB   uint32 = 64 * 1024
-	maxArgonTime       uint32 = 4
-	maxArgonThreads    uint8  = 2
-	maxArgonKeyLen            = 64
+	defaultSessionTTL             = 12 * time.Hour
+	maxSessionsTotal              = 64
+	maxSessionsPerUser            = 8
+	maxLoginFailures              = 12
+	maxLoginFailureEntries        = 1024
+	setupTokenTTL                 = 30 * time.Minute
+	setupTokenMaxUses             = 1
+	minPasswordLen                = 12
+	argonMemoryKB          uint32 = 16 * 1024
+	argonTime              uint32 = 1
+	argonThreads           uint8  = 1
+	argonKeyLen                   = 32
+	maxArgonMemoryKB       uint32 = 64 * 1024
+	maxArgonTime           uint32 = 4
+	maxArgonThreads        uint8  = 2
+	maxArgonKeyLen                = 64
 )
 
 var ErrSetupRequired = errors.New("setup required")
@@ -210,20 +211,23 @@ func (s *Store) SetupAdmin(username, password, token string) (User, error) {
 
 func (s *Store) Login(username, password, remote string) (Session, LoginAudit, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.cleanupLocked(time.Now().UTC())
 	audit := LoginAudit{Username: username, Remote: remote}
 	if err := s.checkRateLocked(username, remote); err != nil {
 		audit.Reason = "rate_limited"
+		s.mu.Unlock()
 		return Session{}, audit, err
 	}
 	users, err := s.loadUsersLocked()
 	if err != nil {
 		audit.Reason = "store_error"
+		s.mu.Unlock()
 		return Session{}, audit, err
 	}
 	if len(users) == 0 {
-		_, _ = verifyPassword(password, s.dummyHash)
+		hash := s.dummyHash
+		s.mu.Unlock()
+		_, _ = verifyPassword(password, hash)
 		audit.Reason = "setup_required"
 		return Session{}, audit, ErrSetupRequired
 	}
@@ -232,7 +236,12 @@ func (s *Store) Login(username, password, remote string) (Session, LoginAudit, e
 	if ok {
 		hash = user.PasswordHash
 	}
+	// Argon2 is deliberately outside the store mutex.  Login flood must not
+	// block existing sessions, health reads, or setup/recovery operations.
+	s.mu.Unlock()
 	valid, _ := verifyPassword(password, hash)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !ok || !valid {
 		s.recordFailureLocked(username, remote)
 		audit.Reason = "bad_credentials"
@@ -343,6 +352,18 @@ func (s *Store) checkRateLocked(username, remote string) error {
 
 func (s *Store) recordFailureLocked(username, remote string) {
 	key := username + "|" + RemoteKey(remote)
+	if _, exists := s.failures[key]; !exists && len(s.failures) >= maxLoginFailureEntries {
+		var oldestKey string
+		var oldest time.Time
+		for candidate, failure := range s.failures {
+			if oldestKey == "" || failure.UpdatedAt.Before(oldest) {
+				oldestKey, oldest = candidate, failure.UpdatedAt
+			}
+		}
+		if oldestKey != "" {
+			delete(s.failures, oldestKey)
+		}
+	}
 	f := s.failures[key]
 	f.Count++
 	delay := time.Duration(1<<min(f.Count, 5)) * time.Second

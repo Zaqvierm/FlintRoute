@@ -70,7 +70,7 @@ if (!$shellcheck) {
   if ($localSc) { $shellcheck = $localSc }
 }
 if ($shellcheck -and (Test-Path -LiteralPath $shellcheck)) {
-  $shellFiles = Get-ChildItem -Recurse -File -Include *.sh,router-policy,router-policy-dns-observer,router-policy-boot-guard,router-policy-watchdog,router-policy-xray,router-policy-zapret,95-router-policy,install.sh,uninstall.sh |
+  $shellFiles = Get-ChildItem -Recurse -File -Include *.sh,router-policy,router-policy-helper,router-policy-dns-observer,router-policy-boot-guard,router-policy-watchdog,router-policy-xray,router-policy-zapret,95-router-policy,install.sh,uninstall.sh |
     Where-Object { $_.FullName -notmatch '\\.tools\\|\\.git\\|\\.local\\|\\dist\\|\\node_modules\\' }
   & $shellcheck -x @($shellFiles.FullName)
   if ($LASTEXITCODE -ne 0) {
@@ -136,6 +136,18 @@ if ($LASTEXITCODE -ne 0) {
   throw "boot guard policy test failed"
 }
 
+Write-Host "== privileged helper boundary =="
+& $gitSh tests/helper-service.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "privileged helper boundary test failed"
+}
+
+Write-Host "== bounded hotplug events =="
+& $gitSh tests/hotplug-bounded.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "bounded hotplug test failed"
+}
+
 Write-Host "== adapter rollback integrity =="
 & $gitSh tests/adapter-rollback.sh
 if ($LASTEXITCODE -ne 0) {
@@ -165,6 +177,12 @@ if ($LASTEXITCODE -ne 0) {
 & $gitSh tests/zapret-calibration-runtime.sh
 if ($LASTEXITCODE -ne 0) {
   throw "Zapret calibration runtime test failed"
+}
+
+Write-Host "== nft transition namespace harness =="
+& $gitSh tests/nft-transition-namespace.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "nft transition namespace harness failed"
 }
 
 Write-Host "== VPN subscription fixtures =="

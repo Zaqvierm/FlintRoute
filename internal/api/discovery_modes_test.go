@@ -136,7 +136,7 @@ func TestDiscoveryLockedDoesNotProbe(t *testing.T) {
 	}
 }
 
-func TestDiscoveryAutoApplyRequiresPathVerifiedAndCommits(t *testing.T) {
+func TestDiscoveryAutoApplyRequiresPathVerifiedAndRemainsNonMutating(t *testing.T) {
 	t.Run("unverified", func(t *testing.T) {
 		fake := newFakeAdapter()
 		srv, _ := newDiscoveryModeServer(t, "auto_apply_verified", false, fake)
@@ -151,12 +151,12 @@ func TestDiscoveryAutoApplyRequiresPathVerifiedAndCommits(t *testing.T) {
 		srv, _ := newDiscoveryModeServer(t, "auto_apply_verified", true, fake)
 		defer srv.Close()
 		srv.discoverDomain(context.Background(), discovery.Observation{Domain: "verified.example", QueryType: "A"})
-		if service := srv.currentConfig().ServiceForDomain("verified.example"); service == "" || fake.callCount("commit") != 1 {
-			t.Fatalf("verified discovery was not committed: service=%q calls=%v", service, fake.calls)
+		if service := srv.currentConfig().ServiceForDomain("verified.example"); service != "" || len(fake.calls) != 0 {
+			t.Fatalf("verified discovery mutated dataplane: service=%q calls=%v", service, fake.calls)
 		}
-		state := srv.loadDiscoveryState()
-		if len(state.AppliedAt) != 1 || state.ConsecutiveRollbacks != 0 {
-			t.Fatalf("successful auto-apply state=%+v", state)
+		suggestions := srv.discoverySuggestions(10)
+		if len(suggestions) != 1 || suggestions[0].PolicyState != "suggested" {
+			t.Fatalf("verified discovery did not leave a suggestion: %+v", suggestions)
 		}
 	})
 }
@@ -209,8 +209,8 @@ func TestDiscoveryRollbackCircuitBreakerStopsFurtherApply(t *testing.T) {
 		srv.discoverDomain(context.Background(), discovery.Observation{Domain: domain, QueryType: "A"})
 	}
 	state := srv.loadDiscoveryState()
-	if state.ConsecutiveRollbacks != 3 || state.PausedReason != "consecutive_rollbacks" || fake.callCount("apply_candidate") != 3 {
-		t.Fatalf("rollback circuit breaker failed: state=%+v calls=%v", state, fake.calls)
+	if state.ConsecutiveRollbacks != 0 || state.PausedReason != "" || len(fake.calls) != 0 {
+		t.Fatalf("disabled auto-apply performed mutation: state=%+v calls=%v", state, fake.calls)
 	}
 }
 
