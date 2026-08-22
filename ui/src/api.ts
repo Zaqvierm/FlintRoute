@@ -191,6 +191,8 @@ export type ZapretCalibrationStatus = {
   state: 'idle' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unavailable';
   stage: string;
   domain?: string;
+  mode?: 'quick' | 'exhaustive';
+  scan_level?: 'quick' | 'standard' | 'force' | string;
   concurrency: number;
   concurrency_reason: string;
   candidate_count: number;
@@ -464,8 +466,8 @@ export async function runVLESSSpeedTest(logicalID: string): Promise<{ server: an
 }
 export async function getZapret(): Promise<any> { return request('/zapret'); }
 export async function getZapretCalibration(): Promise<ZapretCalibrationStatus> { return request('/zapret/calibration'); }
-export async function startZapretCalibration(domain: string, allowManagedRestart = true): Promise<ZapretCalibrationStatus> {
-  return request('/zapret/calibration', { method: 'POST', body: JSON.stringify({ domain, allow_managed_restart: allowManagedRestart }) });
+export async function startZapretCalibration(domain: string, allowManagedRestart = true, mode: 'quick' | 'exhaustive' = 'quick'): Promise<ZapretCalibrationStatus> {
+  return request('/zapret/calibration', { method: 'POST', body: JSON.stringify({ domain, mode, allow_managed_restart: allowManagedRestart }) });
 }
 export async function cancelZapretCalibration(): Promise<ZapretCalibrationStatus> {
   return request('/zapret/calibration', { method: 'DELETE' });

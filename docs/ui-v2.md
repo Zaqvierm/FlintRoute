@@ -30,14 +30,27 @@ Back/Forward updates the active screen. An unknown URL renders a local “page n
 found” state instead of silently opening Overview.
 
 On phones the shell uses four primary bottom-navigation actions plus an “Ещё”
-sheet. On compact/tablet widths the side rail is narrow and the topology is a
-vertical grouped view; the desktop canvas is not forced into a horizontally
-scrolling mobile viewport. Desktop keeps the detailed canvas. Decorative packet
-and wire animations were removed: a line is not evidence of traffic.
+sheet. The bar is attached to the viewport (not the zero-height side rail), so
+it remains reachable at 360–430 px. On compact/tablet widths the side rail is
+narrow and the topology is a vertical grouped view; the desktop canvas is not
+forced into a horizontally scrolling mobile viewport. Desktop keeps the
+detailed canvas and caps its readable width on ultrawide screens. Decorative
+packet and wire animations were removed: a line is not evidence of traffic.
+
+The Activity section has a separate Operation Center. Component, VLESS,
+Zapret, Smart DNS, External SOCKS and service edits create a draft and link to
+that center; they do not validate/apply/confirm a dataplane change from a card
+click. `Advanced` keeps the developer JSON editor behind its own disclosure.
+
+Browser coverage lives in `tests/browser`: deterministic API fixtures cover
+privacy purge, partial API failure, navigation/back-forward and a ten-viewport
+matrix (360×800 through 3840×2160). The fixture is test-only and is never
+enabled by the production build.
 
 ## Scope and limits
 
 This is a progressive-disclosure foundation, not a production-readiness claim.
-The full feature-local frontend split, Playwright viewport matrix, and Linux or
-hardware evidence remain separate gates. Hardware is deliberately not touched
-by the UI work.
+The full feature-local frontend split and Linux or hardware evidence remain
+separate gates. Playwright Chromium passes locally when the browser binary is
+installed; its CI job remains the authoritative repeatable gate. Hardware is
+deliberately not touched by the UI work.

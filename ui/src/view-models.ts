@@ -23,6 +23,37 @@ export function serviceColumnFor(category: unknown): string {
   }
 }
 
+export type OnboardingProgress = {
+  methodsDone: boolean;
+  sourcesDone: boolean;
+  serviceChoiceDone: boolean;
+  providerReady: boolean;
+  setupReady: boolean;
+};
+
+/**
+ * Derive the five setup-step indicators from backend state only.  In
+ * particular, a verified component must not mark the persisted "sources"
+ * step complete, and a local browser preference can never make setupReady.
+ */
+export function onboardingProgress(input: {
+  methodsStatus?: unknown;
+  sourcesStatus?: unknown;
+  servicesStatus?: unknown;
+  verifiedServers?: number;
+  smartReady?: boolean;
+  tgwsReady?: boolean;
+  zapretReady?: boolean;
+  serviceCount?: number;
+  canComplete?: boolean;
+}): OnboardingProgress {
+  const methodsDone = textValue(input.methodsStatus, 'pending') !== 'pending';
+  const sourcesDone = textValue(input.sourcesStatus, 'pending') !== 'pending';
+  const serviceChoiceDone = (input.serviceCount ?? 0) > 0 || textValue(input.servicesStatus, 'pending') !== 'pending';
+  const providerReady = (input.verifiedServers ?? 0) > 0 || Boolean(input.smartReady || input.tgwsReady || input.zapretReady) || methodsDone;
+  return { methodsDone, sourcesDone, serviceChoiceDone, providerReady, setupReady: input.canComplete === true };
+}
+
 export type DecisionCard = {
   id: string;
   time: string;

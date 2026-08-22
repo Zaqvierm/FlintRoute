@@ -80,6 +80,7 @@ import {
   humanStatus,
   isAdministrativeEvent,
   isDecisionEvent,
+  onboardingProgress,
   parseResolverInput,
   serviceColumnFor,
   statusTone,
@@ -87,14 +88,24 @@ import {
   textValue,
   toDecisionCard
 } from './view-models';
+import {
+  AlertCenter,
+  AuthShell,
+  BootScreen,
+  LoadingSkeleton,
+  OperationCenterSummary,
+  PrivacyBar,
+  SessionBar,
+  TopBar
+} from './app/shell';
 import './styles.css';
 
 const navigation = [
   { title: 'Обзор', screens: ['Быстрая настройка', 'Обзор'] },
   { title: 'Сеть', screens: ['Карта сети', 'Устройства', 'Трафик'] },
-  { title: 'Правила', screens: ['Сервисы', 'Маршруты', 'Компоненты', 'VLESS-серверы', 'Smart DNS', 'Zapret', 'TG WS Proxy', 'Discovery', 'External SOCKS'] },
-  { title: 'Активность', screens: ['Поток решений', 'Telegram', 'Ревизии и recovery'] },
-  { title: 'Система', screens: ['Диагностика', 'Безопасность', 'Настройки', 'Резервное копирование', 'Advanced'] }
+  { title: 'Правила', screens: ['Сервисы', 'Маршруты', 'Компоненты', 'VLESS-серверы', 'Smart DNS', 'Zapret', 'TG WS Proxy', 'Discovery'] },
+  { title: 'Активность', screens: ['Поток решений', 'Операции', 'Telegram', 'Ревизии и recovery'] },
+  { title: 'Система', screens: ['Диагностика', 'Безопасность', 'Настройки', 'Резервное копирование', 'Advanced', 'External SOCKS'] }
 ];
 const notFoundScreen = 'Страница не найдена';
 const availableScreens = new Set([...navigation.flatMap((group) => group.screens), 'External SOCKS', notFoundScreen]);
@@ -479,129 +490,12 @@ function App() {
       <main>
         <SessionBar session={session} apiError={apiError} loading={refreshing} lastUpdated={lastUpdated} onRetry={() => refresh()} onLogout={handleLogout} />
         <PrivacyBar hidden={privacyHidden} onToggle={togglePrivacy} />
-        <TopBar overview={overview} />
+        <TopBar overview={overview} navigate={selectScreen} />
         <AlertCenter errors={sliceErrors} onRetry={() => refresh()} />
         <OperationCenterSummary changes={changes} navigate={selectScreen} />
         {loading ? <LoadingSkeleton /> : <Content key={privacyHidden ? 'privacy-hidden' : 'privacy-visible'} screen={screen} session={session} configVersion={configVersion} overview={overview} onboarding={onboarding} topology={topology} devices={devices} services={services} discovery={discovery} routes={routes} traffic={traffic} events={events} changes={changes} security={security} securitySummary={securitySummary} system={system} diagnostics={diagnostics} lifecycle={lifecycle} storage={storage} settings={settings} backups={backups} revisions={revisions} refresh={refresh} onboardingAction={async (step: string, action: 'skip' | 'accept' | 'automatic' | 'complete') => setOnboarding(await updateOnboarding(step, action))} navigate={selectScreen} />}
       </main>
     </div>
-  );
-}
-
-function BootScreen() {
-  return (
-    <main class="auth-page">
-      <section class="auth-card">
-        <div class="mark">RP</div>
-        <h1>Router Policy</h1>
-        <p>Проверка локальной сессии.</p>
-      </section>
-    </main>
-  );
-}
-
-function AuthShell({ error, onLogin, onSetup }: { error: string; onLogin: (u: string, p: string) => Promise<void>; onSetup: (u: string, p: string, t: string) => Promise<void> }) {
-  const [mode, setMode] = useState<'login' | 'setup'>('login');
-  const [username, setUsername] = useState('admin');
-  const [password, setPassword] = useState('');
-  const [setupToken, setSetupToken] = useState('');
-  const [busy, setBusy] = useState(false);
-  async function submit(ev: Event) {
-    ev.preventDefault();
-    setBusy(true);
-    try {
-      if (mode === 'login') {
-        await onLogin(username, password);
-      } else {
-        await onSetup(username, password, setupToken);
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <main class="auth-page">
-      <form class="auth-card" onSubmit={submit}>
-        <div class="mark">RP</div>
-        <h1>{mode === 'login' ? 'Вход' : 'Первичная настройка'}</h1>
-        <label>
-          <span>Пользователь</span>
-          <input value={username} onInput={(e) => setUsername((e.target as HTMLInputElement).value)} autocomplete="username" />
-        </label>
-        <label>
-          <span>Пароль</span>
-          <input type="password" value={password} onInput={(e) => setPassword((e.target as HTMLInputElement).value)} autocomplete={mode === 'login' ? 'current-password' : 'new-password'} />
-        </label>
-        {mode === 'setup' && (
-          <label>
-            <span>Setup token</span>
-            <input value={setupToken} onInput={(e) => setSetupToken((e.target as HTMLInputElement).value)} autocomplete="one-time-code" />
-          </label>
-        )}
-        {error && <p class="auth-error">{error}</p>}
-        <button class="primary" disabled={busy}>{busy ? 'Проверка...' : mode === 'login' ? 'Войти' : 'Создать администратора'}</button>
-        <button type="button" onClick={() => setMode(mode === 'login' ? 'setup' : 'login')}>
-          {mode === 'login' ? 'У меня setup token' : 'Вернуться ко входу'}
-        </button>
-      </form>
-    </main>
-  );
-}
-
-function AlertCenter({ errors, onRetry }: { errors: Array<{ name: string; message: string }>; onRetry: () => void }) {
-  if (!errors.length) return null;
-  return <section class="alert-center" aria-live="polite">
-    <b>Часть данных недоступна</b>
-    <div>{errors.slice(0, 4).map((item) => <details key={item.name}><summary>{item.name}</summary><p>{item.message}</p></details>)}</div>
-    <button onClick={onRetry}>Повторить всё</button>
-  </section>;
-}
-
-function OperationCenterSummary({ changes, navigate }: { changes: ChangeSet[]; navigate: (screen: string) => void }) {
-  const active = changes.filter((change) => !['committed', 'rolled_back', 'failed'].includes(change.state));
-  if (!active.length) return null;
-  return <section class="operation-strip" aria-live="polite"><div><b>Активные изменения: {active.length}</b><span>{active.slice(0, 3).map((change) => `${humanStatus(change.state)} · ${textValue(change.title, 'правило')}`).join(' · ')}</span></div><button onClick={() => navigate('Advanced')}>Открыть очередь</button></section>;
-}
-
-function SessionBar({ session, apiError, loading, lastUpdated, onRetry, onLogout }: { session: SessionInfo; apiError: string; loading: boolean; lastUpdated: string; onRetry: () => void; onLogout: () => void }) {
-  return (
-    <div class={`session-bar ${apiError ? 'warning' : ''}`}>
-      <span>{apiError ? `API недоступен: ${apiError}` : loading ? 'Обновляю данные…' : `Обновлено: ${formatDateTime(lastUpdated, 'ещё не обновлялось')}`}</span>
-      <div class="session-actions">{apiError && <button onClick={onRetry}>Повторить</button>}<span>{session.user}</span><button onClick={onLogout}>Выйти</button></div>
-    </div>
-  );
-}
-
-function PrivacyBar({ hidden, onToggle }: { hidden: boolean; onToggle: () => void }) {
-  return <div class={`privacy-bar ${hidden ? '' : 'revealed'}`}>
-    <div><b>{hidden ? 'Адреса скрыты' : 'Адреса устройств видны'}</b><span>{hidden ? 'Скрытый режим не запрашивает raw IP и MAC. Раскрытие временное и автоматически отключится через 10 минут.' : 'Можно скрыть IP и MAC одним переключателем.'}</span></div>
-    <button onClick={onToggle}>{hidden ? 'Показать адреса' : 'Скрыть адреса'}</button>
-  </div>;
-}
-
-function LoadingSkeleton() {
-  return <section class="loading-grid" aria-label="Загрузка"><div /><div /><div /><div /><div /><div /></section>;
-}
-
-function TopBar({ overview }: { overview: any }) {
-  const candidates = [
-    ['Интернет', overview.internet],
-    ['Data plane', overview.data_plane],
-    ['DNS', overview.dns],
-    ['Маршрут', overview.current_route ?? overview.route],
-    ['Ошибки', overview.critical_errors ?? overview.errors]
-  ];
-  const items = candidates.filter(([, value]) => value !== undefined && value !== null && value !== '');
-  return (
-    <header class="topbar">
-      {items.map(([k, v]) => (
-        <div class={`status-pill ${overview.freshness === 'stale' ? 'warn' : statusTone(v)}`} key={String(k)}>
-          <span>{k}</span>
-          <b>{overview.freshness === 'stale' ? `${humanStatus(v)} · данные устарели` : humanStatus(v)}</b>
-        </div>
-      ))}
-      {!items.length && <div class="status-pill muted"><span>Состояние</span><b>Нет данных</b></div>}
-    </header>
   );
 }
 
@@ -633,19 +527,21 @@ function Content(props: any) {
     case 'Политики: доска':
       return <Policies mode="board" />;
     case 'Advanced':
-      return <Changes changes={props.changes} refresh={props.refresh} role={props.session.role} configVersion={props.configVersion} />;
+      return <Changes changes={props.changes} refresh={props.refresh} role={props.session.role} configVersion={props.configVersion} mode="developer" />;
+    case 'Операции':
+      return <Changes changes={props.changes} refresh={props.refresh} role={props.session.role} configVersion={props.configVersion} mode="operations" />;
     case 'Маршруты':
       return <Routes routes={props.routes} navigate={props.navigate} />;
     case 'Компоненты':
       return <Components role={props.session.role} navigate={props.navigate} />;
     case 'VLESS-серверы':
-      return <Vless routes={props.routes} configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
+      return <Vless routes={props.routes} configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} navigate={props.navigate} />;
     case 'Smart DNS':
-      return <SmartDNS configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
+      return <SmartDNS configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} navigate={props.navigate} />;
     case 'Zapret':
-      return <Zapret routes={props.routes} configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
+      return <Zapret routes={props.routes} configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} navigate={props.navigate} />;
     case 'External SOCKS':
-      return <ExternalSOCKS configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
+      return <ExternalSOCKS configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} navigate={props.navigate} />;
     case 'TG WS Proxy':
       return <TGWS role={props.session.role} navigate={props.navigate} />;
     case 'Telegram':
@@ -714,7 +610,10 @@ function NetworkMap({ topology, devices, system, expanded = false }: { topology:
   const unknown = online.filter((device) => !['ethernet', 'wifi'].includes(device.kind));
   const portCards = buildPortCards(ports, ethernet);
   const branchCount = Math.max(portCards.length, 1);
-  const canvasWidth = Math.max(1000, branchCount * 190 + 140, viewportWidth);
+  // Keep the desktop canvas readable on ultrawide screens.  The topology is
+  // data-driven, but it must not turn a 4K viewport into a multi-kilometre
+  // wire diagram; larger collections are represented by per-port counts.
+  const canvasWidth = Math.min(1600, Math.max(1000, branchCount * 190 + 140, viewportWidth));
   const portGap = canvasWidth / (branchCount + 1);
   const wifiPositions = wifi.map((device, index) => {
     const side = index % 2 === 0 ? -1 : 1;
@@ -964,7 +863,7 @@ function Services({
       setMessage(`${domain}: черновик создан. Проверь изменения перед применением.`);
       setEditor(null);
       await refresh();
-      navigate('Advanced');
+      navigate('Операции');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Не удалось изменить маршрут');
     } finally {
@@ -1040,7 +939,7 @@ function Services({
             </div>
           </div>
           <div class="actions">
-            <button class="primary" disabled={!editor.domain.trim() || editor.paths.length === 0 || Boolean(moving)}>Применить</button>
+            <button class="primary" disabled={!editor.domain.trim() || editor.paths.length === 0 || Boolean(moving)}>Создать черновик</button>
             <button type="button" onClick={() => setEditor(null)}>Отмена</button>
           </div>
         </form>
@@ -1158,7 +1057,7 @@ function Policies({ mode }: { mode: string }) {
   return <Card title={`Политики: ${mode}`}>{items.map((p, i) => <div class="row"><b>{i + 1}</b><span>{p}</span><small>формальный приоритет</small></div>)}</Card>;
 }
 
-function Changes({ changes, refresh, role, configVersion }: { changes: ChangeSet[]; refresh: () => void; role: SessionInfo['role']; configVersion: number }) {
+function Changes({ changes, refresh, role, configVersion, mode = 'developer' }: { changes: ChangeSet[]; refresh: () => void; role: SessionInfo['role']; configVersion: number; mode?: 'developer' | 'operations' }) {
   const [title, setTitle] = useState('');
   const [operationType, setOperationType] = useState<ChangeOp['type']>('set');
   const [path, setPath] = useState('');
@@ -1166,7 +1065,7 @@ function Changes({ changes, refresh, role, configVersion }: { changes: ChangeSet
   const [error, setError] = useState('');
 
   if (role !== 'administrator') {
-    return <Generic title="Advanced" text="Developer mode доступен только администратору." />;
+    return <Generic title={mode === 'operations' ? 'Операции' : 'Advanced'} text="Для этого раздела нужна роль администратора." />;
   }
 
   async function create() {
@@ -1195,9 +1094,9 @@ function Changes({ changes, refresh, role, configVersion }: { changes: ChangeSet
     await refresh();
   }
   return (
-    <Card title="Advanced · ChangeSet">
-      <p>Низкоуровневый редактор. Обычная настройка VLESS, Zapret, Smart DNS и discovery делается в их собственных экранах.</p>
-      <details>
+    <Card title={mode === 'operations' ? 'Центр операций' : 'Advanced · ChangeSet'}>
+      <p>{mode === 'operations' ? 'Здесь видны черновики, проверки, применение, окно подтверждения и откат. Ничего не считается применённым, пока backend не подтвердил состояние.' : 'Низкоуровневый редактор. Обычная настройка VLESS, Zapret, Smart DNS и discovery делается в их собственных экранах.'}</p>
+      {mode === 'developer' && <details>
         <summary>Открыть Developer JSON editor</summary>
         <div class="change-editor">
         <label><span>Название</span><input value={title} onInput={(e) => setTitle((e.target as HTMLInputElement).value)} /></label>
@@ -1208,14 +1107,16 @@ function Changes({ changes, refresh, role, configVersion }: { changes: ChangeSet
         {error && <p class="auth-error">{error}</p>}
         <button class="primary" disabled={!configVersion} onClick={create}>Создать ChangeSet</button>
         </div>
-      </details>
+      </details>}
       {changes.map((c) => (
         <div class="change" key={c.id}>
-          <b>{c.title}</b><span>{c.state}</span>
+          <b>{c.title}</b><StatusBadge value={c.state} />
+          {c.data_plane_verified && <small class="verified">Путь проверен backend</small>}
           <ChangeDiff change={c} />
           <div class="actions">
-            {actionsForChange(c.state).map((a) => <button onClick={() => act(c.id, a)}>{a}</button>)}
+            {actionsForChange(c.state).map((a) => <button onClick={() => act(c.id, a)}>{changeActionLabel(a)}</button>)}
           </div>
+          {['failed', 'rolled_back', 'requires_device', 'recovery_required'].includes(c.state) && <p class="reason">{humanChangeFailure(c)}</p>}
         </div>
       ))}
     </Card>
@@ -1227,6 +1128,10 @@ function actionsForChange(state: string): string[] {
   if (state === 'validated') return ['apply'];
   if (state === 'awaiting_confirmation') return ['confirm', 'rollback'];
   return [];
+}
+
+function changeActionLabel(action: string): string {
+  return ({ validate: 'Проверить', apply: 'Применить', confirm: 'Подтвердить', rollback: 'Откатить' } as Record<string, string>)[action] ?? action;
 }
 
 function ChangeDiff({ change }: { change: ChangeSet }) {
@@ -1312,6 +1217,9 @@ const componentNames: Record<ComponentKind, string> = {
 
 function componentNextStep(status: ComponentStatus): string {
   if (!status.installed) return 'Компонент не установлен. FlintRoute сам выберет закреплённый build для архитектуры роутера и проверит SHA-256.';
+  if (['stopped', 'disabled', 'not_used'].includes(String(status.service_state).toLowerCase()) && !status.health_ready) {
+    return 'Компонент установлен, но сейчас не используется. Настрой сервисы, чтобы подключить его к маршрутам.';
+  }
   if (!status.health_ready) return status.health_reason || 'Компонент установлен, но health check не пройден.';
   if (status.kind === 'xray') return 'Готово. Следующий шаг — добавить VLESS-подписку или свой сервер.';
   if (status.kind === 'zapret') return 'Готово. Следующий шаг — запустить безопасную калибровку стратегии для текущей сети.';
@@ -1508,12 +1416,14 @@ function Vless({
   routes,
   configVersion,
   role,
-  refresh
+  refresh,
+  navigate
 }: {
   routes: any[];
   configVersion: number;
   role: SessionInfo['role'];
   refresh: () => Promise<void>;
+  navigate: (screen: string) => void;
 }) {
   const vless = routes.filter((r) => r.type === 'vless');
   const [urls, setURLs] = useState(() => Array(5).fill('') as string[]);
@@ -1655,19 +1565,12 @@ function Vless({
 
   async function activateManaged() {
     setBusy(true);
-    setMessage('Повторно проверяю подписку, TPROXY и bypass mark перед транзакцией…');
+    setMessage('Создаю черновик включения managed Xray…');
     try {
       const result = await prepareSubscription(configVersion, true);
       if (!result.change) throw new Error('Backend не создал транзакцию managed Xray.');
-      let change = await changeAction(result.change.id, 'validate');
-      change = await changeAction(change.id, 'apply');
-      if (change.state !== 'awaiting_confirmation' || !change.data_plane_verified) {
-        throw new Error(`Xray apply не получил PathVerified: ${change.state}`);
-      }
-      change = await changeAction(change.id, 'confirm');
-      if (change.state !== 'committed') throw new Error(`Xray confirm: ${change.state}`);
       setManagedAvailable(false);
-      setMessage(`Managed Xray включён и подтверждён ревизией ${change.revision_id}.`);
+      setMessage('Черновик managed Xray создан. Проверь diff и запусти применение отдельно в очереди изменений.');
       await refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Managed Xray не включён; транзакция откатилась или ждёт устройство.');
@@ -1721,7 +1624,7 @@ function Vless({
             </button>
             {managedAvailable && <button class="primary" disabled={busy || !configVersion} onClick={activateManaged}>Явно включить managed Xray</button>}
             {managedAvailable && <small>Одна транзакция включит TPROXY, bypass mark и проверенные VLESS routes. Без успешной проверки она не будет подтверждена.</small>}
-            {message && <p class="action-status">{message}</p>}
+            {message && <div class="action-status"><p>{message}</p>{message.includes('черновик') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
           </div>
         ) : <p>Импорт подписки доступен администратору.</p>}
       </Card>
@@ -1763,7 +1666,7 @@ function RouteType({ title, type, routes }: { title: string; type: string; route
   return <section><h2>{title}</h2><Grid>{routes.filter((r) => r.type === type).map((r) => <EntityCard title={r.tag} status={r.status} onOpen={() => setSelected(r)}><RouteBadge type={type} /><p>{humanStatus(r.status)}</p></EntityCard>)}</Grid><DetailDrawer title={selected?.tag ?? title} open={Boolean(selected)} onClose={() => setSelected(null)}><DiagnosticDetails value={selected} /><RawDisclosure value={selected} /></DetailDrawer></section>;
 }
 
-function Zapret({ routes, configVersion, role, refresh }: { routes: any[]; configVersion: number; role: SessionInfo['role']; refresh: () => Promise<void> }) {
+function Zapret({ routes, configVersion, role, refresh, navigate }: { routes: any[]; configVersion: number; role: SessionInfo['role']; refresh: () => Promise<void>; navigate: (screen: string) => void }) {
   const [status, setStatus] = useState<any>(null);
   const [component, setComponent] = useState<ComponentStatus | null>(null);
   const [calibration, setCalibration] = useState<ZapretCalibrationStatus | null>(null);
@@ -1775,6 +1678,7 @@ function Zapret({ routes, configVersion, role, refresh }: { routes: any[]; confi
   const [checked, setChecked] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [showExhaustive, setShowExhaustive] = useState(false);
   async function load() {
     const [zapretStatus, components, calibrationStatus] = await Promise.all([getZapret(), getComponents(), getZapretCalibration()]);
     const managed = components.find((item) => item.kind === 'zapret') ?? null;
@@ -1805,11 +1709,15 @@ function Zapret({ routes, configVersion, role, refresh }: { routes: any[]; confi
     } catch (error) { const info = errorInfo(error); setMessage(`${info.code}: ${info.message}`); }
     finally { setBusy(false); }
   }
-  async function startCalibration() {
-    setBusy(true); setMessage('Запускаю изолированный upstream blockcheck. Сеть не переключается на найденный профиль автоматически.');
+  async function startCalibration(mode: 'quick' | 'exhaustive') {
+    setBusy(true); setMessage(mode === 'quick'
+      ? 'Запускаю быстрый bounded-тест Zapret. Это не полный перебор и не переключает сеть на найденный профиль автоматически.'
+      : 'Запускаю полный подбор Zapret. Он может занять до 6 часов; найденный профиль не включается автоматически.');
     try {
-      const result = await startZapretCalibration(testDomain.trim(), true);
-      setCalibration(result); setMessage('Калибровка запущена. FlintRoute использует один worker, потому что upstream делит nft/NFQUEUE ресурсы.');
+      const result = await startZapretCalibration(testDomain.trim(), true, mode);
+      setCalibration(result); setShowExhaustive(false); setMessage(mode === 'quick'
+        ? 'Быстрый тест запущен. FlintRoute использует один worker: upstream делит nft/NFQUEUE ресурсы.'
+        : 'Полный подбор запущен. Один worker сохраняет безопасное владение общими nft/NFQUEUE ресурсами.');
     } catch (error) { const info = errorInfo(error); setMessage(`${info.code}: ${info.message}`); }
     finally { setBusy(false); }
   }
@@ -1828,19 +1736,14 @@ function Zapret({ routes, configVersion, role, refresh }: { routes: any[]; confi
     finally { setBusy(false); }
   }
   async function activate() {
-    setBusy(true); setMessage('Повторяю preflight и применяю managed Zapret транзакцией…');
+    setBusy(true); setMessage('Создаю черновик включения managed Zapret…');
     try {
       const result = await activateZapretSetup(input, configVersion);
-      let change = await changeAction(result.change.id, 'validate');
-      change = await changeAction(change.id, 'apply');
-      if (change.state !== 'awaiting_confirmation' || !change.data_plane_verified) throw new Error(`Zapret apply не получил PathVerified: ${change.state}`);
-      change = await changeAction(change.id, 'confirm');
-      if (change.state !== 'committed') throw new Error(`Zapret confirm: ${change.state}`);
       setChecked(false); setReport(result.report);
       setMessage(result.calibrated_profile_id
-        ? `Zapret включён с проверенным профилем ${result.calibrated_profile_id}; ревизия ${change.revision_id}.`
-        : `Managed Zapret подтверждён ревизией ${change.revision_id}. Калиброванный профиль не использовался.`);
-      setStatus(await getZapret()); await refresh();
+        ? `Создан черновик включения Zapret с профилем ${result.calibrated_profile_id}. Открой очередь, проверь diff и запусти применение отдельно.`
+        : 'Создан черновик включения managed Zapret. Открой очередь, проверь diff и запусти применение отдельно.');
+      await refresh();
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Zapret не включён; транзакция откатилась или ждёт устройство.'); }
     finally { setBusy(false); }
   }
@@ -1850,14 +1753,22 @@ function Zapret({ routes, configVersion, role, refresh }: { routes: any[]; confi
       {role === 'administrator' && !component?.installed && <button class="primary" disabled={busy} onClick={install}>{busy ? 'Устанавливаю…' : 'Установить Zapret'}</button>}
       {component?.installed && role === 'administrator' && <div class="change-editor">
         <label><span>Домен для подбора стратегии</span><input class="mono" value={testDomain} onInput={(event) => { setTestDomain((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
-        {calibration?.state === 'running' ? <button disabled={busy} onClick={cancelCalibration}>Остановить подбор</button> : <button class="primary" disabled={busy || !testDomain.trim()} onClick={startCalibration}>Запустить подбор стратегии</button>}
+        {calibration?.state === 'running' ? <button disabled={busy} onClick={cancelCalibration}>Остановить тест</button> : <div class="actions">
+          <button class="primary" disabled={busy || !testDomain.trim()} onClick={() => void startCalibration('quick')}>Быстрый тест Zapret</button>
+          <button disabled={busy || !testDomain.trim()} onClick={() => setShowExhaustive(true)}>Полный подбор стратегий</button>
+        </div>}
+        {showExhaustive && calibration?.state !== 'running' && <div class="warning-panel" role="alert">
+          <b>Глубокий перебор — аварийно-длинная операция</b>
+          <p>Будет проверено большое количество комбинаций upstream Zapret. Это может занять до 6 часов. Запускайте полный подбор только если быстрый тест не нашёл рабочую стратегию.</p>
+          <div class="actions"><button class="primary" disabled={busy} onClick={() => void startCalibration('exhaustive')}>Запустить полный подбор</button><button disabled={busy} onClick={() => setShowExhaustive(false)}>Отмена</button></div>
+        </div>}
         <small>Параллельность: {calibration?.concurrency ?? 1}. {calibration?.concurrency_reason ?? 'Общие nft/NFQUEUE ресурсы upstream требуют последовательного прогона.'}</small>
       </div>}
-      {message && <p class="action-status">{message}</p>}
+      {message && <div class="action-status"><p>{message}</p>{message.includes('черновик') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
     </Card>
     {calibration && calibration.state !== 'idle' && <Card title="Подбор стратегии">
-      <div class="row"><b>{humanStatus(calibration.state)}</b><span>{humanStatus(calibration.stage)}</span><small>{calibration.domain} · {calibration.duration_ms ? `${Math.round(calibration.duration_ms / 1000)} сек` : 'идёт'}</small></div>
-      {calibration.state === 'running' && <div class="row"><b>Проверено вариантов</b><span>{calibration.checks_completed ?? 0}{calibration.checks_total ? ` / ${calibration.checks_total}` : ''}</span><small>Upstream сам определяет число безопасных комбинаций для этой платформы.</small></div>}
+      <div class="row"><b>{humanStatus(calibration.state)}</b><span>{calibration.mode === 'exhaustive' ? 'полный подбор' : 'быстрый тест'} · {calibration.scan_level ?? 'quick'}</span><small>{calibration.domain} · {calibration.duration_ms ? `${Math.round(calibration.duration_ms / 1000)} сек` : 'идёт'}</small></div>
+      {calibration.state === 'running' && <div class="row"><b>Проверено вариантов</b><span>{calibration.checks_completed ?? 0}{calibration.checks_total ? ` / ${calibration.checks_total}` : ''}</span><small>{calibration.mode === 'exhaustive' ? 'Upstream force scan; точное число зависит от версии и платформы.' : 'Upstream quick scan с bounded временем; точное число зависит от версии и платформы.'}</small></div>}
       {calibration.error && <p class="reason">{calibration.error_code}: {calibration.error}</p>}
       <h4>Рабочие стратегии — появляются сразу</h4>
       {(calibration.working_strategies ?? []).length
@@ -1867,11 +1778,11 @@ function Zapret({ routes, configVersion, role, refresh }: { routes: any[]; confi
       {calibration.recommended_profile_id && <p class="action-status">Рекомендован: <span class="mono">{calibration.recommended_profile_id}</span>. Именно он будет привязан при явном включении ниже.</p>}
       <h4>Живой лог</h4>
       <pre>{(calibration.log_tail ?? []).join('\n') || 'blockcheck ещё не успел вывести данные'}</pre>
-      {calibration.activation_required && <p>Профили записаны в проверенный каталог. Выбор не применяется молча: ниже нужно явно включить managed Zapret одной транзакцией.</p>}
+      {calibration.activation_required && <p>Профили записаны в проверенный каталог. Выбор не применяется молча: создай отдельный черновик, проверь diff и запусти транзакцию в центре операций.</p>}
     </Card>}
     {component?.installed && <Card title="Явное включение маршрута">
       <p>Установка бинарника и включение маршрута — разные операции. Apply проверит NFQUEUE, data path и подтвердится только через штатную транзакцию.</p>
-      {role === 'administrator' && <div class="actions"><button disabled={busy || !configVersion} onClick={check}>{busy ? 'Проверяю…' : 'Проверить перед включением'}</button><button class="primary" disabled={busy || !checked || !configVersion} onClick={activate}>Включить managed Zapret</button></div>}
+      {role === 'administrator' && <div class="actions"><button disabled={busy || !configVersion} onClick={check}>{busy ? 'Проверяю…' : 'Проверить перед черновиком'}</button><button class="primary" disabled={busy || !checked || !configVersion} onClick={activate}>Создать черновик Zapret</button></div>}
       <details><summary>Advanced · закреплённый источник</summary><div class="change-editor">
         <label><span>HTTPS source</span><input class="mono" value={sourceURL} onInput={(event) => { setSourceURL((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
         <label><span>Версия</span><input class="mono" value={version} onInput={(event) => { setVersion((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
@@ -1886,11 +1797,13 @@ function Zapret({ routes, configVersion, role, refresh }: { routes: any[]; confi
 function SmartDNS({
   configVersion,
   role,
-  refresh
+  refresh,
+  navigate
 }: {
   configVersion: number;
   role: SessionInfo['role'];
   refresh: () => Promise<void>;
+  navigate: (screen: string) => void;
 }) {
   const [status, setStatus] = useState<any>(null);
   const [error, setError] = useState('');
@@ -1952,9 +1865,9 @@ function SmartDNS({
             <small>Порт необязателен. По умолчанию используется 53. Поддерживаются IPv4, IPv4:порт, IPv6 и [IPv6]:порт.</small>
             <label><span>Домен для DNS + HTTP/TLS</span><input class="mono" value={testDomain} placeholder="example.com" onInput={(event) => setTestDomain((event.target as HTMLInputElement).value)} /></label>
             <button class="primary" disabled={busy || !configVersion} onClick={save}>
-              {busy ? 'Проверяю…' : 'Проверить и применить'}
+              {busy ? 'Проверяю…' : 'Проверить и создать черновик'}
             </button>
-            {message && <p class={message.includes('применён') ? 'action-status ok' : 'action-status'}>{message}</p>}
+            {message && <div class={message.includes('применён') ? 'action-status ok' : 'action-status'}><p>{message}</p>{message.includes('черновик') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
           </div>
         )}
       </Card>
@@ -1981,7 +1894,7 @@ function SmartDNS({
   );
 }
 
-function ExternalSOCKS({ configVersion, role, refresh }: { configVersion: number; role: SessionInfo['role']; refresh: () => Promise<void> }) {
+function ExternalSOCKS({ configVersion, role, refresh, navigate }: { configVersion: number; role: SessionInfo['role']; refresh: () => Promise<void>; navigate: (screen: string) => void }) {
   const [status, setStatus] = useState<any>(null);
   const [endpoint, setEndpoint] = useState('127.0.0.1:1180');
   const [domain, setDomain] = useState('web.telegram.org');
@@ -1999,15 +1912,12 @@ function ExternalSOCKS({ configVersion, role, refresh }: { configVersion: number
     finally { setBusy(false); }
   }
   async function activate() {
-    setBusy(true); setMessage('Повторяю проверку и создаю одну транзакцию маршрутизации…');
+    setBusy(true); setMessage('Создаю черновик внешнего SOCKS-маршрута…');
     try {
       const result = await activateExternalSOCKS(endpoint.trim(), domain.trim(), configVersion);
-      let change = await changeAction(result.change.id, 'validate');
-      change = await changeAction(change.id, 'apply');
-      if (change.state !== 'awaiting_confirmation' || !change.data_plane_verified) throw new Error(`External SOCKS не получил PathVerified: ${change.state}`);
-      change = await changeAction(change.id, 'confirm');
-      if (change.state !== 'committed') throw new Error(`Confirm завершился состоянием ${change.state}`);
-      setMessage(`External SOCKS подтверждён ревизией ${change.revision_id}.`); setChecked(false); setStatus(await getExternalSOCKS()); await refresh();
+      if (!result.change) throw new Error('Backend не создал черновик внешнего SOCKS-маршрута.');
+      setMessage('Черновик внешнего SOCKS-маршрута создан. Проверь diff и запусти применение отдельно в очереди изменений.');
+      setChecked(false); await refresh();
     } catch (error) { setMessage(error instanceof Error ? error.message : 'External SOCKS не включён; транзакция откатилась или ждёт устройство.'); }
     finally { setBusy(false); }
   }
@@ -2018,8 +1928,8 @@ function ExternalSOCKS({ configVersion, role, refresh }: { configVersion: number
         <label><span>Loopback SOCKS5 endpoint</span><input class="mono" value={endpoint} onInput={(event) => { setEndpoint((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
         <label><span>Домен для remote DNS + TLS/HTTP</span><input class="mono" value={domain} onInput={(event) => { setDomain((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
         <button class="primary" disabled={busy || !configVersion} onClick={check}>{busy ? 'Проверяю…' : 'Проверить endpoint'}</button>
-        <button class="primary" disabled={busy || !checked || !configVersion} onClick={activate}>Явно включить маршрут</button>
-        {message && <p class="action-status">{message}</p>}
+        <button class="primary" disabled={busy || !checked || !configVersion} onClick={activate}>Создать черновик маршрута</button>
+        {message && <div class="action-status"><p>{message}</p>{message.includes('черновик') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
       </div>}
     </Card>
     {report && <Card title="Результат проверки"><div class="row"><b>{report.ready ? 'READY' : 'FAILED'}</b><span>SOCKS5: {report.socks5_handshake ? 'OK' : 'FAIL'}</span><small>TLS: {report.tls_verified ? 'OK' : 'FAIL'} · HTTP {report.http_status || '—'}</small></div></Card>}
@@ -2301,9 +2211,18 @@ function SetupScreen({ overview, services, routes, discovery, onboarding, onboar
   const methodsStatus = textValue(onboarding?.steps?.methods?.status, 'pending');
   const sourcesStatus = textValue(onboarding?.steps?.sources?.status, 'pending');
   const servicesStatus = textValue(onboarding?.steps?.services?.status, 'pending');
-  const providerChosen = verifiedServers > 0 || smartReady || tgwsReady || zapretReady || methodsStatus !== 'pending';
-  const serviceChoiceDone = asArray(services).length > 0 || servicesStatus !== 'pending';
-  const setupReady = onboarding?.can_complete === true;
+  const progress = onboardingProgress({
+    methodsStatus,
+    sourcesStatus,
+    servicesStatus,
+    verifiedServers,
+    smartReady,
+    tgwsReady,
+    zapretReady,
+    serviceCount: asArray(services).length,
+    canComplete: onboarding?.can_complete
+  });
+  const { methodsDone, sourcesDone, providerReady: providerChosen, serviceChoiceDone, setupReady } = progress;
 
   async function chooseDirect() {
     await onboardingAction('methods', 'skip');
@@ -2328,8 +2247,8 @@ function SetupScreen({ overview, services, routes, discovery, onboarding, onboar
     {state.error && <div class="inline-error"><b>Не все проверки завершены</b><span>{state.error}</span><button onClick={() => void load()}>Повторить</button></div>}
     <div class="setup-progress">{[
       ['1', 'Роутер', routerReady],
-      ['2', 'Маршруты', providerChosen],
-      ['3', 'Источники', providerChosen],
+       ['2', 'Маршруты', methodsDone],
+       ['3', 'Источники', sourcesDone],
       ['4', 'Сервисы', serviceChoiceDone],
       ['5', 'Проверка', setupReady]
     ].map(([number, label, done]) => <div class={done ? 'done' : ''} key={String(number)}><b>{number}</b><span>{label}</span></div>)}</div>
@@ -2338,18 +2257,18 @@ function SetupScreen({ overview, services, routes, discovery, onboarding, onboar
         <StatusLine label="Интернет" value={overview?.internet} /><StatusLine label="DNS" value={overview?.dns} />
         <p>{routerReady ? 'Базовая сеть работает. FlintRoute может переходить к настройке маршрутов.' : 'Базовая сеть не подтверждена. Открой диагностику и исправь проблему до применения правил.'}</p>
       </EntityCard>
-      <EntityCard title="2. Способы подключения" status={providerChosen ? 'configured' : 'not_configured'} onOpen={() => navigate('Компоненты')}>
+      <EntityCard title="2. Способы подключения" status={methodsDone ? 'configured' : 'not_configured'} onOpen={() => navigate('Компоненты')}>
         <StatusLine label="Zapret" value={zapretReady ? 'ready' : zapretComponent?.installed ? 'requires_config' : 'not_installed'} />
         <StatusLine label="Xray / VLESS" value={verifiedServers > 0 ? `${verifiedServers} verified` : xray?.installed ? 'requires_config' : 'not_installed'} />
         <StatusLine label="TG WS Proxy" value={tgwsReady ? 'verified' : tgwsComponent?.installed ? 'requires_config' : 'not_installed'} />
         {!providerChosen && <button onClick={() => void chooseDirect()}>Пока использовать только обычный интернет</button>}
       </EntityCard>
-      <EntityCard title="3. Источники и проверка" status={providerChosen ? 'ready' : 'not_configured'} onOpen={() => navigate(verifiedServers ? 'VLESS-серверы' : 'Компоненты')}>
+      <EntityCard title="3. Источники и проверка" status={sourcesDone ? 'ready' : 'not_configured'} onOpen={() => navigate(verifiedServers ? 'VLESS-серверы' : 'Компоненты')}>
         <StatusLine label="VLESS-серверы" value={verifiedServers ? `${verifiedServers} подтверждено` : 'не добавлены'} />
         <StatusLine label="Smart DNS" value={smartReady ? 'ready' : 'not_configured'} />
         <StatusLine label="Telegram proxy" value={tgwsReady ? 'verified' : 'not_configured'} />
         <p>Добавляй только нужные способы. FlintRoute не заставляет ставить всё подряд.</p>
-        {providerChosen && sourcesStatus === 'pending' && <button onClick={() => void acceptSources()}>Подтвердить проверенные источники</button>}
+        {providerChosen && !sourcesDone && <button onClick={() => void acceptSources()}>Подтвердить проверенные источники</button>}
       </EntityCard>
       <EntityCard title="4. Что нужно открыть" status={serviceChoiceDone ? 'configured' : 'not_configured'} onOpen={() => navigate('Сервисы')}>
         <p>{asArray(services).length ? `Настроено сервисов: ${asArray(services).length}.` : 'Можно закрепить Discord, ChatGPT, YouTube и другие сервисы за подходящими маршрутами.'}</p>

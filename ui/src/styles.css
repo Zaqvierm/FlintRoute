@@ -49,6 +49,7 @@ nav button.active .nav-dot { background: var(--accent); box-shadow: 0 0 12px var
 main { min-width: 0; padding: 0 1.3rem 2.2rem; }
 
 .session-bar, .privacy-bar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin: 0 -1.3rem; padding: .52rem 1.3rem; border-bottom: 1px solid var(--line); font-size: .78rem; color: var(--muted); }
+.mobile-brand { display: none; color: var(--text); letter-spacing: .01em; }
 .session-bar.warning { color: #ffd68a; background: #3a2a111f; }
 .session-actions { display: flex; align-items: center; gap: .55rem; }
 .session-actions button { padding: .35rem .6rem; }
@@ -60,6 +61,7 @@ main { min-width: 0; padding: 0 1.3rem 2.2rem; }
 .status-pill { display: flex; flex-direction: column; gap: .15rem; min-height: 62px; padding: .72rem .85rem; background: #101722; border: 1px solid var(--line); border-radius: 13px; }
 .status-pill span { color: var(--muted); font-size: .72rem; }
 .status-pill b { font-size: .88rem; overflow-wrap: anywhere; }
+.status-pill button { align-self: flex-start; padding: .25rem .5rem; font-size: .7rem; }
 .status-pill.ok { border-bottom-color: var(--ok); }
 .status-pill.warn { border-bottom-color: var(--warn); }
 .status-pill.bad { border-bottom-color: var(--bad); }
@@ -96,7 +98,7 @@ main { min-width: 0; padding: 0 1.3rem 2.2rem; }
 .network-map:not(.expanded) .page-header { display: none; }
 .network-map-scroll { width: 100%; overflow-x: auto; overflow-y: hidden; padding: 0 0 .7rem; scrollbar-color: #33445d transparent; }
 .network-map-mobile { display: none; }
-.topology-canvas { position: relative; min-width: 100%; margin: 0; overflow: hidden; border: 1px solid #22304a; border-radius: 18px; background: radial-gradient(900px 420px at 50% 30%, #60a5fa0f, transparent 70%), radial-gradient(#60a5fa12 1px, transparent 1px), #0a101a; background-size: auto, 26px 26px; }
+.topology-canvas { position: relative; min-width: 0; margin: 0 auto; overflow: hidden; border: 1px solid #22304a; border-radius: 18px; background: radial-gradient(900px 420px at 50% 30%, #60a5fa0f, transparent 70%), radial-gradient(#60a5fa12 1px, transparent 1px), #0a101a; background-size: auto, 26px 26px; }
 .topology-wires { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; pointer-events: none; }
 .map-wire { fill: none; stroke: #3a4c6b; stroke-width: 2; }
 .map-wire.wifi-wire { stroke: var(--blue); stroke-opacity: .56; stroke-width: 1.8; stroke-dasharray: 7 7; }
@@ -231,6 +233,7 @@ pre { max-width: 100%; overflow: auto; background: #070a0f; border: 1px solid va
 .empty-state { padding: 1rem; border: 1px dashed #344158; border-radius: 12px; text-align: center; color: var(--muted); }
 .empty-state p { margin: .35rem 0 0; color: var(--muted); }
 .action-status { color: var(--warn); }.action-status.ok { color: var(--ok); }.auth-error { color: var(--bad); }
+.warning-panel { margin-top: .75rem; padding: .85rem; border: 1px solid var(--warn); border-radius: 13px; background: #3a2a111f; }
 .setup-progress { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .5rem; margin: 1rem 0; }
 .setup-progress div { display: flex; align-items: center; gap: .5rem; min-width: 0; padding: .65rem; border: 1px solid var(--line); border-radius: 12px; color: var(--muted); background: #0f151f; }
 .setup-progress div.done { color: var(--ok); border-color: #2d725c; }
@@ -305,16 +308,20 @@ pre { max-width: 100%; overflow: auto; background: #070a0f; border: 1px solid va
 
 @media (max-width: 680px) {
   .shell { display: block; }
-  .side { position: static; z-index: 20; height: 0; border: 0; padding: 0; overflow: visible; }
+  /* Keep the fixed bottom navigation attached to the viewport.  A filtered
+     ancestor can become its containing block in Chromium, which moves the
+     bar below the viewport when the mobile side rail has zero height. */
+  .side { position: static; z-index: 20; height: 0; border: 0; padding: 0; overflow: visible; backdrop-filter: none; }
   .brand { display: none; }
   .side > nav { display: none; }
+  .side > nav.mobile-nav { display: grid; }
   .mobile-nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .2rem; padding: .35rem .45rem calc(.35rem + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: #0b1018f5; backdrop-filter: blur(18px); }
   .mobile-nav button { min-height: 44px; display: grid; place-items: center; gap: .1rem; border: 0; background: transparent; color: var(--muted); font-size: .66rem; padding: .25rem .1rem; }
   .mobile-nav button.active { color: var(--accent); background: #1a2636; }
   .mobile-nav .nav-dot { width: 7px; height: 7px; }
   main { padding: 0 .7rem 5.3rem; }
-  main { padding: 0 .7rem 1.5rem; }
   .session-bar { margin: 0 -.7rem; padding: .45rem .7rem; }
+  .mobile-brand { display: inline; flex: 0 0 auto; }
   .session-bar > span { max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .privacy-bar { margin-left: 0; margin-right: 0; align-items: flex-start; }
   .privacy-bar div { display: grid; gap: .15rem; }

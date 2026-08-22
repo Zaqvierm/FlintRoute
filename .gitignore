@@ -29,6 +29,8 @@ coverage.out
 
 # Dependencies and local tooling
 node_modules/
+playwright-report/
+test-results/
 .tools/
 .vite/
 

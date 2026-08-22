@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatDateTime, groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, parseResolverInput, serviceColumnFor, stringArray, textValue, toDecisionCard } from './view-models';
+import { formatDateTime, groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, onboardingProgress, parseResolverInput, serviceColumnFor, stringArray, textValue, toDecisionCard } from './view-models';
 import type { EventItem } from './api';
 
 describe('safe display values', () => {
@@ -74,6 +74,25 @@ describe('service view model', () => {
     ]);
     expect(observed.applied).toBe(false);
     expect(observed.sources).toEqual(['automatic']);
+  });
+});
+
+describe('onboarding truthfulness', () => {
+  it('does not mark sources complete merely because a route is verified', () => {
+    const progress = onboardingProgress({ verifiedServers: 2, methodsStatus: 'pending', sourcesStatus: 'pending', servicesStatus: 'pending' });
+    expect(progress.providerReady).toBe(true);
+    expect(progress.methodsDone).toBe(false);
+    expect(progress.sourcesDone).toBe(false);
+    expect(progress.serviceChoiceDone).toBe(false);
+    expect(progress.setupReady).toBe(false);
+  });
+
+  it('uses persisted backend statuses for skipped direct and automatic choices', () => {
+    const progress = onboardingProgress({ methodsStatus: 'skipped', sourcesStatus: 'skipped', servicesStatus: 'automatic', canComplete: true });
+    expect(progress.methodsDone).toBe(true);
+    expect(progress.sourcesDone).toBe(true);
+    expect(progress.serviceChoiceDone).toBe(true);
+    expect(progress.setupReady).toBe(true);
   });
 });
 

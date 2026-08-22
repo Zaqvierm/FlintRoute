@@ -1,0 +1,21 @@
+name: UI browser and responsive smoke
+
+on:
+  push:
+    branches: [main, remediation/**, ui/**]
+  pull_request:
+
+jobs:
+  browser-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm run browser:test
