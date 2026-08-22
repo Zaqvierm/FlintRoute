@@ -144,6 +144,10 @@ func (s *Server) handleAdaptiveZapretEvaluate(w http.ResponseWriter, r *http.Req
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
 		return
 	}
+	if failure := s.mutationFailureNow(); failure != nil {
+		writeError(w, r, failure.Status, failure.Code, failure.Message)
+		return
+	}
 	if s.currentAdaptiveRuntime() == nil {
 		writeError(w, r, http.StatusConflict, "adaptive_zapret_disabled", "adaptive Zapret is not configured")
 		return
@@ -166,6 +170,12 @@ func (s *Server) handleAdaptiveZapretState(w http.ResponseWriter, r *http.Reques
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
 		return
 	}
+	release, failure := s.acquireMutationLease()
+	if failure != nil {
+		writeError(w, r, failure.Status, failure.Code, failure.Message)
+		return
+	}
+	defer release()
 	var request adaptiveStateRequest
 	if err := readJSON(r, &request); err != nil {
 		writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())
@@ -189,6 +199,12 @@ func (s *Server) handleAdaptiveZapretPin(w http.ResponseWriter, r *http.Request)
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
 		return
 	}
+	release, failure := s.acquireMutationLease()
+	if failure != nil {
+		writeError(w, r, failure.Status, failure.Code, failure.Message)
+		return
+	}
+	defer release()
 	var request adaptivePinRequest
 	if err := readJSON(r, &request); err != nil {
 		writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())
@@ -245,6 +261,12 @@ func (s *Server) handleAdaptiveZapretUnpin(w http.ResponseWriter, r *http.Reques
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
 		return
 	}
+	release, failure := s.acquireMutationLease()
+	if failure != nil {
+		writeError(w, r, failure.Status, failure.Code, failure.Message)
+		return
+	}
+	defer release()
 	var request adaptiveStateRequest
 	if err := readJSON(r, &request); err != nil {
 		writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())
@@ -305,6 +327,9 @@ func (s *Server) restoreAdaptiveState(key zapret.DecisionKey, now time.Time) (*a
 }
 
 func (s *Server) evaluateAdaptiveZapret(ctx context.Context, request adaptiveEvaluateRequest, now time.Time) (adaptiveEvaluateResponse, *actionFailure) {
+	if failure := s.mutationFailureNow(); failure != nil {
+		return adaptiveEvaluateResponse{}, failure
+	}
 	runtime, stateKey, failure := s.restoreAdaptiveState(request.Key, now)
 	if failure != nil {
 		return adaptiveEvaluateResponse{}, failure

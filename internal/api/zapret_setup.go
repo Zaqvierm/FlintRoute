@@ -30,6 +30,10 @@ func (s *Server) handleZapretSetupCheck(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleZapretSetupActivate(w http.ResponseWriter, r *http.Request) {
+	if failure := s.mutationFailureNow(); failure != nil {
+		writeError(w, r, failure.Status, failure.Code, failure.Message)
+		return
+	}
 	request, report, ok := s.checkZapretSetup(w, r)
 	if !ok {
 		return

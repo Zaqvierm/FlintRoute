@@ -240,6 +240,10 @@ func (s *Server) adaptiveNetworkFingerprint(active *config.Config, runtime *adap
 }
 
 func (s *Server) runAdaptiveZapretCycle(ctx context.Context, active *config.Config, engine health.ProbeEngine, now time.Time) {
+	if failure := s.mutationFailureNow(); failure != nil {
+		s.publishEvent(Event{Type: "zapret.adaptive_probe", Severity: "warning", ReasonCode: "mutation_fenced", Details: map[string]any{"code": failure.Code}})
+		return
+	}
 	runtime := s.currentAdaptiveRuntime()
 	if runtime == nil || active == nil || engine == nil {
 		return
@@ -294,7 +298,9 @@ func (s *Server) runScheduledAdaptiveProbe(ctx context.Context, active *config.C
 		} else {
 			_ = runtime.scheduler.Cancel(lease.Token)
 		}
-		_ = persistAdaptiveProbeRuntime(runtime, finishedAt)
+		if failure := s.mutationFailureNow(); failure == nil {
+			_ = persistAdaptiveProbeRuntime(runtime, finishedAt)
+		}
 	}()
 
 	var result probe.RouteResult

@@ -1,0 +1,14 @@
+name: Zapret process-group safety
+
+on:
+  push:
+    branches: [main, remediation/**]
+  pull_request:
+
+jobs:
+  process-group-cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Linux Zapret ownership and timeout cleanup harness
+        run: sh tests/zapret-calibration-runtime.sh

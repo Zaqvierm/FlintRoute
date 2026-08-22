@@ -103,6 +103,40 @@ Local tests are not hardware proof. Every evidence record names the exact
 commit, environment, command, raw-log path, digest, scope and PASS/FAIL/SKIP
 state. Evidence from an older commit is `STALE FOR CURRENT SHA`.
 
+## Recovery mutation fence (post-remediation follow-up)
+
+The only statuses that permit a dataplane mutation are a semantically
+confirmed `ok` status and a `not_required` status that carries the confirmed
+baseline revision and candidate hash. `starting`, `error`,
+`recovery_required`, empty, and unknown values fail closed with HTTP 503.
+The gate is held for the complete mutation operation by a server-level
+read/write lease, so a recovery transition cannot race an apply at the
+entry/adapter boundary. Discovery, health, subscription refresh, reactive
+recovery, and adaptive scheduler work check the same fence before doing
+active work; their read-only health/status endpoints remain available.
+
+Persisting a recovery status is not best-effort: if the durable write fails,
+the in-memory status is immediately replaced with `recovery_required` and the
+failure is published as `recovery_status_persist_failed`. This is a visible
+safe fence, not a false durable success.
+
+This is a bounded guarantee, not a claim that split-brain is mathematically
+impossible. Confirmed ambiguous states are fenced as `RECOVERY_REQUIRED` and
+silent rollback/committed divergence is rejected by semantic-response and
+fault-injection tests. Full reboot/fault matrix and hardware evidence are
+still required before claiming complete absence of split-brain.
+
+## Privilege boundary status
+
+`router-policy-helper` is a packaged, fixed-path, typed Unix-socket helper and
+its contract is tested. The production `router-policy` controller still runs
+as root on this branch, so the privilege split is **PARTIAL**, not complete.
+The helper path is the preferred/allowlisted integration path; direct shell
+adapter execution remains a legacy/development path. LAN exposure is refused
+by default while the controller is root. A later change must run the
+controller non-root and remove its direct privileged execution path before the
+boundary can be marked closed.
+
 ## Remediation order
 
 Transaction protocol, bootstrap separation, boot guard, nft transition and

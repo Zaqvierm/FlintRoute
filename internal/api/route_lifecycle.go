@@ -39,6 +39,12 @@ func (s *Server) handleClassifiedRevalidation(w http.ResponseWriter, r *http.Req
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
 		return
 	}
+	release, failure := s.acquireMutationLease()
+	if failure != nil {
+		writeError(w, r, failure.Status, failure.Code, failure.Message)
+		return
+	}
+	defer release()
 	var request classifiedRevalidationRequest
 	if err := readJSON(r, &request); err != nil {
 		writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())
@@ -236,6 +242,10 @@ func (s *Server) scheduleFailedRouteRecovery(routeTag string, next time.Time, ba
 }
 
 func (s *Server) runDueFailedRouteRecovery(ctx context.Context, now time.Time) {
+	if failure := s.mutationFailureNow(); failure != nil {
+		s.publishEvent(Event{Type: "route.recovery", Severity: "warning", ReasonCode: "mutation_fenced", Details: map[string]any{"code": failure.Code}})
+		return
+	}
 	cfg := s.currentConfig()
 	if cfg == nil || s.healthTracker == nil {
 		return
@@ -356,6 +366,9 @@ func (s *Server) nextKnownGoodVLESS(cfg *config.Config, service config.Service, 
 }
 
 func (s *Server) commitVLESSFailover(ctx context.Context, serviceID, from, to string) error {
+	if failure := s.mutationFailureNow(); failure != nil {
+		return errors.New(failure.Message)
+	}
 	s.mu.Lock()
 	baseVersion := s.configVersion
 	s.mu.Unlock()
@@ -433,6 +446,9 @@ func (s *Server) runDueClassifiedRevalidation(ctx context.Context, now time.Time
 // TSPU/GEO service.  A successful Direct result creates a suggestion only;
 // it never silently removes the user's bypass policy.
 func (s *Server) RevalidateClassifiedDomain(ctx context.Context, domain string) error {
+	if failure := s.mutationFailureNow(); failure != nil {
+		return errors.New(failure.Message)
+	}
 	cfg := s.currentConfig()
 	if cfg == nil {
 		return errors.New("active configuration is unavailable")

@@ -98,28 +98,32 @@ type actionLockEntry struct {
 }
 
 type Server struct {
-	cfg                    *config.Config
-	auth                   *auth.Store
-	provider               platform.Provider
-	store                  *state.Store
-	adapter                adapter.Interface
-	subscriptionPreparer   SubscriptionPreparer
-	zapretSetupChecker     zapret.SetupChecker
-	externalSOCKSChecker   externalsocks.Checker
-	telegramNotifier       *telegramnotify.Manager
-	componentManager       ComponentManager
-	zapretCalibration      *zapret.CalibrationManager
-	vlessThroughputTester  vpnsub.ThroughputTester
-	probeEngineFactory     func(*config.Config) health.ProbeEngine
-	tspuRefresh            TSPURefreshFunc
-	tspuDelay              tspuDelayFunc
-	healthTracker          *probe.HealthTracker
-	domainDecisions        *domaincache.Manager
-	dnsObservationPath     string
-	development            bool
-	broker                 *EventBroker
-	mux                    *http.ServeMux
-	mu                     sync.Mutex
+	cfg                   *config.Config
+	auth                  *auth.Store
+	provider              platform.Provider
+	store                 *state.Store
+	adapter               adapter.Interface
+	subscriptionPreparer  SubscriptionPreparer
+	zapretSetupChecker    zapret.SetupChecker
+	externalSOCKSChecker  externalsocks.Checker
+	telegramNotifier      *telegramnotify.Manager
+	componentManager      ComponentManager
+	zapretCalibration     *zapret.CalibrationManager
+	vlessThroughputTester vpnsub.ThroughputTester
+	probeEngineFactory    func(*config.Config) health.ProbeEngine
+	tspuRefresh           TSPURefreshFunc
+	tspuDelay             tspuDelayFunc
+	healthTracker         *probe.HealthTracker
+	domainDecisions       *domaincache.Manager
+	dnsObservationPath    string
+	development           bool
+	broker                *EventBroker
+	mux                   *http.ServeMux
+	mu                    sync.Mutex
+	// mutationGate closes the recovery-to-mutation TOCTOU window. Recovery
+	// status transitions take the write side; every write-capable operation
+	// holds the read side for its entire lifetime.
+	mutationGate           sync.RWMutex
 	changes                map[string]ChangeSet
 	actionLocks            map[string]*actionLockEntry
 	transactionMu          sync.Mutex
@@ -352,7 +356,12 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 	}
 	if opts.DeferRecovery {
 		now := time.Now().UTC()
-		s.recovery = recoveryStatus{Status: "starting", RevisionID: activeRevision, StartedAt: now}
+		if err := s.setRecoveryStatus(recoveryStatus{Status: "starting", RevisionID: activeRevision, StartedAt: now}); err != nil {
+			// setRecoveryStatus installs a memory fence when persistence fails;
+			// construction can continue so health/rescue diagnostics remain
+			// available, but no mutation will be admitted.
+			_ = err
+		}
 	} else {
 		s.recoverCommittedDataplane(context.Background())
 	}
@@ -401,7 +410,7 @@ func (s *Server) StartScheduler(ctx context.Context) {
 				recoveryCtx, cancelRecovery := context.WithTimeout(schedulerCtx, 90*time.Second)
 				defer cancelRecovery()
 				s.recoverCommittedDataplane(recoveryCtx)
-				if schedulerCtx.Err() == nil && s.currentRecoveryStatus().Status != "error" {
+				if schedulerCtx.Err() == nil && recoveryStatusAllowsMutation(s.currentRecoveryStatus()) {
 					s.startOperationalSchedulers(schedulerCtx)
 				}
 			}()
@@ -472,6 +481,10 @@ func (s *Server) startSubscriptionScheduler(ctx context.Context) {
 			delay := s.subscriptionRefreshDelay(time.Now().UTC())
 			if !waitForScheduler(ctx, delay) {
 				return
+			}
+			if failure := s.mutationFailureNow(); failure != nil {
+				s.publishEvent(Event{Type: "subscription.refresh", Severity: "warning", ReasonCode: "mutation_fenced", Details: map[string]any{"code": failure.Code}})
+				continue
 			}
 			s.subscriptionMu.Lock()
 			active := s.currentConfig()
@@ -730,6 +743,9 @@ func observationClassification(service, category, selectedType string, confidenc
 }
 
 func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.DomainCheck) automaticCommitResult {
+	if failure := s.mutationFailureNow(); failure != nil {
+		return automaticCommitResult{Reason: failure.Message}
+	}
 	service, id, ok := automaticServiceForDecision(check)
 	if !ok {
 		return automaticCommitResult{Reason: "decision_not_eligible"}
@@ -874,6 +890,9 @@ func tspuInitialDelay(active *config.Config, interval time.Duration, now time.Ti
 }
 
 func (s *Server) runTSPURefresh(ctx context.Context) error {
+	if failure := s.mutationFailureNow(); failure != nil {
+		return fmt.Errorf("mutation fenced: %s", failure.Code)
+	}
 	active := s.tspuSchedulerConfig()
 	refreshCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
@@ -993,6 +1012,10 @@ func jitterTSPUDelay(base time.Duration, sample uint16) time.Duration {
 }
 
 func (s *Server) runHealthCycle(ctx context.Context) {
+	if failure := s.mutationFailureNow(); failure != nil {
+		s.publishEvent(Event{Type: "route.health", Severity: "warning", ReasonCode: "mutation_fenced", Details: map[string]any{"code": failure.Code}})
+		return
+	}
 	active := s.currentConfig()
 	engine := s.probeEngineFactory(active)
 	now := time.Now().UTC()
@@ -1022,6 +1045,9 @@ func (s *Server) runHealthCycle(ctx context.Context) {
 		details["error"] = err.Error()
 	}
 	s.publishEvent(Event{Type: "route.health", Severity: severity, ReasonCode: reason, Details: details})
+	if failure := s.mutationFailureNow(); failure != nil {
+		return
+	}
 	s.runAdaptiveZapretCycle(ctx, active, engine, now)
 }
 
@@ -1440,6 +1466,10 @@ func (s *Server) handleServiceClassify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
 		return
 	}
+	if failure := s.mutationFailureNow(); failure != nil {
+		writeError(w, r, failure.Status, failure.Code, failure.Message)
+		return
+	}
 	var request serviceClassifyRequest
 	if err := readJSON(r, &request); err != nil {
 		writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())
@@ -1712,6 +1742,10 @@ type smartDNSResolverInput struct {
 func (s *Server) handleSmartDNSConfigure(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	if failure := s.mutationFailureNow(); failure != nil {
+		writeError(w, r, failure.Status, failure.Code, failure.Message)
 		return
 	}
 	var request smartDNSConfigureRequest
@@ -2065,6 +2099,10 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, http.StatusConflict, "base_version_conflict", "base_version does not match current revision")
 			return
 		}
+		if failure := mutationFailureFromError(err); failure != nil {
+			writeError(w, r, failure.Status, failure.Code, failure.Message)
+			return
+		}
 		if err != nil {
 			writeError(w, r, 500, "state_store_failed", err.Error())
 			return
@@ -2144,6 +2182,12 @@ func (s *Server) handleChangeByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, http.StatusConflict, "invalid_transition", "only inactive changes can be deleted")
 			return
 		}
+		mutationRelease, mutationFailure := s.acquireMutationLease()
+		if mutationFailure != nil {
+			writeError(w, r, mutationFailure.Status, mutationFailure.Code, mutationFailure.Message)
+			return
+		}
+		defer mutationRelease()
 		s.mu.Lock()
 		delete(s.changes, id)
 		s.mu.Unlock()

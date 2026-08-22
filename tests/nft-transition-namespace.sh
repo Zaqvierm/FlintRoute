@@ -39,18 +39,12 @@ table inet foreign {
 table inet router_policy {
   chain output {
     type filter hook output priority -300; policy accept;
-    ip daddr 127.0.0.1 counter drop comment "protected-drop"
+    ip daddr 127.0.0.1 counter drop comment "protected-drop-generation-1"
   }
 }
 NFT
 
 cat >"$new" <<'NFT'
-table inet foreign {
-  chain output {
-    type filter hook output priority -200; policy accept;
-    counter comment "foreign-must-survive"
-  }
-}
 table inet router_policy {
   chain output {
     type filter hook output priority -300; policy accept;
@@ -73,6 +67,7 @@ run_nft() {
 }
 
 run_nft -f "$old"
+foreign_before="$(run_nft list table inet foreign)"
 traffic_pid="$(ip netns exec "$ns" sh -c 'while :; do ping -c 1 -W 1 127.0.0.1 >/dev/null 2>&1 || true; done' >/dev/null 2>&1 & echo $!)"
 sleep 1
 
@@ -87,8 +82,23 @@ if run_nft -c -f "$bad" >/dev/null 2>&1; then
   echo 'invalid nft batch unexpectedly passed syntax check' >&2
   exit 1
 fi
+if run_nft -f "$bad" >/dev/null 2>&1; then
+  echo 'invalid nft batch unexpectedly applied' >&2
+  exit 1
+fi
 run_nft list table inet router_policy >/dev/null
 run_nft list table inet foreign >/dev/null
+
+foreign_after="$(run_nft list table inet foreign)"
+[ "$foreign_after" = "$foreign_before" ] || {
+  echo 'foreign nft table changed during owned transition' >&2
+  exit 1
+}
+
+if ! run_nft list chain inet router_policy output | grep -F 'protected-drop-generation-2' >/dev/null; then
+  echo 'failed transition changed the last valid owned generation' >&2
+  exit 1
+fi
 
 drop_packets="$(run_nft list chain inet router_policy output | awk '/protected-drop-generation-2/ {for (i = 1; i <= NF; i++) if ($i == "packets") {print $(i + 1); exit}}')"
 case "$drop_packets" in

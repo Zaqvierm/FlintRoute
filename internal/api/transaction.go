@@ -136,6 +136,11 @@ func (s *Server) refreshCandidateNetworkDiagnostics(candidate *config.Config) er
 }
 
 func (s *Server) validateChangeSet(cs ChangeSet) (ChangeSet, *actionFailure) {
+	release, failure := s.acquireMutationLease()
+	if failure != nil {
+		return cs, failure
+	}
+	defer release()
 	if cs.State != "draft" {
 		return cs, conflict("invalid_transition", "change cannot be validated from "+cs.State)
 	}
@@ -267,9 +272,11 @@ func (s *Server) validateChangeSet(cs ChangeSet) (ChangeSet, *actionFailure) {
 }
 
 func (s *Server) applyChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet, *actionFailure) {
-	if failure := s.mutationFailure(); failure != nil {
+	release, failure := s.acquireMutationLease()
+	if failure != nil {
 		return cs, failure
 	}
+	defer release()
 	if cs.State != "validated" {
 		return cs, conflict("invalid_transition", "change cannot be applied from "+cs.State)
 	}
@@ -433,9 +440,11 @@ func (s *Server) applyNoopChangeSet(ctx context.Context, cs ChangeSet) (ChangeSe
 }
 
 func (s *Server) confirmChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet, *actionFailure) {
-	if failure := s.mutationFailure(); failure != nil {
+	release, failure := s.acquireMutationLease()
+	if failure != nil {
 		return cs, failure
 	}
+	defer release()
 	if cs.State != "awaiting_confirmation" {
 		return cs, conflict("invalid_transition", "change cannot be confirmed from "+cs.State)
 	}
@@ -626,9 +635,11 @@ func (s *Server) cleanupCommittedResources(tx adapter.Transaction, previous revi
 }
 
 func (s *Server) rollbackChangeSet(ctx context.Context, cs ChangeSet, expired bool) (ChangeSet, *actionFailure) {
-	if failure := s.mutationFailure(); failure != nil {
+	release, failure := s.acquireMutationLease()
+	if failure != nil {
 		return cs, failure
 	}
+	defer release()
 	if cs.State == "rolled_back" || cs.State == "expired" {
 		return cs, nil
 	}

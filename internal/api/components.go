@@ -71,6 +71,12 @@ func (s *Server) handleComponentAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusConflict, "component_in_use", componentUsageMessage(request.Kind, usage))
 		return
 	}
+	release, failure := s.acquireMutationLease()
+	if failure != nil {
+		writeError(w, r, failure.Status, failure.Code, failure.Message)
+		return
+	}
+	defer release()
 	result, err := s.componentManager.Execute(r.Context(), request)
 	if err != nil {
 		writeError(w, r, http.StatusUnprocessableEntity, "component_action_failed", err.Error())

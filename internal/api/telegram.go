@@ -21,6 +21,12 @@ func (s *Server) handleTelegramConfigure(w http.ResponseWriter, r *http.Request)
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "PUT required")
 		return
 	}
+	release, failure := s.acquireMutationLease()
+	if failure != nil {
+		writeError(w, r, failure.Status, failure.Code, failure.Message)
+		return
+	}
+	defer release()
 	var request telegramConfigureRequest
 	if err := readJSON(r, &request); err != nil {
 		writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())

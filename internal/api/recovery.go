@@ -22,6 +22,23 @@ type recoveryStatus struct {
 	FinishedAt           time.Time `json:"finished_at"`
 }
 
+type mutationBlockedError struct{ failure *actionFailure }
+
+func (e *mutationBlockedError) Error() string {
+	if e == nil || e.failure == nil {
+		return "mutation blocked by recovery fence"
+	}
+	return e.failure.Message
+}
+
+func mutationFailureFromError(err error) *actionFailure {
+	blocked, ok := err.(*mutationBlockedError)
+	if !ok || blocked == nil {
+		return nil
+	}
+	return blocked.failure
+}
+
 func (s *Server) recoverCommittedDataplane(ctx context.Context) {
 	started := time.Now().UTC()
 	result := recoveryStatus{Status: "not_required", StartedAt: started, FinishedAt: started}
@@ -168,26 +185,81 @@ func recoveryRequired(started time.Time, code, reason string, target adapter.Rec
 }
 
 func (s *Server) markRecoveryRequired(target adapter.RecoveryTarget, code, reason, phase string) {
-	s.setRecoveryStatus(recoveryRequired(time.Now().UTC(), code, reason, target, phase))
+	// The caller is normally inside a mutation lease. Taking the write side of
+	// mutationGate here would self-deadlock; the lease already excludes new
+	// readers, and the status is published before the lease is released.
+	_ = s.setRecoveryStatusDuringMutation(recoveryRequired(time.Now().UTC(), code, reason, target, phase))
 }
 
 func (s *Server) mutationFailure() *actionFailure {
 	status := s.currentRecoveryStatus()
-	if status.Status != "recovery_required" {
+	if recoveryStatusAllowsMutation(status) {
 		return nil
 	}
 	message := status.Reason
 	if message == "" {
-		message = "control-plane and adapter state require explicit recovery"
+		message = fmt.Sprintf("recovery status %q is not safe for network changes", status.Status)
 	}
-	return &actionFailure{Status: 503, Code: "recovery_required", Message: message}
+	code := "recovery_not_safe"
+	if status.Status == "recovery_required" {
+		code = "recovery_required"
+	}
+	return &actionFailure{Status: 503, Code: code, Message: message}
 }
 
-func (s *Server) setRecoveryStatus(status recoveryStatus) {
+func recoveryStatusAllowsMutation(status recoveryStatus) bool {
+	switch status.Status {
+	case "ok":
+		return true
+	case "not_required":
+		// not_required is only an allowlisted baseline when the identity of
+		// that baseline is present. Empty/hand-built statuses fail closed.
+		return status.RevisionID != "" && status.CandidateHash != ""
+	default:
+		return false
+	}
+}
+
+func (s *Server) acquireMutationLease() (func(), *actionFailure) {
+	s.mutationGate.RLock()
+	if failure := s.mutationFailure(); failure != nil {
+		s.mutationGate.RUnlock()
+		return nil, failure
+	}
+	return s.mutationGate.RUnlock, nil
+}
+
+func (s *Server) mutationFailureNow() *actionFailure {
+	s.mutationGate.RLock()
+	defer s.mutationGate.RUnlock()
+	return s.mutationFailure()
+}
+
+func (s *Server) setRecoveryStatus(status recoveryStatus) error {
+	s.mutationGate.Lock()
+	defer s.mutationGate.Unlock()
+	return s.setRecoveryStatusDuringMutation(status)
+}
+
+func (s *Server) setRecoveryStatusDuringMutation(status recoveryStatus) error {
 	s.mu.Lock()
 	s.recovery = status
 	s.mu.Unlock()
-	_ = s.store.SaveJSON("meta", "recovery_status", status)
+	if err := s.store.SaveJSON("meta", "recovery_status", status); err != nil {
+		// A status that was not durably recorded cannot be treated as a safe
+		// status. Keep a visible in-memory fence so this process cannot admit
+		// writes while the durable state is uncertain.
+		fenced := status
+		fenced.Status = "recovery_required"
+		fenced.ReasonCode = "recovery_status_persist_failed"
+		fenced.Reason = fmt.Sprintf("could not persist recovery status %q: %v", status.Status, err)
+		fenced.FinishedAt = time.Now().UTC()
+		s.mu.Lock()
+		s.recovery = fenced
+		s.mu.Unlock()
+		s.publishEvent(Event{Type: "recovery.status_persist_failed", Severity: "critical", ReasonCode: fenced.ReasonCode, Details: map[string]any{"requested_status": status.Status}})
+		return err
+	}
 	if status.Status == "ok" {
 		s.publishEvent(Event{Type: "recovery.completed", Severity: "info", ReasonCode: "committed_dataplane_recovered", Details: map[string]any{"revision_id": status.RevisionID}})
 	} else if status.Status == "error" {
@@ -195,6 +267,7 @@ func (s *Server) setRecoveryStatus(status recoveryStatus) {
 	} else if status.Status == "recovery_required" {
 		s.publishEvent(Event{Type: "recovery.required", Severity: "critical", ReasonCode: status.ReasonCode, Details: map[string]any{"revision_id": status.RevisionID, "transaction_id": status.TransactionID, "commit_phase": status.CommitPhase}})
 	}
+	return nil
 }
 
 func (s *Server) currentRecoveryStatus() recoveryStatus {

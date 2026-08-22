@@ -28,6 +28,11 @@ func proofBinding(tx adapter.Transaction) managementproof.Binding {
 }
 
 func (s *Server) prepareManagementProof(request *http.Request, action ChangeActionRequest, cs ChangeSet) (ChangeSet, *actionFailure) {
+	release, failure := s.acquireMutationLease()
+	if failure != nil {
+		return cs, failure
+	}
+	defer release()
 	tx, failure := s.loadVerifiedTransaction(cs)
 	if failure != nil {
 		return cs, failure
