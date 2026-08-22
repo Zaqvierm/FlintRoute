@@ -7,7 +7,7 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 
 - Base review SHA: `d45a779dfa9dc024b426cef358d3df4d32478897`
 - Branch: `remediation/transaction-and-privilege-boundaries`
-- Code verification SHA: `abf26b6e9a5f14f51ba741e7c855b79e7a74bb7b` (recovery fence plus Linux fixture follow-up).
+- Code verification SHA: `d7dffaf` (recovery fence plus route-verification semantics follow-up).
 - Verification scope: the exact code SHA recorded here; older evidence is not
   inherited by this follow-up.
 - Hardware scope: **not run**. Flint 2 was not contacted, installed, rebooted,
@@ -37,11 +37,15 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | SSRF and decompression limits | `go test ./internal/remotefetch ./internal/vpnsub ./internal/tspu ./internal/geoip` | PASS | local |
 | Xray typed input | `go test ./internal/vpnsub` | PASS | local |
 | resource budget | `go test ./internal/api ./internal/probe` | PASS | local |
+| `NO_SAFE_ROUTE` terminal state | planner cancellation/exhaustion and API probe-state tests | PASS | local |
+| classification vs route confidence | `TestClassificationConfidenceIsIndependentFromRouteConfidence` | PASS | local |
+| route latency vs verification duration | probe/API separation tests | PASS | local |
+| unknown route latency scoring | `TestSelectBestDoesNotTreatUnknownLatencyAsZero` | PASS | local |
 | frontend build | `npm run build` | PASS | local |
-| frontend tests | `npm.cmd test -- --run` | PASS (15 tests) | local |
+| frontend tests | `npm.cmd test -- --run` | PASS (16 tests) | local |
 | race/vet | `go test -race ./...`, `go vet ./...` | PASS | local |
 
-The full local runner at the recorded SHA completed in 307.8 seconds with
+The full local runner at the recorded SHA completed in 326.6 seconds with
 `all_tests_ok=true`. Its Linux-only namespace/process-group steps were
 honestly reported as `NOT RUN LOCALLY`; the independent GitHub runs above are
 the Linux evidence. The earlier `e04778e` nft run failed because the fixture's
