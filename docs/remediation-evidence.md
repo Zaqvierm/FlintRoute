@@ -143,6 +143,15 @@ code changed after `91193d7`:
 - Zapret process-group safety: [run 32578987408](https://github.com/Zaqvierm/FlintRoute/actions/runs/32578987408)
 - UI browser/responsive: [run 32578987494](https://github.com/Zaqvierm/FlintRoute/actions/runs/32578987494)
 
+The current docs head is `2194119c0814813c4b5316112bfc46d69ca6fd7b`.
+It contains documentation-only evidence updates after the code SHA above;
+the code remains unchanged from `084898c8898c99203017964de1d5e377b670df0d`.
+The latest required CI runs for that head passed:
+
+- nft transition safety: [run 32579761689](https://github.com/Zaqvierm/FlintRoute/actions/runs/32579761689)
+- Zapret process-group safety: [run 32579761688](https://github.com/Zaqvierm/FlintRoute/actions/runs/32579761688)
+- UI browser/responsive: [run 32579761695](https://github.com/Zaqvierm/FlintRoute/actions/runs/32579761695)
+
 ## Known limitation
 
 The packaged helper boundary is tested, but the production `router-policy`
