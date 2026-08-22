@@ -2306,6 +2306,8 @@ function LoginScreen() {
 function SetupScreen({ overview, services, routes, discovery, onboarding, onboardingAction, navigate }: any) {
   const [state, setState] = useState<any>({ loading: true, components: [], pool: null, smartDNS: null, tgws: null, zapret: null, error: '' });
   const requestRef = useRef<AbortController | null>(null);
+  const [actionBusy, setActionBusy] = useState('');
+  const [actionError, setActionError] = useState('');
 
   async function load() {
     requestRef.current?.abort();
@@ -2383,12 +2385,25 @@ function SetupScreen({ overview, services, routes, discovery, onboarding, onboar
     const result = await onboardingAction('complete', 'complete');
     if (result?.completed) navigate('Обзор');
   }
+  async function runSetupAction(label: string, action: () => Promise<void>) {
+    setActionBusy(label);
+    setActionError('');
+    try {
+      await action();
+    } catch (reason) {
+      const info = errorInfo(reason);
+      setActionError(`${info.code}: ${info.message}`);
+    } finally {
+      setActionBusy('');
+    }
+  }
 
   return <section>
     <PageHeader title="Быстрая настройка" text="Пять шагов: проверить роутер, выбрать способы подключения, добавить источники, назначить сервисы и убедиться, что выбранные пути работают.">
       <button onClick={() => void load()} disabled={state.loading}>{state.loading ? 'Проверяю…' : 'Проверить снова'}</button>
     </PageHeader>
     {state.error && <div class="inline-error"><b>Не все проверки завершены</b><span>{state.error}</span><button onClick={() => void load()}>Повторить</button></div>}
+    {actionError && <div class="inline-error" role="alert"><b>Шаг не сохранён</b><span>{actionError}</span><button onClick={() => setActionError('')}>Закрыть</button></div>}
     <div class="setup-progress">{[
       ['1', 'Роутер', routerReady],
        ['2', 'Маршруты', methodsDone],
@@ -2405,25 +2420,25 @@ function SetupScreen({ overview, services, routes, discovery, onboarding, onboar
         <StatusLine label="Zapret" value={zapretReady ? 'ready' : zapretComponent?.installed ? 'requires_config' : 'not_installed'} />
         <StatusLine label="Xray / VLESS" value={verifiedServers > 0 ? `${verifiedServers} verified` : xray?.installed ? 'requires_config' : 'not_installed'} />
         <StatusLine label="TG WS Proxy" value={tgwsReady ? 'verified' : tgwsComponent?.installed ? 'requires_config' : 'not_installed'} />
-        {!providerChosen && <button onClick={() => void chooseDirect()}>Пока использовать только обычный интернет</button>}
+        {!providerChosen && <button disabled={Boolean(actionBusy)} onClick={() => void runSetupAction('methods', chooseDirect)}>Пока использовать только обычный интернет</button>}
       </EntityCard>
       <EntityCard title="3. Источники и проверка" status={sourcesDone ? 'ready' : 'not_configured'} onOpen={() => navigate(verifiedServers ? 'VLESS-серверы' : 'Компоненты')}>
         <StatusLine label="VLESS-серверы" value={verifiedServers ? `${verifiedServers} подтверждено` : 'не добавлены'} />
         <StatusLine label="Smart DNS" value={smartReady ? 'ready' : 'not_configured'} />
         <StatusLine label="Telegram proxy" value={tgwsReady ? 'verified' : 'not_configured'} />
         <p>Добавляй только нужные способы. FlintRoute не заставляет ставить всё подряд.</p>
-        {providerChosen && !sourcesDone && <button onClick={() => void acceptSources()}>Подтвердить проверенные источники</button>}
+        {providerChosen && !sourcesDone && <button disabled={Boolean(actionBusy)} onClick={() => void runSetupAction('sources', acceptSources)}>Подтвердить проверенные источники</button>}
       </EntityCard>
       <EntityCard title="4. Что нужно открыть" status={serviceChoiceDone ? 'configured' : 'not_configured'} onOpen={() => navigate('Сервисы')}>
         <p>{asArray(services).length ? `Настроено сервисов: ${asArray(services).length}.` : 'Можно закрепить Discord, ChatGPT, YouTube и другие сервисы за подходящими маршрутами.'}</p>
-        {!serviceChoiceDone && <button onClick={() => void chooseAutomatic()}>Пока выбирать автоматически</button>}
+        {!serviceChoiceDone && <button disabled={Boolean(actionBusy)} onClick={() => void runSetupAction('services', chooseAutomatic)}>Пока выбирать автоматически</button>}
         <StatusLine label="Discovery" value={discovery?.mode ?? 'observe_only'} />
       </EntityCard>
       <EntityCard title="5. Финальная проверка" status={setupReady ? 'ready' : 'unverified'} onOpen={() => navigate('Маршруты')}>
         <StatusLine label="Обычный интернет" value={routerReady ? 'ready' : 'unverified'} />
         <StatusLine label="Выбранные маршруты" value={providerChosen ? 'configured' : 'not_configured'} />
         <StatusLine label="Правила сервисов" value={serviceChoiceDone ? 'configured' : 'not_configured'} />
-        <button class="primary" disabled={!setupReady} onClick={finish}>Завершить настройку</button>
+        <button class="primary" disabled={!setupReady || Boolean(actionBusy)} onClick={() => void runSetupAction('complete', finish)}>Завершить настройку</button>
         {!setupReady && <p>Кнопка станет доступна, когда базовая сеть работает и выбран хотя бы Direct либо один проверенный управляемый путь.</p>}
       </EntityCard>
     </Grid>

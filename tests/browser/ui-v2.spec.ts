@@ -7,7 +7,7 @@ function envelope(data: unknown, status = 200) {
   return { status, contentType: 'application/json', body: JSON.stringify({ data }) };
 }
 
-export async function mockAPI(page: Page, options: { securityFailure?: boolean; recoveryStatus?: string; bootstrapRequired?: boolean; decisionState?: 'verifying' | 'no_safe_route'; changeState?: 'requires_device'; objectStatuses?: boolean } = {}) {
+export async function mockAPI(page: Page, options: { securityFailure?: boolean; recoveryStatus?: string; bootstrapRequired?: boolean; decisionState?: 'verifying' | 'no_safe_route'; changeState?: 'requires_device'; objectStatuses?: boolean; onboardingFailure?: boolean } = {}) {
   const onboarding = {
     completed: false,
     can_complete: false,
@@ -63,6 +63,7 @@ export async function mockAPI(page: Page, options: { securityFailure?: boolean; 
     }
     if (path === '/traffic') return route.fulfill(envelope({ status: options.objectStatuses ? { state: 'ready' } : 'ready', source: options.objectStatuses ? { name: 'fixture' } : 'fixture', collected_at: new Date().toISOString(), interfaces: [] }));
     if (path === '/onboarding') {
+      if (options.onboardingFailure && route.request().method() === 'POST') return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'fixture_onboarding_down', message: 'onboarding unavailable' } }) });
       if (route.request().method() === 'POST') {
         const body = route.request().postDataJSON() as { step?: string; action?: string };
         if (body.step === 'complete' && onboardingSnapshot().can_complete && body.action === 'complete') {
@@ -190,6 +191,15 @@ test.describe('FlintRoute UI v2', () => {
     await expect(page.getByRole('heading', { name: 'Быстрая настройка' })).toBeVisible();
     await expect.poll(() => setupRequests.length).toBeGreaterThan(0);
     expect(new Set(setupRequests)).toEqual(new Set(['/components', '/xray/pool', '/smart-dns', '/tgws', '/zapret']));
+  });
+
+  test('explains a failed onboarding write instead of leaving an unhandled promise', async ({ page }) => {
+    await mockAPI(page, { bootstrapRequired: true, onboardingFailure: true });
+    await page.goto('/?screen=Быстрая настройка');
+    await page.getByRole('button', { name: 'Пока использовать только обычный интернет' }).click();
+    const alert = page.getByRole('alert').filter({ hasText: 'Шаг не сохранён' });
+    await expect(alert).toContainText('Шаг не сохранён');
+    await expect(alert).toContainText('fixture_onboarding_down');
   });
 
   test('completes the backend-driven fast start flow', async ({ page }) => {
