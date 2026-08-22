@@ -430,14 +430,14 @@ setsid sh -c '
   # setsid may fork when its caller is already a process-group leader.  The
   # background PID is then the short-lived launcher, not the isolated child;
   # publish the child PID from inside the new session instead of trusting $!.
-  printf "%s\\n" "$$" > "$11"
+  printf "%s\\n" "$$" > "${11}"
   i=0
-  while [ ! -e "$13" ] && [ "$i" -lt 100 ]; do
+  while [ ! -e "${13}" ] && [ "$i" -lt 100 ]; do
     sleep 0.1
     i=$((i + 1))
   done
   if [ ! -e "$13" ]; then
-    printf "%s\\n" 125 > "$12"
+    printf "%s\\n" 125 > "${12}"
     exit 125
   fi
   cd "$1"
@@ -445,7 +445,7 @@ setsid sh -c '
     BATCH=1 IPVS=4 REPEATS=3 SCANLEVEL="${10}" SKIP_TPWS=1 SKIP_DNSCHECK="$2" DOMAINS="$3" \
     "$4" "$5" sh "$6" >"$7" 2>&1
   status=$?
-  printf "%s\\n" "$status" > "$12"
+  printf "%s\\n" "$status" > "${12}"
   exit "$status"
 ' sh "$(dirname "$blockcheck_script")" "$skip_dnscheck" "$domain" "$TIMEOUT_BIN" "$BLOCKCHECK_TIMEOUT" "$blockcheck_script" "$report" "$NFQWS_BIN" "$calibration_run_id" "$scan_level" "$blockcheck_pid_file" "$blockcheck_status_file" "$blockcheck_release_file" &
 blockcheck_launcher_pid=$!
