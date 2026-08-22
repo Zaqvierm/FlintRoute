@@ -1443,11 +1443,11 @@ function Discovery({ data, configVersion, role, mutationLocked, refresh }: { dat
   if (!data) return <Generic title="Discovery" text="Загружаю состояние…" />;
   return <section class="grid">
     <Card title="Наблюдение за доменами">
-      <div class="row"><b>{data.observation_source?.status === 'receiving' ? 'Вижу DNS-запросы' : data.observation_source?.status === 'listening' ? 'Жду новые запросы' : 'DNS-запросы не поступают'}</b><span>{humanStatus(data.observation_source?.status)}</span><small>{data.observation_source?.last_updated ? `последний запрос: ${formatDateTime(data.observation_source.last_updated)}` : data.observation_source?.reason ?? 'Источник ещё не создал журнал'}</small></div>
+      <div class="row"><b>{data.observation_source?.status === 'receiving' ? 'Вижу DNS-запросы' : data.observation_source?.status === 'listening' ? 'Жду новые запросы' : 'DNS-запросы не поступают'}</b><span>{humanStatus(data.observation_source?.status)}</span><small>{data.observation_source?.last_updated ? `последний запрос: ${formatDateTime(data.observation_source.last_updated)}` : textValue(data.observation_source?.reason, 'Источник ещё не создал журнал')}</small></div>
       <p>{data.observation_source?.status === 'waiting' || data.observation_source?.status === 'unavailable' ? 'FlintRoute пока не получает наблюдения от DNS. Проверь, что клиент использует DNS роутера.' : 'Открывай сайты с устройства в LAN или Wi-Fi — новые домены появятся в Потоке решений.'}</p>
     </Card>
     <Card title="Режим discovery">
-      <div class="row"><b>{data.mode}</b><span>{data.paused ? `остановлен: ${data.paused_reason}` : 'активен'}</span><small>{data.applied_last_hour} правил за последний час</small></div>
+      <div class="row"><b>{textValue(data.mode, 'неизвестный режим')}</b><span>{data.paused ? `остановлен: ${textValue(data.paused_reason, 'причина не указана')}` : 'активен'}</span><small>{textValue(data.applied_last_hour, '0')} правил за последний час</small></div>
       <p>observe_only только журналирует; suggest добавляет предложения; auto_apply_verified применяет лишь PathVerified; locked не запускает проверки.</p>
       {role === 'administrator' && <div class="smart-dns-editor">
         <label><span>Режим</span><select value={mode} onChange={(event) => setMode((event.target as HTMLSelectElement).value as DiscoveryStatus['mode'])}>
@@ -1462,7 +1462,7 @@ function Discovery({ data, configVersion, role, mutationLocked, refresh }: { dat
       </div>}
     </Card>
     <Card title="Предложения">
-      {(data.suggestions ?? []).map((item: any) => <div class="row" key={item.domain}><b>{item.domain}</b><span>{item.route_type} · {item.route}</span><small>{item.path_verified ? 'Кандидат прошёл проверку пути' : 'Безопасный кандидат не найден'} · политика не применена</small></div>)}
+      {(data.suggestions ?? []).map((item: any) => <div class="row" key={textValue(item.domain, 'unknown')}><b>{textValue(item.domain, 'Домен не указан')}</b><span>{textValue(item.route_type, 'Маршрут не определён')} · {textValue(item.route, 'не выбран')}</span><small>{item.path_verified ? 'Кандидат прошёл проверку пути' : 'Безопасный кандидат не найден'} · политика не применена</small></div>)}
       {!data.suggestions?.length && <p class="empty-state">Предложений пока нет</p>}
     </Card>
   </section>;
@@ -1490,7 +1490,7 @@ function withTrafficRates(previous: TrafficView, current: TrafficSnapshot): Traf
 function Traffic({ data }: { data: TrafficView }) {
   return (
     <Card title="Трафик интерфейсов">
-      <div class="row"><b>{data.status}</b><span>{data.source}</span><small>{data.collected_at ? new Date(data.collected_at).toLocaleTimeString() : data.reason ?? 'нет данных'}</small></div>
+      <div class="row"><b>{humanStatus(data.status)}</b><span>{textValue(data.source, 'источник не указан')}</span><small>{data.collected_at ? new Date(data.collected_at).toLocaleTimeString() : textValue(data.reason, 'нет данных')}</small></div>
       {data.interfaces.map((item) => (
         <div class={`traffic-row ${(item.rx_errors || item.tx_errors) ? 'warn' : ''}`} key={item.name}>
           <b class="mono">{item.name}</b>
