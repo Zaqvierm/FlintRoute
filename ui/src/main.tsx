@@ -298,9 +298,9 @@ function App() {
         maybe(needsTraffic, 'traffic', () => getTraffic(signal), traffic),
         maybe(needsEvents, 'events', () => getEvents(500, signal), hideAddresses ? [] : events),
         safe('system', getSystem(signal), staleFallback(system)),
-        maybe(needsRevisions, 'revisions', () => getRevisions(signal), revisions),
+        maybe(needsRevisions || activeScreen === notFoundScreen, 'revisions', () => getRevisions(signal), revisions),
         maybe(needsDiscovery, 'discovery', () => getDiscovery(signal), discovery),
-        maybe(needsOnboarding, 'onboarding', () => getOnboarding(signal), onboarding),
+        maybe(needsOnboarding || activeScreen === notFoundScreen, 'onboarding', () => getOnboarding(signal), onboarding),
         safe('health', getHealth(signal), { status: 'unavailable', recovery_status: 'unknown', recovery_reason: 'Статус восстановления недоступен' })
       ]);
       if (generation !== refreshGeneration.current) return;
@@ -321,17 +321,12 @@ function App() {
       }
       setDiscovery(nextDiscovery);
       setOnboarding(nextOnboarding);
-      if (nextRevisions && nextRevisions.config_version <= 1 && nextServices.length === 0 && nextOnboarding?.completed !== true && activeScreen === 'Обзор') {
-        try {
-          if (window.localStorage.getItem('flintroute-first-run-opened') !== '1') {
-            window.localStorage.setItem('flintroute-first-run-opened', '1');
-            selectScreen('Быстрая настройка');
-          }
-        } catch {
-          // The wizard remains available from navigation when storage is disabled.
-        }
+      if (nextRevisions && nextRevisions.config_version <= 1 && nextServices.length === 0 && nextOnboarding?.completed !== true) {
+        const firstRunScreen = navigation[0].screens[0];
+        // The URL is the navigation source of truth. Invalid/old URLs and
+        // stale local preferences must still land on the resumable wizard.
+        if (screenFromLocation() !== firstRunScreen) selectScreen(firstRunScreen);
       }
-
       const optional = await Promise.allSettled([
         maybe(needsChanges, 'changes', () => getChanges(signal), changes),
         maybe(needsSecurity, 'security', () => getSecurity(signal), security),
