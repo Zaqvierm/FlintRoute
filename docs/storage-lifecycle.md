@@ -76,6 +76,12 @@ The storage diagnostics endpoint exposes logical write transactions, bytes,
 file create/replace/delete counts, fsync counts, snapshot/backup counts, and
 the last write reason. It does not claim to measure physical flash wear.
 
+Artifact replacement treats the parent-directory sync as part of the write
+contract. OpenWrt targets use an exact directory `sync -f` when available and
+record a clearly labelled global-sync fallback otherwise; if both fail,
+`atomic_install` returns an error and records `fsync_failed` instead of
+reporting a durable install.
+
 ## Recovery artifact policy
 
 If bbolt cannot be opened or an interrupted compaction cannot be recovered, the

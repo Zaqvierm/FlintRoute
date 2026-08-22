@@ -20,6 +20,23 @@ chmod +x "$TMP/fake-bin/mv"
 PATH="$TMP/fake-bin:$PATH"
 export PATH
 
+REAL_SYNC=$(command -v sync || true)
+if [ -n "$REAL_SYNC" ]; then
+  cat > "$TMP/fake-bin/sync" <<'SH'
+#!/bin/sh
+set -eu
+if [ "${FAIL_DIRECTORY_SYNC:-0}" = "1" ] && [ "$#" -gt 0 ] && [ "$1" = "-f" ] && [ -d "${2:-}" ]; then
+  exit 73
+fi
+if [ "${FAIL_DIRECTORY_SYNC:-0}" = "1" ] && [ "$#" -eq 0 ]; then
+  exit 74
+fi
+exec "$REAL_SYNC" "$@"
+SH
+  chmod +x "$TMP/fake-bin/sync"
+  export REAL_SYNC
+fi
+
 RUNTIME_DIR="$TMP/install/runtime"
 ROUTER_POLICY_INSTALL_LIB_ONLY=1
 SYSTEM_ROOT="$TMP/install/system"
@@ -115,6 +132,17 @@ unset FAIL_MV
 if find "$TMP/adapter" -maxdepth 1 -name 'target.tmp.*' | grep . >/dev/null; then
   echo "atomic_install left a temporary file after failed rename" >&2
   exit 1
+fi
+
+if [ -n "$REAL_SYNC" ]; then
+  printf 'fsync-failure-artifact\n' > "$adapter_source"
+  export FAIL_DIRECTORY_SYNC=1
+  if atomic_install "$adapter_source" "$adapter_target" >/dev/null 2>&1; then
+    echo "atomic_install hid a directory fsync failure" >&2
+    exit 1
+  fi
+  unset FAIL_DIRECTORY_SYNC
+  grep -q 'fsync_failed' "$RUNTIME_DIR/write-events.log"
 fi
 
 echo "content_aware_install_identical_noop=true"
