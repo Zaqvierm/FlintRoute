@@ -117,9 +117,10 @@ coercion. Incomplete Fast Start is now resumable from backend state: stale
 localStorage screen/opened flags cannot suppress the wizard, and invalid or
 old URLs are redirected only after backend onboarding/revision state is read.
 The browser regression explicitly seeds the stale `flintroute-first-run-opened`
-flag and still observes the backend-required wizard. Focused frontend gate,
-full local runner, and the current CI runs passed; the full local runner took
-318.6 seconds with
+flag and still observes the backend-required wizard. The full local runner
+was executed at the immediately preceding code SHA `6e183f88f01c0f1d00724303a6b8879cd20a172a`
+in 318.6 seconds; the only subsequent code change is this browser fixture.
+The focused frontend gate and the current CI runs for `bb14af6` passed with
 `all_tests_ok=true`; Linux-only namespace/process-group checks remain
 `NOT RUN LOCALLY` on Windows.
 
