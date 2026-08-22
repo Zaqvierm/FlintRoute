@@ -174,3 +174,11 @@ the orchestration duration. `route_latency_ms` is the explicit equivalent
 field. `verification_duration_ms` includes DNS, preparation, retries, proof
 verification, and cleanup. When a route type cannot expose a meaningful path
 measurement, latency is unavailable rather than a disguised job duration.
+
+Decision-cache entries persist the full planner verification duration separately
+from each candidate's `VerificationDurationMS`. A cache hit is marked with
+`verification_cached=true`; it reuses that stored evidence (or a legacy
+candidate duration) and never substitutes the cache lookup/orchestration wall
+clock. A RouteProber response with an empty or in-progress status is also
+non-terminal, so it cannot be converted into `NO_SAFE_ROUTE` without a bounded
+terminal result.

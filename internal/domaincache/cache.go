@@ -26,23 +26,26 @@ type Store interface {
 }
 
 type Decision struct {
-	Key             string              `json:"key"`
-	Scope           string              `json:"scope"`
-	Domain          string              `json:"domain"`
-	ETLDPlusOne     string              `json:"etld_plus_one"`
-	Service         string              `json:"service"`
-	Category        string              `json:"category"`
-	TSPUStatus      string              `json:"tspu_status,omitempty"`
-	SelectedRoute   string              `json:"selected_route,omitempty"`
-	SelectedType    string              `json:"selected_type,omitempty"`
-	Status          string              `json:"status"`
-	Reason          string              `json:"reason,omitempty"`
-	AdapterRevision string              `json:"adapter_revision"`
-	Confidence      float64             `json:"confidence"`
-	Results         []probe.RouteResult `json:"results"`
-	CheckedAt       time.Time           `json:"checked_at"`
-	ExpiresAt       time.Time           `json:"expires_at"`
-	LastUsedAt      time.Time           `json:"last_used_at"`
+	Key             string  `json:"key"`
+	Scope           string  `json:"scope"`
+	Domain          string  `json:"domain"`
+	ETLDPlusOne     string  `json:"etld_plus_one"`
+	Service         string  `json:"service"`
+	Category        string  `json:"category"`
+	TSPUStatus      string  `json:"tspu_status,omitempty"`
+	SelectedRoute   string  `json:"selected_route,omitempty"`
+	SelectedType    string  `json:"selected_type,omitempty"`
+	Status          string  `json:"status"`
+	Reason          string  `json:"reason,omitempty"`
+	AdapterRevision string  `json:"adapter_revision"`
+	Confidence      float64 `json:"confidence"`
+	// VerificationDurationMS is the full planner verification job duration.
+	// Per-candidate path verification durations remain in Results.
+	VerificationDurationMS int64               `json:"verification_duration_ms,omitempty"`
+	Results                []probe.RouteResult `json:"results"`
+	CheckedAt              time.Time           `json:"checked_at"`
+	ExpiresAt              time.Time           `json:"expires_at"`
+	LastUsedAt             time.Time           `json:"last_used_at"`
 }
 
 type Manager struct {

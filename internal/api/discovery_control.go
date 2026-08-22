@@ -120,14 +120,26 @@ func discoveryHTTPStatus(result probe.RouteResult) string {
 	return ""
 }
 
-func checkVerificationDuration(check planner.DomainCheck, startedAt time.Time) int64 {
+func checkVerificationDuration(check planner.DomainCheck) int64 {
+	if check.Cached {
+		// A cache hit does not run a verification job. Reuse the stored full
+		// decision duration, falling back to the selected candidate's legacy
+		// evidence; never report cache lookup time as path verification.
+		if check.VerificationDurationMS > 0 {
+			return check.VerificationDurationMS
+		}
+		if check.Selected != nil {
+			return check.Selected.VerificationDurationMS
+		}
+		return 0
+	}
 	if check.VerificationDurationMS > 0 {
 		return check.VerificationDurationMS
 	}
-	if startedAt.IsZero() {
-		return 0
-	}
-	return time.Since(startedAt).Milliseconds()
+	// A missing planner measurement is not permission to substitute the
+	// caller's wall-clock time. That would include queue/cache/orchestration
+	// delay and mislabel it as path verification duration.
+	return 0
 }
 
 type discoveryControlState struct {

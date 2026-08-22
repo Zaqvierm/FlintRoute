@@ -89,6 +89,26 @@ func TestDiscoveryCandidateDetailsExcludeProxySecrets(t *testing.T) {
 	}
 }
 
+func TestCachedVerificationDurationUsesStoredEvidence(t *testing.T) {
+	check := planner.DomainCheck{
+		Cached: true, VerificationDurationMS: 812,
+		Selected: &probe.RouteResult{VerificationDurationMS: 731},
+	}
+	if got := checkVerificationDuration(check); got != 812 {
+		t.Fatalf("cached decision duration=%d, want full stored evidence 812", got)
+	}
+	check.VerificationDurationMS = 0
+	if got := checkVerificationDuration(check); got != 731 {
+		t.Fatalf("cached legacy decision duration=%d, want selected evidence 731", got)
+	}
+	if got := checkVerificationDuration(planner.DomainCheck{Cached: true}); got != 0 {
+		t.Fatalf("cached decision without selected evidence duration=%d, want 0", got)
+	}
+	if got := checkVerificationDuration(planner.DomainCheck{VerificationState: "verified"}); got != 0 {
+		t.Fatalf("missing planner duration=%d, want 0", got)
+	}
+}
+
 func TestPlannerProbeStateNeverTreatsVerificationAsNoSafeRoute(t *testing.T) {
 	if got := plannerProbeState(planner.DomainCheck{Status: "VERIFYING", VerificationState: "in_progress"}); got != "verifying" {
 		t.Fatalf("in-progress check mapped to %q", got)

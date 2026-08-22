@@ -232,6 +232,25 @@ not by a mock PASS. CI for this exact head passed:
 The code remains local-only with respect to hardware: no SSH, install, apply,
 reboot, or Flint 2 validation was performed for this head.
 
+### NO_SAFE_ROUTE and verification metric follow-up
+
+At the current follow-up code head, planner results with empty or in-progress
+candidate status (`VERIFYING`, `PROBING`, `WAITING_FOR_VERIFICATION`,
+`IN_PROGRESS`) remain `verification_state=in_progress`; they are not evidence of
+candidate exhaustion and cannot produce terminal `NO_SAFE_ROUTE`. Regression
+coverage is `TestInProgressOrMalformedProbeCannotBecomeTerminalNoSafeRoute`.
+
+Decision-cache records now persist the full planner verification job duration in
+`verification_duration_ms`, while per-candidate path verification duration
+remains inside each `RouteResult`. Discovery events include
+`verification_cached=true` for cache hits. The API emits zero when no planner
+measurement exists instead of converting cache lookup time into verification
+duration. Coverage includes the planner cache round-trip and
+`TestCachedVerificationDurationUsesStoredEvidence`.
+
+These changes are local source/test evidence only until the next full gate and
+CI run; no hardware evidence is inferred.
+
 ## Known limitation
 
 The packaged helper boundary is tested, but the production `router-policy`

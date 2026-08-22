@@ -2,6 +2,7 @@ package planner
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -123,9 +124,11 @@ func TestUnknownDomainDirectSuccessIsCachedAndReused(t *testing.T) {
 	cfg := discoveryConfig(t)
 	cache := openDecisionCache(t, cfg)
 	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	direct := successfulResult("direct", "direct", "rev-active")
+	direct.VerificationDurationMS = 731
 	prober := &scriptedProber{results: map[string]probe.RouteResult{
-		"direct": successfulResult("direct", "direct", "rev-active"),
-	}}
+		"direct": direct,
+	}, delay: 2 * time.Millisecond}
 	opts := Options{
 		RouteProber: prober, DecisionCache: cache, ActiveRevision: "rev-active",
 		Now: func() time.Time { return now },
@@ -147,6 +150,12 @@ func TestUnknownDomainDirectSuccessIsCachedAndReused(t *testing.T) {
 	}
 	if !second.Cached || second.Selected == nil || second.Selected.Route != "direct" || len(prober.calls) != 1 {
 		t.Fatalf("cached decision was not reused: %+v calls=%v", second, prober.calls)
+	}
+	if first.VerificationDurationMS <= 0 || second.VerificationDurationMS != first.VerificationDurationMS {
+		t.Fatalf("cached decision lost full verification duration: first=%d second=%d", first.VerificationDurationMS, second.VerificationDurationMS)
+	}
+	if second.Selected.VerificationDurationMS != 731 {
+		t.Fatalf("cached decision lost selected path verification duration: %d", second.Selected.VerificationDurationMS)
 	}
 }
 
@@ -192,6 +201,27 @@ func TestCancelledDomainCheckNeverBecomesTerminalNoSafeRoute(t *testing.T) {
 	}
 	if len(prober.calls) != 0 {
 		t.Fatalf("cancelled verification still probed candidates: %v", prober.calls)
+	}
+}
+
+func TestInProgressOrMalformedProbeCannotBecomeTerminalNoSafeRoute(t *testing.T) {
+	cfg := discoveryConfig(t)
+	for _, status := range []string{"VERIFYING", "PROBING", "WAITING_FOR_VERIFICATION", ""} {
+		t.Run(fmt.Sprintf("status_%q", status), func(t *testing.T) {
+			prober := &scriptedProber{results: map[string]probe.RouteResult{
+				"direct": {Route: "direct", RouteType: "direct", Status: status},
+			}}
+			check, err := CheckDomain(context.Background(), cfg, "pending.example", "", Options{RouteProber: prober, ActiveRevision: "rev-active"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if check.Status != "VERIFYING" || check.VerificationState != "in_progress" || check.Reason != "verification_incomplete" {
+				t.Fatalf("non-terminal probe was exposed as terminal: status=%q check=%+v", status, check)
+			}
+			if len(prober.calls) != 1 {
+				t.Fatalf("expected one bounded candidate call, got %v", prober.calls)
+			}
+		})
 	}
 }
 
@@ -526,9 +556,13 @@ type scriptedProber struct {
 	results  map[string]probe.RouteResult
 	calls    []string
 	services []config.Service
+	delay    time.Duration
 }
 
 func (p *scriptedProber) ProbeRoute(_ context.Context, _ *config.Config, domain, serviceName string, service config.Service, route config.Route) probe.RouteResult {
+	if p.delay > 0 {
+		time.Sleep(p.delay)
+	}
 	p.calls = append(p.calls, route.Tag)
 	p.services = append(p.services, service)
 	result, ok := p.results[route.Tag]

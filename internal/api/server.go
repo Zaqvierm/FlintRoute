@@ -652,8 +652,9 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 		"classification_source":     check.ClassificationSource,
 		"classification_evidence":   check.ClassificationEvidence,
 		"verification_state":        check.VerificationState,
+		"verification_cached":       check.Cached,
 		"service":                   check.Service, "decision_duration_ms": s.discoveryNow().Sub(startedAt).Milliseconds(),
-		"verification_duration_ms": checkVerificationDuration(check, startedAt),
+		"verification_duration_ms": checkVerificationDuration(check),
 		"candidates":               discoveryCandidateDetails(check.Results),
 	}
 	selectedType := ""
