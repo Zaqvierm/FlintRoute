@@ -7,7 +7,7 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 
 - Base review SHA: `d45a779dfa9dc024b426cef358d3df4d32478897`
 - Branch: `remediation/transaction-and-privilege-boundaries`
-- Code verification SHA: `6e183f88f01c0f1d00724303a6b8879cd20a172a` (recovery
+- Code verification SHA: `bb14af679e379a518636f0504b1fd52cd2f9a322` (recovery
   fence, route-verification semantics, bounded Zapret modes, truthful UI/browser
   coverage, screen-specific request budget, refresh cancellation, and robust
   Zapret process ownership). This document may be advanced by docs-only
@@ -108,7 +108,7 @@ that prior head; the latest local follow-up is recorded below.
 
 ## Latest local follow-up
 
-At `6e183f88f01c0f1d00724303a6b8879cd20a172a`, onboarding readiness is
+At `bb14af679e379a518636f0504b1fd52cd2f9a322`, onboarding readiness is
 fail-closed: only explicit route/DNS proof states pass; simulation,
 unverified, missing-upstream, and unknown statuses do not. The UI consumes the
 backend `router_ready` boolean when present and has a tested explicit-status
@@ -116,9 +116,18 @@ fallback, so an object cannot become `[object Object]` or readiness by
 coercion. Incomplete Fast Start is now resumable from backend state: stale
 localStorage screen/opened flags cannot suppress the wizard, and invalid or
 old URLs are redirected only after backend onboarding/revision state is read.
-The focused frontend gate and full local runner passed in 318.6 seconds with
+The browser regression explicitly seeds the stale `flintroute-first-run-opened`
+flag and still observes the backend-required wizard. Focused frontend gate,
+full local runner, and the current CI runs passed; the full local runner took
+318.6 seconds with
 `all_tests_ok=true`; Linux-only namespace/process-group checks remain
 `NOT RUN LOCALLY` on Windows.
+
+Current CI for this exact SHA:
+
+- nft transition safety: [run 32578063407](https://github.com/Zaqvierm/FlintRoute/actions/runs/32578063407)
+- Zapret process-group safety: [run 32578063499](https://github.com/Zaqvierm/FlintRoute/actions/runs/32578063499)
+- UI browser/responsive: [run 32578063388](https://github.com/Zaqvierm/FlintRoute/actions/runs/32578063388)
 
 ## Known limitation
 
