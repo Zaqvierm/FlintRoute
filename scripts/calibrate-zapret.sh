@@ -136,7 +136,6 @@ report="$run_dir/blockcheck.log"
 result="$run_dir/import.json"
 blockcheck_pid_file="$run_dir/blockcheck.pid"
 blockcheck_status_file="$run_dir/blockcheck.status"
-blockcheck_release_file="$run_dir/blockcheck.release"
 maintenance_started=0
 zapret_was_running=0
 blockcheck_pid=""
@@ -431,15 +430,9 @@ setsid sh -c '
   # background PID is then the short-lived launcher, not the isolated child;
   # publish the child PID from inside the new session instead of trusting $!.
   printf "%s\\n" "$$" > "${11}"
-  i=0
-  while [ ! -e "${13}" ] && [ "$i" -lt 100 ]; do
-    sleep 0.1
-    i=$((i + 1))
-  done
-  if [ ! -e "$13" ]; then
-    printf "%s\\n" 125 > "${12}"
-    exit 125
-  fi
+  # Stop before executing provider code. This gives the controller a stable
+  # PID/PGID to validate, even when the blockcheck exits immediately.
+  kill -STOP "$$"
   cd "$1"
   NFQWS="$8" NFQWS_BIN="$8" ROUTER_POLICY_CALIBRATION_RUN_ID="$9" \
     BATCH=1 IPVS=4 REPEATS=3 SCANLEVEL="${10}" SKIP_TPWS=1 SKIP_DNSCHECK="$2" DOMAINS="$3" \
@@ -447,7 +440,7 @@ setsid sh -c '
   status=$?
   printf "%s\\n" "$status" > "${12}"
   exit "$status"
-' sh "$(dirname "$blockcheck_script")" "$skip_dnscheck" "$domain" "$TIMEOUT_BIN" "$BLOCKCHECK_TIMEOUT" "$blockcheck_script" "$report" "$NFQWS_BIN" "$calibration_run_id" "$scan_level" "$blockcheck_pid_file" "$blockcheck_status_file" "$blockcheck_release_file" &
+' sh "$(dirname "$blockcheck_script")" "$skip_dnscheck" "$domain" "$TIMEOUT_BIN" "$BLOCKCHECK_TIMEOUT" "$blockcheck_script" "$report" "$NFQWS_BIN" "$calibration_run_id" "$scan_level" "$blockcheck_pid_file" "$blockcheck_status_file" &
 blockcheck_launcher_pid=$!
 i=0
 while [ ! -s "$blockcheck_pid_file" ] && [ "$i" -lt 10 ]; do
@@ -482,7 +475,10 @@ controller_pgid=$(proc_pgid "$$" 2>/dev/null || true)
 blockcheck_start=$(proc_start_time "$blockcheck_pid" 2>/dev/null || true)
 blockcheck_exe=$(proc_executable "$blockcheck_pid")
 printf '%s|%s|%s|%s|%s\n' "$blockcheck_pid" "$blockcheck_start" "$blockcheck_exe" "$blockcheck_pgid" "$calibration_run_id" > "$process_manifest"
-: > "$blockcheck_release_file"
+kill -CONT "$blockcheck_pid" 2>/dev/null || {
+  echo "unable to resume validated calibration process" >&2
+  exit 1
+}
 wait "$blockcheck_launcher_pid" 2>/dev/null || true
 i=0
 while [ ! -s "$blockcheck_status_file" ] && [ "$i" -lt 30 ]; do
