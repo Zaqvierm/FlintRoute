@@ -89,6 +89,7 @@ test.describe('FlintRoute UI v2', () => {
   });
 
   test('opens backend-required fast start instead of trusting local storage', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('flintroute-first-run-opened', '1'));
     await mockAPI(page, { bootstrapRequired: true });
     await page.goto('/?screen=Обзор');
     await expect.poll(() => new URL(page.url()).searchParams.get('screen')).toBe('Быстрая настройка');
