@@ -2,6 +2,27 @@ import { APIError, type EventItem } from './api';
 
 export type Tone = 'ok' | 'warn' | 'bad' | 'muted' | 'info';
 
+/**
+ * Maps backend classification values to an explicit UI bucket.
+ * Unknown values must remain visible as unresolved; silently treating them as
+ * Direct is a data-integrity bug because it can suggest a route that was
+ * never selected or verified.
+ */
+export function serviceColumnFor(category: unknown): string {
+  const normalized = textValue(category, '').trim().toUpperCase();
+  switch (normalized) {
+    case 'GEO_LOCKED':
+    case 'TSPU_RESTRICTED':
+    case 'TELEGRAM':
+    case 'DIRECT_PREFERRED':
+    case 'DIRECT_ONLY':
+    case 'BLOCKED':
+      return normalized;
+    default:
+      return 'UNRESOLVED';
+  }
+}
+
 export type DecisionCard = {
   id: string;
   time: string;

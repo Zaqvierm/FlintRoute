@@ -1,5 +1,15 @@
 export type Envelope<T> = { request_id: string; data: T };
 export type Overview = Record<string, unknown>;
+export type OnboardingState = {
+  version: number;
+  steps: Record<string, { status: string; updated_at?: string }>;
+  completed: boolean;
+  can_complete: boolean;
+  router_ready: boolean;
+  source: 'backend' | string;
+  updated_at?: string;
+  completion_note?: string;
+};
 export type SessionInfo = {
   user: string;
   role: 'administrator' | 'diagnostician' | 'viewer';
@@ -333,6 +343,10 @@ export async function logout(): Promise<void> {
 }
 
 export async function getOverview(): Promise<Overview> { return request<Overview>('/overview'); }
+export async function getOnboarding(): Promise<OnboardingState> { return request<OnboardingState>('/onboarding'); }
+export async function updateOnboarding(step: string, action: 'skip' | 'accept' | 'automatic' | 'complete'): Promise<OnboardingState> {
+  return request<OnboardingState>('/onboarding', { method: 'POST', body: JSON.stringify({ step, action }) });
+}
 export async function getTopology(hideAddresses = false): Promise<any> { return request(`/topology?privacy=${hideAddresses ? 'hidden' : 'visible'}`); }
 export async function getDevices(hideAddresses = false): Promise<any[]> {
   return request(`/devices?privacy=${hideAddresses ? 'hidden' : 'visible'}`);

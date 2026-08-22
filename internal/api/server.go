@@ -1081,6 +1081,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/auth/logout", s.requireRole(auth.RoleViewer, s.handleLogout))
 	s.mux.HandleFunc("/api/v1/auth/me", s.requireRole(auth.RoleViewer, s.handleMe))
 	s.mux.HandleFunc("/api/v1/overview", s.requireRole(auth.RoleViewer, s.handleOverview))
+	s.mux.HandleFunc("/api/v1/onboarding", s.requireRole(auth.RoleViewer, s.handleOnboarding))
 	s.mux.HandleFunc("/api/v1/topology", s.requireRole(auth.RoleViewer, s.handleTopology))
 	s.mux.HandleFunc("/api/v1/devices", s.requireRole(auth.RoleViewer, s.handleDevices))
 	s.mux.HandleFunc("/api/v1/services", s.requireRole(auth.RoleViewer, s.handleServices))

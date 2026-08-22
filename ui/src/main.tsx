@@ -26,6 +26,7 @@ import {
   getExternalSOCKS,
   getEvents,
   getOverview,
+  getOnboarding,
   getRevisions,
   getRoutes,
   getSecurity,
@@ -55,6 +56,7 @@ import {
   startZapretCalibration,
   setupAdmin,
   testTelegram,
+  updateOnboarding,
   type ChangeSet,
   type ChangeOp,
   type ComponentAction,
@@ -63,6 +65,7 @@ import {
   type DiscoveryStatus,
   type EventItem,
   type ManualVLESSServer,
+  type OnboardingState,
   type RevisionSummary,
   type SessionInfo,
   type TrafficSnapshot,
@@ -78,6 +81,7 @@ import {
   isAdministrativeEvent,
   isDecisionEvent,
   parseResolverInput,
+  serviceColumnFor,
   statusTone,
   stringArray,
   textValue,
@@ -86,11 +90,21 @@ import {
 import './styles.css';
 
 const navigation = [
-  { title: 'Главное', screens: ['Быстрая настройка', 'Обзор', 'Карта сети', 'Устройства', 'Поток решений'] },
-  { title: 'Маршрутизация', screens: ['Сервисы', 'Маршруты', 'Компоненты', 'VLESS-серверы', 'Smart DNS', 'Zapret', 'TG WS Proxy', 'Discovery'] },
-  { title: 'Система', screens: ['Трафик', 'Telegram', 'Ревизии и recovery', 'Диагностика', 'Безопасность', 'Advanced'] }
+  { title: 'Обзор', screens: ['Быстрая настройка', 'Обзор'] },
+  { title: 'Сеть', screens: ['Карта сети', 'Устройства', 'Трафик'] },
+  { title: 'Правила', screens: ['Сервисы', 'Маршруты', 'Компоненты', 'VLESS-серверы', 'Smart DNS', 'Zapret', 'TG WS Proxy', 'Discovery', 'External SOCKS'] },
+  { title: 'Активность', screens: ['Поток решений', 'Telegram', 'Ревизии и recovery'] },
+  { title: 'Система', screens: ['Диагностика', 'Безопасность', 'Настройки', 'Резервное копирование', 'Advanced'] }
 ];
-const availableScreens = new Set([...navigation.flatMap((group) => group.screens), 'External SOCKS']);
+const notFoundScreen = 'Страница не найдена';
+const availableScreens = new Set([...navigation.flatMap((group) => group.screens), 'External SOCKS', notFoundScreen]);
+
+function screenFromLocation(): string | null {
+  if (typeof window === 'undefined') return null;
+  const raw = new URLSearchParams(window.location.search).get('screen');
+  if (raw === null) return null;
+  return availableScreens.has(raw) ? raw : notFoundScreen;
+}
 
 function humanChangeBlock(reason?: string): string {
   const messages: Record<string, string> = {
@@ -137,9 +151,18 @@ const unavailableOverview = {
   freshness: 'stale'
 };
 
+function staleFallback<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    return { ...(value as Record<string, unknown>), freshness: 'stale' } as T;
+  }
+  return value;
+}
+
 function App() {
   const [screen, setScreen] = useState(() => {
     try {
+      const fromURL = screenFromLocation();
+      if (fromURL) return fromURL;
       const stored = window.localStorage.getItem('flintroute-screen');
       return stored && availableScreens.has(stored) ? stored : 'Обзор';
     } catch {
@@ -147,10 +170,13 @@ function App() {
     }
   });
   const [session, setSession] = useState<SessionInfo | null>(null);
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [authError, setAuthError] = useState('');
   const [apiError, setApiError] = useState('');
   const [overview, setOverview] = useState<any>(unavailableOverview);
+  const [onboarding, setOnboarding] = useState<OnboardingState | null>(null);
+  const [sliceErrors, setSliceErrors] = useState<Array<{ name: string; message: string }>>([]);
   const [topology, setTopology] = useState<any>({ nodes: [], edges: [], status: 'unavailable', source: 'api-unavailable' });
   const [devices, setDevices] = useState<any[]>([]);
   const [services, setServices] = useState<any[]>([]);
@@ -173,39 +199,63 @@ function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState('');
   const refreshInFlight = useRef<Promise<void> | null>(null);
+  const refreshPrivacy = useRef<boolean | undefined>(undefined);
+  const refreshGeneration = useRef(0);
   const [privacyHidden, setPrivacyHidden] = useState(() => {
-    try { return window.localStorage.getItem('flintroute-address-privacy') === 'hidden'; } catch { return false; }
+    try { return window.localStorage.getItem('flintroute-address-privacy') !== 'visible'; } catch { return true; }
   });
 
   function selectScreen(next: string) {
     setScreen(next);
+    setMobileMoreOpen(false);
     try {
       window.localStorage.setItem('flintroute-screen', next);
+      const url = new URL(window.location.href);
+      url.searchParams.set('screen', next);
+      window.history.pushState({ screen: next }, '', url);
     } catch {
       // Storage may be disabled; navigation still works for this session.
     }
   }
 
+  useEffect(() => {
+    const onPopState = () => setScreen(screenFromLocation() ?? 'Обзор');
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
   async function refresh(hideAddresses = privacyHidden) {
     // One dashboard refresh is enough.  A slow router must not accumulate
     // overlapping command batches when the timer, SSE reconnect, or a user
     // click happens at the same time.
-    if (refreshInFlight.current) return refreshInFlight.current;
+    if (refreshInFlight.current && refreshPrivacy.current === hideAddresses) return refreshInFlight.current;
+    const generation = ++refreshGeneration.current;
     const operation = (async () => {
     setRefreshing(true);
     try {
-      const [nextOverview, nextTopology, nextDevices, nextServices, nextRoutes, nextTraffic, nextEvents, nextSystem, nextRevisions, nextDiscovery] = await Promise.all([
-        getOverview(),
-        getTopology(hideAddresses),
-        getDevices(hideAddresses),
-        getServices(),
-        getRoutes(),
-        getTraffic(),
-        getEvents(),
-        getSystem(),
-        getRevisions(),
-        getDiscovery()
+      const optionalErrors: Array<{ name: string; message: string }> = [];
+      async function safe<T>(name: string, load: Promise<T>, fallback: T): Promise<T> {
+        try {
+          return await load;
+        } catch (reason) {
+          if (!(reason instanceof APIError && reason.status === 403)) optionalErrors.push({ name, message: errorInfo(reason).message });
+          return fallback;
+        }
+      }
+      const [nextOverview, nextTopology, nextDevices, nextServices, nextRoutes, nextTraffic, nextEvents, nextSystem, nextRevisions, nextDiscovery, nextOnboarding] = await Promise.all([
+        safe('overview', getOverview(), staleFallback(overview)),
+        safe('topology', getTopology(hideAddresses), hideAddresses ? { nodes: [], edges: [], status: 'unavailable', source: 'privacy-fallback' } : staleFallback(topology)),
+        safe('devices', getDevices(hideAddresses), hideAddresses ? [] : devices),
+        safe('services', getServices(), services),
+        safe('routes', getRoutes(), routes),
+        safe('traffic', getTraffic(), traffic),
+        safe('events', getEvents(), hideAddresses ? [] : events),
+        safe('system', getSystem(), staleFallback(system)),
+        safe('revisions', getRevisions(), revisions),
+        safe('discovery', getDiscovery(), discovery),
+        safe('onboarding', getOnboarding(), onboarding)
       ]);
+      if (generation !== refreshGeneration.current) return;
       setOverview(nextOverview);
       setTopology(nextTopology);
       setDevices(nextDevices);
@@ -214,12 +264,15 @@ function App() {
       setTraffic((previous) => withTrafficRates(previous, nextTraffic));
       setEvents(nextEvents);
       setSystem(nextSystem);
-      setRevisions(nextRevisions);
-      setConfigVersion(nextRevisions.config_version);
+      if (nextRevisions) {
+        setRevisions(nextRevisions);
+        setConfigVersion(nextRevisions.config_version);
+      }
       setDiscovery(nextDiscovery);
-      if (nextRevisions.config_version <= 1 && nextServices.length === 0) {
+      setOnboarding(nextOnboarding);
+      if (nextRevisions && nextRevisions.config_version <= 1 && nextServices.length === 0 && nextOnboarding?.completed !== true && screen === 'РћР±Р·РѕСЂ') {
         try {
-          if (window.localStorage.getItem('flintroute-first-run-complete') !== '1' && window.localStorage.getItem('flintroute-first-run-opened') !== '1') {
+          if (window.localStorage.getItem('flintroute-first-run-opened') !== '1') {
             window.localStorage.setItem('flintroute-first-run-opened', '1');
             selectScreen('Быстрая настройка');
           }
@@ -228,35 +281,40 @@ function App() {
         }
       }
 
-      const optionalErrors: string[] = [];
       const optional = await Promise.allSettled([
         getChanges(), getSecurity(), getSecuritySummary(), getDiagnostics(), getLifecycle(), getStorage(), getSettings(), getBackups()
       ]);
       const setters = [setChanges, setSecurity, setSecuritySummary, setDiagnostics, setLifecycle, setStorage, setSettings, setBackups];
       optional.forEach((result, index) => {
         if (result.status === 'fulfilled') setters[index](result.value as never);
-        else if (!(result.reason instanceof APIError && result.reason.status === 403)) optionalErrors.push(errorInfo(result.reason).message);
+        else if (!(result.reason instanceof APIError && result.reason.status === 403)) optionalErrors.push({ name: `optional-${index + 1}`, message: errorInfo(result.reason).message });
       });
       if (optional[0].status === 'rejected') setChanges([]);
       if (optional[1].status === 'rejected') setSecurity(null);
       setLastUpdated(new Date().toISOString());
       setLoading(false);
-      setApiError(optionalErrors.join('; '));
+      setSliceErrors(optionalErrors);
+      setApiError(optionalErrors.length ? 'Некоторые данные устарели или недоступны' : '');
     } catch (err) {
+      if (generation !== refreshGeneration.current) return;
       if (err instanceof APIError && err.status === 401) {
         setSession(null);
       }
       setApiError(err instanceof Error ? err.message : 'API недоступен');
     } finally {
-      setRefreshing(false);
-      setLoading(false);
+      if (generation === refreshGeneration.current) {
+        setRefreshing(false);
+        setLoading(false);
+      }
     }
     })();
     refreshInFlight.current = operation;
+    refreshPrivacy.current = hideAddresses;
     try {
       await operation;
     } finally {
       if (refreshInFlight.current === operation) refreshInFlight.current = null;
+      if (!refreshInFlight.current) refreshPrivacy.current = undefined;
     }
   }
 
@@ -312,9 +370,22 @@ function App() {
   async function togglePrivacy() {
     const next = !privacyHidden;
     setPrivacyHidden(next);
+    if (next) {
+      // Do not leave a previously revealed entity alive while the hidden
+      // response is in flight. The keyed content tree also closes drawers.
+      setTopology({ nodes: [], edges: [], status: 'unavailable', source: 'privacy-transition' });
+      setDevices([]);
+      setEvents([]);
+    }
     try { window.localStorage.setItem('flintroute-address-privacy', next ? 'hidden' : 'visible'); } catch { /* session state still works */ }
     await refresh(next);
   }
+
+  useEffect(() => {
+    if (privacyHidden) return;
+    const timer = window.setTimeout(() => { void togglePrivacy(); }, 10 * 60 * 1000);
+    return () => window.clearTimeout(timer);
+  }, [privacyHidden]);
 
   async function handleLogin(username: string, password: string) {
     setAuthError('');
@@ -353,6 +424,17 @@ function App() {
     setRoutes([]);
     setEvents([]);
     setChanges([]);
+    setOnboarding(null);
+    setSystem(null);
+    setDiagnostics(null);
+    setLifecycle(null);
+    setStorage(null);
+    setSettings(null);
+    setBackups(null);
+    setRevisions(null);
+    setSecurity(null);
+    setSecuritySummary(null);
+    setSliceErrors([]);
   }
 
   if (!authChecked) {
@@ -377,18 +459,30 @@ function App() {
           {navigation.map((group) => <section class="nav-group" key={group.title}>
             <span class="nav-title">{group.title}</span>
             {group.screens.map((s) => (
-              <button class={screen === s ? 'active' : ''} onClick={() => selectScreen(s)} key={s}>
+              <button class={screen === s ? 'active' : ''} aria-current={screen === s ? 'page' : undefined} title={s} onClick={() => selectScreen(s)} key={s}>
                 <span class="nav-dot" />{s}
               </button>
             ))}
           </section>)}
         </nav>
+        <nav class="mobile-nav" aria-label="Основная навигация">
+          {[
+            ['Обзор', 'Обзор'],
+            ['Карта сети', 'Сеть'],
+            ['Сервисы', 'Правила'],
+            ['Поток решений', 'Активность']
+          ].map(([target, label]) => <button class={screen === target ? 'active' : ''} aria-current={screen === target ? 'page' : undefined} title={target} onClick={() => selectScreen(target)} key={target}><span class="nav-dot" />{label}</button>)}
+          <button class={mobileMoreOpen ? 'active' : ''} aria-expanded={mobileMoreOpen} onClick={() => setMobileMoreOpen((open) => !open)}><span class="nav-dot" />Ещё</button>
+        </nav>
+        {mobileMoreOpen && <div class="mobile-more-backdrop" role="presentation" onClick={() => setMobileMoreOpen(false)}><section class="mobile-more" role="dialog" aria-modal="true" aria-label="Дополнительные разделы" onClick={(event) => event.stopPropagation()}><header><b>Дополнительные разделы</b><button class="icon-button" aria-label="Закрыть" onClick={() => setMobileMoreOpen(false)}>×</button></header>{navigation.flatMap((group) => group.screens).filter((item) => !['Обзор', 'Карта сети', 'Сервисы', 'Поток решений'].includes(item)).map((item) => <button class={screen === item ? 'active' : ''} aria-current={screen === item ? 'page' : undefined} onClick={() => selectScreen(item)} key={item}>{item}</button>)}</section></div>}
       </aside>
       <main>
         <SessionBar session={session} apiError={apiError} loading={refreshing} lastUpdated={lastUpdated} onRetry={() => refresh()} onLogout={handleLogout} />
         <PrivacyBar hidden={privacyHidden} onToggle={togglePrivacy} />
         <TopBar overview={overview} />
-        {loading ? <LoadingSkeleton /> : <Content screen={screen} session={session} configVersion={configVersion} overview={overview} topology={topology} devices={devices} services={services} discovery={discovery} routes={routes} traffic={traffic} events={events} changes={changes} security={security} securitySummary={securitySummary} system={system} diagnostics={diagnostics} lifecycle={lifecycle} storage={storage} settings={settings} backups={backups} revisions={revisions} refresh={refresh} navigate={selectScreen} />}
+        <AlertCenter errors={sliceErrors} onRetry={() => refresh()} />
+        <OperationCenterSummary changes={changes} navigate={selectScreen} />
+        {loading ? <LoadingSkeleton /> : <Content key={privacyHidden ? 'privacy-hidden' : 'privacy-visible'} screen={screen} session={session} configVersion={configVersion} overview={overview} onboarding={onboarding} topology={topology} devices={devices} services={services} discovery={discovery} routes={routes} traffic={traffic} events={events} changes={changes} security={security} securitySummary={securitySummary} system={system} diagnostics={diagnostics} lifecycle={lifecycle} storage={storage} settings={settings} backups={backups} revisions={revisions} refresh={refresh} onboardingAction={async (step: string, action: 'skip' | 'accept' | 'automatic' | 'complete') => setOnboarding(await updateOnboarding(step, action))} navigate={selectScreen} />}
       </main>
     </div>
   );
@@ -454,6 +548,21 @@ function AuthShell({ error, onLogin, onSetup }: { error: string; onLogin: (u: st
   );
 }
 
+function AlertCenter({ errors, onRetry }: { errors: Array<{ name: string; message: string }>; onRetry: () => void }) {
+  if (!errors.length) return null;
+  return <section class="alert-center" aria-live="polite">
+    <b>Часть данных недоступна</b>
+    <div>{errors.slice(0, 4).map((item) => <details key={item.name}><summary>{item.name}</summary><p>{item.message}</p></details>)}</div>
+    <button onClick={onRetry}>Повторить всё</button>
+  </section>;
+}
+
+function OperationCenterSummary({ changes, navigate }: { changes: ChangeSet[]; navigate: (screen: string) => void }) {
+  const active = changes.filter((change) => !['committed', 'rolled_back', 'failed'].includes(change.state));
+  if (!active.length) return null;
+  return <section class="operation-strip" aria-live="polite"><div><b>Активные изменения: {active.length}</b><span>{active.slice(0, 3).map((change) => `${humanStatus(change.state)} · ${textValue(change.title, 'правило')}`).join(' · ')}</span></div><button onClick={() => navigate('Advanced')}>Открыть очередь</button></section>;
+}
+
 function SessionBar({ session, apiError, loading, lastUpdated, onRetry, onLogout }: { session: SessionInfo; apiError: string; loading: boolean; lastUpdated: string; onRetry: () => void; onLogout: () => void }) {
   return (
     <div class={`session-bar ${apiError ? 'warning' : ''}`}>
@@ -465,7 +574,7 @@ function SessionBar({ session, apiError, loading, lastUpdated, onRetry, onLogout
 
 function PrivacyBar({ hidden, onToggle }: { hidden: boolean; onToggle: () => void }) {
   return <div class={`privacy-bar ${hidden ? '' : 'revealed'}`}>
-    <div><b>{hidden ? 'Адреса скрыты' : 'Адреса устройств видны'}</b><span>{hidden ? 'IP и MAC не передаются в DOM. Настройка сохранена в этом браузере.' : 'Можно скрыть IP и MAC одним переключателем.'}</span></div>
+    <div><b>{hidden ? 'Адреса скрыты' : 'Адреса устройств видны'}</b><span>{hidden ? 'Скрытый режим не запрашивает raw IP и MAC. Раскрытие временное и автоматически отключится через 10 минут.' : 'Можно скрыть IP и MAC одним переключателем.'}</span></div>
     <button onClick={onToggle}>{hidden ? 'Показать адреса' : 'Скрыть адреса'}</button>
   </div>;
 }
@@ -486,9 +595,9 @@ function TopBar({ overview }: { overview: any }) {
   return (
     <header class="topbar">
       {items.map(([k, v]) => (
-        <div class={`status-pill ${statusTone(v)}`} key={String(k)}>
+        <div class={`status-pill ${overview.freshness === 'stale' ? 'warn' : statusTone(v)}`} key={String(k)}>
           <span>{k}</span>
-          <b>{humanStatus(v)}</b>
+          <b>{overview.freshness === 'stale' ? `${humanStatus(v)} · данные устарели` : humanStatus(v)}</b>
         </div>
       ))}
       {!items.length && <div class="status-pill muted"><span>Состояние</span><b>Нет данных</b></div>}
@@ -514,7 +623,7 @@ function Content(props: any) {
     case 'Карточка устройства':
       return <DeviceCard device={props.devices[0]} />;
     case 'Сервисы':
-      return <Services services={props.services} configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
+      return <Services services={props.services} configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} navigate={props.navigate} />;
     case 'Discovery':
       return <Discovery data={props.discovery} configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
     case 'Группа сервиса':
@@ -557,6 +666,8 @@ function Content(props: any) {
       return <Generic title="Обновление" text="Проверка версии, подпись выпуска, checksum, staged install и rollback." />;
     case 'Резервное копирование':
       return <Generic title="Резервное копирование и откат" text="Резервные копии конфигурации, секретов по явному выбору, nft/dnsmasq/fw4 snapshots." />;
+    case notFoundScreen:
+      return <Generic title="Страница не найдена" text="Такого раздела FlintRoute нет. Вернись в обзор или выбери раздел в меню." />;
     default:
       return <OverviewScreen {...props} />;
   }
@@ -630,7 +741,6 @@ function NetworkMap({ topology, devices, system, expanded = false }: { topology:
         <div class="topology-canvas" style={{ width: `${canvasWidth}px`, height: `${mapHeight}px` }}>
           <svg class="topology-wires" viewBox={`0 0 ${canvasWidth} ${mapHeight}`} aria-hidden="true">
             <path class="map-wire wan-wire" d={`M ${canvasWidth / 2} 91 L ${canvasWidth / 2} 154`} />
-            <circle class="wan-packet" cx={canvasWidth / 2} cy="118" r="3" />
             {portCards.length > 0 && <>
               <path class="map-wire" d={`M ${canvasWidth / 2} 286 L ${canvasWidth / 2} 365`} />
               <path class="map-wire" d={`M ${portGap} 365 L ${canvasWidth - portGap} 365`} />
@@ -669,6 +779,18 @@ function NetworkMap({ topology, devices, system, expanded = false }: { topology:
           </div>}
           <div class="map-legend"><span><i />Ethernet</span><span class="wifi"><i />Wi‑Fi</span></div>
           <div class="map-stamp">Обновлено: <span class="mono">{formatDateTime(topology.collected_at)}</span></div>
+        </div>
+      </div>
+      <div class="network-map-mobile">
+        <div class="topology-mobile-node"><TopologyIcon kind="globe" /><div><b>Интернет</b><small>{wanLabel}</small></div><StatusBadge value={internet?.status ?? topology.status} /></div>
+        <div class="topology-mobile-link" />
+        <button class="topology-mobile-node router" onClick={() => setSelected({ type: 'router', ...router, ...system })}>
+          <TopologyIcon kind="router" /><div><b>{textValue(system?.hostname ?? router?.hostname ?? router?.label, 'OpenWrt router')}</b><small>{textValue(system?.model ?? router?.model, 'Модель не определена')}</small></div><StatusBadge value={topology.status} />
+        </button>
+        <div class="topology-mobile-groups">
+          <section class="topology-mobile-group"><h3>Проводные устройства <small>{ethernet.length}</small></h3>{ethernet.length ? ethernet.map((device) => <button class="topology-mobile-device" key={device.id} onClick={() => setSelected(device)}><TopologyIcon kind={topologyDeviceIcon(device)} /><span><b>{textValue(device.name, 'Устройство')}</b><small>{deviceAddress(device, 'ip')} · {textValue(device.interface, 'Интерфейс не определён')}</small></span><StatusBadge value={device.connected ? 'online' : 'offline'} /></button>) : <EmptyState title="Нет проводных устройств" text="Когда FDB и DHCP подтвердят устройство, оно появится здесь." />}</section>
+          <section class="topology-mobile-group wifi-group"><h3>Wi‑Fi устройства <small>{wifi.length}</small></h3>{wifi.length ? wifi.map((device) => <button class="topology-mobile-device" key={device.id} onClick={() => setSelected(device)}><TopologyIcon kind={topologyDeviceIcon(device)} /><span><b>{textValue(device.name, 'Wi‑Fi устройство')}</b><small>{deviceAddress(device, 'ip')} · {wifiBandLabel(device, radios)}</small></span><StatusBadge value={device.connected ? 'online' : 'offline'} /></button>) : <EmptyState title="Нет Wi‑Fi устройств" text="Данные появятся после подключения станции." />}</section>
+          {unknown.length > 0 && <section class="topology-mobile-group"><h3>Тип подключения неизвестен <small>{unknown.length}</small></h3>{unknown.map((device) => <button class="topology-mobile-device unknown" key={device.id} onClick={() => setSelected(device)}><TopologyIcon kind="desktop" /><span><b>{textValue(device.name, 'Устройство')}</b><small>{deviceAddress(device, 'ip')} · тип не определён</small></span><StatusBadge value={device.connected ? 'online' : 'offline'} /></button>)}</section>}
         </div>
       </div>
       {offline.length > 0 && <div class="recent-offline"><b>Недавно отключились</b>{offline.slice(0, 6).map((device) => <button key={device.id} onClick={() => setSelected(device)}>{device.name}</button>)}</div>}
@@ -787,9 +909,14 @@ function RouterDetails({ router }: { router: any }) {
 const serviceColumns = [
   { category: 'GEO_LOCKED', title: 'GEO · VPN', hint: 'Smart DNS → VLESS → блокировка' },
   { category: 'TSPU_RESTRICTED', title: 'TSPU', hint: 'Zapret → Smart DNS → VLESS → Direct' },
+  { category: 'TELEGRAM', title: 'Telegram', hint: 'Telegram policy — отдельный маршрут' },
+  { category: 'DIRECT_PREFERRED', title: 'Direct предпочтительно', hint: 'Direct → управляемый fallback' },
   { category: 'DIRECT_ONLY', title: 'Direct', hint: 'Только прямое подключение под управлением FlintRoute' },
-  { category: 'BLOCKED', title: 'Drop', hint: 'DNS NXDOMAIN и блокировка forwarding' }
+  { category: 'BLOCKED', title: 'Drop', hint: 'DNS NXDOMAIN и блокировка forwarding' },
+  { category: 'UNRESOLVED', title: 'Не определено', hint: 'Категория не распознана; маршрут не угадывается' }
 ];
+
+const editableServiceColumns = serviceColumns.filter((column) => column.category !== 'TELEGRAM' && column.category !== 'UNRESOLVED');
 
 const serviceRoutePaths = ['direct', 'zapret', 'smart_dns', 'vless', 'drop'];
 
@@ -804,60 +931,41 @@ function Services({
   services,
   configVersion,
   role,
-  refresh
+  refresh,
+  navigate
 }: {
   services: any[];
   configVersion: number;
   role: SessionInfo['role'];
   refresh: () => Promise<void>;
+  navigate: (screen: string) => void;
 }) {
   const [moving, setMoving] = useState('');
   const [message, setMessage] = useState('');
   const [editor, setEditor] = useState<{ domain: string; category: string; paths: string[] } | null>(null);
   const [selectedService, setSelectedService] = useState<any>(null);
+  const [serviceView, setServiceView] = useState<'table' | 'board'>('table');
+  const [serviceQuery, setServiceQuery] = useState('');
   const grouped = useMemo(() => groupServices(services), [services]);
   const configuredServices = useMemo(() => grouped.filter((item) => Boolean(item.applied) || asArray(item.sources).includes('configured')), [grouped]);
   const observedServices = useMemo(() => grouped.filter((item) => !Boolean(item.applied) && !asArray(item.sources).includes('configured')), [grouped]);
+  const filteredConfigured = useMemo(() => {
+    const query = serviceQuery.trim().toLowerCase();
+    if (!query) return configuredServices;
+    return configuredServices.filter((item) => `${textValue(item.id, '')} ${asArray(item.domains).map((domain) => textValue(domain, '')).join(' ')}`.toLowerCase().includes(query));
+  }, [configuredServices, serviceQuery]);
 
   async function commitRule(domain: string, category: string, paths?: string[]) {
     if (role !== 'administrator' || !configVersion || moving) return;
     setMoving(domain);
-    setMessage(`Меняю правило для ${domain}…`);
-    let changeID = '';
+    setMessage(`Создаю черновик правила для ${domain}…`);
     try {
-      let created = await classifyService(domain, category, configVersion, paths);
-      changeID = created.change.id;
-      let validated = await changeAction(changeID, 'validate');
-      if (validated.artifact_block_reason === 'flow_offloading_incompatible') {
-        await changeAction(changeID, 'rollback');
-        changeID = '';
-        const accepted = window.confirm(
-          'Аппаратное ускорение пакетов мешает выборочной маршрутизации. FlintRoute может безопасно отключить flow offloading в той же транзакции и восстановит прежнее состояние при ошибке. Продолжить?'
-        );
-        if (!accepted) {
-          setMessage('Правило не применено. Для выборочной маршрутизации нужно разрешить FlintRoute отключить flow offloading. Интернет не изменён.');
-          return;
-        }
-        created = await classifyService(domain, category, configVersion, paths, true);
-        changeID = created.change.id;
-        validated = await changeAction(changeID, 'validate');
-      }
-      if (validated.artifacts_ready === false) {
-        throw new Error(humanChangeBlock(validated.artifact_block_reason));
-      }
-      const applied = await changeAction(changeID, 'apply');
-      if (applied.state === 'awaiting_confirmation') {
-        await changeAction(changeID, 'confirm');
-      } else if (applied.state !== 'committed') {
-        throw new Error(humanChangeFailure(applied));
-      }
-      setMessage(`${domain}: правило применено`);
+      await classifyService(domain, category, configVersion, paths);
+      setMessage(`${domain}: черновик создан. Проверь изменения перед применением.`);
       setEditor(null);
       await refresh();
+      navigate('Advanced');
     } catch (error) {
-      if (changeID) {
-        try { await changeAction(changeID, 'rollback'); } catch { /* keep original error */ }
-      }
       setMessage(error instanceof Error ? error.message : 'Не удалось изменить маршрут');
     } finally {
       setMoving('');
@@ -886,10 +994,13 @@ function Services({
     <section>
       <div class="service-toolbar">
         <div>
-          <b>Применённые правила</b>
-          <span>Только правила, которые реально сохранены в активной конфигурации FlintRoute.</span>
+          <b>Правила сервисов</b>
+          <span>Изменение сначала попадёт в очередь черновиков. Dataplane меняется только после отдельного review и apply.</span>
         </div>
         <div class="actions">
+          <label class="service-search"><span class="sr-only">Поиск сервиса или домена</span><input value={serviceQuery} placeholder="Поиск сервиса или домена" onInput={(event) => setServiceQuery(event.currentTarget.value)} /></label>
+          <button class={serviceView === 'table' ? 'selected' : ''} onClick={() => setServiceView('table')}>Таблица</button>
+          <button class={serviceView === 'board' ? 'selected' : ''} onClick={() => setServiceView('board')}>Доска</button>
           <button class="primary" disabled={role !== 'administrator'} onClick={() => editRule()}>+ Новое правило</button>
         </div>
       </div>
@@ -911,7 +1022,7 @@ function Services({
                 setEditor({ ...editor, category, paths: defaultServicePaths(category) });
               }}
             >
-              {serviceColumns.map((column) => <option value={column.category}>{column.title}</option>)}
+              {editableServiceColumns.map((column) => <option value={column.category}>{column.title}</option>)}
             </select>
           </label>
           <div>
@@ -934,7 +1045,17 @@ function Services({
           </div>
         </form>
       )}
-      <div class="service-board">
+      {serviceView === 'table' && <section class="service-table-card card">
+        <div class="table-scroll"><table class="service-table"><thead><tr><th>Сервис</th><th>Домены</th><th>Классификация</th><th>Основной путь</th><th>Состояние</th><th aria-label="Действия" /></tr></thead><tbody>
+          {filteredConfigured.map((item) => {
+            const domains = asArray(item.domains).map((domain) => textValue(domain, '')).filter(Boolean);
+            const paths = asArray(item.allowed_paths).map((path) => textValue(path, '')).filter(Boolean);
+            return <tr key={String(item.id)}><td><b>{textValue(item.id, 'Неизвестный сервис')}</b><small>{textValue(item.source, 'configured')}</small></td><td>{domains.length || '—'}{domains.length > 0 && <small>{domains.slice(0, 2).join(', ')}{domains.length > 2 ? '…' : ''}</small>}</td><td><StatusBadge value={serviceColumnFor(item.category)} /></td><td>{textValue(item.selected_route_tag ?? paths[0], 'Не выбран')}</td><td><StatusBadge value={item.health ?? item.status ?? (item.applied ? 'configured' : 'observed')} /></td><td><button onClick={() => setSelectedService(item)}>Открыть</button></td></tr>;
+          })}
+        </tbody></table></div>
+        {!filteredConfigured.length && <EmptyState title="Правил пока нет" text="Настрой сервис или сначала дождись наблюдения Discovery." />}
+      </section>}
+      {serviceView === 'board' && <div class="service-board">
         {serviceColumns.map((column) => (
           <section
             class={`service-column ${column.category.toLowerCase()}`}
@@ -962,7 +1083,7 @@ function Services({
             {!configuredServices.some((item) => serviceColumnFor(textValue(item.category, 'DIRECT_ONLY')) === column.category) && <p class="empty-state">Применённых правил пока нет</p>}
           </section>
         ))}
-      </div>
+      </div>}
       {observedServices.length > 0 && <section class="card">
         <h2>Наблюдения Discovery — не применены</h2>
         <p>FlintRoute заметил эти домены и проверил доступные пути. Они не меняют маршрутизацию, пока ты явно не закрепишь правило.</p>
@@ -977,19 +1098,12 @@ function Services({
           />)}
         </div>
       </section>}
-      <p class={message.includes('применено') ? 'action-status ok' : 'action-status'}>{message || 'Домены появляются после наблюдения и проверки. Перетащи карточку, чтобы закрепить правило.'}</p>
+      <p class={message.includes('создан') ? 'action-status ok' : 'action-status'}>{message || 'Домены появляются после наблюдения и проверки. Перетащи карточку, чтобы создать черновик правила.'}</p>
       <DetailDrawer title={textValue(selectedService?.id, 'Сервис')} open={Boolean(selectedService)} onClose={() => setSelectedService(null)}>
         <ServiceDetails service={selectedService} onEdit={() => selectedService && editRule(selectedService)} />
       </DetailDrawer>
     </section>
   );
-}
-
-function serviceColumnFor(category: string): string {
-  if (category === 'GEO_LOCKED') return 'GEO_LOCKED';
-  if (category === 'TSPU_RESTRICTED') return 'TSPU_RESTRICTED';
-  if (category === 'BLOCKED') return 'BLOCKED';
-  return 'DIRECT_ONLY';
 }
 
 function ServiceGroup({
@@ -1210,6 +1324,7 @@ function Components({ role, navigate }: { role: SessionInfo['role']; navigate: (
   const [busy, setBusy] = useState<ComponentKind | null>(null);
   const [stage, setStage] = useState('');
   const [message, setMessage] = useState('');
+  const confirmDialog = useConfirmDialog();
 
   async function refresh() {
     try {
@@ -1225,7 +1340,7 @@ function Components({ role, navigate }: { role: SessionInfo['role']; navigate: (
 
   async function run(kind: ComponentKind, action: ComponentAction) {
     const destructive = action === 'uninstall';
-    if (destructive && !window.confirm(`${componentNames[kind]} используется сетевыми маршрутами или может содержать рабочую конфигурацию. Продолжить удаление?`)) return;
+    if (destructive && !(await confirmDialog.ask(`${componentNames[kind]} используется сетевыми маршрутами или может содержать рабочую конфигурацию. Продолжить удаление?`))) return;
     setBusy(kind);
     setStage(action === 'install' || action === 'update' ? 'Preflight → платформа → download → SHA-256 → install → service → health' : humanStatus(action));
     setMessage('');
@@ -1280,6 +1395,7 @@ function Components({ role, navigate }: { role: SessionInfo['role']; navigate: (
       {selected?.update_blocked_reason && <p class="reason">Обновление заблокировано: {selected.update_blocked_reason}</p>}
       <RawDisclosure value={selected} />
     </DetailDrawer>
+    {confirmDialog.dialog}
   </section>;
 }
 
@@ -1787,7 +1903,6 @@ function SmartDNS({
     getSmartDNS().then(setStatus).catch((reason) => setError(reason instanceof Error ? reason.message : 'Smart DNS недоступен'));
   }, []);
   async function save() {
-    let changeID = '';
     let values;
     try {
       values = resolvers.filter((value) => value.trim()).map(parseResolverInput);
@@ -1809,24 +1924,11 @@ function SmartDNS({
     try {
       const result = await configureSmartDNS(values, testDomain.trim(), configVersion);
       setValidations(result.validations ?? []);
-      changeID = result.change.id;
-      let change = await changeAction(result.change.id, 'validate');
-      if (change.artifacts_ready === false) throw new Error(humanChangeBlock(change.artifact_block_reason));
-      change = await changeAction(change.id, 'apply');
-      if (change.state === 'awaiting_confirmation') {
-        change = await changeAction(change.id, 'confirm');
-      } else if (change.state !== 'committed' || !change.noop) {
-        throw new Error(humanChangeFailure(change));
-      }
-      changeID = '';
       setResolvers(['']);
-      setMessage(change.noop ? `Smart DNS перепроверен, конфигурация уже была актуальна: ${result.endpoint_count}.` : `Smart DNS проверен и применён: ${result.endpoint_count}.`);
+      setMessage(`Smart DNS проверен. Создан черновик для ${result.endpoint_count} резолверов; открой очередь изменений для review и apply.`);
       setStatus(await getSmartDNS());
       await refresh();
     } catch (reason) {
-      if (changeID) {
-        try { await changeAction(changeID, 'rollback'); } catch { /* preserve the original error */ }
-      }
       setMessage(reason instanceof Error ? reason.message : 'Smart DNS не прошёл проверку. Предыдущая конфигурация сохранена.');
     } finally {
       setBusy(false);
@@ -2165,14 +2267,8 @@ function LoginScreen() {
   return <Card title="Вход"><p>Локальный администратор. Сессия защищается HttpOnly cookie и CSRF-токеном.</p><button class="primary">Войти локально</button></Card>;
 }
 
-function SetupScreen({ overview, services, routes, discovery, navigate }: any) {
+function SetupScreen({ overview, services, routes, discovery, onboarding, onboardingAction, navigate }: any) {
   const [state, setState] = useState<any>({ loading: true, components: [], pool: null, smartDNS: null, tgws: null, zapret: null, error: '' });
-  const [directOnly, setDirectOnly] = useState(() => {
-    try { return window.localStorage.getItem('flintroute-first-run-direct') === '1'; } catch { return false; }
-  });
-  const [automaticServices, setAutomaticServices] = useState(() => {
-    try { return window.localStorage.getItem('flintroute-first-run-services-auto') === '1'; } catch { return false; }
-  });
 
   async function load() {
     setState((old: any) => ({ ...old, loading: true, error: '' }));
@@ -2202,22 +2298,27 @@ function SetupScreen({ overview, services, routes, discovery, navigate }: any) {
   const smartReady = Number(state.smartDNS?.ready_resolvers ?? state.smartDNS?.ready ?? 0) > 0;
   const tgwsReady = Boolean(state.tgws?.client_path_verified);
   const zapretReady = Boolean(state.zapret?.ready ?? zapretComponent?.health_ready);
-  const providerChosen = directOnly || verifiedServers > 0 || smartReady || tgwsReady || zapretReady;
-  const serviceChoiceDone = automaticServices || asArray(services).length > 0;
-  const setupReady = routerReady && providerChosen && serviceChoiceDone;
+  const methodsStatus = textValue(onboarding?.steps?.methods?.status, 'pending');
+  const sourcesStatus = textValue(onboarding?.steps?.sources?.status, 'pending');
+  const servicesStatus = textValue(onboarding?.steps?.services?.status, 'pending');
+  const providerChosen = verifiedServers > 0 || smartReady || tgwsReady || zapretReady || methodsStatus !== 'pending';
+  const serviceChoiceDone = asArray(services).length > 0 || servicesStatus !== 'pending';
+  const setupReady = onboarding?.can_complete === true;
 
-  function chooseDirect() {
-    setDirectOnly(true);
-    try { window.localStorage.setItem('flintroute-first-run-direct', '1'); } catch { /* current session still works */ }
+  async function chooseDirect() {
+    await onboardingAction('methods', 'skip');
+    await onboardingAction('sources', 'skip');
   }
-  function chooseAutomatic() {
-    setAutomaticServices(true);
-    try { window.localStorage.setItem('flintroute-first-run-services-auto', '1'); } catch { /* current session still works */ }
+  async function chooseAutomatic() {
+    await onboardingAction('services', 'automatic');
   }
-  function finish() {
+  async function acceptSources() {
+    await onboardingAction('sources', 'accept');
+  }
+  async function finish() {
     if (!setupReady) return;
-    try { window.localStorage.setItem('flintroute-first-run-complete', '1'); } catch { /* overview is still reachable */ }
-    navigate('Обзор');
+    const result = await onboardingAction('complete', 'complete');
+    if (result?.completed) navigate('Обзор');
   }
 
   return <section>
@@ -2241,17 +2342,18 @@ function SetupScreen({ overview, services, routes, discovery, navigate }: any) {
         <StatusLine label="Zapret" value={zapretReady ? 'ready' : zapretComponent?.installed ? 'requires_config' : 'not_installed'} />
         <StatusLine label="Xray / VLESS" value={verifiedServers > 0 ? `${verifiedServers} verified` : xray?.installed ? 'requires_config' : 'not_installed'} />
         <StatusLine label="TG WS Proxy" value={tgwsReady ? 'verified' : tgwsComponent?.installed ? 'requires_config' : 'not_installed'} />
-        {!providerChosen && <button onClick={chooseDirect}>Пока использовать только обычный интернет</button>}
+        {!providerChosen && <button onClick={() => void chooseDirect()}>Пока использовать только обычный интернет</button>}
       </EntityCard>
       <EntityCard title="3. Источники и проверка" status={providerChosen ? 'ready' : 'not_configured'} onOpen={() => navigate(verifiedServers ? 'VLESS-серверы' : 'Компоненты')}>
         <StatusLine label="VLESS-серверы" value={verifiedServers ? `${verifiedServers} подтверждено` : 'не добавлены'} />
         <StatusLine label="Smart DNS" value={smartReady ? 'ready' : 'not_configured'} />
         <StatusLine label="Telegram proxy" value={tgwsReady ? 'verified' : 'not_configured'} />
         <p>Добавляй только нужные способы. FlintRoute не заставляет ставить всё подряд.</p>
+        {providerChosen && sourcesStatus === 'pending' && <button onClick={() => void acceptSources()}>Подтвердить проверенные источники</button>}
       </EntityCard>
       <EntityCard title="4. Что нужно открыть" status={serviceChoiceDone ? 'configured' : 'not_configured'} onOpen={() => navigate('Сервисы')}>
         <p>{asArray(services).length ? `Настроено сервисов: ${asArray(services).length}.` : 'Можно закрепить Discord, ChatGPT, YouTube и другие сервисы за подходящими маршрутами.'}</p>
-        {!serviceChoiceDone && <button onClick={chooseAutomatic}>Пока выбирать автоматически</button>}
+        {!serviceChoiceDone && <button onClick={() => void chooseAutomatic()}>Пока выбирать автоматически</button>}
         <StatusLine label="Discovery" value={discovery?.mode ?? 'observe_only'} />
       </EntityCard>
       <EntityCard title="5. Финальная проверка" status={setupReady ? 'ready' : 'unverified'} onOpen={() => navigate('Маршруты')}>
@@ -2279,7 +2381,8 @@ function EntityCard({ title, status, children, onOpen }: { title: string; status
 }
 
 function StatusBadge({ value }: { value: unknown }) {
-  return <span class={`status-badge ${statusTone(value)}`}>{humanStatus(value)}</span>;
+  const stale = textValue(asRecord(value).freshness, '').toLowerCase() === 'stale';
+  return <span class={`status-badge ${stale ? 'warn' : statusTone(value)}`}>{stale ? `${humanStatus(value)} · данные устарели` : humanStatus(value)}</span>;
 }
 
 function StatusLine({ label, value }: { label: string; value: unknown }) {
@@ -2292,18 +2395,50 @@ function InfoGrid({ items }: { items: Array<[string, unknown]> }) {
 }
 
 function DetailDrawer({ title, open, onClose, children, wide = false }: { title: string; open: boolean; onClose: () => void; children: any; wide?: boolean }) {
+  const drawerRef = useRef<HTMLElement>(null);
   useEffect(() => {
     if (!open) return;
-    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', close);
-    return () => window.removeEventListener('keydown', close);
+    const previous = document.activeElement as HTMLElement | null;
+    const focusable = () => Array.from(drawerRef.current?.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])') ?? []).filter((item) => !item.hasAttribute('disabled'));
+    window.setTimeout(() => focusable()[0]?.focus(), 0);
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { onClose(); return; }
+      if (event.key !== 'Tab') return;
+      const items = focusable();
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => {
+      window.removeEventListener('keydown', handleKey);
+      previous?.focus?.();
+    };
   }, [open, onClose]);
   if (!open) return null;
-  return <div class="drawer-backdrop" role="presentation" onClick={onClose}><aside class={`detail-drawer ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-label={title} onClick={(event) => event.stopPropagation()}><header><h2>{title}</h2><button class="icon-button" aria-label="Закрыть" onClick={onClose}>×</button></header><div class="drawer-content">{children}</div></aside></div>;
+  return <div class="drawer-backdrop" role="presentation" onClick={onClose}><aside ref={drawerRef} class={`detail-drawer ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-label={title} onClick={(event) => event.stopPropagation()}><header><h2>{title}</h2><button class="icon-button" aria-label="Закрыть" onClick={onClose}>×</button></header><div class="drawer-content">{children}</div></aside></div>;
 }
 
 function RawDisclosure({ value }: { value: unknown }) {
   return <details class="raw-disclosure"><summary>Открыть сырые данные</summary><pre>{JSON.stringify(value ?? {}, null, 2)}</pre></details>;
+}
+
+function useConfirmDialog() {
+  const [request, setRequest] = useState<string | null>(null);
+  const resolver = useRef<((accepted: boolean) => void) | null>(null);
+  const ask = (message: string): Promise<boolean> => new Promise((resolve) => {
+    resolver.current = resolve;
+    setRequest(message);
+  });
+  const answer = (accepted: boolean) => {
+    resolver.current?.(accepted);
+    resolver.current = null;
+    setRequest(null);
+  };
+  const dialog = request ? <div class="modal-backdrop" role="presentation"><section class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title" onClick={(event) => event.stopPropagation()}><h2 id="confirm-title">Подтвердить действие</h2><p>{request}</p><div class="actions"><button autoFocus onClick={() => answer(false)}>Отмена</button><button class="primary" onClick={() => answer(true)}>Продолжить</button></div></section></div> : null;
+  return { ask, dialog };
 }
 
 function EmptyState({ title, text }: { title: string; text: string }) {

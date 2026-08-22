@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatDateTime, groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, parseResolverInput, stringArray, textValue, toDecisionCard } from './view-models';
+import { formatDateTime, groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, parseResolverInput, serviceColumnFor, stringArray, textValue, toDecisionCard } from './view-models';
 import type { EventItem } from './api';
 
 describe('safe display values', () => {
@@ -44,6 +44,19 @@ describe('Smart DNS endpoint input', () => {
 });
 
 describe('service view model', () => {
+  it.each([
+    ['GEO_LOCKED', 'GEO_LOCKED'],
+    ['TSPU_RESTRICTED', 'TSPU_RESTRICTED'],
+    ['TELEGRAM', 'TELEGRAM'],
+    ['DIRECT_PREFERRED', 'DIRECT_PREFERRED'],
+    ['DIRECT_ONLY', 'DIRECT_ONLY'],
+    ['BLOCKED', 'BLOCKED'],
+    ['future_category', 'UNRESOLVED'],
+    ['', 'UNRESOLVED']
+  ])('maps category %s explicitly', (category, expected) => {
+    expect(serviceColumnFor(category)).toBe(expected);
+  });
+
   it('groups configured and discovered domains into one service', () => {
     const grouped = groupServices([
       { id: 'Discord', category: 'TSPU_RESTRICTED', domains: ['discord.com', 'discord.gg'], source: 'configured' },
