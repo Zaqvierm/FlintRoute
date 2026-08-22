@@ -213,6 +213,7 @@ function App() {
   const [lastUpdated, setLastUpdated] = useState('');
   const refreshInFlight = useRef<Promise<void> | null>(null);
   const refreshPrivacy = useRef<boolean | undefined>(undefined);
+  const refreshScreen = useRef<string | undefined>(undefined);
   const refreshGeneration = useRef(0);
   const [privacyHidden, setPrivacyHidden] = useState(() => {
     try { return window.localStorage.getItem('flintroute-address-privacy') !== 'visible'; } catch { return true; }
@@ -246,12 +247,13 @@ function App() {
     // One dashboard refresh is enough.  A slow router must not accumulate
     // overlapping command batches when the timer, SSE reconnect, or a user
     // click happens at the same time.
-    if (refreshInFlight.current && refreshPrivacy.current === hideAddresses) return refreshInFlight.current;
+    const requestedScreen = screenRef.current;
+    if (refreshInFlight.current && refreshPrivacy.current === hideAddresses && refreshScreen.current === requestedScreen) return refreshInFlight.current;
     const generation = ++refreshGeneration.current;
     const operation = (async () => {
     setRefreshing(true);
     try {
-      const activeScreen = screenRef.current;
+      const activeScreen = requestedScreen;
       const needsTopology = ['Обзор', 'Карта сети', 'Устройства', 'Карточка устройства'].includes(activeScreen);
       const needsDevices = needsTopology;
       const needsServices = ['Обзор', 'Сервисы', 'Группа сервиса'].includes(activeScreen);
@@ -359,11 +361,15 @@ function App() {
     })();
     refreshInFlight.current = operation;
     refreshPrivacy.current = hideAddresses;
+    refreshScreen.current = requestedScreen;
     try {
       await operation;
     } finally {
       if (refreshInFlight.current === operation) refreshInFlight.current = null;
-      if (!refreshInFlight.current) refreshPrivacy.current = undefined;
+      if (!refreshInFlight.current) {
+        refreshPrivacy.current = undefined;
+        refreshScreen.current = undefined;
+      }
     }
   }
 
@@ -415,6 +421,10 @@ function App() {
       es?.close();
     };
   }, [session?.user, session?.role, privacyHidden]);
+
+  useEffect(() => {
+    if (session) void refresh(privacyHidden);
+  }, [screen, session?.user, privacyHidden]);
 
   async function togglePrivacy() {
     const next = !privacyHidden;
