@@ -196,7 +196,11 @@ list_nfqwss() {
     case "$exe:$commandline" in
       "$NFQWS_BIN":*|*/nfqws:*|*"$NFQWS_BIN"*|*"/nfqws "*)
         start=$(proc_start_time "$pid") || continue
-        printf '%s|%s|%s|%s|%s|%s\n' "$pid" "$start" "$exe" "$(proc_pgid "$pid")" "$(proc_ppid "$pid")" "$commandline"
+        # The ownership snapshot intentionally contains only the identity used
+        # for PID-reuse protection.  PGID/PPID/argv are queried live when the
+        # cleanup decision is made, so they cannot make the snapshot parser
+        # confuse an executable path with trailing fields.
+        printf '%s|%s|%s\n' "$pid" "$start" "$exe"
         ;;
     esac
   done
@@ -227,7 +231,7 @@ terminate_owned_process() {
 cleanup_owned_nfqwss() {
 	current="$run_dir/nfqws.after"
 	list_nfqwss > "$current" || return 1
-	while IFS='|' read -r pid start exe; do
+while IFS='|' read -r pid start exe; do
     [ -n "$pid" ] || continue
     baseline=0
     while IFS='|' read -r old_pid old_start old_exe; do
