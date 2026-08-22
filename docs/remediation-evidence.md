@@ -7,7 +7,7 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 
 - Base review SHA: `d45a779dfa9dc024b426cef358d3df4d32478897`
 - Branch: `remediation/transaction-and-privilege-boundaries`
-- Code verification SHA: `3173e32c6e040794bdf73078e013908aabc18c38` (recovery
+- Code verification SHA: `4345207ec79e5290a3a6de78a01b8ce84ad702e2` (recovery
   fence, route-verification semantics, bounded Zapret modes, truthful UI/browser
   coverage, screen-specific request budget, refresh cancellation, and robust
   Zapret process ownership). This document may be advanced by docs-only
@@ -35,6 +35,7 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | immutable bootstrap | `tests/openwrt-adapter-integration.sh` | PASS | local/mock |
 | installer parent modes | `tests/installer-lifecycle.sh` | PASS | local/mock |
 | legacy shell atomic write | `tests/shell-library.sh` | PASS (mode check is Linux-only; Windows reports `NOT RUN LOCALLY`) | local/mock |
+| artifact directory fsync failure | `tests/content-aware-install.sh` | PASS — failed exact and fallback sync is surfaced as `fsync_failed` | local/mock |
 | boot guard | `tests/boot-guard-policy.sh`, `tests/boot-guard-service.sh` | PASS | local/mock |
 | privileged helper boundary | `tests/helper-service.sh`, `go test ./internal/helper` | PASS | local/mock |
 | nft transition | `tests/nft-transition-namespace.sh` | PASS — [run 32575449189](https://github.com/Zaqvierm/FlintRoute/actions/runs/32575449189), exact code SHA `3173e32c6e040794bdf73078e013908aabc18c38` | Linux namespace |
@@ -84,6 +85,26 @@ explicit maintenance action capped at six hours and passes `SCANLEVEL=force`.
 The current repository has no authoritative fixed 21-strategy asset, so the
 UI does not invent that number. Neither mode silently activates a production
 profile; the result is a reviewed candidate/draft.
+
+## Current follow-up evidence
+
+The current follow-up code SHA is `4345207ec79e5290a3a6de78a01b8ce84ad702e2`.
+The artifact directory fsync regression now fails closed when both the exact
+directory sync and the explicit global sync fallback fail; the runtime write
+log records `fsync_failed` and `atomic_install` returns an error. The local
+full runner passed at this SHA in about 300.5 seconds with
+`all_tests_ok=true`; Linux-only namespace/process-group checks remain
+`NOT RUN LOCALLY` on Windows.
+
+The current Linux CI evidence for this SHA is:
+
+- nft transition safety: [run 32576221526](https://github.com/Zaqvierm/FlintRoute/actions/runs/32576221526)
+- Zapret process-group safety: [run 32576221472](https://github.com/Zaqvierm/FlintRoute/actions/runs/32576221472)
+- UI browser/responsive: [run 32576221408](https://github.com/Zaqvierm/FlintRoute/actions/runs/32576221408)
+
+The earlier matrix rows retain their original SHAs as historical evidence;
+the entries above are the authoritative follow-up results for the current
+head.
 
 ## Known limitation
 
