@@ -32,7 +32,7 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | recovery mutation allowlist | `go test ./internal/api -run 'TestRecovery|TestAutomaticDomainCommit|TestHealthScheduler'` | PASS | local |
 | recovery status persistence failure | `TestRecoveryStatusPersistenceFailureInstallsMemoryFence` | PASS | local |
 | concurrent recovery/apply fence | `TestRecoveryTransitionExcludesConcurrentMutation` | PASS | local |
-| frontend recovery mutation fence | `npm run test`, `npm run browser:test` (`recovery=starting`) | PASS (37 unit tests; 9 browser tests) | local Chromium |
+| frontend recovery mutation fence | `npm run test`, `npm run browser:test` (`recovery=starting`) | PASS (37 unit tests; 11 browser tests) | local Chromium |
 | immutable bootstrap | `tests/openwrt-adapter-integration.sh` | PASS | local/mock |
 | installer parent modes | `tests/installer-lifecycle.sh` | PASS | local/mock |
 | legacy shell atomic write | `tests/shell-library.sh` | PASS (mode check is Linux-only; Windows reports `NOT RUN LOCALLY`) | local/mock |
@@ -51,7 +51,7 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | unknown route latency scoring | `TestSelectBestDoesNotTreatUnknownLatencyAsZero` | PASS | local |
 | frontend build | `npm run build` | PASS | local |
 | frontend tests | `npm test` | PASS (37 tests) | local |
-| browser smoke/responsive | `npm run browser:test` | PASS (9 tests; 10 viewport matrix); [CI run 32575449236](https://github.com/Zaqvierm/FlintRoute/actions/runs/32575449236) | local Chromium + Linux CI |
+| browser smoke/responsive | `npm run browser:test` | PASS (11 tests; 10 viewport matrix); [CI run 32575449236](https://github.com/Zaqvierm/FlintRoute/actions/runs/32575449236) | local Chromium + Linux CI |
 | ShellCheck | `.tools/shellcheck-v0.11.0/shellcheck.exe -x <tracked shell files>` | PASS | local |
 | race/vet | `go test -race ./...`, `go vet ./...` | PASS | local |
 
@@ -155,13 +155,15 @@ The latest required CI runs for that head passed:
 
 ### Current code follow-up
 
-At `82845295b76a0fe1938289de013d46716edfc0df`, Decision Flow no longer labels
+At production code `82845295b76a0fe1938289de013d46716edfc0df`, Decision Flow no longer labels
 every `path_verified=false` event as a terminal failure. `VERIFYING` and
 `in_progress` remain `Проверяется…`, observe-only remains passive, and
 `NO_SAFE_ROUTE` is shown as terminal only when the planner reports exhausted
 candidates. The same semantics are used in service details. This follow-up
 added two frontend regressions; the focused gate passed with 37 unit tests and
-9 browser tests. `gofmt` was clean, `go test -race ./...` passed in 136.3
+11 browser tests. The current browser-fixture head is
+`6bf28b890a25c7cf68033b37d3896e22efbe8d29`; it adds two browser assertions and
+does not change production code. `gofmt` was clean, `go test -race ./...` passed in 136.3
 seconds, `go vet ./...` passed, and the full local runner passed in 322.5
 seconds. The production bundle is 185.15 kB JS (58.04 kB gzip) and 26.52 kB
 CSS (6.28 kB gzip). Linux-only namespace/process-group checks remain
