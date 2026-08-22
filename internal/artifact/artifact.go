@@ -446,7 +446,7 @@ func renderNFT(cfg *config.Config, binding Binding, routes []config.Route, plan 
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "# generated transaction=%s revision=%s candidate=%s\n", binding.TransactionID, binding.RevisionID, binding.CandidateHash)
-	fmt.Fprintf(&b, "table %s %s {\n", family, table)
+	fmt.Fprintf(&b, "table %s %s {\n  comment \"router-policy owner=flintroute\"\n", family, table)
 	names := sortedServiceNames(cfg)
 	for _, serviceName := range names {
 		id := serviceID(serviceName)

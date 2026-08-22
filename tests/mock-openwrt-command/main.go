@@ -48,12 +48,59 @@ func main() {
 	if name == "xray-init" || name == "zapret-init" {
 		os.Exit(handleService(name, args))
 	}
+	if name == "nft" {
+		os.Exit(handleNFT(args))
+	}
 	if name == "uci" {
 		os.Exit(handleUCI(args))
 	}
 	if name == "ip" {
 		os.Exit(handleIP(args))
 	}
+}
+
+func handleNFT(args []string) int {
+	if len(args) == 2 && args[0] == "list" && args[1] == "tables" {
+		fmt.Println("table inet router_policy")
+		if _, err := os.Stat(os.Getenv("MOCK_NFT_BOOT_GUARD_STATE")); err == nil {
+			fmt.Println("table inet router_policy_boot_guard")
+		}
+		return 0
+	}
+	if len(args) == 4 && args[0] == "list" && args[1] == "table" && args[2] == "inet" && args[3] == "router_policy" {
+		fmt.Println(`table inet router_policy { comment "router-policy owner=flintroute" }`)
+		return 0
+	}
+	if len(args) == 4 && args[0] == "list" && args[1] == "table" && args[2] == "inet" && args[3] == "router_policy_boot_guard" {
+		if _, err := os.Stat(os.Getenv("MOCK_NFT_BOOT_GUARD_STATE")); err == nil {
+			fmt.Println(`table inet router_policy_boot_guard { comment "router-policy owner=flintroute" }`)
+			return 0
+		}
+		return 1
+	}
+	if len(args) == 4 && args[0] == "delete" && args[1] == "table" && args[2] == "inet" && args[3] == "router_policy_boot_guard" {
+		_ = os.Remove(os.Getenv("MOCK_NFT_BOOT_GUARD_STATE"))
+		return 0
+	}
+	if len(args) == 2 && args[0] == "-f" {
+		raw, err := os.ReadFile(args[1])
+		if err != nil {
+			return 97
+		}
+		text := string(raw)
+		if strings.Contains(text, "table inet router_policy_boot_guard") {
+			state := os.Getenv("MOCK_NFT_BOOT_GUARD_STATE")
+			if state != "" {
+				if strings.Contains(text, "delete table inet router_policy_boot_guard") {
+					_ = os.WriteFile(state, []byte("present\n"), 0o600)
+				} else {
+					_ = os.WriteFile(state, []byte("present\n"), 0o600)
+				}
+			}
+		}
+		return 0
+	}
+	return 0
 }
 
 func handleService(name string, args []string) int {

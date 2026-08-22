@@ -7,18 +7,14 @@ USE_PROCD=1
 
 ADAPTER="${ROUTER_POLICY_ADAPTER:-/usr/lib/router-policy/openwrt/adapter.sh}"
 CONFIG="${ROUTER_POLICY_CONFIG:-/etc/router-policy/config/default.json}"
-LEASE_SECONDS="${ROUTER_POLICY_BOOT_GUARD_LEASE_SECONDS:-120}"
-
 start_service() {
-  case "$LEASE_SECONDS" in
-    ''|*[!0-9]*) return 1 ;;
-  esac
-  [ "$LEASE_SECONDS" -ge 30 ] && [ "$LEASE_SECONDS" -le 600 ] || return 1
   "$ADAPTER" boot-guard "$CONFIG" || return 1
   procd_open_instance router-policy-boot-guard-lease
-  # Positional parameters are expanded by the child shell, not by this script.
-  # shellcheck disable=SC2016
-  procd_set_param command /bin/sh -c 'sleep "$1"; exec "$2" clear-boot-guard "$3"' router-policy-boot-guard "$LEASE_SECONDS" "$ADAPTER" "$CONFIG"
+  # The guard is mark-scoped and remains installed until the controller proves
+  # the exact committed generation. A wall-clock lease would create a fail-open
+  # window after a corrupt or missing control plane. procd owns only this tiny
+  # holder process; stop_service clears the table explicitly.
+  procd_set_param command /bin/sh -c 'exec sleep 2147483647' router-policy-boot-guard
   procd_set_param term_timeout 5
   procd_set_param stdout 1
   procd_set_param stderr 1

@@ -20,6 +20,27 @@ import (
 	"router-policy/internal/probe"
 )
 
+// RescueError means the durable state cannot be trusted. Callers must expose
+// read-only rescue diagnostics and keep all dataplane mutation fenced.
+type RescueError struct {
+	Path  string
+	Cause error
+}
+
+func (e *RescueError) Error() string {
+	if e == nil || e.Cause == nil {
+		return "persistent state requires rescue"
+	}
+	return "persistent state requires rescue: " + e.Cause.Error()
+}
+
+func (e *RescueError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
 var ErrNotFound = errors.New("state key not found")
 
 const CurrentSchemaVersion = 3
@@ -45,6 +66,7 @@ type Store struct {
 	db        *bolt.DB
 	probes    []probe.RouteResult
 	metrics   WriteMetrics
+	faultHook func(string) error
 }
 
 type WriteMetrics struct {
@@ -72,11 +94,13 @@ func Open(cfg *config.Config) (*Store, error) {
 		return nil, err
 	}
 	if err := recoverInterruptedCompaction(path); err != nil {
-		return nil, err
+		preserveRescueArtifact(path, dir)
+		return nil, &RescueError{Path: path, Cause: err}
 	}
 	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: 2 * time.Second})
 	if err != nil {
-		return nil, err
+		preserveRescueArtifact(path, dir)
+		return nil, &RescueError{Path: path, Cause: err}
 	}
 	policy := retentionPolicy{
 		maxProbeResults:      positiveOr(cfg.Storage.MaxProbeResults, 5000),
@@ -92,15 +116,90 @@ func Open(cfg *config.Config) (*Store, error) {
 	store := &Store{mode: "bbolt", path: path, stateDir: cfg.Storage.StateDir, retention: policy, db: db}
 	if err := store.init(); err != nil {
 		_ = db.Close()
-		return nil, err
+		preserveRescueArtifact(path, dir)
+		return nil, &RescueError{Path: path, Cause: err}
 	}
 	if _, err := store.Cleanup(time.Now().UTC()); err != nil {
 		_ = db.Close()
-		return nil, err
+		preserveRescueArtifact(path, dir)
+		return nil, &RescueError{Path: path, Cause: err}
 	}
 	_ = os.Remove(path + ".precompact")
 	_ = os.Remove(path + ".compact.tmp")
 	return store, nil
+}
+
+const (
+	maxRescueArtifactBytes = 64 << 20
+	maxRescueArtifacts     = 3
+)
+
+// preserveRescueArtifact keeps a bounded, private copy of an unreadable
+// database for diagnosis. It never replaces, deletes, or repairs the source;
+// the controller remains fenced until an administrator explicitly recovers a
+// verified backup.
+func preserveRescueArtifact(path, stateDir string) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() <= 0 || info.Size() > maxRescueArtifactBytes {
+		return
+	}
+	dir := filepath.Join(stateDir, "forensics")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
+	name := filepath.Join(dir, "router-policy-corrupt-"+time.Now().UTC().Format("20060102T150405.000000000Z")+".bbolt")
+	source, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer source.Close()
+	target, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return
+	}
+	keep := true
+	if copied, err := io.Copy(target, io.LimitReader(source, maxRescueArtifactBytes+1)); err != nil || copied > maxRescueArtifactBytes {
+		keep = false
+	}
+	if err := target.Close(); err != nil {
+		keep = false
+	}
+	if !keep {
+		_ = os.Remove(name)
+		return
+	}
+	pruneRescueArtifacts(dir)
+}
+
+func pruneRescueArtifacts(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	type artifact struct {
+		name string
+		when time.Time
+	}
+	items := make([]artifact, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || !strings.HasPrefix(entry.Name(), "router-policy-corrupt-") || !strings.HasSuffix(entry.Name(), ".bbolt") {
+			continue
+		}
+		info, err := entry.Info()
+		if err == nil {
+			items = append(items, artifact{name: entry.Name(), when: info.ModTime()})
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].when.Equal(items[j].when) {
+			return items[i].name < items[j].name
+		}
+		return items[i].when.Before(items[j].when)
+	})
+	for len(items) > maxRescueArtifacts {
+		_ = os.Remove(filepath.Join(dir, items[0].name))
+		items = items[1:]
+	}
 }
 
 func (s *Store) init() error {
@@ -184,6 +283,15 @@ func (s *Store) WriteMetrics() WriteMetrics {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.metrics
+}
+
+// SetFaultHook is test-only fault injection. Production callers leave it nil;
+// tests use it to fail a named durable boundary without changing the bbolt
+// implementation or pretending that a partial commit succeeded.
+func (s *Store) SetFaultHook(hook func(string) error) {
+	s.mu.Lock()
+	s.faultHook = hook
+	s.mu.Unlock()
 }
 
 func (s *Store) StoreProbeResult(result probe.RouteResult) error {
@@ -288,6 +396,11 @@ func (s *Store) SaveJSON(bucket, key string, value any) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.faultHook != nil {
+		if err := s.faultHook("save_json:" + bucket); err != nil {
+			return err
+		}
+	}
 	identical := false
 	if err := s.db.View(func(tx *bolt.Tx) error {
 		bkt := tx.Bucket([]byte(bucket))
@@ -327,6 +440,11 @@ func (s *Store) SaveBatch(entries ...Entry) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.faultHook != nil {
+		if err := s.faultHook("save_batch"); err != nil {
+			return err
+		}
+	}
 	identical := true
 	if err := s.db.View(func(tx *bolt.Tx) error {
 		for i, entry := range entries {

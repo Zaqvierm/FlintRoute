@@ -44,6 +44,7 @@ type candidateRecord struct {
 type transactionRecord struct {
 	Transaction adapter.Transaction  `json:"transaction"`
 	State       string               `json:"state"`
+	CommitPhase string               `json:"commit_phase,omitempty"`
 	Steps       []adapter.StepResult `json:"steps"`
 	UpdatedAt   time.Time            `json:"updated_at"`
 	CompletedAt *time.Time           `json:"completed_at,omitempty"`
@@ -266,6 +267,9 @@ func (s *Server) validateChangeSet(cs ChangeSet) (ChangeSet, *actionFailure) {
 }
 
 func (s *Server) applyChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet, *actionFailure) {
+	if failure := s.mutationFailure(); failure != nil {
+		return cs, failure
+	}
 	if cs.State != "validated" {
 		return cs, conflict("invalid_transition", "change cannot be applied from "+cs.State)
 	}
@@ -429,6 +433,9 @@ func (s *Server) applyNoopChangeSet(ctx context.Context, cs ChangeSet) (ChangeSe
 }
 
 func (s *Server) confirmChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet, *actionFailure) {
+	if failure := s.mutationFailure(); failure != nil {
+		return cs, failure
+	}
 	if cs.State != "awaiting_confirmation" {
 		return cs, conflict("invalid_transition", "change cannot be confirmed from "+cs.State)
 	}
@@ -455,18 +462,6 @@ func (s *Server) confirmChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet,
 	if !stepOK(status) || evidenceString(status, "active_revision") != tx.RevisionID || evidenceString(status, "active_transaction") != tx.ID || evidenceString(status, "active_candidate_hash") != tx.CandidateHash || evidenceString(status, "active_artifact_manifest_hash") != tx.ArtifactManifestHash {
 		return s.rollbackLocked(ctx, cs, tx, "failed", "adapter_revision_mismatch")
 	}
-	if err := s.saveProgress(&cs, tx, "committing"); err != nil {
-		return cs, internalFailure(err)
-	}
-	commit := s.adapter.Commit(ctx, tx)
-	cs.Steps = append(cs.Steps, commit)
-	cs.AdapterStatus = commit.Status
-	if err := s.saveProgress(&cs, tx, "committing"); err != nil {
-		return cs, internalFailure(err)
-	}
-	if !stepOK(commit) {
-		return s.rollbackLocked(ctx, cs, tx, "failed", "commit_failed")
-	}
 	candidate, failure := s.loadVerifiedCandidate(cs, tx)
 	if failure != nil {
 		return s.rollbackLocked(ctx, cs, tx, "failed", "candidate_recheck_failed")
@@ -475,21 +470,124 @@ func (s *Server) confirmChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet,
 	if err != nil {
 		return s.rollbackLocked(ctx, cs, tx, "failed", "adaptive_runtime_invalid")
 	}
-	now := time.Now().UTC()
-	cs.State = "committed"
-	cs.Version++
-	cs.UpdatedAt = now.Format(time.RFC3339)
-	revision := revisionRecord{RevisionID: tx.RevisionID, ChangeID: cs.ID, TransactionID: tx.ID, BaseVersion: tx.BaseVersion, Version: tx.CandidateVersion, CandidateHash: tx.CandidateHash, ArtifactManifestHash: tx.ArtifactManifestHash, State: "committed", CreatedAt: tx.CreatedAt, CommittedAt: &now}
-	txRecord := transactionRecord{Transaction: tx, State: "committed", Steps: cs.Steps, UpdatedAt: now, CompletedAt: &now}
-	if err := s.store.SaveBatch(
-		state.Entry{Bucket: "meta", Key: "active_config", Value: candidate},
-		state.Entry{Bucket: "meta", Key: "active_revision", Value: tx.RevisionID},
-		state.Entry{Bucket: "meta", Key: "config_version", Value: tx.CandidateVersion},
-		state.Entry{Bucket: "revisions", Key: tx.RevisionID, Value: revision},
-		state.Entry{Bucket: "transactions", Key: tx.ID, Value: txRecord},
-		state.Entry{Bucket: "changes", Key: cs.ID, Value: cs},
-	); err != nil {
+	if err := s.saveProgress(&cs, tx, "committing"); err != nil {
 		return cs, internalFailure(err)
+	}
+
+	target := adapter.RecoveryTarget{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash, ArtifactManifestHash: tx.ArtifactManifestHash}
+	preparedCommitter, splitCommit := s.adapter.(adapter.PreparedCommitter)
+	if splitCommit {
+		prepared := preparedCommitter.CommitPrepared(ctx, tx)
+		cs.Steps = append(cs.Steps, prepared)
+		cs.AdapterStatus = prepared.Status
+		if err := adapter.ValidatePreparedCommit(prepared, tx); err != nil {
+			cs.CommitPhase = "adapter_activation_ambiguous"
+			_ = s.saveProgress(&cs, tx, "committing")
+			s.markRecoveryRequired(target, "adapter_commit_prepared_ambiguous", err.Error(), cs.CommitPhase)
+			return cs, &actionFailure{Status: 503, Code: "recovery_required", Message: err.Error()}
+		}
+		cs.CommitPhase = "adapter_activated"
+		if err := s.saveProgress(&cs, tx, "committing"); err != nil {
+			s.markRecoveryRequired(target, "adapter_commit_progress_failed", err.Error(), cs.CommitPhase)
+			return cs, &actionFailure{Status: 503, Code: "recovery_required", Message: "adapter is activated but transaction progress could not be persisted"}
+		}
+
+		// The control plane becomes active while the adapter rollback capability is
+		// still retained.  This durable boundary is what recovery compares after a
+		// crash; it is deliberately not marked committed until finalize succeeds.
+		now := time.Now().UTC()
+		cs.Version++
+		cs.UpdatedAt = now.Format(time.RFC3339)
+		revision := revisionRecord{RevisionID: tx.RevisionID, ChangeID: cs.ID, TransactionID: tx.ID, BaseVersion: tx.BaseVersion, Version: tx.CandidateVersion, CandidateHash: tx.CandidateHash, ArtifactManifestHash: tx.ArtifactManifestHash, State: "control_plane_committed", CreatedAt: tx.CreatedAt}
+		controlRecord := transactionRecord{Transaction: tx, State: "control_plane_committed", CommitPhase: "control_plane_committed", Steps: cs.Steps, UpdatedAt: now}
+		cs.CommitPhase = "control_plane_committed"
+		if err := s.store.SaveBatch(
+			state.Entry{Bucket: "meta", Key: "active_config", Value: candidate},
+			state.Entry{Bucket: "meta", Key: "active_revision", Value: tx.RevisionID},
+			state.Entry{Bucket: "meta", Key: "config_version", Value: tx.CandidateVersion},
+			state.Entry{Bucket: "revisions", Key: tx.RevisionID, Value: revision},
+			state.Entry{Bucket: "transactions", Key: tx.ID, Value: controlRecord},
+			state.Entry{Bucket: "changes", Key: cs.ID, Value: cs},
+		); err != nil {
+			s.markRecoveryRequired(target, "control_plane_commit_persist_failed", err.Error(), cs.CommitPhase)
+			return cs, &actionFailure{Status: 503, Code: "recovery_required", Message: "adapter is activated but active revision persistence is ambiguous"}
+		}
+		s.mu.Lock()
+		s.activeConfig = candidate
+		s.adaptiveZapret = adaptiveRuntime
+		s.activeRevision = tx.RevisionID
+		s.configVersion = tx.CandidateVersion
+		s.changes[cs.ID] = cs
+		s.mu.Unlock()
+
+		finalized := preparedCommitter.FinalizeCommit(ctx, tx)
+		cs.Steps = append(cs.Steps, finalized)
+		cs.AdapterStatus = finalized.Status
+		if err := adapter.ValidateFinalizedCommit(finalized, tx); err != nil {
+			cs.CommitPhase = "finalize_ambiguous"
+			_ = s.store.SaveJSON("transactions", tx.ID, transactionRecord{Transaction: tx, State: "control_plane_committed", CommitPhase: cs.CommitPhase, Steps: cs.Steps, UpdatedAt: time.Now().UTC()})
+			s.markRecoveryRequired(target, "adapter_finalize_ambiguous", err.Error(), cs.CommitPhase)
+			return cs, &actionFailure{Status: 503, Code: "recovery_required", Message: err.Error()}
+		}
+		cs.CommitPhase = "adapter_finalized"
+		now = time.Now().UTC()
+		cs.State = "committed"
+		cs.Version++
+		cs.UpdatedAt = now.Format(time.RFC3339)
+		revision.State = "committed"
+		revision.CommittedAt = &now
+		txRecord := transactionRecord{Transaction: tx, State: "committed", CommitPhase: cs.CommitPhase, Steps: cs.Steps, UpdatedAt: now, CompletedAt: &now}
+		if err := s.store.SaveBatch(
+			state.Entry{Bucket: "revisions", Key: tx.RevisionID, Value: revision},
+			state.Entry{Bucket: "transactions", Key: tx.ID, Value: txRecord},
+			state.Entry{Bucket: "changes", Key: cs.ID, Value: cs},
+		); err != nil {
+			s.markRecoveryRequired(target, "control_plane_finalize_persist_failed", err.Error(), cs.CommitPhase)
+			return cs, &actionFailure{Status: 503, Code: "recovery_required", Message: "adapter finalized but commit completion persistence is ambiguous"}
+		}
+	} else {
+		commit := s.adapter.Commit(ctx, tx)
+		cs.Steps = append(cs.Steps, commit)
+		cs.AdapterStatus = commit.Status
+		if commit.Operation != "" || commit.ProtocolVersion != 0 {
+			if err := adapter.ValidateBinding(commit, "commit", tx); err != nil {
+				return s.rollbackLocked(ctx, cs, tx, "failed", "commit_binding_invalid")
+			}
+		}
+		if err := s.saveProgress(&cs, tx, "committing"); err != nil {
+			// The legacy adapter has already been asked to commit.  Once that
+			// external boundary has been crossed, losing the progress record is
+			// ambiguous rather than an ordinary API failure: the adapter may be
+			// active while bbolt still describes the old revision.  Never attempt
+			// a best-effort rollback from this point; fence mutations and require
+			// recovery to compare both sides.
+			s.markRecoveryRequired(target, "legacy_commit_progress_persist_failed", err.Error(), "legacy_commit_progress")
+			return cs, &actionFailure{Status: 503, Code: "recovery_required", Message: "adapter commit result is ambiguous; recovery is required"}
+		}
+		if !stepOK(commit) {
+			return s.rollbackLocked(ctx, cs, tx, "failed", "commit_failed")
+		}
+		now := time.Now().UTC()
+		cs.State = "committed"
+		cs.Version++
+		cs.UpdatedAt = now.Format(time.RFC3339)
+		revision := revisionRecord{RevisionID: tx.RevisionID, ChangeID: cs.ID, TransactionID: tx.ID, BaseVersion: tx.BaseVersion, Version: tx.CandidateVersion, CandidateHash: tx.CandidateHash, ArtifactManifestHash: tx.ArtifactManifestHash, State: "committed", CreatedAt: tx.CreatedAt, CommittedAt: &now}
+		txRecord := transactionRecord{Transaction: tx, State: "committed", CommitPhase: "legacy_committed", Steps: cs.Steps, UpdatedAt: now, CompletedAt: &now}
+		if err := s.store.SaveBatch(
+			state.Entry{Bucket: "meta", Key: "active_config", Value: candidate},
+			state.Entry{Bucket: "meta", Key: "active_revision", Value: tx.RevisionID},
+			state.Entry{Bucket: "meta", Key: "config_version", Value: tx.CandidateVersion},
+			state.Entry{Bucket: "revisions", Key: tx.RevisionID, Value: revision},
+			state.Entry{Bucket: "transactions", Key: tx.ID, Value: txRecord},
+			state.Entry{Bucket: "changes", Key: cs.ID, Value: cs},
+		); err != nil {
+			// A legacy Commit is irreversible from the controller's point of
+			// view.  Do not report rolled_back/failed when the durable active
+			// revision could not be written.  The recovery fence is the only
+			// safe outcome until adapter and bbolt are reconciled.
+			s.markRecoveryRequired(target, "legacy_commit_persist_failed", err.Error(), "legacy_committed")
+			return cs, &actionFailure{Status: 503, Code: "recovery_required", Message: "adapter committed but active revision persistence is ambiguous"}
+		}
 	}
 	s.mu.Lock()
 	s.activeConfig = candidate
@@ -528,6 +626,9 @@ func (s *Server) cleanupCommittedResources(tx adapter.Transaction, previous revi
 }
 
 func (s *Server) rollbackChangeSet(ctx context.Context, cs ChangeSet, expired bool) (ChangeSet, *actionFailure) {
+	if failure := s.mutationFailure(); failure != nil {
+		return cs, failure
+	}
 	if cs.State == "rolled_back" || cs.State == "expired" {
 		return cs, nil
 	}
@@ -562,6 +663,13 @@ func (s *Server) rollbackLocked(ctx context.Context, cs ChangeSet, tx adapter.Tr
 	result := s.adapter.Rollback(ctx, tx)
 	cs.Steps = append(cs.Steps, result)
 	cs.AdapterStatus = result.Status
+	if result.Operation != "" || result.ProtocolVersion != 0 {
+		if err := adapter.ValidateRollback(result, tx); err != nil {
+			_ = s.saveProgress(&cs, tx, "rollback_failed")
+			s.markRecoveryRequired(adapter.RecoveryTarget{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash, ArtifactManifestHash: tx.ArtifactManifestHash}, "adapter_rollback_ambiguous", err.Error(), cs.CommitPhase)
+			return cs, &actionFailure{Status: 503, Code: "recovery_required", Message: err.Error()}
+		}
+	}
 	if !stepOK(result) {
 		if err := s.saveProgress(&cs, tx, "rollback_failed"); err != nil {
 			return cs, internalFailure(err)
@@ -572,7 +680,8 @@ func (s *Server) rollbackLocked(ctx context.Context, cs ChangeSet, tx adapter.Tr
 	cs.DataPlaneVerified = false
 	cs.Validation = append(cs.Validation, Validation{Level: "info", Code: reason, Message: "adapter rollback completed"})
 	if err := s.saveProgress(&cs, tx, finalState); err != nil {
-		return cs, internalFailure(err)
+		s.markRecoveryRequired(adapter.RecoveryTarget{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash, ArtifactManifestHash: tx.ArtifactManifestHash}, "rollback_state_persist_failed", err.Error(), cs.CommitPhase)
+		return cs, &actionFailure{Status: 503, Code: "recovery_required", Message: "rollback completed externally but control-plane state is ambiguous"}
 	}
 	s.mu.Lock()
 	s.cancelExpiryLocked(cs.ID)
@@ -599,7 +708,7 @@ func (s *Server) saveProgress(cs *ChangeSet, tx adapter.Transaction, nextState s
 	cs.Version++
 	cs.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	now := time.Now().UTC()
-	record := transactionRecord{Transaction: tx, State: nextState, Steps: cs.Steps, UpdatedAt: now}
+	record := transactionRecord{Transaction: tx, State: nextState, CommitPhase: cs.CommitPhase, Steps: cs.Steps, UpdatedAt: now}
 	if isTerminalState(nextState) {
 		record.CompletedAt = &now
 	}
@@ -829,22 +938,81 @@ func (s *Server) recoverTransactions(ctx context.Context) error {
 			release()
 			return errors.New(failure.Message)
 		}
+		var txRecord transactionRecord
+		if err := s.store.LoadJSON("transactions", tx.ID, &txRecord); err != nil {
+			release()
+			return err
+		}
 		status := s.adapter.Status(ctx)
 		activeMatches := stepOK(status) && evidenceString(status, "active_revision") == tx.RevisionID && evidenceString(status, "active_transaction") == tx.ID && evidenceString(status, "active_candidate_hash") == tx.CandidateHash && evidenceString(status, "active_artifact_manifest_hash") == tx.ArtifactManifestHash
-		if cs.State == "committing" && activeMatches && evidenceString(status, "transaction_state") == "committed" {
-			if err := s.finalizeRecoveredCommit(&cs, tx); err != nil {
+		adapterState := evidenceString(status, "transaction_state")
+		if cs.State == "committing" && activeMatches {
+			switch {
+			case txRecord.CommitPhase == "" && adapterState == "committed":
+				if err := s.finalizeRecoveredCommit(&cs, tx); err != nil {
+					release()
+					return err
+				}
+				s.publishChangeEvent(cs, "recovery_commit_finalized")
 				release()
-				return err
+				continue
+			case (txRecord.CommitPhase == "control_plane_committed" || txRecord.CommitPhase == "finalize_ambiguous") && adapterState == "adapter_activated":
+				preparedCommitter, ok := s.adapter.(adapter.PreparedCommitter)
+				if !ok {
+					release()
+					s.markRecoveryRequired(adapter.RecoveryTarget{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash, ArtifactManifestHash: tx.ArtifactManifestHash}, "adapter_finalize_unavailable", "control plane is active but adapter finalize is unavailable", txRecord.CommitPhase)
+					return errors.New("adapter finalize is unavailable")
+				}
+				finalized := preparedCommitter.FinalizeCommit(ctx, tx)
+				cs.Steps = append(cs.Steps, finalized)
+				if err := adapter.ValidateFinalizedCommit(finalized, tx); err != nil {
+					release()
+					s.markRecoveryRequired(adapter.RecoveryTarget{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash, ArtifactManifestHash: tx.ArtifactManifestHash}, "adapter_finalize_ambiguous", err.Error(), txRecord.CommitPhase)
+					return errors.New(err.Error())
+				}
+				cs.CommitPhase = "adapter_finalized"
+				if err := s.finalizeRecoveredCommit(&cs, tx); err != nil {
+					release()
+					s.markRecoveryRequired(adapter.RecoveryTarget{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash, ArtifactManifestHash: tx.ArtifactManifestHash}, "control_plane_finalize_persist_failed", err.Error(), cs.CommitPhase)
+					return err
+				}
+				s.publishChangeEvent(cs, "recovery_commit_finalized")
+				release()
+				continue
+			case (txRecord.CommitPhase == "control_plane_committed" || txRecord.CommitPhase == "finalize_ambiguous") && adapterState == "committed":
+				cs.CommitPhase = "adapter_finalized"
+				if err := s.finalizeRecoveredCommit(&cs, tx); err != nil {
+					release()
+					s.markRecoveryRequired(adapter.RecoveryTarget{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash, ArtifactManifestHash: tx.ArtifactManifestHash}, "control_plane_finalize_persist_failed", err.Error(), cs.CommitPhase)
+					return err
+				}
+				s.publishChangeEvent(cs, "recovery_commit_finalized")
+				release()
+				continue
+			case txRecord.CommitPhase == "adapter_activated" && adapterState == "adapter_activated":
+				// Adapter activation happened, but the durable control-plane boundary
+				// did not. Rollback is still provably available.
+			case adapterState == "committed":
+				release()
+				s.markRecoveryRequired(adapter.RecoveryTarget{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash, ArtifactManifestHash: tx.ArtifactManifestHash}, "adapter_control_plane_split_brain", "adapter is committed but control-plane commit phase is not finalized", txRecord.CommitPhase)
+				return errors.New("adapter/control-plane commit split-brain")
 			}
-			s.publishChangeEvent(cs, "recovery_commit_finalized")
-			release()
-			continue
+			if txRecord.CommitPhase == "control_plane_committed" {
+				release()
+				s.markRecoveryRequired(adapter.RecoveryTarget{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash, ArtifactManifestHash: tx.ArtifactManifestHash}, "adapter_control_plane_state_unknown", "control-plane commit is durable but adapter state is not provable", txRecord.CommitPhase)
+				return errors.New("adapter state is unknown after control-plane commit")
+			}
 		}
 		if cs.State == "awaiting_confirmation" && activeMatches && time.Now().UTC().Before(tx.ExpiresAt) {
 			s.scheduleExpiry(cs)
 			s.publishChangeEvent(cs, "recovery_awaiting_confirmation")
 			release()
 			continue
+		}
+		if cs.State == "committing" && (txRecord.CommitPhase == "control_plane_committed" || txRecord.CommitPhase == "finalize_ambiguous") {
+			release()
+			s.markRecoveryRequired(adapter.RecoveryTarget{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash, ArtifactManifestHash: tx.ArtifactManifestHash}, "adapter_control_plane_binding_mismatch", "control-plane active revision does not match adapter state", txRecord.CommitPhase)
+			return errors.New("adapter/control-plane binding mismatch after commit")
 		}
 		s.transactionMu.Lock()
 		finalState := "rolled_back"
@@ -876,7 +1044,8 @@ func (s *Server) finalizeRecoveredCommit(cs *ChangeSet, tx adapter.Transaction) 
 	cs.Version++
 	cs.UpdatedAt = now.Format(time.RFC3339)
 	revision := revisionRecord{RevisionID: tx.RevisionID, ChangeID: cs.ID, TransactionID: tx.ID, BaseVersion: tx.BaseVersion, Version: tx.CandidateVersion, CandidateHash: tx.CandidateHash, ArtifactManifestHash: tx.ArtifactManifestHash, State: "committed", CreatedAt: tx.CreatedAt, CommittedAt: &now}
-	record := transactionRecord{Transaction: tx, State: "committed", Steps: cs.Steps, UpdatedAt: now, CompletedAt: &now}
+	cs.CommitPhase = "adapter_finalized"
+	record := transactionRecord{Transaction: tx, State: "committed", CommitPhase: cs.CommitPhase, Steps: cs.Steps, UpdatedAt: now, CompletedAt: &now}
 	if err := s.store.SaveBatch(
 		state.Entry{Bucket: "meta", Key: "active_config", Value: candidate},
 		state.Entry{Bucket: "meta", Key: "active_revision", Value: tx.RevisionID},

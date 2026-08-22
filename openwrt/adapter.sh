@@ -23,7 +23,6 @@ known_config="${ROUTER_POLICY_CONFIG_PATH:-/etc/router-policy/config/default.jso
 router_policy_bin="${ROUTER_POLICY_BIN:-/usr/bin/router-policy}"
 adapter_self="${ROUTER_POLICY_ADAPTER_SELF:-/usr/lib/router-policy/openwrt/adapter.sh}"
 nft_bin="${NFT_BIN:-nft}"
-fw4_bin="${FW4_BIN:-fw4}"
 dnsmasq_bin="${DNSMASQ_BIN:-dnsmasq}"
 dnsmasq_init="${DNSMASQ_INIT:-/etc/init.d/dnsmasq}"
 xray_bin="${XRAY_BIN:-xray}"
@@ -73,6 +72,29 @@ process_start() {
   awk '{print $22}' "/proc/$pid_value/stat"
 }
 
+terminate_owned_timer_pid() {
+  timer_pid_arg="$1"
+  timer_start_arg="$2"
+  kill -0 "$timer_pid_arg" 2>/dev/null || return 0
+  current_timer_start="$(process_start "$timer_pid_arg" 2>/dev/null || true)"
+  [ -n "$current_timer_start" ] && [ "$current_timer_start" = "$timer_start_arg" ] || return 1
+  kill -TERM "$timer_pid_arg" 2>/dev/null || return 1
+  timer_wait=0
+  while [ "$timer_wait" -lt 5 ] && kill -0 "$timer_pid_arg" 2>/dev/null; do
+    current_timer_start="$(process_start "$timer_pid_arg" 2>/dev/null || true)"
+    [ "$current_timer_start" = "$timer_start_arg" ] || return 0
+    sleep 1
+    timer_wait=$((timer_wait + 1))
+  done
+  if kill -0 "$timer_pid_arg" 2>/dev/null; then
+    current_timer_start="$(process_start "$timer_pid_arg" 2>/dev/null || true)"
+    [ "$current_timer_start" = "$timer_start_arg" ] || return 1
+    kill -KILL "$timer_pid_arg" 2>/dev/null || return 1
+    sleep 1
+    kill -0 "$timer_pid_arg" 2>/dev/null && return 1
+  fi
+}
+
 lock_owner_alive() {
   [ -f "$lock_dir/metadata.env" ] || return 1
   lock_pid="$(sed -n 's/^pid=//p' "$lock_dir/metadata.env" | head -n 1)"
@@ -100,6 +122,14 @@ take_lock() {
       echo "reason=lock_metadata_missing_cannot_prove_stale" >&2
       exit 75
     }
+    lock_pid="$(sed -n 's/^pid=//p' "$lock_dir/metadata.env" | head -n 1)"
+    lock_start="$(sed -n 's/^process_start=//p' "$lock_dir/metadata.env" | head -n 1)"
+    self_start="$(process_start "$$" 2>/dev/null || true)"
+    if [ "$lock_pid" = "$$" ] && [ -n "$self_start" ] && [ "$lock_start" = "$self_start" ]; then
+      # commit() is a compatibility wrapper around two typed operations.  The
+      # same shell owns both phases, so taking the same lock is re-entrant.
+      return 0
+    fi
     if lock_owner_alive; then
       echo "adapter_busy=true"
       exit 75
@@ -142,6 +172,12 @@ require_transaction_args() {
   binding_file="$txdir/binding.env"
   capability_file="$txdir/rollback.cap"
   timer_file="$timer_dir/$revision-$txid.env"
+  # The command arguments are parsed at file scope.  Functions have their own
+  # positional parameters in POSIX sh, so reading $5/$6 here silently dropped
+  # the binding supplied by the caller and made a mismatched request look
+  # valid.  Keep the parsed values in dedicated names instead.
+  expected_candidate_hash="$recovery_candidate_hash"
+  expected_artifact_manifest_hash="$recovery_artifact_manifest_hash"
 }
 
 load_recovery_args() {
@@ -172,20 +208,53 @@ require_recovery_args() {
   }
 }
 
+delete_boot_guard_table() {
+  # The runtime file is the ownership marker for this exact table.  Do not
+  # hide nft failures: if FlintRoute believes it owns the guard, a failed
+  # delete is a real reconcile error and must fence the transition.  A missing
+  # table is an idempotent no-op.
+  tables="$($nft_bin list tables 2>/dev/null)" || return 1
+  printf '%s\n' "$tables" | grep -Eq '^table[[:space:]]+inet[[:space:]]+router_policy_boot_guard[[:space:]]*$' || return 0
+  [ -f "$boot_guard_file" ] || {
+    echo "reason=boot_guard_ownership_marker_missing" >&2
+    return 1
+  }
+  current="$($nft_bin list table inet router_policy_boot_guard 2>/dev/null)" || return 1
+  printf '%s\n' "$current" | grep -F 'comment "router-policy owner=flintroute"' >/dev/null || return 1
+  "$nft_bin" delete table inet router_policy_boot_guard >/dev/null 2>&1 || return 1
+  "$nft_bin" list table inet router_policy_boot_guard >/dev/null 2>&1 && return 1
+  return 0
+}
+
 install_boot_guard() {
   [ -f "$state/last-good/manifest.txt" ] || {
     echo "boot_guard=skipped-no-last-good"
     return 0
   }
   marks=""
-  for key in direct_mark zapret_mark xray_mark drop_mark; do
-    value="$(sed -n "s/^[[:space:]]*\"$key\"[[:space:]]*:[[:space:]]*\"\(0x[0-9a-fA-F][0-9a-fA-F]*\)\".*/\1/p" "$known_config" 2>/dev/null | head -n 1)"
-    printf '%s\n' "$value" | grep -Eq '^0x[0-9a-fA-F]{1,8}$' || continue
+  guard_config="$state/last-good/router-policy-config.json"
+  [ -f "$guard_config" ] || guard_config="$known_config"
+  marks_error_file="$runtime/boot-guard-marks.error"
+  if ! marks_output="$(ROUTER_POLICY_CONFIG="$guard_config" "$router_policy_bin" internal-print-managed-marks 2>"$marks_error_file")"; then
+    reason="$(head -c 256 "$marks_error_file" 2>/dev/null | tr '\r\n' ' ' | sed 's/[^A-Za-z0-9_.: =\/-]/_/g')"
+    rm -f "$marks_error_file"
+    echo "reason=managed_marks_query_failed${reason:+:$reason}" >&2
+    return 1
+  fi
+  rm -f "$marks_error_file"
+  while IFS='=' read -r mark_key value; do
+    [ "$mark_key" = "managed_mark" ] || continue
+    printf '%s\n' "$value" | grep -Eq '^0x[0-9a-fA-F]{1,8}$' || {
+      echo "reason=managed_mark_invalid" >&2
+      return 1
+    }
     case " $marks " in
       *" $value "*) ;;
       *) marks="$marks $value" ;;
     esac
-  done
+  done <<EOF
+$marks_output
+EOF
   [ -n "$marks" ] || {
     echo "boot_guard=skipped-no-managed-marks"
     return 0
@@ -193,6 +262,7 @@ install_boot_guard() {
   mkdir -p "$runtime"
   {
     echo 'table inet router_policy_boot_guard {'
+    echo '  comment "router-policy owner=flintroute"'
     echo '  chain forward {'
     echo '    type filter hook forward priority -4; policy accept;'
     for mark in $marks; do
@@ -203,13 +273,41 @@ install_boot_guard() {
     echo '}'
   } > "$boot_guard_file.tmp"
   mv "$boot_guard_file.tmp" "$boot_guard_file"
-  "$nft_bin" delete table inet router_policy_boot_guard >/dev/null 2>&1 || true
-  "$nft_bin" -f "$boot_guard_file"
+  replace_boot_guard_table
   echo "boot_guard=armed"
 }
 
+replace_boot_guard_table() {
+  [ -s "$boot_guard_file" ] || return 1
+  transition_batch="$runtime/nft-boot-guard-transition-${txid:-reconcile}.nft"
+  mkdir -p "$runtime"
+  existing_table=""
+  if existing_table="$($nft_bin list table inet router_policy_boot_guard 2>/dev/null)"; then
+    printf '%s\n' "$existing_table" | grep -F 'comment "router-policy owner=flintroute"' >/dev/null || {
+      rm -f "$transition_batch"
+      echo "reason=boot_guard_ownership_unproven" >&2
+      return 1
+    }
+    printf '%s\n' 'delete table inet router_policy_boot_guard' > "$transition_batch"
+  else
+    : > "$transition_batch"
+  fi
+  cat "$boot_guard_file" >> "$transition_batch"
+  if ! "$nft_bin" -c -f "$transition_batch"; then
+    rm -f "$transition_batch"
+    echo "reason=boot_guard_transition_check_failed" >&2
+    return 1
+  fi
+  if ! "$nft_bin" -f "$transition_batch"; then
+    rm -f "$transition_batch"
+    echo "reason=boot_guard_transition_failed" >&2
+    return 1
+  fi
+  rm -f "$transition_batch"
+}
+
 clear_boot_guard() {
-  "$nft_bin" delete table inet router_policy_boot_guard >/dev/null 2>&1 || true
+  delete_boot_guard_table
   rm -f "$boot_guard_file"
   echo "boot_guard=cleared"
 }
@@ -273,6 +371,14 @@ verify_token() {
     echo "reason=transaction_identity_mismatch" >&2
     return 1
   }
+  if [ -n "${expected_candidate_hash:-}" ] && [ "$expected_candidate_hash" != "$candidate_hash" ]; then
+    echo "reason=candidate_hash_binding_mismatch" >&2
+    return 1
+  fi
+  if [ -n "${expected_artifact_manifest_hash:-}" ] && [ "$expected_artifact_manifest_hash" != "$artifact_manifest_hash" ]; then
+    echo "reason=artifact_manifest_hash_binding_mismatch" >&2
+    return 1
+  fi
   case "$artifacts_ready" in true|false) ;; *) echo "reason=artifact_readiness_missing" >&2; return 1 ;; esac
   case "$artifacts_simulation" in true|false) ;; *) echo "reason=artifact_simulation_flag_missing" >&2; return 1 ;; esac
   "$router_policy_bin" internal-verify-rollback-token "$stored_hash" < "$capability_file" >/dev/null 2>&1 || {
@@ -288,6 +394,7 @@ write_status() {
     echo "transaction_id=$txid"
     echo "revision_id=$revision"
     echo "status=$status_value"
+    echo "transaction_state=$status_value"
     echo "updated_at=$(now_utc)"
   } > "$txdir/status.env.tmp"
   mv "$txdir/status.env.tmp" "$txdir/status.env"
@@ -462,10 +569,15 @@ create_snapshot() {
   create_root="$1"
   committed_active_source="${2:-}"
   recovery_artifact_source="${3:-}"
+  committed_config_source="${4:-}"
   rm -rf "$create_root.tmp"
   mkdir -p "$create_root.tmp"
   : > "$create_root.tmp/manifest.txt"
-  snapshot_one "$config" "router-policy-config.json" "$create_root.tmp"
+  if [ -n "$committed_config_source" ]; then
+    snapshot_source_as "$config" "router-policy-config.json" "$create_root.tmp" "$committed_config_source"
+  else
+    snapshot_one "$config" "router-policy-config.json" "$create_root.tmp"
+  fi
   snapshot_one "$active_nft" "router-policy.nft" "$create_root.tmp"
   snapshot_one "$active_dnsmasq" "router-policy-dnsmasq.conf" "$create_root.tmp"
   snapshot_one "$active_xray" "xray-active.json" "$create_root.tmp"
@@ -629,6 +741,10 @@ start_timer() {
   timer_bootstrap="$timer_file.bootstrap"
   rm -f "$timer_bootstrap" "$timer_bootstrap.tmp"
   (
+    sleeper_pid=""
+    # The worker owns this child. Keep the trap active until the child has
+    # exited so a startup failure cannot strand a sleep process under PID 1.
+    trap 'if [ -n "$sleeper_pid" ]; then kill -TERM "$sleeper_pid" 2>/dev/null || true; fi; exit 143' HUP INT TERM
     sleep "$seconds" &
     sleeper_pid="$!"
     sleeper_start="$(process_start "$sleeper_pid")"
@@ -652,7 +768,15 @@ start_timer() {
   while [ ! -f "$timer_bootstrap" ]; do
     timer_wait_attempts=$((timer_wait_attempts + 1))
     [ "$timer_wait_attempts" -le 5 ] || {
-      kill "$timer_pid" 2>/dev/null || true
+      # Do not use an unbound kill here: a reused PID must never be stopped.
+      # If the worker did not publish its child identity, we can only prove
+      # ownership of the worker itself; failure to terminate it is a hard
+      # start failure rather than permission to leave an orphan timer behind.
+      terminate_owned_timer_pid "$timer_pid" "$timer_start" || {
+        echo "reason=rollback_timer_worker_cleanup_unverified" >&2
+        return 1
+      }
+      rm -f "$timer_bootstrap" "$timer_bootstrap.tmp"
       echo "reason=rollback_timer_failed_to_start" >&2
       return 1
     }
@@ -690,17 +814,11 @@ cancel_timer() {
     rm -f "$timer_file"
     return 0
   fi
-  if [ -n "$timer_sleep_pid" ] && kill -0 "$timer_sleep_pid" 2>/dev/null; then
-    current_sleep_start="$(process_start "$timer_sleep_pid" 2>/dev/null || true)"
-    if [ -n "$current_sleep_start" ] && [ "$current_sleep_start" = "$timer_sleep_start" ]; then
-      kill "$timer_sleep_pid" 2>/dev/null || true
-    fi
+  if [ -n "$timer_sleep_pid" ] && [ -n "$timer_sleep_start" ]; then
+    terminate_owned_timer_pid "$timer_sleep_pid" "$timer_sleep_start" || return 1
   fi
-  if [ -n "$timer_pid" ] && kill -0 "$timer_pid" 2>/dev/null; then
-    current_start="$(process_start "$timer_pid" 2>/dev/null || true)"
-    if [ -n "$current_start" ] && [ "$current_start" = "$timer_start" ]; then
-      kill "$timer_pid" 2>/dev/null || true
-    fi
+  if [ -n "$timer_pid" ] && [ -n "$timer_start" ]; then
+    terminate_owned_timer_pid "$timer_pid" "$timer_start" || return 1
   fi
   rm -f "$timer_file" "$timer_file.bootstrap" "$timer_file.bootstrap.tmp"
 }
@@ -745,28 +863,152 @@ nft_identity() {
   printf '%s %s\n' "$identity_family" "$identity_table"
 }
 
-delete_nft_table_from() {
-  identity_file="$1"
-  identity="$(nft_identity "$identity_file" 2>/dev/null || true)"
-  [ -n "$identity" ] || return 0
+replace_owned_nft_table() {
+  nft_source="$1"
+  [ -s "$nft_source" ] || return 0
+  if ! identity="$(nft_identity "$nft_source" 2>/dev/null)"; then
+    echo "reason=owned_nft_identity_invalid" >&2
+    return 1
+  fi
+  [ -n "$identity" ] || {
+    echo "reason=owned_nft_identity_invalid" >&2
+    return 1
+  }
   identity_family="${identity%% *}"
   identity_table="${identity#* }"
-  "$nft_bin" delete table "$identity_family" "$identity_table" >/dev/null 2>&1 || true
+  owned_marker='comment "router-policy owner=flintroute"'
+  grep -F "$owned_marker" "$nft_source" >/dev/null || {
+    echo "reason=owned_nft_marker_missing" >&2
+    return 1
+  }
+  transition_batch="$runtime/nft-transition-${txid:-reconcile}.nft"
+  mkdir -p "$runtime"
+  # A single nft input is one kernel transaction.  If the owned table exists,
+  # destroy and recreate it in that same transaction; syntax or apply errors
+  # therefore leave the previous table intact instead of opening a gap.
+  existing_table=""
+  if existing_table="$("$nft_bin" list table "$identity_family" "$identity_table" 2>/dev/null)"; then
+    printf '%s\n' "$existing_table" | grep -F "$owned_marker" >/dev/null || {
+      rm -f "$transition_batch"
+      echo "reason=owned_nft_ownership_unproven" >&2
+      return 1
+    }
+    printf 'delete table %s %s\n' "$identity_family" "$identity_table" > "$transition_batch"
+  else
+    : > "$transition_batch"
+  fi
+  cat "$nft_source" >> "$transition_batch"
+  if ! "$nft_bin" -c -f "$transition_batch"; then
+    rm -f "$transition_batch"
+    echo "reason=owned_nft_transition_check_failed" >&2
+    return 1
+  fi
+  if ! "$nft_bin" -f "$transition_batch"; then
+    rm -f "$transition_batch"
+    echo "reason=owned_nft_transition_failed" >&2
+    return 1
+  fi
+  rm -f "$transition_batch"
 }
 
 reload_project_firewall() {
-  generated_nft=""
-  if [ -n "${generated:-}" ]; then
-    generated_nft="$generated/router-policy.nft"
-    delete_nft_table_from "$generated_nft"
-  fi
-  if [ "$active_nft" != "$generated_nft" ]; then
-    delete_nft_table_from "$active_nft"
-  fi
-  "$fw4_bin" reload
   if [ -s "$active_nft" ]; then
-    "$nft_bin" -f "$active_nft"
+    replace_owned_nft_table "$active_nft"
   fi
+}
+
+replace_owned_nft_command() {
+  take_lock
+  verify_token
+  pending_matches || { echo "reason=transaction_not_pending" >&2; exit 3; }
+  replace_owned_nft_table "$generated/router-policy.nft"
+  echo "operation=nft.replace_owned_table"
+  echo "generation=$revision"
+  echo "transaction_state=nft_replaced"
+  echo "transaction_id=$txid"
+  echo "revision_id=$revision"
+  echo "candidate_hash=$candidate_hash"
+  echo "artifact_manifest_hash=$artifact_manifest_hash"
+}
+
+apply_ip_plan_command() {
+  take_lock
+  verify_token
+  pending_matches || { echo "reason=transaction_not_pending" >&2; exit 3; }
+  [ -f "$generated/ip-plan.json" ] || { echo "reason=ip_plan_missing" >&2; exit 3; }
+  ROUTER_POLICY_IP_BIN="$ip_bin" ROUTER_POLICY_UCI_BIN="$uci_bin" "$router_policy_bin" internal-apply-ip-plan --plan "$generated/ip-plan.json" --transaction "$txid" --revision "$revision" --candidate-hash "$candidate_hash" >/dev/null
+  echo "operation=ip_plan.apply"
+  echo "generation=$revision"
+  echo "transaction_state=ip_plan_applied"
+  echo "transaction_id=$txid"
+  echo "revision_id=$revision"
+  echo "candidate_hash=$candidate_hash"
+  echo "artifact_manifest_hash=$artifact_manifest_hash"
+}
+
+rollback_ip_plan_command() {
+  take_lock
+  verify_token
+  pending_matches || { echo "reason=transaction_not_pending" >&2; exit 3; }
+  [ -f "$generated/ip-plan.json" ] && [ -f "$txdir/snapshot/ip-state.json" ] || { echo "reason=ip_plan_snapshot_missing" >&2; exit 3; }
+  ROUTER_POLICY_IP_BIN="$ip_bin" "$router_policy_bin" internal-rollback-ip-state --plan "$generated/ip-plan.json" --transaction "$txid" --revision "$revision" --candidate-hash "$candidate_hash" --pre-state "$txdir/snapshot/ip-state.json" >/dev/null
+  echo "operation=ip_plan.rollback"
+  echo "generation=$revision"
+  echo "transaction_state=ip_plan_rolled_back"
+  echo "transaction_id=$txid"
+  echo "revision_id=$revision"
+  echo "candidate_hash=$candidate_hash"
+  echo "artifact_manifest_hash=$artifact_manifest_hash"
+}
+
+artifact_paths() {
+  helper_artifact_kind="$1"
+  case "$helper_artifact_kind" in
+    xray_config) artifact_source="$generated/xray.json"; artifact_target="$active_xray" ;;
+    zapret_config) artifact_source="$generated/nfqws.conf"; artifact_target="$active_zapret" ;;
+    dnsmasq_config) artifact_source="$generated/router-policy-dnsmasq.conf"; artifact_target="$active_dnsmasq" ;;
+    nft_table) artifact_source="$generated/router-policy.nft"; artifact_target="$active_nft" ;;
+    ip_plan) artifact_source="$generated/ip-plan.json"; artifact_target="$txdir/active-ip-plan.json" ;;
+    *) echo "reason=artifact_kind_not_allowlisted" >&2; return 1 ;;
+  esac
+}
+
+install_artifact_command() {
+  take_lock
+  verify_token
+  pending_matches || { echo "reason=transaction_not_pending" >&2; exit 3; }
+  artifact_paths "${7:-}" || exit 2
+  [ -f "$artifact_source" ] && [ ! -L "$artifact_source" ] || { echo "reason=artifact_source_missing" >&2; exit 3; }
+  if [ "${7:-}" = "nft_table" ]; then
+    replace_owned_nft_table "$artifact_source"
+  else
+    atomic_install "$artifact_source" "$artifact_target"
+  fi
+  echo "operation=artifact.install"
+  echo "generation=$revision"
+  echo "transaction_state=artifact_installed"
+  echo "artifact_kind=${7:-}"
+  echo "transaction_id=$txid"
+  echo "revision_id=$revision"
+  echo "candidate_hash=$candidate_hash"
+  echo "artifact_manifest_hash=$artifact_manifest_hash"
+}
+
+remove_artifact_command() {
+  take_lock
+  verify_token
+  pending_matches || { echo "reason=transaction_not_pending" >&2; exit 3; }
+  artifact_paths "${7:-}" || exit 2
+  [ "${7:-}" != "nft_table" ] || { echo "reason=nft_table_requires_owned_transition" >&2; exit 3; }
+  rm -f "$artifact_target"
+  echo "operation=artifact.remove"
+  echo "generation=$revision"
+  echo "transaction_state=artifact_removed"
+  echo "artifact_kind=${7:-}"
+  echo "transaction_id=$txid"
+  echo "revision_id=$revision"
+  echo "candidate_hash=$candidate_hash"
+  echo "artifact_manifest_hash=$artifact_manifest_hash"
 }
 
 wait_dnsmasq_ready() {
@@ -865,7 +1107,12 @@ start_managed_service() {
 stop_managed_service() {
   service_init="$1"
   [ -x "$service_init" ] || return 0
-  "$service_init" stop >/dev/null 2>&1 || true
+  if "$service_init" running >/dev/null 2>&1; then
+    "$service_init" stop >/dev/null 2>&1 || {
+      echo "reason=managed_service_stop_failed" >&2
+      return 1
+    }
+  fi
 }
 
 apply_candidate() {
@@ -888,7 +1135,6 @@ apply_candidate() {
     exit 3
   }
   start_timer
-  atomic_install "$candidate" "$config"
   atomic_install "$generated/router-policy.nft" "$active_nft"
   atomic_install "$generated/router-policy-dnsmasq.conf" "$active_dnsmasq"
   atomic_install "$generated/xray.json" "$active_xray"
@@ -1084,31 +1330,96 @@ verify_data_plane() {
   fi
 }
 
-commit_tx() {
-  current_status="$(sed -n 's/^status=//p' "$txdir/status.env" 2>/dev/null | head -n 1)"
-  if [ "$current_status" = "committed" ]; then
-    echo "committed=true"
-    echo "already_committed=true"
-    return 0
+emit_commit_binding() {
+  commit_state="$1"
+  commit_value="$2"
+  rollback_value="$3"
+  if [ -z "${candidate_hash:-}" ] && [ -f "$binding_file" ]; then
+    candidate_hash="$(sed -n 's/^candidate_hash=//p' "$binding_file" | head -n 1)"
   fi
+  if [ -z "${artifact_manifest_hash:-}" ] && [ -f "$binding_file" ]; then
+    artifact_manifest_hash="$(sed -n 's/^artifact_manifest_hash=//p' "$binding_file" | head -n 1)"
+  fi
+  [ -n "${candidate_hash:-}" ] && [ -n "${artifact_manifest_hash:-}" ] || {
+    echo "reason=commit_binding_hashes_missing" >&2
+    return 1
+  }
+  echo "protocol_version=1"
+  echo "operation=$4"
+  echo "request_id=${txid}-${revision}"
+  echo "transaction_id=$txid"
+  echo "revision_id=$revision"
+  echo "candidate_hash=$candidate_hash"
+  echo "artifact_manifest_hash=$artifact_manifest_hash"
+  echo "transaction_state=$commit_state"
+  echo "committed=$commit_value"
+  echo "rollback_capable=$rollback_value"
+  echo "generation=$revision"
+}
+
+write_active_transaction_state() {
+  state_value="$1"
+  {
+    echo "transaction_id=$txid"
+    echo "revision_id=$revision"
+    echo "candidate_hash=$candidate_hash"
+    echo "artifact_manifest_hash=$artifact_manifest_hash"
+    echo "transaction_state=$state_value"
+    echo "updated_at=$(now_utc)"
+  } > "$active_file.tmp"
+  mv "$active_file.tmp" "$active_file"
+}
+
+commit_prepared_tx() {
+  current_status="$(sed -n 's/^status=//p' "$txdir/status.env" 2>/dev/null | head -n 1)"
+  case "$current_status" in
+    committed)
+      emit_commit_binding committed true false commit-prepared
+      echo "already_committed=true"
+      return 0
+      ;;
+    adapter_activated|control_plane_committed)
+      emit_commit_binding adapter_activated false true commit-prepared
+      echo "already_prepared=true"
+      return 0
+      ;;
+  esac
   take_lock
   verify_token
   active_matches || {
     echo "reason=active_transaction_mismatch" >&2
     exit 6
   }
-  cancel_timer
-  committed_active="$txdir/committed-active.env"
-  {
-    echo "transaction_id=$txid"
-    echo "revision_id=$revision"
-    echo "candidate_hash=$candidate_hash"
-    echo "artifact_manifest_hash=$artifact_manifest_hash"
-    echo "transaction_state=committed"
-    echo "updated_at=$(now_utc)"
-  } > "$committed_active.tmp"
-  mv "$committed_active.tmp" "$committed_active"
-  create_snapshot "$state/last-good" "$committed_active" "$generated"
+  write_active_transaction_state "adapter_activated"
+  write_status "adapter_activated"
+  emit_commit_binding adapter_activated false true commit-prepared
+}
+
+finalize_commit_tx() {
+  current_status="$(sed -n 's/^status=//p' "$txdir/status.env" 2>/dev/null | head -n 1)"
+  if [ "$current_status" = "committed" ]; then
+    emit_commit_binding committed true false finalize-commit
+    echo "already_committed=true"
+    return 0
+  fi
+  case "$current_status" in
+    adapter_activated|control_plane_committed) ;;
+    *)
+      echo "reason=commit_prepared_required" >&2
+      exit 6
+      ;;
+  esac
+  take_lock
+  verify_token
+  active_matches || {
+    echo "reason=active_transaction_mismatch" >&2
+    exit 6
+  }
+  # The adapter is only finalized after the control plane has persisted its
+  # active revision.  The caller marks control_plane_committed before invoking
+  # this command; this shell step never removes rollback capability early.
+  write_active_transaction_state "committed"
+  create_snapshot "$state/last-good" "$active_file" "$generated" "$candidate"
   {
     echo "transaction_id=$txid"
     echo "revision_id=$revision"
@@ -1119,13 +1430,16 @@ commit_tx() {
   mv "$state/last-good/transaction.env.tmp" "$state/last-good/transaction.env"
   printf '%s\n' "$revision" > "$state/active-revision.tmp"
   mv "$state/active-revision.tmp" "$state/active-revision"
-  atomic_install "$committed_active" "$active_file"
   rm -f "$pending_file"
+  cancel_timer
   write_status "committed"
   rm -f "$capability_file"
-  echo "committed=true"
-  echo "active_transaction=$txid"
-  echo "active_revision=$revision"
+  emit_commit_binding committed true false finalize-commit
+}
+
+commit_tx() {
+  commit_prepared_tx
+  finalize_commit_tx
 }
 
 known_restore_target() {
@@ -1165,6 +1479,7 @@ verify_snapshot() {
 
 restore_snapshot() {
   snapshot_dir="$1"
+  restore_bootstrap="${2:-true}"
   verify_snapshot "$snapshot_dir" || {
     echo "reason=snapshot_integrity_failed" >&2
     return 1
@@ -1179,6 +1494,9 @@ restore_snapshot() {
       continue
     fi
     if [ "$restore_owner" = "project" ]; then
+      if [ "$restore_bootstrap" != "true" ] && [ "$restore_target" = "$config" ]; then
+        continue
+      fi
       if [ "$restore_state" = "present" ]; then
         atomic_install "$snapshot_dir/$restore_name" "$restore_target"
       elif [ "$restore_state" = "absent" ]; then
@@ -1194,7 +1512,11 @@ restore_snapshot() {
       case "$restore_value" in 0|1) ;; *) return 1 ;; esac
       "$uci_bin" set "$restore_key=$restore_value"
     elif [ "$restore_state" = "absent" ]; then
-      "$uci_bin" -q delete "$restore_key" >/dev/null 2>&1 || true
+      # Missing is the expected idempotent state; a failed delete of an
+      # existing option must abort recovery instead of being hidden.
+      if "$uci_bin" -q get "$restore_key" >/dev/null 2>&1; then
+        "$uci_bin" delete "$restore_key" >/dev/null 2>&1 || return 1
+      fi
     else
       return 1
     fi
@@ -1259,7 +1581,7 @@ committed_deployment_matches() {
   recovery_generated="$1"
   recovery_active_matches || return 1
   [ ! -f "$boot_guard_file" ] || return 1
-  cmp -s "$state/last-good/router-policy-config.json" "$config" || return 1
+  "$router_policy_bin" internal-verify-candidate --candidate "$state/last-good/router-policy-config.json" --candidate-hash "$recovery_candidate_hash" >/dev/null || return 1
   cmp -s "$recovery_generated/router-policy.nft" "$active_nft" || return 1
   cmp -s "$recovery_generated/router-policy-dnsmasq.conf" "$active_dnsmasq" || return 1
   cmp -s "$recovery_generated/xray.json" "$active_xray" || return 1
@@ -1295,17 +1617,27 @@ rollback_tx() {
     return 0
   fi
   if [ "$current_status" = "committed" ]; then
-    cancel_timer || true
+    emit_commit_binding committed true false rollback
     echo "rollback=false"
     echo "stale_timer_ignored=true"
     echo "reason=transaction_already_committed"
+    return 0
+  fi
+  if [ "$current_status" = "control_plane_committed" ]; then
+    emit_commit_binding control_plane_committed false true rollback
+    echo "rollback=false"
+    echo "reason=control_plane_commit_requires_finalize"
     return 0
   fi
   verify_token
   case "$current_status" in
     applied|management_failed|management_unverified|management_verified|data_plane_unverified|data_plane_failed|data_plane_verified)
       if [ -f "$active_file" ] && ! active_matches; then
-        cancel_timer || true
+        if ! cancel_timer; then
+          echo "rollback=false"
+          echo "reason=timer_cancellation_failed" >&2
+          exit 3
+        fi
         echo "rollback=false"
         echo "stale_timer_ignored=true"
         echo "reason=active_revision_changed"
@@ -1315,7 +1647,11 @@ rollback_tx() {
   esac
   take_lock
   verify_token
-  cancel_timer || true
+  if ! cancel_timer; then
+    echo "rollback=false"
+    echo "reason=timer_cancellation_failed" >&2
+    exit 3
+  fi
   if [ -f "$txdir/snapshot/manifest.txt" ]; then
     restore_snapshot "$txdir/snapshot"
     reload_restored_state "$txdir/snapshot"
@@ -1334,9 +1670,16 @@ rollback_tx() {
   if pending_matches; then rm -f "$pending_file"; fi
   if active_matches; then rm -f "$active_file"; fi
   write_status "rolled_back"
+  echo "protocol_version=1"
+  echo "operation=rollback"
   echo "rollback=true"
+  echo "committed=false"
+  echo "rollback_capable=false"
+  echo "transaction_state=rolled_back"
   echo "transaction_id=$txid"
   echo "revision_id=$revision"
+  echo "candidate_hash=$candidate_hash"
+  echo "artifact_manifest_hash=$artifact_manifest_hash"
 }
 
 reconcile_tx() {
@@ -1380,7 +1723,7 @@ reconcile_tx() {
     return 0
   fi
   install_boot_guard
-  restore_snapshot "$state/last-good"
+  restore_snapshot "$state/last-good" false
   restore_service_state "$state/last-good" "xray-service.state" "$xray_init" "xray"
   restore_service_state "$state/last-good" "zapret-service.state" "$zapret_init" "zapret"
   ROUTER_POLICY_IP_BIN="$ip_bin" ROUTER_POLICY_UCI_BIN="$uci_bin" "$router_policy_bin" internal-apply-ip-plan --plan "$recovery_generated/ip-plan.json" --transaction "$txid" --revision "$revision" --candidate-hash "$recovery_candidate_hash" >/dev/null
@@ -1401,6 +1744,7 @@ status_tx() {
   echo "runtime_dir=$runtime"
   if [ -f "$active_file" ]; then
     sed -n 's/^transaction_id=/active_transaction=/p; s/^revision_id=/active_revision=/p; s/^candidate_hash=/active_candidate_hash=/p; s/^artifact_manifest_hash=/active_artifact_manifest_hash=/p; s/^transaction_state=/transaction_state=/p' "$active_file"
+    status_value="$(sed -n 's/^status=//p' "$state/transactions/$revision/$txid/status.env" 2>/dev/null | head -n 1)"
   else
     echo "active_transaction="
     echo "active_revision="
@@ -1408,6 +1752,7 @@ status_tx() {
     echo "active_artifact_manifest_hash="
     echo "transaction_state=idle"
   fi
+  echo "protocol_version=1"
 }
 
 if [ "${ROUTER_POLICY_ADAPTER_LIB_ONLY:-0}" = "1" ]; then
@@ -1435,7 +1780,7 @@ case "$cmd" in
     [ "$config" = "$known_config" ] || exit 2
     status_tx
     ;;
-  prepare|validate-candidate|snapshot-current|apply-candidate|verify-management|verify-data-plane|commit|rollback)
+  prepare|validate-candidate|snapshot-current|apply-candidate|verify-management|verify-data-plane|commit|commit-prepared|finalize-commit|rollback|replace-owned-nft|apply-ip-plan|rollback-ip-plan|artifact-install|artifact-remove)
     require_transaction_args
     case "$cmd" in
       prepare) prepare_tx ;;
@@ -1445,11 +1790,18 @@ case "$cmd" in
       verify-management) verify_management ;;
       verify-data-plane) verify_data_plane ;;
       commit) commit_tx ;;
+      commit-prepared) commit_prepared_tx ;;
+      finalize-commit) finalize_commit_tx ;;
       rollback) rollback_tx ;;
+      replace-owned-nft) replace_owned_nft_command ;;
+      apply-ip-plan) apply_ip_plan_command ;;
+      rollback-ip-plan) rollback_ip_plan_command ;;
+      artifact-install) install_artifact_command ;;
+      artifact-remove) remove_artifact_command ;;
     esac
     ;;
   *)
-    echo "usage: adapter.sh prepare|validate-candidate|snapshot-current|apply-candidate|verify-management|verify-data-plane|commit|rollback|reconcile|boot-guard|clear-boot-guard|status CONFIG [TX_ID REVISION [CANDIDATE_HASH ARTIFACT_MANIFEST_HASH]]" >&2
+    echo "usage: adapter.sh prepare|validate-candidate|snapshot-current|apply-candidate|verify-management|verify-data-plane|commit|commit-prepared|finalize-commit|rollback|replace-owned-nft|apply-ip-plan|rollback-ip-plan|artifact-install|artifact-remove|reconcile|boot-guard|clear-boot-guard|status CONFIG [TX_ID REVISION [CANDIDATE_HASH ARTIFACT_MANIFEST_HASH [ARTIFACT_KIND]]]" >&2
     exit 2
     ;;
 esac

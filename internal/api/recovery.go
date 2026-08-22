@@ -17,6 +17,7 @@ type recoveryStatus struct {
 	RevisionID           string    `json:"revision_id,omitempty"`
 	CandidateHash        string    `json:"candidate_hash,omitempty"`
 	ArtifactManifestHash string    `json:"artifact_manifest_hash,omitempty"`
+	CommitPhase          string    `json:"commit_phase,omitempty"`
 	StartedAt            time.Time `json:"started_at"`
 	FinishedAt           time.Time `json:"finished_at"`
 }
@@ -55,6 +56,11 @@ func (s *Server) recoverCommittedDataplane(ctx context.Context) {
 	target := adapter.RecoveryTarget{
 		TransactionID: revision.TransactionID, RevisionID: revision.RevisionID,
 		CandidateHash: revision.CandidateHash, ArtifactManifestHash: revision.ArtifactManifestHash,
+	}
+	if revision.State == "control_plane_committed" {
+		result = recoveryRequired(started, "active_revision_pending_finalize", "active revision is durable but adapter finalization is not proven", target, "control_plane_committed")
+		s.setRecoveryStatus(result)
+		return
 	}
 	if revision.State != "committed" || revision.RevisionID != activeRevision || revision.TransactionID == "" || revision.CandidateHash == "" || revision.ArtifactManifestHash == "" {
 		result = failedRecovery(started, "active_revision_invalid", "active revision record is incomplete or not committed", target)
@@ -152,6 +158,31 @@ func failedRecovery(started time.Time, code, reason string, target adapter.Recov
 	}
 }
 
+func recoveryRequired(started time.Time, code, reason string, target adapter.RecoveryTarget, phase string) recoveryStatus {
+	return recoveryStatus{
+		Status: "recovery_required", ReasonCode: code, Reason: reason,
+		TransactionID: target.TransactionID, RevisionID: target.RevisionID,
+		CandidateHash: target.CandidateHash, ArtifactManifestHash: target.ArtifactManifestHash,
+		CommitPhase: phase, StartedAt: started, FinishedAt: time.Now().UTC(),
+	}
+}
+
+func (s *Server) markRecoveryRequired(target adapter.RecoveryTarget, code, reason, phase string) {
+	s.setRecoveryStatus(recoveryRequired(time.Now().UTC(), code, reason, target, phase))
+}
+
+func (s *Server) mutationFailure() *actionFailure {
+	status := s.currentRecoveryStatus()
+	if status.Status != "recovery_required" {
+		return nil
+	}
+	message := status.Reason
+	if message == "" {
+		message = "control-plane and adapter state require explicit recovery"
+	}
+	return &actionFailure{Status: 503, Code: "recovery_required", Message: message}
+}
+
 func (s *Server) setRecoveryStatus(status recoveryStatus) {
 	s.mu.Lock()
 	s.recovery = status
@@ -161,6 +192,8 @@ func (s *Server) setRecoveryStatus(status recoveryStatus) {
 		s.publishEvent(Event{Type: "recovery.completed", Severity: "info", ReasonCode: "committed_dataplane_recovered", Details: map[string]any{"revision_id": status.RevisionID}})
 	} else if status.Status == "error" {
 		s.publishEvent(Event{Type: "recovery.failed", Severity: "error", ReasonCode: status.ReasonCode, Details: map[string]any{"revision_id": status.RevisionID}})
+	} else if status.Status == "recovery_required" {
+		s.publishEvent(Event{Type: "recovery.required", Severity: "critical", ReasonCode: status.ReasonCode, Details: map[string]any{"revision_id": status.RevisionID, "transaction_id": status.TransactionID, "commit_phase": status.CommitPhase}})
 	}
 }
 
