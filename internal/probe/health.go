@@ -243,6 +243,19 @@ func (t *HealthTracker) Snapshot() []RouteHealth {
 	return result
 }
 
+// Get returns the last health decision for one route.  Callers use this for
+// bounded reactive failover; the returned value is a copy and is safe to
+// retain after the tracker lock is released.
+func (t *HealthTracker) Get(routeTag string) (RouteHealth, bool) {
+	if t == nil || routeTag == "" {
+		return RouteHealth{}, false
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	health, ok := t.routes[routeTag]
+	return health, ok
+}
+
 func (t *HealthTracker) OrderSmartDNS(routes []config.Route) []config.Route {
 	ordered := append([]config.Route(nil), routes...)
 	if t == nil {

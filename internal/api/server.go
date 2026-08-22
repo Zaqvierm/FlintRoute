@@ -143,6 +143,14 @@ type Server struct {
 	discoveryInFlight      map[string]bool
 	discoveryQueue         chan discovery.Observation
 	probeBudget            chan struct{}
+	routeFailureQueue      chan routeFailureReport
+	routeFailureMu         sync.Mutex
+	routeFailureRecent     map[string]time.Time
+	routeFailureCooldown   map[string]time.Time
+	routeRecoveryNext      map[string]time.Time
+	routeRecoveryBackoff   map[string]time.Duration
+	revalidationMu         sync.Mutex
+	revalidationNext       map[string]time.Time
 	deferRecovery          bool
 	schedulerOnce          sync.Once
 	schedulerCancel        context.CancelFunc
@@ -312,6 +320,12 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		discoveryInFlight:      map[string]bool{},
 		discoveryQueue:         make(chan discovery.Observation, discoveryQueueLimit),
 		probeBudget:            make(chan struct{}, probeBudgetSize),
+		routeFailureQueue:      make(chan routeFailureReport, 16),
+		routeFailureRecent:     map[string]time.Time{},
+		routeFailureCooldown:   map[string]time.Time{},
+		routeRecoveryNext:      map[string]time.Time{},
+		routeRecoveryBackoff:   map[string]time.Duration{},
+		revalidationNext:       map[string]time.Time{},
 		deferRecovery:          opts.DeferRecovery,
 	}
 	if preparer, ok := s.subscriptionPreparer.(ProbeBudgetAware); ok {
@@ -432,6 +446,9 @@ func (s *Server) startOperationalSchedulers(schedulerCtx context.Context) {
 	s.startTSPUScheduler(schedulerCtx)
 	s.startSubscriptionScheduler(schedulerCtx)
 	s.startDNSDiscovery(schedulerCtx)
+	s.startRouteFailureScheduler(schedulerCtx)
+	s.startFailedRouteRecoveryScheduler(schedulerCtx)
+	s.startClassifiedRevalidationScheduler(schedulerCtx)
 }
 
 func (s *Server) startTSPUScheduler(ctx context.Context) {
@@ -1022,6 +1039,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/domains", s.requireRole(auth.RoleViewer, s.handleDomains))
 	s.mux.HandleFunc("/api/v1/policies", s.requireRole(auth.RoleViewer, s.handlePolicies))
 	s.mux.HandleFunc("/api/v1/routes", s.requireRole(auth.RoleViewer, s.handleRoutes))
+	s.mux.HandleFunc("/api/v1/routes/revalidate", s.requireRole(auth.RoleAdministrator, s.handleClassifiedRevalidation))
 	s.mux.HandleFunc("/api/v1/components", s.requireRole(auth.RoleViewer, s.handleComponents))
 	s.mux.HandleFunc("/api/v1/components/action", s.requireRole(auth.RoleAdministrator, s.handleComponentAction))
 	s.mux.HandleFunc("/api/v1/components/", s.requireRole(auth.RoleViewer, s.handleComponentStatus))

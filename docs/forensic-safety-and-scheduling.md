@@ -119,7 +119,7 @@ unbounded number of concurrent route jobs, and the global ceiling remains four.
 | Failed-route recovery | one probe for one cooled-down route | 1 | 5m → 15m → 1h → 6h |
 | Subscription refresh | fetch/parse; candidate verification is bounded by the shared budget | 4 global jobs | 2m timeout, no overlap |
 | Known expiry | subscription refresh only | 0 if unchanged | one refresh window |
-| TSPU/GEO revalidation | targeted Direct check for the named domain | 1 | weekly/manual contract; runtime event wiring remains |
+| TSPU/GEO revalidation | targeted Direct check for the named domain | 1 | weekly scheduler or manual request; no VLESS fan-out |
 | Manual path check | selected path for the named service | 1 | 10s |
 
 The hard process-wide maximum is four concurrent route-check jobs. A discovery
@@ -149,10 +149,27 @@ copy, `tar`, `rm -rf`, `os.Chmod`, `os.Chown`, `os.MkdirAll`,
   paths onto system parents. They remain subject to their existing registry
   and allowlist checks.
 
-## Remaining boundary
+## Runtime boundary
 
-Reactive selected-route failover and expiry-aware subscription refresh need to
-be wired to the runtime route-error event stream; they are not represented by
-the old global health ticker. Until that integration is complete, the daily
-inventory check is intentionally conservative and no hardware PASS should be
-claimed for the new scheduling behavior.
+Expiry-aware subscription refresh is wired to subscription metadata: a known
+expiry schedules one refresh window before expiry, while sources without an
+expiry use a jittered daily refresh. It is not part of the route-health cycle.
+
+Reactive failover now has an explicit `ReportSelectedRouteFailure` ingress and
+a single worker. Three consecutive transport failures are required before a
+five-second confirmation probe; at most one known-good standby is then probed
+and the route change goes through the normal transaction/rollback path. Duplicate
+reports are coalesced for 10 seconds and a failed route is held for five minutes.
+The current dataplane adapters do not yet emit this ingress automatically, so
+callers must wire their real request-path error to that method; the scheduler
+does not infer user failures from periodic inventory checks.
+
+An unhealthy route is recovered independently: at most one cooled-down route is
+probed per minute, with a 5-minute first retry and bounded 15-minute, 45-minute,
+135-minute and 6-hour caps. A successful probe clears the retry state but does
+not silently steal traffic back from the currently selected route.
+
+TSPU/GEO revalidation is separate from health: `RevalidateClassifiedDomain`
+performs one Direct probe and emits a suggestion if Direct recovers. The
+background scheduler runs no more than one such job per hour and spaces each
+service by seven days. It never silently removes an existing bypass policy.

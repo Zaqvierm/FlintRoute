@@ -74,6 +74,7 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/xray/manual-servers` | list safe metadata, add or delete manual VLESS outbounds; UUID and source URI are never returned |
 | `/api/v1/xray/pool` `/pool/settings` | logical servers, credential sources, tariff and explainable score |
 | `/api/v1/xray/pool/speedtest` | bounded manual throughput measurement through one verified loopback VLESS SOCKS path |
+| `/api/v1/routes/revalidate` | manually run one bounded Direct revalidation for a configured TSPU/GEO service |
 | `/api/v1/events` | persisted history merged with live epoch |
 | `/api/v1/events/stream` | SSE stream |
 | `/api/v1/changes` `GET/POST` | list/create ChangeSet |
