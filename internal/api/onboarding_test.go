@@ -75,6 +75,30 @@ func TestOnboardingStateIsBackendPersistedAndCannotCompleteFromBrowserHint(t *te
 	}
 }
 
+func TestOnboardingResponseFailsClosedForCorruptPersistedStep(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	srv.provider = onboardingReadyProvider{}
+	state := defaultOnboardingState()
+	state.Steps["methods"] = onboardingStep{Status: "corrupted"}
+	state.Steps["sources"] = onboardingStep{Status: "accepted"}
+	state.Steps["services"] = onboardingStep{Status: "accepted"}
+	if err := srv.store.SaveJSON("onboarding", onboardingStateKey, state); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client, _ := login(t, ts.URL)
+	data := getAPIData(t, client, ts.URL+"/api/v1/onboarding")
+	var response map[string]any
+	if err := json.Unmarshal(data, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["can_complete"] == true {
+		t.Fatalf("corrupt persisted step unlocked completion: %+v", response)
+	}
+}
+
 func TestOnboardingOverviewReadyRequiresProofStates(t *testing.T) {
 	tests := []struct {
 		name     string
