@@ -7,11 +7,12 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 
 - Base review SHA: `d45a779dfa9dc024b426cef358d3df4d32478897`
 - Branch: `remediation/transaction-and-privilege-boundaries`
-- Code verification SHA: `084898c8898c99203017964de1d5e377b670df0d` (recovery
+- Code verification SHA: `82845295b76a0fe1938289de013d46716edfc0df` (recovery
   fence, route-verification semantics, bounded Zapret modes, truthful UI/browser
   coverage, screen-specific request budget, refresh cancellation, backend-gated
-  onboarding, stateful Fast Start completion, and robust Zapret process ownership). This document may be advanced by docs-only
-  commits; the code evidence remains bound to this SHA.
+  onboarding, stateful Fast Start completion, robust Zapret process ownership,
+  and non-terminal Decision Flow states). Earlier Go/safety evidence remains
+  explicitly attributed to its original SHA.
 - Verification scope: the exact code SHA recorded here; older evidence is not
   inherited by this follow-up.
 - Hardware scope: **not run**. Flint 2 was not contacted, installed, rebooted,
@@ -31,7 +32,7 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | recovery mutation allowlist | `go test ./internal/api -run 'TestRecovery|TestAutomaticDomainCommit|TestHealthScheduler'` | PASS | local |
 | recovery status persistence failure | `TestRecoveryStatusPersistenceFailureInstallsMemoryFence` | PASS | local |
 | concurrent recovery/apply fence | `TestRecoveryTransitionExcludesConcurrentMutation` | PASS | local |
-| frontend recovery mutation fence | `npm run test`, `npm run browser:test` (`recovery=starting`) | PASS (35 unit tests; 9 browser tests) | local Chromium |
+| frontend recovery mutation fence | `npm run test`, `npm run browser:test` (`recovery=starting`) | PASS (37 unit tests; 9 browser tests) | local Chromium |
 | immutable bootstrap | `tests/openwrt-adapter-integration.sh` | PASS | local/mock |
 | installer parent modes | `tests/installer-lifecycle.sh` | PASS | local/mock |
 | legacy shell atomic write | `tests/shell-library.sh` | PASS (mode check is Linux-only; Windows reports `NOT RUN LOCALLY`) | local/mock |
@@ -49,12 +50,12 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | route latency vs verification duration | probe/API separation tests | PASS | local |
 | unknown route latency scoring | `TestSelectBestDoesNotTreatUnknownLatencyAsZero` | PASS | local |
 | frontend build | `npm run build` | PASS | local |
-| frontend tests | `npm test` | PASS (35 tests) | local |
+| frontend tests | `npm test` | PASS (37 tests) | local |
 | browser smoke/responsive | `npm run browser:test` | PASS (9 tests; 10 viewport matrix); [CI run 32575449236](https://github.com/Zaqvierm/FlintRoute/actions/runs/32575449236) | local Chromium + Linux CI |
 | ShellCheck | `.tools/shellcheck-v0.11.0/shellcheck.exe -x <tracked shell files>` | PASS | local |
 | race/vet | `go test -race ./...`, `go vet ./...` | PASS | local |
 
-The full local runner at the recorded code SHA completed in 365.3 seconds with
+The full local runner at the recorded code SHA completed in 322.5 seconds with
 `all_tests_ok=true`. Its Linux-only namespace/process-group steps were
 honestly reported as `NOT RUN LOCALLY`; the independent GitHub runs above are
 the Linux evidence. The earlier `e04778e` nft run failed because the fixture's
@@ -151,6 +152,20 @@ The latest required CI runs for that head passed:
 - nft transition safety: [run 32579761689](https://github.com/Zaqvierm/FlintRoute/actions/runs/32579761689)
 - Zapret process-group safety: [run 32579761688](https://github.com/Zaqvierm/FlintRoute/actions/runs/32579761688)
 - UI browser/responsive: [run 32579761695](https://github.com/Zaqvierm/FlintRoute/actions/runs/32579761695)
+
+### Current code follow-up
+
+At `82845295b76a0fe1938289de013d46716edfc0df`, Decision Flow no longer labels
+every `path_verified=false` event as a terminal failure. `VERIFYING` and
+`in_progress` remain `Проверяется…`, observe-only remains passive, and
+`NO_SAFE_ROUTE` is shown as terminal only when the planner reports exhausted
+candidates. The same semantics are used in service details. This follow-up
+added two frontend regressions; the focused gate passed with 37 unit tests and
+9 browser tests. `gofmt` was clean, `go test -race ./...` passed in 136.3
+seconds, `go vet ./...` passed, and the full local runner passed in 322.5
+seconds. The production bundle is 185.15 kB JS (58.04 kB gzip) and 26.52 kB
+CSS (6.28 kB gzip). Linux-only namespace/process-group checks remain
+`NOT RUN LOCALLY` on Windows.
 
 ## Known limitation
 
