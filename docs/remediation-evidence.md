@@ -205,6 +205,17 @@ Linux CI also passed for this exact code head:
 The current documentation head is `9f304923721b68775d4b34694543bbad86780261`;
 it records evidence only and does not alter the production behavior above.
 
+The adversarial follow-up at code head
+`b36b8a56d2a471aa0fcceccd5e38d8d6da9fab1b` removed the last dormant
+background-calibration path that could have called `applyChangeSet` merely to
+test a Zapret candidate. The scheduler now has no candidate-apply function to
+call. The old automatic domain commit path was also reduced to an explicit
+`automatic_route_assignment_unavailable` result; verified DNS decisions remain
+suggestions until a bounded route-only assignment backend exists. The direct
+regression proves a verified discovery result causes zero adapter calls and no
+persisted service, even with a safe recovery baseline. Targeted API tests,
+race tests and `go vet` passed; hardware remains unverified.
+
 ## Known limitation
 
 The packaged helper boundary is tested, but the production `router-policy`
