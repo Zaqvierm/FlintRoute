@@ -7,7 +7,9 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 
 - Base review SHA: `d45a779dfa9dc024b426cef358d3df4d32478897`
 - Branch: `remediation/transaction-and-privilege-boundaries`
-- Code verification SHA: `d7dffaf` (recovery fence plus route-verification semantics follow-up).
+- Code verification SHA: `b7a7597` (recovery fence, route-verification semantics,
+  bounded Zapret modes, and truthful UI/browser coverage). This document may be
+  advanced by docs-only commits; the code evidence remains bound to this SHA.
 - Verification scope: the exact code SHA recorded here; older evidence is not
   inherited by this follow-up.
 - Hardware scope: **not run**. Flint 2 was not contacted, installed, rebooted,
@@ -31,9 +33,9 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | installer parent modes | `tests/installer-lifecycle.sh` | PASS | local/mock |
 | boot guard | `tests/boot-guard-policy.sh`, `tests/boot-guard-service.sh` | PASS | local/mock |
 | privileged helper boundary | `tests/helper-service.sh`, `go test ./internal/helper` | PASS | local/mock |
-| nft transition | `tests/nft-transition-namespace.sh` | PASS, GitHub Actions run [32559811433](https://github.com/Zaqvierm/FlintRoute/actions/runs/32559811433) | Linux namespace |
+| nft transition | `tests/nft-transition-namespace.sh` | NOT RUN LOCALLY — Linux namespace/nftables; CI run required for `b7a7597` and recorded in the handoff | Linux namespace |
 | hotplug boundedness | `tests/hotplug-bounded.sh` | PASS | local/mock |
-| Zapret cleanup | `tests/zapret-calibration-runtime.sh` | PASS, GitHub Actions run [32559811439](https://github.com/Zaqvierm/FlintRoute/actions/runs/32559811439) | Linux process/procfs |
+| Zapret cleanup | `tests/zapret-calibration-runtime.sh` | NOT RUN LOCALLY — Linux process groups/procfs; CI run required for `b7a7597` and recorded in the handoff | Linux process/procfs |
 | SSRF and decompression limits | `go test ./internal/remotefetch ./internal/vpnsub ./internal/tspu ./internal/geoip` | PASS | local |
 | Xray typed input | `go test ./internal/vpnsub` | PASS | local |
 | resource budget | `go test ./internal/api ./internal/probe` | PASS | local |
@@ -42,16 +44,26 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | route latency vs verification duration | probe/API separation tests | PASS | local |
 | unknown route latency scoring | `TestSelectBestDoesNotTreatUnknownLatencyAsZero` | PASS | local |
 | frontend build | `npm run build` | PASS | local |
-| frontend tests | `npm.cmd test -- --run` | PASS (16 tests) | local |
+| frontend tests | `npm test` | PASS (26 tests) | local |
+| browser smoke/responsive | `npm run browser:test` | PASS (4 tests; 10 viewport matrix) | local Chromium |
+| ShellCheck | `.tools/shellcheck-v0.11.0/shellcheck.exe -x <tracked shell files>` | PASS | local |
 | race/vet | `go test -race ./...`, `go vet ./...` | PASS | local |
 
-The full local runner at the recorded SHA completed in 326.6 seconds with
+The full local runner at the recorded code SHA completed in 311.7 seconds with
 `all_tests_ok=true`. Its Linux-only namespace/process-group steps were
 honestly reported as `NOT RUN LOCALLY`; the independent GitHub runs above are
-the Linux evidence. The earlier `e04778e` nft run failed because the fixture's
+not inherited by this SHA. The exact-HEAD CI run IDs are recorded in the final
+handoff after push. The earlier `e04778e` nft run failed because the fixture's
 background traffic generator died before the counter assertion. Follow-up
 `abf26b6` keeps the namespace-side generator alive and the rerun passed. That
 failure remains part of the evidence trail rather than being erased.
+
+The Zapret calibration UI now has two explicit modes. `quick` is the bounded
+default and passes the pinned upstream `SCANLEVEL=quick`; `exhaustive` is an
+explicit maintenance action capped at six hours and passes `SCANLEVEL=force`.
+The current repository has no authoritative fixed 21-strategy asset, so the
+UI does not invent that number. Neither mode silently activates a production
+profile; the result is a reviewed candidate/draft.
 
 ## Known limitation
 
