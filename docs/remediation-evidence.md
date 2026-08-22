@@ -7,7 +7,7 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 
 - Base review SHA: `d45a779dfa9dc024b426cef358d3df4d32478897`
 - Branch: `remediation/transaction-and-privilege-boundaries`
-- Code verification SHA: `b7a7597` (recovery fence, route-verification semantics,
+- Code verification SHA: `f3c7355` (recovery fence, route-verification semantics,
   bounded Zapret modes, and truthful UI/browser coverage). This document may be
   advanced by docs-only commits; the code evidence remains bound to this SHA.
 - Verification scope: the exact code SHA recorded here; older evidence is not
@@ -33,9 +33,9 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | installer parent modes | `tests/installer-lifecycle.sh` | PASS | local/mock |
 | boot guard | `tests/boot-guard-policy.sh`, `tests/boot-guard-service.sh` | PASS | local/mock |
 | privileged helper boundary | `tests/helper-service.sh`, `go test ./internal/helper` | PASS | local/mock |
-| nft transition | `tests/nft-transition-namespace.sh` | NOT RUN LOCALLY — Linux namespace/nftables; CI run required for `b7a7597` and recorded in the handoff | Linux namespace |
+| nft transition | `tests/nft-transition-namespace.sh` | PASS — [run 32565429108](https://github.com/Zaqvierm/FlintRoute/actions/runs/32565429108), exact code SHA `f3c7355` | Linux namespace |
 | hotplug boundedness | `tests/hotplug-bounded.sh` | PASS | local/mock |
-| Zapret cleanup | `tests/zapret-calibration-runtime.sh` | NOT RUN LOCALLY — Linux process groups/procfs; CI run required for `b7a7597` and recorded in the handoff | Linux process/procfs |
+| Zapret cleanup | `tests/zapret-calibration-runtime.sh` | PASS — [run 32565429013](https://github.com/Zaqvierm/FlintRoute/actions/runs/32565429013), exact code SHA `f3c7355` | Linux process/procfs |
 | SSRF and decompression limits | `go test ./internal/remotefetch ./internal/vpnsub ./internal/tspu ./internal/geoip` | PASS | local |
 | Xray typed input | `go test ./internal/vpnsub` | PASS | local |
 | resource budget | `go test ./internal/api ./internal/probe` | PASS | local |
@@ -45,15 +45,14 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | unknown route latency scoring | `TestSelectBestDoesNotTreatUnknownLatencyAsZero` | PASS | local |
 | frontend build | `npm run build` | PASS | local |
 | frontend tests | `npm test` | PASS (26 tests) | local |
-| browser smoke/responsive | `npm run browser:test` | PASS (4 tests; 10 viewport matrix) | local Chromium |
+| browser smoke/responsive | `npm run browser:test` | PASS (4 tests; 10 viewport matrix); [CI run 32565429068](https://github.com/Zaqvierm/FlintRoute/actions/runs/32565429068) | local Chromium + Linux CI |
 | ShellCheck | `.tools/shellcheck-v0.11.0/shellcheck.exe -x <tracked shell files>` | PASS | local |
 | race/vet | `go test -race ./...`, `go vet ./...` | PASS | local |
 
-The full local runner at the recorded code SHA completed in 311.7 seconds with
+The full local runner at the recorded code SHA completed in 295.3 seconds with
 `all_tests_ok=true`. Its Linux-only namespace/process-group steps were
 honestly reported as `NOT RUN LOCALLY`; the independent GitHub runs above are
-not inherited by this SHA. The exact-HEAD CI run IDs are recorded in the final
-handoff after push. The earlier `e04778e` nft run failed because the fixture's
+the Linux evidence. The earlier `e04778e` nft run failed because the fixture's
 background traffic generator died before the counter assertion. Follow-up
 `abf26b6` keeps the namespace-side generator alive and the rerun passed. That
 failure remains part of the evidence trail rather than being erased.
