@@ -367,60 +367,6 @@ func (s *Server) probeAdaptiveTarget(ctx context.Context, cfg *config.Config, en
 	return result, nil
 }
 
-func (s *Server) calibrateAdaptiveCandidate(ctx context.Context, active *config.Config, runtime *adaptiveRuntime, bundle zapret.ServiceBundle, lease zapret.ScheduledProbe) (probe.RouteResult, error) {
-	updated, err := replaceBundleProfile(active.Zapret.AdaptiveAssignments, bundle.ID, lease.ProfileID)
-	if err != nil {
-		return probe.RouteResult{}, err
-	}
-	s.mu.Lock()
-	baseVersion := s.configVersion
-	s.mu.Unlock()
-	change, err := s.createDraftChange("Calibrate Zapret service profile", "Scheduled bounded profile calibration", baseVersion, []ChangeOp{{Type: "update", Path: "/zapret/adaptive_assignments", Value: updated}}, "adaptive-scheduler")
-	if err != nil {
-		if errors.Is(err, errBaseVersionConflict) {
-			return probe.RouteResult{}, errAdaptiveProbeBusy
-		}
-		return probe.RouteResult{}, err
-	}
-	change, failure := s.validateChangeSet(change)
-	if failure == nil {
-		change, failure = s.applyChangeSet(withAutomaticManagementProof(ctx), change)
-	}
-	if failure != nil {
-		if failure.Status == 409 {
-			return probe.RouteResult{}, errAdaptiveProbeBusy
-		}
-		return probe.RouteResult{}, fmt.Errorf("candidate apply failed: %s", failure.Code)
-	}
-	if change.State != "awaiting_confirmation" {
-		return probe.RouteResult{}, errors.New("adaptive calibration did not reach confirmation")
-	}
-	candidate, err := cloneConfigWithAdaptiveAssignments(active, updated)
-	if err != nil {
-		_, _ = s.rollbackChangeSet(context.WithoutCancel(ctx), change, false)
-		return probe.RouteResult{}, err
-	}
-	result, probeErr := s.probeAdaptiveTarget(ctx, candidate, s.probeEngineFactory(candidate), runtime, bundle, lease.Key)
-	rolled, rollbackFailure := s.rollbackChangeSet(context.WithoutCancel(ctx), change, false)
-	if rollbackFailure != nil || rolled.State != "rolled_back" {
-		return result, errors.New("adaptive calibration rollback failed")
-	}
-	return result, probeErr
-}
-
-func cloneConfigWithAdaptiveAssignments(active *config.Config, assignments []config.ZapretProfileAssignment) (*config.Config, error) {
-	raw, err := json.Marshal(active)
-	if err != nil {
-		return nil, err
-	}
-	var cloned config.Config
-	if err := json.Unmarshal(raw, &cloned); err != nil {
-		return nil, err
-	}
-	cloned.Zapret.AdaptiveAssignments = append([]config.ZapretProfileAssignment(nil), assignments...)
-	return &cloned, cloned.Validate()
-}
-
 func selectAdaptiveProbeTarget(cfg *config.Config, runtime *adaptiveRuntime, bundle zapret.ServiceBundle, key zapret.DecisionKey) (adaptiveProbeTarget, error) {
 	if key.Transport != "tcp" {
 		return adaptiveProbeTarget{}, errors.New("production adaptive probe does not support this transport")

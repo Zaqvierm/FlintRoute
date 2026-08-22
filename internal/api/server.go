@@ -766,50 +766,16 @@ func observationClassification(service, category, selectedType string, confidenc
 }
 
 func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.DomainCheck) automaticCommitResult {
+	// The route-only automatic assignment backend is not implemented yet. Never
+	// fall back to a full ChangeSet/apply from a DNS observation: that would
+	// rebuild dataplane topology from a background event. Verified decisions
+	// remain suggestions until an explicit bounded route-only mutation exists.
+	_ = ctx
+	_ = check
 	if failure := s.mutationFailureNow(); failure != nil {
 		return automaticCommitResult{Reason: failure.Message}
 	}
-	service, id, ok := automaticServiceForDecision(check)
-	if !ok {
-		return automaticCommitResult{Reason: "decision_not_eligible"}
-	}
-	operations := []ChangeOp{{Type: "set", Path: "/services/" + escapeJSONPointer(id), Value: service}}
-	if err := validateDiscoveryOperations(operations); err != nil {
-		return automaticCommitResult{Reason: err.Error()}
-	}
-	active := s.currentConfig()
-	if active.ServiceForDomain(check.Domain) != "" {
-		return automaticCommitResult{Reason: "domain_already_configured"}
-	}
-	s.mu.Lock()
-	baseVersion := s.configVersion
-	s.mu.Unlock()
-	change, err := s.createDraftChange("Add discovered domain policy", "Apply verified automatic route decision", baseVersion, operations, "domain-discovery")
-	if err != nil {
-		if errors.Is(err, errBaseVersionConflict) {
-			return automaticCommitResult{Reason: "base_version_conflict"}
-		}
-		return automaticCommitResult{Reason: err.Error()}
-	}
-	change, failure := s.validateChangeSet(change)
-	if failure == nil {
-		change, failure = s.applyChangeSet(withAutomaticManagementProof(ctx), change)
-	}
-	if failure == nil && change.State != "awaiting_confirmation" {
-		failure = conflict("automatic_apply_unverified", "automatic domain policy did not reach confirmation")
-	}
-	if failure == nil {
-		change, failure = s.confirmChangeSet(ctx, change)
-	}
-	if failure != nil {
-		rolledBack := change.State == "rolled_back" || change.State == "expired" || change.State == "failed"
-		if change.TransactionID != "" && change.State != "rolled_back" && change.State != "expired" {
-			rolled, rollbackFailure := s.rollbackChangeSet(context.WithoutCancel(ctx), change, false)
-			rolledBack = rollbackFailure == nil && (rolled.State == "rolled_back" || rolled.State == "expired" || rolled.State == "failed")
-		}
-		return automaticCommitResult{RolledBack: rolledBack, Reason: failure.Code}
-	}
-	return automaticCommitResult{Applied: true, Reason: "committed"}
+	return automaticCommitResult{Reason: "automatic_route_assignment_unavailable"}
 }
 
 func automaticServiceForDecision(check planner.DomainCheck) (config.Service, string, bool) {
