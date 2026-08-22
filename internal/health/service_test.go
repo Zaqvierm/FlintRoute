@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -98,6 +99,39 @@ func TestCycleUsesBoundedWorkersAndSelectsLowestStableLatency(t *testing.T) {
 	}
 	if len(store.probes) != 6 || store.health["fast"].Role != "selected" || store.health["slow"].Role != "standby" {
 		t.Fatalf("health evidence was not persisted: probes=%d health=%+v", len(store.probes), store.health)
+	}
+}
+
+func TestCycleRespectsSharedProbeBudget(t *testing.T) {
+	cfg := healthConfig()
+	cfg.Routes = append(cfg.Routes,
+		config.Route{Type: "vless", Tag: "third", Priority: 30},
+		config.Route{Type: "vless", Tag: "fourth", Priority: 40},
+	)
+	store := &memoryStore{}
+	engine := &fakeProbeEngine{latencyByRoute: map[string]int64{"fast": 20, "slow": 80, "third": 90, "fourth": 100}}
+	service := &Service{Tracker: probe.NewHealthTracker(nil), Store: store, Parallelism: 4, MaxControlServices: 3, ProbeBudget: make(chan struct{}, 2)}
+	if _, err := service.RunCycle(context.Background(), cfg, engine, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if engine.maxActive > 2 {
+		t.Fatalf("shared probe budget exceeded: %d", engine.maxActive)
+	}
+}
+
+func TestCycleNeverExceedsProcessWideFourJobBudget(t *testing.T) {
+	cfg := healthConfig()
+	for i := 0; i < 8; i++ {
+		cfg.Routes = append(cfg.Routes, config.Route{Type: "vless", Tag: fmt.Sprintf("extra-%d", i), Priority: 30 + i})
+	}
+	store := &memoryStore{}
+	engine := &fakeProbeEngine{latencyByRoute: map[string]int64{}}
+	service := &Service{Tracker: probe.NewHealthTracker(nil), Store: store, Parallelism: 16, MaxControlServices: 3, ProbeBudget: make(chan struct{}, 4)}
+	if _, err := service.RunCycle(context.Background(), cfg, engine, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if engine.maxActive > 4 {
+		t.Fatalf("process-wide route job budget exceeded: %d", engine.maxActive)
 	}
 }
 

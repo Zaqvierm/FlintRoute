@@ -40,6 +40,7 @@ const (
 	commandWirelessStatus   OpenWrtCommand = "wireless-status"
 	commandWirelessClients  OpenWrtCommand = "wireless-clients"
 	commandBridgeFDB        OpenWrtCommand = "bridge-fdb"
+	commandBridgeFDBLegacy  OpenWrtCommand = "bridge-fdb-legacy"
 	commandNeighbors        OpenWrtCommand = "neighbors"
 	commandDHCPLeases       OpenWrtCommand = "dhcp-leases"
 	commandODHCPDHosts      OpenWrtCommand = "odhcpd-hosts"
@@ -142,6 +143,12 @@ func fixedOpenWrtCommand(command OpenWrtCommand, parameter string) (string, []st
 		return "/bin/ubus", []string{"call", "hostapd." + parameter, "get_clients"}, nil
 	case commandBridgeFDB:
 		return "/sbin/bridge", []string{"-j", "fdb", "show"}, nil
+	case commandBridgeFDBLegacy:
+		if !interfaceNamePattern.MatchString(parameter) {
+			return "", nil, fmt.Errorf("bridge name is not allowed")
+		}
+		script := `bridge=$1; for path in /sys/class/net/"$bridge"/brif/*; do [ -e "$path" ] || continue; printf 'PORT %s %s\n' "$(cat "$path/port_no")" "${path##*/}"; done; /usr/sbin/brctl showmacs "$bridge"`
+		return "/bin/sh", []string{"-c", script, "flintroute-bridge-fdb", parameter}, nil
 	case commandNeighbors:
 		return "/sbin/ip", []string{"-j", "neigh", "show"}, nil
 	case commandDHCPLeases:
@@ -678,6 +685,27 @@ func collectOpenWrtSnapshot(runtime *openWrtRuntime, now time.Time) *openWrtSnap
 		}
 	}
 	snapshot.LANs, snapshot.WANs, snapshot.WAN6s = classifyOpenWrtInterfaces(snapshot.Interfaces, snapshot.Routes4, snapshot.Routes6)
+	if len(snapshot.BridgeFDB) == 0 {
+		for _, lan := range snapshot.LANs {
+			bridgeName := firstInterface(lan.L3Device, lan.Device)
+			if !interfaceNamePattern.MatchString(bridgeName) {
+				continue
+			}
+			output, err := run("bridge_fdb_legacy_"+bridgeName, commandBridgeFDBLegacy, bridgeName)
+			if err != nil {
+				continue
+			}
+			entries, parseErr := parseLegacyBridgeFDB(output, bridgeName)
+			if parseErr != nil {
+				snapshot.Errors["bridge_fdb_legacy_"+bridgeName] = "malformed_output"
+				continue
+			}
+			snapshot.BridgeFDB = append(snapshot.BridgeFDB, entries...)
+		}
+		if len(snapshot.BridgeFDB) > 0 {
+			delete(snapshot.Errors, "bridge_fdb")
+		}
+	}
 	if len(snapshot.LANs) > 0 {
 		snapshot.LAN = snapshot.LANs[0]
 	}
@@ -989,6 +1017,14 @@ func (p OpenWrtProvider) Policies(cfg *config.Config) []map[string]any {
 }
 
 func (p OpenWrtProvider) Topology(*config.Config) map[string]any {
+	return p.topologyWithPrivacy(false)
+}
+
+func (p OpenWrtProvider) TopologyWithPrivacy(_ *config.Config, reveal bool) map[string]any {
+	return p.topologyWithPrivacy(reveal)
+}
+
+func (p OpenWrtProvider) topologyWithPrivacy(reveal bool) map[string]any {
 	snapshot := p.snapshot()
 	nodes := []map[string]any{
 		{"id": "internet", "label": "Internet", "type": "internet", "status": internetStatus(snapshot)},
@@ -1043,7 +1079,7 @@ func (p OpenWrtProvider) Topology(*config.Config) map[string]any {
 	if !topologyHasWANEdge(edges) {
 		edges = append(edges, map[string]any{"from": "internet", "to": "router", "status": internetStatus(snapshot), "kind": "unknown"})
 	}
-	for _, device := range buildDeviceItems(snapshot, p.Name(), false) {
+	for _, device := range buildDeviceItems(snapshot, p.Name(), reveal) {
 		id, _ := device["id"].(string)
 		nodes = append(nodes, map[string]any{
 			"id": id, "label": device["name"], "type": "device", "status": device["status"],
@@ -1134,19 +1170,77 @@ func parseODHCPHosts(output []byte) ([]odhcpHost, error) {
 	return hosts, nil
 }
 
+func parseLegacyBridgeFDB(output []byte, bridgeName string) ([]bridgeFDBEntry, error) {
+	if len(output) == 0 || len(output) > maxProviderOutputBytes || !interfaceNamePattern.MatchString(bridgeName) {
+		return nil, errors.New("invalid legacy bridge FDB output")
+	}
+	ports := map[uint64]string{}
+	entries := []bridgeFDBEntry{}
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 3 && fields[0] == "PORT" && interfaceNamePattern.MatchString(fields[2]) {
+			port, err := strconv.ParseUint(fields[1], 0, 16)
+			if err == nil && port > 0 {
+				ports[port] = fields[2]
+			}
+			continue
+		}
+		if len(fields) < 3 || fields[0] == "port" || strings.EqualFold(fields[2], "yes") {
+			continue
+		}
+		port, portErr := strconv.ParseUint(fields[0], 10, 16)
+		mac, macErr := net.ParseMAC(fields[1])
+		dev := ports[port]
+		if portErr != nil || macErr != nil || len(mac) != 6 || dev == "" {
+			continue
+		}
+		entries = append(entries, bridgeFDBEntry{MAC: strings.ToLower(mac.String()), Dev: dev, Master: bridgeName, State: "reachable"})
+	}
+	if len(ports) == 0 {
+		return nil, errors.New("legacy bridge FDB contains no port map")
+	}
+	return entries, nil
+}
+
 func buildDeviceItems(snapshot *openWrtSnapshot, source string, reveal bool) []map[string]any {
 	neighborsByIP := make(map[string]neighborInfo, len(snapshot.Neighbors))
 	for _, neighbor := range snapshot.Neighbors {
 		neighborsByIP[neighbor.Dst] = neighbor
 	}
 	items := make([]map[string]any, 0, len(snapshot.DHCPLeases)+len(snapshot.ODHCPHosts))
-	seen := map[string]bool{}
-	for _, lease := range snapshot.DHCPLeases {
+	seenIP := map[string]bool{}
+	seenIdentity := map[string]bool{}
+	seenHostname := map[string]bool{}
+	leases := append([]dhcpLease(nil), snapshot.DHCPLeases...)
+	sort.SliceStable(leases, func(i, j int) bool {
+		leftConnected := neighborIsConnected(neighborsByIP[leases[i].IP].State)
+		rightConnected := neighborIsConnected(neighborsByIP[leases[j].IP].State)
+		if leftConnected != rightConnected {
+			return leftConnected
+		}
+		return leases[i].ExpiresAt.After(leases[j].ExpiresAt)
+	})
+	for _, lease := range leases {
+		if !usableClientIP(lease.IP) {
+			continue
+		}
 		neighbor := neighborsByIP[lease.IP]
 		name := nonEmpty(lease.Hostname, "Unknown device")
 		connected := neighborIsConnected(neighbor.State)
-		id := "device-" + stableID(lease.MAC)
-		seen[lease.IP] = true
+		identity := deviceIdentityKey(lease.MAC, lease.IP)
+		if seenIdentity[identity] {
+			continue
+		}
+		hostnameKey := normalizedDeviceHostname(lease.Hostname)
+		if hostnameKey != "" && seenHostname[hostnameKey] && !connected {
+			continue
+		}
+		id := "device-" + stableID(identity)
+		seenIP[lease.IP] = true
+		seenIdentity[identity] = true
+		if hostnameKey != "" {
+			seenHostname[hostnameKey] = true
+		}
 		kind, interfaceName, ssid, rssi, rxBytes, txBytes, connectedAt := deviceConnection(snapshot, lease.MAC, neighbor.Dev)
 		ip, mac, ipDisplay, macDisplay, identityAvailable := deviceAddressView(lease.IP, lease.MAC, reveal)
 		items = append(items, map[string]any{
@@ -1161,19 +1255,32 @@ func buildDeviceItems(snapshot *openWrtSnapshot, source string, reveal bool) []m
 		})
 	}
 	for _, host := range snapshot.ODHCPHosts {
-		if seen[host.IP] {
+		if seenIP[host.IP] || !usableClientIP(host.IP) {
 			continue
 		}
 		neighbor := neighborsByIP[host.IP]
+		identity := deviceIdentityKey(neighbor.LLAddr, host.IP)
+		if seenIdentity[identity] {
+			continue
+		}
+		hostnameKey := normalizedDeviceHostname(host.Hostname)
+		connected := neighborIsConnected(neighbor.State)
+		if hostnameKey != "" && seenHostname[hostnameKey] && !connected {
+			continue
+		}
+		seenIdentity[identity] = true
+		if hostnameKey != "" {
+			seenHostname[hostnameKey] = true
+		}
 		kind, interfaceName, ssid, rssi, rxBytes, txBytes, connectedAt := deviceConnection(snapshot, neighbor.LLAddr, neighbor.Dev)
 		ip, mac, ipDisplay, macDisplay, identityAvailable := deviceAddressView(host.IP, neighbor.LLAddr, reveal)
 		items = append(items, map[string]any{
-			"id": "device-" + stableID(host.IP), "name": nonEmpty(host.Hostname, "IPv6 device"),
+			"id": "device-" + stableID(identity), "name": nonEmpty(host.Hostname, "IPv6 device"),
 			"kind": kind, "ip": ip, "ip_display": ipDisplay, "mac": mac, "mac_display": macDisplay,
 			"mac_hash": hashText(neighbor.LLAddr), "identity_available": identityAvailable,
 			"interface": interfaceName, "ssid": nilIfEmpty(ssid), "rssi": rssi,
 			"rx_bytes": rxBytes, "tx_bytes": txBytes, "first_seen": connectedAt, "last_seen": snapshot.CollectedAt,
-			"connected":      neighborIsConnected(neighbor.State),
+			"connected":      connected,
 			"neighbor_state": neighbor.State, "policy": "UNVERIFIED", "active_route": "UNVERIFIED",
 			"source": source + ":odhcpd+neighbor", "status": "OK", "simulation": false,
 			"freshness": "live", "collected_at": snapshot.CollectedAt, "addresses_revealed": reveal,
@@ -1183,6 +1290,26 @@ func buildDeviceItems(snapshot *openWrtSnapshot, source string, reveal bool) []m
 		return fmt.Sprint(items[i]["name"], items[i]["ip_display"]) < fmt.Sprint(items[j]["name"], items[j]["ip_display"])
 	})
 	return items
+}
+
+func usableClientIP(value string) bool {
+	ip := net.ParseIP(strings.TrimSpace(value))
+	return ip != nil && !ip.IsLoopback() && !ip.IsUnspecified() && !ip.IsMulticast()
+}
+
+func deviceIdentityKey(macText, ipText string) string {
+	if mac, err := net.ParseMAC(strings.TrimSpace(macText)); err == nil && len(mac) == 6 {
+		return "mac:" + strings.ToLower(mac.String())
+	}
+	return "ip:" + strings.TrimSpace(ipText)
+}
+
+func normalizedDeviceHostname(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" || value == "*" || value == "unknown" || value == "unknown device" {
+		return ""
+	}
+	return value
 }
 
 func deviceAddressView(ipText, macText string, reveal bool) (ip, mac any, ipDisplay, macDisplay string, identityAvailable bool) {

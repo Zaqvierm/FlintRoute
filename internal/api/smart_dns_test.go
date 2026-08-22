@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"router-policy/internal/config"
 	"router-policy/internal/probe"
 )
 
@@ -143,7 +144,25 @@ func TestSmartDNSStatusPublishesConditionalDNSFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), `"tspu":["zapret","smart_dns","vless","direct","drop"]`) {
+	if !strings.Contains(string(raw), `"tspu":["zapret","vless","drop"]`) {
 		t.Fatalf("Smart DNS fallback contract is wrong: %s", raw)
+	}
+}
+
+func TestSmartDNSResolverStateTreatsFreshUnboundValidationAsIdleReady(t *testing.T) {
+	route := config.Route{Type: "smart_dns", Tag: "smart", DNSServer: "1.1.1.1:53"}
+	health := probe.RouteHealth{State: "unhealthy", LastReason: "route_not_bound_to_verification_plan"}
+	ready, status := smartDNSResolverState(route, health, true, true)
+	if !ready || status != "validated_idle" {
+		t.Fatalf("fresh unbound resolver state=(%v,%q), want ready validated_idle", ready, status)
+	}
+}
+
+func TestSmartDNSResolverStateKeepsRealHealthFailureUnavailable(t *testing.T) {
+	route := config.Route{Type: "smart_dns", Tag: "smart", DNSServer: "1.1.1.1:53"}
+	health := probe.RouteHealth{State: "unhealthy", LastReason: "dns_failed"}
+	ready, status := smartDNSResolverState(route, health, true, true)
+	if ready || status != "unhealthy" {
+		t.Fatalf("failed resolver state=(%v,%q), want unavailable unhealthy", ready, status)
 	}
 }

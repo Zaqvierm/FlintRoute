@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -115,6 +116,25 @@ func TestValidateRejectsUnsafeGeoLockedPolicy(t *testing.T) {
 	cfg.Services["site"] = service
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "forbidden by policy") {
 		t.Fatalf("unsafe GEO_LOCKED policy was accepted: %v", err)
+	}
+}
+
+func TestValidateBoundsRouteCheckFanout(t *testing.T) {
+	cfg := validConfig()
+	for i := len(cfg.Routes); i < 65; i++ {
+		cfg.Routes = append(cfg.Routes, Route{Type: "direct", Tag: fmt.Sprintf("direct-extra-%d", i), Status: "CONFIGURED"})
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "maximum of 64") {
+		t.Fatalf("route fan-out limit was not enforced: %v", err)
+	}
+	cfg = validConfig()
+	service := cfg.Services["site"]
+	for i := 0; i < 17; i++ {
+		service.ProbeURLs = append(service.ProbeURLs, ProbeCheck{Name: "extra-" + string(rune('a'+i)), URL: "https://example.com/", Required: false, ExpectedCodes: []int{200}, BodyMode: "optional"})
+	}
+	cfg.Services["site"] = service
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "too many probe urls") {
+		t.Fatalf("probe fan-out limit was not enforced: %v", err)
 	}
 }
 

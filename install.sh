@@ -28,6 +28,11 @@ SERVICES="router-policy router-policy-watchdog router-policy-xray router-policy-
 ENABLE_SERVICES="router-policy-dns-observer router-policy-boot-guard $SERVICES"
 INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $INIT_DIR/router-policy $INIT_DIR/router-policy-dns-observer $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/config/listener.conf $ETC_DIR/secrets/vpn-subscription-url $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
 
+# These directories belong to OpenWrt, not to FlintRoute.  They must never be
+# represented by a rollback archive entry: restoring synthetic staging
+# metadata can make a healthy system unreadable after a failed install.
+CRITICAL_SYSTEM_DIRS="$SYSTEM_ROOT $SYSTEM_ROOT/etc $SYSTEM_ROOT/usr $SYSTEM_ROOT/usr/bin $SYSTEM_ROOT/usr/lib $SYSTEM_ROOT/etc/init.d $SYSTEM_ROOT/etc/hotplug.d"
+
 mode=""
 enable_services=0
 
@@ -67,6 +72,7 @@ preflight_install() {
     command -v sha256sum >/dev/null 2>&1 || { echo "sha256sum is required to verify this install bundle" >&2; return 1; }
     (cd "$ROOT" && sha256sum -c SHA256SUMS >/dev/null) || { echo "install bundle checksum verification failed" >&2; return 1; }
   fi
+  validate_critical_system_dirs && validate_backup_paths
 }
 
 regular_file_mode_matches() {
@@ -100,6 +106,53 @@ is_install_target() {
   return 1
 }
 
+is_critical_system_dir() {
+  candidate_path="$1"
+  for critical_path in $CRITICAL_SYSTEM_DIRS; do
+    [ -n "$critical_path" ] && [ "$candidate_path" = "$critical_path" ] && return 0
+  done
+  return 1
+}
+
+validate_no_symlink_path() {
+  candidate="$1"
+  case "$candidate" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  remainder=${candidate#/}
+  current=""
+  while [ -n "$remainder" ]; do
+    case "$remainder" in
+      */*) component=${remainder%%/*}; remainder=${remainder#*/} ;;
+      *) component=$remainder; remainder= ;;
+    esac
+    [ -n "$component" ] || continue
+    current="$current/$component"
+    [ ! -L "$current" ] || return 1
+  done
+}
+
+validate_backup_paths() {
+  case "$BACKUP_ROOT:$BACKUP_DIR" in
+    "":*|*:|/:*|*:/) echo "install blocked: invalid backup root" >&2; return 1 ;;
+  esac
+  case "$BACKUP_DIR" in
+    "$BACKUP_ROOT"/*) ;;
+    *) echo "install blocked: backup directory is outside backup root" >&2; return 1 ;;
+  esac
+  validate_no_symlink_path "$BACKUP_ROOT" || {
+    echo "install blocked: symlink in backup root path" >&2
+    return 1
+  }
+  for critical_path in $CRITICAL_SYSTEM_DIRS; do
+    [ -n "$critical_path" ] || continue
+    case "$BACKUP_ROOT/" in
+      "$critical_path"/*) echo "install blocked: backup root is inside a system directory: $BACKUP_ROOT" >&2; return 1 ;;
+    esac
+  done
+}
+
 is_managed_service() {
   candidate_service="$1"
   for allowed_service in $ENABLE_SERVICES; do
@@ -108,10 +161,71 @@ is_managed_service() {
   return 1
 }
 
+path_metadata() {
+  target="$1"
+  # OpenWrt BusyBox and GNU stat both support -c for these fields.
+  # Git Bash's stat emulation includes the caller umask in its displayed mode;
+  # inspect with a neutral umask so the invariant is about the object itself.
+  (umask 022; stat -c '%a|%u|%g' "$target" 2>/dev/null)
+}
+
+copy_preserving_metadata() {
+  source_path="$1"
+  target_path="$2"
+  # BusyBox and GNU cp both provide -a.  Unlike cp -R this retains nested
+  # modes, uid/gid and symlink identity inside a FlintRoute-owned tree.
+  cp -a "$source_path" "$target_path"
+}
+
+validate_critical_system_dirs() {
+  # Library/tests may source this script on a developer host where /etc is
+  # not an OpenWrt tree. Real root installs are gated by openwrt_release;
+  # synthetic trees use SYSTEM_ROOT explicitly.
+  if [ -z "$SYSTEM_ROOT" ] && [ ! -f /etc/openwrt_release ]; then
+    return 0
+  fi
+  for target in $CRITICAL_SYSTEM_DIRS; do
+    [ -n "$target" ] || continue
+    [ -d "$target" ] || {
+      echo "install blocked: critical system directory is missing: $target" >&2
+      return 1
+    }
+    [ ! -L "$target" ] || {
+      echo "install blocked: critical system directory is a symlink: $target" >&2
+      return 1
+    }
+    metadata=$(path_metadata "$target") || {
+      echo "install blocked: cannot inspect critical system directory: $target" >&2
+      return 1
+    }
+    directory_mode=${metadata%%|*}
+    reference="${SYSTEM_ROOT:-}/rom${target#"${SYSTEM_ROOT:-}"}"
+    if [ -e "$reference" ] && [ ! -L "$reference" ]; then
+      reference_metadata=$(path_metadata "$reference") || {
+        echo "install blocked: cannot inspect ROM directory: $reference" >&2
+        return 1
+      }
+      reference_mode=${reference_metadata%%|*}
+      [ "$directory_mode" = "$reference_mode" ] || {
+        echo "install blocked: critical directory mode differs from ROM: $target mode=$directory_mode rom=$reference_mode" >&2
+        return 1
+      }
+    else
+      case "$target:$directory_mode" in
+        "$SYSTEM_ROOT:755"|"$SYSTEM_ROOT/etc:755"|"$SYSTEM_ROOT/usr:755"|"$SYSTEM_ROOT/usr/bin:755"|"$SYSTEM_ROOT/usr/lib:755"|"$SYSTEM_ROOT/etc/init.d:755"|"$SYSTEM_ROOT/etc/hotplug.d:755") ;;
+        *)
+          echo "install blocked: suspicious critical directory mode: $target mode=$directory_mode" >&2
+          return 1
+          ;;
+      esac
+    fi
+  done
+}
+
 validate_install_snapshot_metadata() {
   snapshot_manifest="$1"
   snapshot_services="$2"
-  while IFS='|' read -r presence target extra; do
+  while IFS='|' read -r presence target target_mode uid gid extra; do
     [ -z "$extra" ] || {
       echo "automatic install rollback unavailable: malformed snapshot manifest" >&2
       return 1
@@ -124,10 +238,32 @@ validate_install_snapshot_metadata() {
       echo "automatic install rollback unavailable: unowned snapshot target" >&2
       return 1
     }
+    validate_no_symlink_path "$target" || {
+      echo "automatic install rollback unavailable: symlink in target path" >&2
+      return 1
+    }
+    is_critical_system_dir "$target" && {
+      echo "automatic install rollback unavailable: critical system directory in snapshot" >&2
+      return 1
+    }
+    case "$presence" in
+      present)
+        if [ -n "$target_mode$uid$gid" ]; then
+          case "$target_mode" in ''|*[!0-7]*) echo "automatic install rollback unavailable: malformed target mode" >&2; return 1 ;; esac
+          case "$uid:$gid" in *[!0-9:]*|*:|:*) echo "automatic install rollback unavailable: malformed target ownership" >&2; return 1 ;; esac
+        fi
+        ;;
+      absent)
+        [ -z "$target_mode" ] && [ -z "$uid" ] && [ -z "$gid" ] || {
+          echo "automatic install rollback unavailable: absent target has metadata" >&2
+          return 1
+        }
+        ;;
+    esac
   done < "$snapshot_manifest"
   for allowed_path in $INSTALL_TARGETS; do
     target_count=0
-    while IFS='|' read -r _ target _; do
+    while IFS='|' read -r _ target _ _ _ _; do
       [ "$target" != "$allowed_path" ] || target_count=$((target_count + 1))
     done < "$snapshot_manifest"
     [ "$target_count" -eq 1 ] || {
@@ -221,6 +357,7 @@ detect() {
 }
 
 backup() {
+  validate_backup_paths || return 1
   mkdir -p "$BACKUP_DIR"
   staging="$BACKUP_DIR/staging"
   archive="$BACKUP_DIR/config.tar"
@@ -233,13 +370,25 @@ backup() {
     if [ -e "$p" ]; then
       relative="${p#/}"
       mkdir -p "$staging/$(dirname "$relative")"
-      cp -R "$p" "$staging/$relative"
+      copy_preserving_metadata "$p" "$staging/$relative"
       echo "$p" >> "$manifest"
       backup_items=$((backup_items + 1))
     fi
   done
   [ "$backup_items" -gt 0 ] || { echo "backup has no source files" >&2; return 1; }
-  "$TAR_BIN" -C "$staging" -cf "$archive.tmp" .
+  # Do not store the synthetic staging root or its umask-derived parents.
+  # This archive is an export backup, but keeping only allowlisted descendants
+  # makes accidental future restore code unable to replay /etc or /usr modes.
+  file_list="$BACKUP_DIR/files.list"
+  (cd "$staging" && find . -mindepth 1 -print | sed 's#^\./##' > "$file_list") || {
+    rm -f "$file_list"
+    return 1
+  }
+  (cd "$staging" && "$TAR_BIN" -cf "$archive.tmp" -T "$file_list") || {
+    rm -f "$file_list" "$archive.tmp"
+    return 1
+  }
+  rm -f "$file_list"
   mv "$archive.tmp" "$archive"
   [ -f "$archive" ] || { echo "backup archive was not created" >&2; return 1; }
   [ -s "$archive" ] || { echo "backup archive is empty" >&2; return 1; }
@@ -257,6 +406,7 @@ backup() {
 }
 
 snapshot_installation() {
+  validate_backup_paths || return 1
   snapshot="$BACKUP_DIR/install-rollback"
   staging="$snapshot/staging"
   archive="$snapshot/files.tar"
@@ -273,11 +423,16 @@ snapshot_installation() {
       /*) ;;
       *) echo "unsafe non-absolute install target: $p" >&2; return 1 ;;
     esac
+    is_critical_system_dir "$p" && { echo "unsafe critical system install target: $p" >&2; return 1; }
+    validate_no_symlink_path "$p" || { echo "unsafe symlink in install target path: $p" >&2; return 1; }
     if [ -e "$p" ]; then
+      [ ! -L "$p" ] || { echo "unsafe symlink install target: $p" >&2; return 1; }
       relative="${p#/}"
       mkdir -p "$staging/$(dirname "$relative")"
-      cp -R "$p" "$staging/$relative"
-      echo "present|$p" >> "$manifest"
+      copy_preserving_metadata "$p" "$staging/$relative"
+      metadata=$(path_metadata "$p") || { echo "unable to snapshot metadata: $p" >&2; return 1; }
+      target_mode=${metadata%%|*}; ownership=${metadata#*|}; uid=${ownership%%|*}; gid=${ownership#*|}
+      echo "present|$p|$target_mode|$uid|$gid" >> "$manifest"
     else
       echo "absent|$p" >> "$manifest"
     fi
@@ -294,7 +449,19 @@ snapshot_installation() {
     fi
     echo "$service|$enabled|$running" >> "$services"
   done
-  "$TAR_BIN" -C "$staging" -cf "$archive.tmp" .
+  # Never archive the staging root.  The root and all synthetic parent
+  # directories inherit umask 077 and must not be replayed onto OpenWrt.
+  # Restore extracts into private staging and copies only allowlisted targets.
+  file_list="$snapshot/files.list"
+  (cd "$staging" && find . -mindepth 1 -print | sed 's#^\./##' > "$file_list") || {
+    rm -f "$file_list"
+    return 1
+  }
+  (cd "$staging" && "$TAR_BIN" -cf "$archive.tmp" -T "$file_list") || {
+    rm -f "$file_list" "$archive.tmp"
+    return 1
+  }
+  rm -f "$file_list"
   mv "$archive.tmp" "$archive"
   "$TAR_BIN" -tf "$archive" >/dev/null
   hash_file "$archive" > "$archive_hash_file.tmp"
@@ -327,6 +494,10 @@ restore_installation() {
     return 1
   }
   validate_install_snapshot_metadata "$manifest" "$services" || return 1
+  validate_critical_system_dirs || {
+    echo "automatic install rollback blocked: critical system directory invariant failed" >&2
+    return 1
+  }
   service_restore_ok=1
   if [ -z "$SYSTEM_ROOT" ]; then
     for service in router-policy-watchdog router-policy; do
@@ -350,11 +521,49 @@ restore_installation() {
     echo "install_rollback=blocked-managed-services-still-running" >&2
     return 1
   fi
-  while IFS='|' read -r presence p; do
+  restore_staging="$snapshot/restore.$$"
+  rm -rf "$restore_staging"
+  mkdir -p "$restore_staging"
+  "$TAR_BIN" -C "$restore_staging" -xf "$archive" || {
+    rm -rf "$restore_staging"
+    echo "automatic install rollback unavailable: snapshot extraction failed" >&2
+    return 1
+  }
+  while IFS='|' read -r presence p target_mode uid gid; do
     [ "$presence" = "present" ] || [ "$presence" = "absent" ] || continue
     rm -rf "$p"
+    if [ "$presence" = "present" ]; then
+      relative="${p#/}"
+      source="$restore_staging/$relative"
+      [ -e "$source" ] || {
+        rm -rf "$restore_staging"
+        echo "automatic install rollback unavailable: missing allowlisted target in snapshot: $p" >&2
+        return 1
+      }
+      parent_dir=$(dirname "$p")
+      [ -d "$parent_dir" ] || {
+        rm -rf "$restore_staging"
+        echo "automatic install rollback blocked: target parent is missing: $parent_dir" >&2
+        return 1
+      }
+      validate_no_symlink_path "$p" || {
+        rm -rf "$restore_staging"
+        echo "automatic install rollback blocked: symlink in target path: $p" >&2
+        return 1
+      }
+      mkdir -p "$(dirname "$p")"
+      copy_preserving_metadata "$source" "$p"
+      if [ -z "$target_mode$uid$gid" ]; then
+        metadata=$(path_metadata "$source") || { rm -rf "$restore_staging"; return 1; }
+        target_mode=${metadata%%|*}; ownership=${metadata#*|}; uid=${ownership%%|*}; gid=${ownership#*|}
+      fi
+      chmod "$target_mode" "$p" || { rm -rf "$restore_staging"; return 1; }
+      if [ "$(id -u)" = "0" ] && command -v chown >/dev/null 2>&1; then
+        chown "$uid:$gid" "$p" || { rm -rf "$restore_staging"; return 1; }
+      fi
+    fi
   done < "$manifest"
-  "$TAR_BIN" -C / -xf "$archive"
+  rm -rf "$restore_staging"
   restore_state_database || return 1
   if [ -z "$SYSTEM_ROOT" ] && [ -s "$services" ]; then
     while IFS='|' read -r service enabled running; do
@@ -586,7 +795,7 @@ atomic_copy() {
   target="$2"
   mode_bits="$3"
   mkdir -p "$(dirname "$target")"
-  [ ! -L "$target" ] || { echo "refusing symlink install target: $target" >&2; return 1; }
+  validate_no_symlink_path "$target" || { echo "refusing symlink install target path: $target" >&2; return 1; }
   if [ -f "$target" ] && cmp -s "$source" "$target" && regular_file_mode_matches "$target" "$mode_bits"; then
     return 0
   fi

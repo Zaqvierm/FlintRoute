@@ -284,7 +284,7 @@ func buildCandidates(cfg *config.Config, profile serviceProfile, opts Options) C
 	// Unknown traffic is still owned by OpenWrt until a FlintRoute policy is
 	// committed. Probe that real system path first instead of pretending the
 	// managed Direct mark/table already exists on a clean baseline.
-	if profile.unknown {
+	if profile.unknown && !tspuStartsWithZapret(tspuStatus, cfg.Policy.TSPUStalePolicy) {
 		for _, route := range cfg.RoutesByType("direct") {
 			if route.Enabled() && route.RequiresAdapter {
 				candidates = append(candidates, config.Route{
@@ -375,12 +375,12 @@ func orderForService(category, tspuStatus, stalePolicy string) []string {
 	case "TELEGRAM":
 		return []string{"external_socks", "vless", "drop"}
 	case "TSPU_RESTRICTED":
-		return []string{"zapret", "smart_dns", "vless", "direct", "drop"}
+		return []string{"zapret", "vless", "drop"}
 	case "BLOCKED":
 		return []string{"drop"}
 	case "DIRECT_PREFERRED", "":
 		if tspuStatus == "MATCH" || tspuStatus == "STALE_MATCH" && stalePolicy == "zapret_first" {
-			return []string{"zapret", "smart_dns", "vless", "direct", "drop"}
+			return []string{"zapret", "vless", "drop"}
 		}
 		if tspuStatus == "STALE_MATCH" && stalePolicy == "fail_closed" {
 			return []string{"drop"}

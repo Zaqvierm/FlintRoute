@@ -9,6 +9,8 @@ import (
 
 func (r ExecCalibrationRunner) Progress() (int, int) { return 0, 0 }
 
+func (r ExecCalibrationRunner) Live() ([]string, []string) { return nil, nil }
+
 func (r ExecCalibrationRunner) Run(context.Context, CalibrationRequest) ([]byte, error) {
 	if err := r.validatePaths(); err != nil {
 		return nil, err

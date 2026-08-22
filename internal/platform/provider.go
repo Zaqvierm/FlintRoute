@@ -24,11 +24,13 @@ type NetworkDiagnosticsProvider interface {
 	NetworkDiagnostics(*config.Config) NetworkDiagnostics
 }
 
-// PrivacyDeviceProvider returns the same device inventory without placing raw
-// client addresses in the default response. The API opts into reveal mode only
-// for an authenticated, short-lived UI request.
+// PrivacyDeviceProvider can redact raw client addresses before serialization.
 type PrivacyDeviceProvider interface {
 	DevicesWithPrivacy(*config.Config, bool) []map[string]any
+}
+
+type PrivacyTopologyProvider interface {
+	TopologyWithPrivacy(*config.Config, bool) map[string]any
 }
 
 type NetworkDiagnostics struct {

@@ -43,7 +43,7 @@ func TestDiscoveryObserveOnlyNeverCreatesSuggestionOrChange(t *testing.T) {
 	srv, calls := newDiscoveryModeServer(t, "observe_only", true, fake)
 	defer srv.Close()
 	srv.discoverDomain(context.Background(), discovery.Observation{Domain: "observe.example", QueryType: "A"})
-	if *calls != 1 || len(srv.discoverySuggestions(10)) != 0 || len(fake.calls) != 0 {
+	if *calls != 0 || len(srv.discoverySuggestions(10)) != 0 || len(fake.calls) != 0 {
 		t.Fatalf("observe_only changed state: calls=%d suggestions=%d adapter=%v", *calls, len(srv.discoverySuggestions(10)), fake.calls)
 	}
 }
@@ -54,8 +54,19 @@ func TestDiscoveryDebouncesAAndAAAAForSameDomain(t *testing.T) {
 	defer srv.Close()
 	srv.discoverDomain(context.Background(), discovery.Observation{Domain: "dual-stack.example", QueryType: "A"})
 	srv.discoverDomain(context.Background(), discovery.Observation{Domain: "dual-stack.example", QueryType: "AAAA"})
+	if *calls != 0 {
+		t.Fatalf("observe-only DNS lookup produced %d domain checks", *calls)
+	}
+}
+
+func TestDiscoveryDeduplicatesSubdomainsByETLDPlusOne(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, calls := newDiscoveryModeServer(t, "suggest", true, fake)
+	defer srv.Close()
+	srv.discoverDomain(context.Background(), discovery.Observation{Domain: "cdn-a.example.com", QueryType: "A"})
+	srv.discoverDomain(context.Background(), discovery.Observation{Domain: "cdn-b.example.com", QueryType: "A"})
 	if *calls != 1 {
-		t.Fatalf("one DNS lookup produced %d domain checks", *calls)
+		t.Fatalf("subdomains of one service were probed %d times", *calls)
 	}
 }
 
@@ -96,6 +107,9 @@ func TestDiscoverySuggestKeepsBoundedSuggestionWithoutApply(t *testing.T) {
 	items := srv.discoverySuggestions(10)
 	if len(items) != 1 || items[0].Domain != "suggest.example" || !items[0].PathVerified || len(fake.calls) != 0 {
 		t.Fatalf("suggest mode result=%+v adapter=%v", items, fake.calls)
+	}
+	if items[0].ClassificationState != "classified" || items[0].ProbeState != "verified_candidate" || items[0].PolicyState != "suggested" {
+		t.Fatalf("suggest mode mixed classification, probe and policy states: %+v", items[0])
 	}
 }
 

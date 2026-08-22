@@ -27,6 +27,10 @@ type Service struct {
 	Store              Store
 	Parallelism        int
 	MaxControlServices int
+	// ProbeBudget is shared with discovery and other background checks.  It
+	// bounds actual route-check jobs across the whole control plane rather than
+	// only bounding this cycle's worker count.
+	ProbeBudget chan struct{}
 }
 
 type CycleResult struct {
@@ -98,7 +102,17 @@ func (s *Service) RunCycle(ctx context.Context, cfg *config.Config, engine Probe
 		go func() {
 			defer workers.Done()
 			for route := range jobs {
+				if s.ProbeBudget != nil {
+					select {
+					case s.ProbeBudget <- struct{}{}:
+					case <-ctx.Done():
+						return
+					}
+				}
 				checked := checkRoute(ctx, cfg, engine, route, controlLimit, now.UTC())
+				if s.ProbeBudget != nil {
+					<-s.ProbeBudget
+				}
 				select {
 				case results <- checked:
 				case <-ctx.Done():

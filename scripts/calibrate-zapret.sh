@@ -10,6 +10,7 @@ CATALOG_OUT="${ZAPRET_CATALOG_OUT:-/etc/router-policy/zapret/catalog.json}"
 TIMEOUT_BIN="${TIMEOUT_BIN:-timeout}"
 BLOCKCHECK_TIMEOUT="${BLOCKCHECK_TIMEOUT:-2400}"
 QUEUE_NUM="${ZAPRET_QUEUE_NUM:-200}"
+PRE_RESOLVED_IPV4="${ZAPRET_CALIBRATION_IPV4:-}"
 
 mode="dry-run"
 domain=""
@@ -103,14 +104,153 @@ mkdir "$lock_dir" 2>/dev/null || { echo "another Zapret calibration is active" >
 run_dir="$RUNTIME_DIR/zapret-calibration.$$"
 mkdir "$run_dir"
 chmod 700 "$run_dir"
+process_manifest="$run_dir/processes.txt"
+nfqws_baseline="$run_dir/nfqws.before"
+routes_baseline="$run_dir/routes.before"
+rules_baseline="$run_dir/rules.before"
 report="$run_dir/blockcheck.log"
 result="$run_dir/import.json"
 maintenance_started=0
 zapret_was_running=0
+blockcheck_pid=""
+
+proc_start_time() {
+  pid="$1"
+  [ -r "/proc/$pid/stat" ] || return 1
+  awk '{print $22}' "/proc/$pid/stat" 2>/dev/null
+}
+
+proc_executable() {
+  pid="$1"
+  readlink "/proc/$pid/exe" 2>/dev/null || true
+}
+
+proc_commandline() {
+  pid="$1"
+  tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true
+}
+
+list_nfqwss() {
+  for proc in /proc/[0-9]*; do
+    [ -d "$proc" ] || continue
+    pid=${proc#/proc/}
+    exe=$(proc_executable "$pid")
+    commandline=$(proc_commandline "$pid")
+    case "$exe:$commandline" in
+      "$NFQWS_BIN":*|*/nfqws:*|*"$NFQWS_BIN"*|*"/nfqws "*)
+        start=$(proc_start_time "$pid") || continue
+        printf '%s|%s|%s\n' "$pid" "$start" "$exe"
+        ;;
+    esac
+  done
+}
+
+same_process() {
+  pid="$1"; start="$2"; exe="$3"
+  [ -d "/proc/$pid" ] || return 1
+  [ "$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null)" != "Z" ] || return 1
+  [ "$(proc_start_time "$pid")" = "$start" ] || return 1
+  [ "$(proc_executable "$pid")" = "$exe" ]
+}
+
+terminate_owned_process() {
+  pid="$1"; start="$2"; exe="$3"
+  same_process "$pid" "$start" "$exe" || return 0
+  kill -TERM "$pid" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 10 ] && same_process "$pid" "$start" "$exe"; do
+    sleep 1
+    i=$((i + 1))
+  done
+  if same_process "$pid" "$start" "$exe"; then
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+}
+
+cleanup_owned_nfqwss() {
+	current="$run_dir/nfqws.after"
+	list_nfqwss > "$current" || return 1
+	while IFS='|' read -r pid start exe; do
+    [ -n "$pid" ] || continue
+    baseline=0
+    while IFS='|' read -r old_pid old_start old_exe; do
+      if [ "$pid" = "$old_pid" ] && [ "$start" = "$old_start" ] && [ "$exe" = "$old_exe" ]; then
+        baseline=1
+        break
+      fi
+    done < "$nfqws_baseline"
+    [ "$baseline" = "1" ] || terminate_owned_process "$pid" "$start" "$exe"
+	done < "$current"
+}
+
+verify_no_owned_nfqwss() {
+  remaining="$run_dir/nfqws.remaining"
+  list_nfqwss > "$remaining" || return 1
+  while IFS='|' read -r pid start exe; do
+    [ -n "$pid" ] || continue
+    baseline=0
+    while IFS='|' read -r old_pid old_start old_exe; do
+      if [ "$pid" = "$old_pid" ] && [ "$start" = "$old_start" ] && [ "$exe" = "$old_exe" ]; then
+        baseline=1
+        break
+      fi
+    done < "$nfqws_baseline"
+    if [ "$baseline" != "1" ]; then
+      echo "calibration cleanup left an owned nfqws process: $pid" >&2
+      return 1
+    fi
+  done < "$remaining"
+}
+
+verify_calibration_network_cleanup() {
+  if command -v nft >/dev/null 2>&1; then
+    if nft list ruleset 2>/dev/null | grep -Eq "queue[[:space:]]+num[[:space:]]+$QUEUE_NUM|router_policy_calibration"; then
+      echo "calibration cleanup left an NFQUEUE/nft resource" >&2
+      return 1
+    fi
+  fi
+  if command -v ip >/dev/null 2>&1; then
+    ip -o route show table all 2>/dev/null > "$run_dir/routes.after" || return 1
+    ip -o rule show 2>/dev/null > "$run_dir/rules.after" || return 1
+    if ! cmp -s "$routes_baseline" "$run_dir/routes.after"; then
+      echo "calibration cleanup changed routing tables" >&2
+      return 1
+    fi
+    if ! cmp -s "$rules_baseline" "$run_dir/rules.after"; then
+      echo "calibration cleanup changed policy rules" >&2
+      return 1
+    fi
+  fi
+  return 0
+}
+
+list_nfqwss > "$nfqws_baseline"
+if command -v ip >/dev/null 2>&1; then
+  ip -o route show table all 2>/dev/null > "$routes_baseline" || exit 1
+  ip -o rule show 2>/dev/null > "$rules_baseline" || exit 1
+else
+  : > "$routes_baseline"
+  : > "$rules_baseline"
+fi
 
 cleanup() {
   status=$?
   trap - EXIT HUP INT TERM
+  if [ -n "$blockcheck_pid" ]; then
+    kill -TERM "-$blockcheck_pid" 2>/dev/null || kill -TERM "$blockcheck_pid" 2>/dev/null || true
+    i=0
+    while [ "$i" -lt 5 ] && [ -d "/proc/$blockcheck_pid" ]; do
+      sleep 1
+      i=$((i + 1))
+    done
+    if [ -d "/proc/$blockcheck_pid" ]; then
+      kill -KILL "-$blockcheck_pid" 2>/dev/null || kill -KILL "$blockcheck_pid" 2>/dev/null || true
+    fi
+    blockcheck_pid=""
+  fi
+  cleanup_owned_nfqwss || status=1
+  verify_no_owned_nfqwss || status=1
+  verify_calibration_network_cleanup || status=1
   if [ "$zapret_was_running" = "1" ]; then
     "$TIMEOUT_BIN" 30 "$ZAPRET_INIT" start >/dev/null 2>&1 || status=1
   fi
@@ -139,16 +279,72 @@ if [ "$zapret_was_running" = "1" ]; then
   "$TIMEOUT_BIN" 30 "$ZAPRET_INIT" stop
 fi
 
-provider_version=$("$TIMEOUT_BIN" 10 "$NFQWS_BIN" --version 2>&1 | sed -n '1p' | tr -cd 'A-Za-z0-9._+-' | cut -c1-64)
+provider_version=$("$TIMEOUT_BIN" 10 "$NFQWS_BIN" --version 2>&1 | sed -n '1s/.*version v\{0,1\}\([0-9][0-9.]*\).*/\1/p' | cut -c1-32)
 [ -n "$provider_version" ] || { echo "unable to determine nfqws version" >&2; exit 1; }
+case "$provider_version" in
+  *[!0-9.]*|.*|*..*|*.) echo "nfqws returned an invalid version" >&2; exit 1 ;;
+esac
+
+skip_dnscheck=0
+if [ -n "$PRE_RESOLVED_IPV4" ]; then
+  case "$PRE_RESOLVED_IPV4" in
+    *[!0-9.,]*) echo "invalid pre-resolved calibration address list" >&2; exit 2 ;;
+  esac
+  hostvar=$(printf '%s' "$domain" | sed 's/[.-]/_/g')
+  addresses=$PRE_RESOLVED_IPV4
+  set --
+  while [ -n "$addresses" ]; do
+    case "$addresses" in
+      *,*) address=${addresses%%,*}; addresses=${addresses#*,} ;;
+      *) address=$addresses; addresses= ;;
+    esac
+    set -- "$@" "$address"
+  done
+  [ "$#" -ge 1 ] && [ "$#" -le 8 ] || { echo "invalid pre-resolved calibration address count" >&2; exit 2; }
+  address_index=0
+  for address in "$@"; do
+    old_ifs=$IFS
+    IFS=.
+    read -r octet1 octet2 octet3 octet4 octet5 <<EOF
+$address
+EOF
+    IFS=$old_ifs
+    [ -n "$octet1" ] && [ -n "$octet2" ] && [ -n "$octet3" ] && [ -n "$octet4" ] && [ -z "$octet5" ] || { echo "invalid pre-resolved calibration IPv4 address" >&2; exit 2; }
+    for octet in "$octet1" "$octet2" "$octet3" "$octet4"; do
+      case "$octet" in
+        ""|*[!0-9]*) echo "invalid pre-resolved calibration IPv4 address" >&2; exit 2 ;;
+      esac
+      [ "$octet" -le 255 ] || { echo "invalid pre-resolved calibration IPv4 address" >&2; exit 2; }
+    done
+    eval "export DNSCACHE_${hostvar}_4_${address_index}=$address"
+    address_index=$((address_index + 1))
+  done
+  eval "export DNSCACHE_${hostvar}_4_COUNT=$address_index"
+  skip_dnscheck=1
+fi
 
 set +e
-(
-  cd "$(dirname "$blockcheck_script")"
-  BATCH=1 IPVS=4 REPEATS=3 SCANLEVEL=standard SKIP_TPWS=1 DOMAINS="$domain" \
-    "$TIMEOUT_BIN" "$BLOCKCHECK_TIMEOUT" sh "$blockcheck_script" >"$report" 2>&1
-)
+if command -v setsid >/dev/null 2>&1; then
+  # shellcheck disable=SC2016 # the child shell expands its positional arguments.
+  setsid sh -c '
+    cd "$1"
+    BATCH=1 IPVS=4 REPEATS=3 SCANLEVEL=standard SKIP_TPWS=1 SKIP_DNSCHECK="$2" DOMAINS="$3" \
+      "$4" "$5" sh "$6" >"$7" 2>&1
+  ' sh "$(dirname "$blockcheck_script")" "$skip_dnscheck" "$domain" "$TIMEOUT_BIN" "$BLOCKCHECK_TIMEOUT" "$blockcheck_script" "$report" &
+else
+  (
+    cd "$(dirname "$blockcheck_script")"
+    BATCH=1 IPVS=4 REPEATS=3 SCANLEVEL=standard SKIP_TPWS=1 SKIP_DNSCHECK="$skip_dnscheck" DOMAINS="$domain" \
+      "$TIMEOUT_BIN" "$BLOCKCHECK_TIMEOUT" sh "$blockcheck_script" >"$report" 2>&1
+  ) &
+fi
+blockcheck_pid=$!
+blockcheck_start=$(proc_start_time "$blockcheck_pid" 2>/dev/null || true)
+blockcheck_exe=$(proc_executable "$blockcheck_pid")
+printf '%s|%s|%s\n' "$blockcheck_pid" "$blockcheck_start" "$blockcheck_exe" > "$process_manifest"
+wait "$blockcheck_pid"
 blockcheck_status=$?
+blockcheck_pid=""
 set -e
 if [ "$blockcheck_status" -ne 0 ]; then
   if [ "$blockcheck_status" -eq 124 ]; then

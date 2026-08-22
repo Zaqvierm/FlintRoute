@@ -26,7 +26,17 @@ type SubscriptionService struct {
 	CheckerFactory CheckerFactory
 	Parallelism    int
 	CheckAttempts  int
+	ProbeBudget    chan struct{}
 	SpeedTester    ThroughputTester
+}
+
+// SetProbeBudget wires subscription candidate checks into the same global
+// budget used by discovery and inventory health. It is intentionally a small
+// optional interface so test/preparer implementations remain compatible.
+func (s *SubscriptionService) SetProbeBudget(budget chan struct{}) {
+	if s != nil {
+		s.ProbeBudget = budget
+	}
 }
 
 func (s *SubscriptionService) Prepare(ctx context.Context, cfg *config.Config) (PreparedBundle, error) {
@@ -117,7 +127,7 @@ func (s *SubscriptionService) Prepare(ctx context.Context, cfg *config.Config) (
 	}
 	manager := Manager{
 		StateDir: cfg.Storage.StateDir, Runner: s.Runner, Checker: checker,
-		Parallelism: s.Parallelism, CheckAttempts: s.CheckAttempts, ResolveIPs: resolveServerIPs,
+		Parallelism: s.Parallelism, CheckAttempts: s.CheckAttempts, ProbeBudget: s.ProbeBudget, ResolveIPs: resolveServerIPs,
 		SpeedTester: s.SpeedTester, TariffMbps: LoadTariffMbps(cfg.Storage.StateDir),
 	}
 	result, err := manager.PrepareBundle(ctx, mergedPath, cfg.Xray.ProbeSocksBasePort)

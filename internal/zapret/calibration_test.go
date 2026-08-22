@@ -18,6 +18,8 @@ func (f calibrationRunnerFunc) Run(ctx context.Context, request CalibrationReque
 type progressCalibrationRunner struct {
 	completed int
 	release   chan struct{}
+	logTail   []string
+	working   []string
 }
 
 func (r *progressCalibrationRunner) Run(context.Context, CalibrationRequest) ([]byte, error) {
@@ -26,6 +28,9 @@ func (r *progressCalibrationRunner) Run(context.Context, CalibrationRequest) ([]
 }
 
 func (r *progressCalibrationRunner) Progress() (int, int) { return r.completed, 0 }
+func (r *progressCalibrationRunner) Live() ([]string, []string) {
+	return r.logTail, r.working
+}
 
 func TestCalibrationManagerCompletesWithBoundedCandidates(t *testing.T) {
 	raw := []byte(`{"catalog":{"version":1,"profiles":[{"id":"auto-a","provider":"nfqws-v1","provider_version":"72.13","binary_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","route_type":"zapret","ip_families":["ipv4"],"transports":["tcp"],"ports":[443],"queue":200,"safety":"reviewed","strategy_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","strategy":"--qnum=200"}],"bundles":[]},"evidence":[{"profile_id":"auto-a","tests":["https_tls12"],"occurrences":3}]}`)
@@ -44,7 +49,7 @@ func TestCalibrationManagerCompletesWithBoundedCandidates(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	status := manager.Status()
-	if status.State != "completed" || status.CandidateCount != 1 || !status.ActivationRequired || status.Concurrency != 1 {
+	if status.State != "completed" || status.CandidateCount != 1 || !status.ActivationRequired || status.RecommendedProfileID != "auto-a" || status.Concurrency != 1 {
 		t.Fatalf("unexpected status: %+v", status)
 	}
 }
@@ -94,22 +99,45 @@ func TestCalibrationCommandErrorClassifiesUpstreamTimeout(t *testing.T) {
 }
 
 func TestCalibrationStatusReportsLiveCompletedChecks(t *testing.T) {
-	runner := &progressCalibrationRunner{completed: 17, release: make(chan struct{})}
+	runner := &progressCalibrationRunner{completed: 17, release: make(chan struct{}), logTail: []string{"checking strategy"}, working: []string{"strategy-a"}}
 	manager := NewCalibrationManager(runner)
 	request := CalibrationRequest{Domain: "example.com", BundleID: "auto-example", NetworkFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 	if _, err := manager.Start(request); err != nil {
 		t.Fatal(err)
 	}
 	status := manager.Status()
-	if status.ChecksCompleted != 17 || status.ChecksTotal != 0 {
+	if status.ChecksCompleted != 17 || status.ChecksTotal != 0 || len(status.LogTail) != 1 || len(status.WorkingStrategies) != 1 {
 		t.Fatalf("unexpected live progress: %+v", status)
 	}
 	close(runner.release)
+}
+
+func TestCalibrationLiveSnapshotIsBoundedAndExtractsWorkingStrategies(t *testing.T) {
+	raw := []byte("checking strategy-a\n!!!!! AVAILABLE !!!!!\nchecking strategy-b\nUNAVAILABLE code=28\n")
+	logs, working := calibrationLiveSnapshot(raw)
+	if len(logs) != 4 || len(working) != 1 || working[0] != "checking strategy-a" {
+		t.Fatalf("unexpected live snapshot: logs=%v working=%v", logs, working)
+	}
 }
 
 func TestCompletedCalibrationCheckCounterIgnoresAttempts(t *testing.T) {
 	raw := []byte("[attempt 1] AVAILABLE\n!!!!! AVAILABLE !!!!!\n[attempt 2] timeout\nUNAVAILABLE code=28\n")
 	if got := countCompletedCalibrationChecks(raw); got != 2 {
 		t.Fatalf("completed checks=%d", got)
+	}
+}
+
+func TestCalibrationPreResolvedIPv4IsBoundedAndPublic(t *testing.T) {
+	got, err := normalizeCalibrationIPv4([]string{"8.8.8.8", "8.8.8.8", "1.1.1.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != "8.8.8.8" || got[1] != "1.1.1.1" {
+		t.Fatalf("unexpected normalized addresses: %v", got)
+	}
+	for _, invalid := range [][]string{{"127.0.0.1"}, {"192.168.1.1"}, {"203.0.113.10"}, {"not-an-ip"}} {
+		if _, err := normalizeCalibrationIPv4(invalid); err == nil {
+			t.Fatalf("unsafe address was accepted: %v", invalid)
+		}
 	}
 }

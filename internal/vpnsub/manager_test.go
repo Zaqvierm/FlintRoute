@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -55,6 +56,42 @@ func (p fakeCandidateProcess) Stop(context.Context) error {
 type sequenceChecker struct {
 	checks []OutboundCheck
 	index  int
+}
+
+type budgetTrackingChecker struct {
+	mu       sync.Mutex
+	active   int
+	maxActive int
+}
+
+func (c *budgetTrackingChecker) Check(_ context.Context, tag, _ string) OutboundCheck {
+	c.mu.Lock()
+	c.active++
+	if c.active > c.maxActive {
+		c.maxActive = c.active
+	}
+	c.mu.Unlock()
+	time.Sleep(5 * time.Millisecond)
+	c.mu.Lock()
+	c.active--
+	c.mu.Unlock()
+	return OutboundCheck{Tag: tag, Status: "OK", ExternalIPHash: "sha256:egress", ExternalCountry: "DE"}
+}
+
+func TestManagerRespectsSharedProbeBudget(t *testing.T) {
+	checker := &budgetTrackingChecker{}
+	servers := make([]ServerStatus, 8)
+	for index := range servers {
+		servers[index] = ServerStatus{Tag: "vless-" + string(rune('a'+index)), SOCKS5: "127.0.0.1:12000", Status: "SUPPORTED"}
+	}
+	manager := &Manager{Checker: checker, Parallelism: 8, CheckAttempts: 1, ProbeBudget: make(chan struct{}, 2)}
+	results := manager.checkSupported(context.Background(), servers)
+	if len(results) != len(servers) {
+		t.Fatalf("checked %d servers, want %d", len(results), len(servers))
+	}
+	if checker.maxActive > 2 {
+		t.Fatalf("subscription checks bypassed shared probe budget: max_active=%d", checker.maxActive)
+	}
 }
 
 func (c *sequenceChecker) Check(_ context.Context, tag, _ string) OutboundCheck {

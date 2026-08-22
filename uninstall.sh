@@ -24,6 +24,25 @@ SLEEP_BIN="${SLEEP_BIN:-sleep}"
 SERVICES="router-policy-dns-observer router-policy-boot-guard router-policy-watchdog router-policy router-policy-xray router-policy-zapret"
 mode="${1:---dry-run}"
 
+validate_no_symlink_path() {
+  candidate="$1"
+  case "$candidate" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  remainder=${candidate#/}
+  current=""
+  while [ -n "$remainder" ]; do
+    case "$remainder" in
+      */*) component=${remainder%%/*}; remainder=${remainder#*/} ;;
+      *) component=$remainder; remainder= ;;
+    esac
+    [ -n "$component" ] || continue
+    current="$current/$component"
+    [ ! -L "$current" ] || return 1
+  done
+}
+
 deactivate_committed_dataplane() {
   binding="$STATE_DIR/last-good/active-transaction.env"
   [ -f "$binding" ] || binding="$STATE_DIR/last-good/transaction.env"
@@ -170,6 +189,17 @@ fi
 if [ -z "$SYSTEM_ROOT" ] && [ -x "$BIN_DIR/router-policy" ]; then
   ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$BIN_DIR/router-policy" maintenance begin --owner "installer:uninstall-$$" --reason uninstall --lease 30m >/dev/null
 fi
+
+for owned_path in "$PREFIX" "$BIN_DIR/router-policy" "$INIT_DIR/router-policy" \
+  "$INIT_DIR/router-policy-dns-observer" "$INIT_DIR/router-policy-boot-guard" \
+  "$INIT_DIR/router-policy-watchdog" "$INIT_DIR/router-policy-xray" \
+  "$INIT_DIR/router-policy-zapret" "$HOTPLUG_IFACE_DIR/95-router-policy" \
+  "$HOTPLUG_FIREWALL_DIR/95-router-policy" "$ETC_DIR" "$RUNTIME_DIR"; do
+  validate_no_symlink_path "$owned_path" || {
+    echo "uninstall blocked: symlink in owned path: $owned_path" >&2
+    exit 1
+  }
+done
 
 mkdir -p "$BACKUP_DIR"
 manifest="$BACKUP_DIR/manifest.txt"

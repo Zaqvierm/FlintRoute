@@ -16,6 +16,9 @@ export type DecisionCard = {
   fallback: boolean;
   fallbackPath: string[];
   verified: boolean;
+  classificationState: string;
+  probeState: string;
+  policyState: string;
   status: string;
   durationMS?: number;
   probeLatencyMS?: number;
@@ -164,14 +167,17 @@ export function toDecisionCard(event: EventItem): DecisionCard {
     device: first(details, ['device_name', 'hostname'], event.device_id || 'Неизвестное устройство'),
     ip: first(details, ['device_ip', 'client_ip'], ''),
     domain: event.domain || first(details, ['domain', 'host'], 'Неизвестный домен'),
-    service: event.service_id || first(details, ['service', 'service_name'], 'Не классифицирован'),
-    category: first(details, ['category', 'classification'], 'UNCLASSIFIED'),
+    service: event.service_id || first(details, ['service_name', 'service'], 'Не классифицирован'),
+    category: first(details, ['classification', 'category'], 'unknown'),
     rule: first(details, ['rule', 'policy', 'policy_name'], 'Системное правило'),
     strategy: first(details, ['strategy', 'route_type'], route),
     route,
     fallback: bool(details, ['fallback', 'fallback_performed']) || fallbackPath.length > 1,
     fallbackPath,
     verified: bool(details, ['path_verified', 'verified', 'data_plane_verified']),
+    classificationState: first(details, ['classification_state'], 'unresolved'),
+    probeState: first(details, ['probe_state'], 'unverified'),
+    policyState: first(details, ['policy_state'], 'observed'),
     status: humanStatus(status),
     durationMS: Number.isFinite(duration) ? duration : undefined,
     probeLatencyMS: Number.isFinite(probeLatency) ? probeLatency : undefined,

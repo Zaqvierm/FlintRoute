@@ -188,6 +188,24 @@ func TestUnknownBaselineUsesSystemDefaultBeforeManagedDirect(t *testing.T) {
 	}
 }
 
+func TestUnknownTSPUMatchDoesNotProbeSystemDefault(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cfg.Routes[0].RequiresAdapter = true
+	cfg.Routes[0].AdapterMode = "direct"
+	plan, err := BuildCandidates(cfg, "discord.example", "", Options{TSPUResult: tspu.Match{Status: "MATCH"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Candidates) == 0 || plan.Candidates[0].Type != "zapret" {
+		t.Fatalf("TSPU candidate order does not start with Zapret: %+v", plan.Candidates)
+	}
+	for _, route := range plan.Candidates {
+		if route.Tag == "system-default" {
+			t.Fatalf("TSPU plan leaked system default candidate: %+v", plan.Candidates)
+		}
+	}
+}
+
 func TestSystemDefaultResultBindsToCurrentRevision(t *testing.T) {
 	route := config.Route{Type: "direct", Tag: "system-default", AdapterMode: "system_default"}
 	result := bindResultToCandidate(probe.RouteResult{
@@ -318,15 +336,15 @@ func TestFreshTSPUMatchStartsWithZapret(t *testing.T) {
 	}
 }
 
-func TestTSPUFallbackOrderChecksSmartDNSBeforeVLESS(t *testing.T) {
+func TestTSPUFallbackOrderUsesZapretThenVLESSThenDrop(t *testing.T) {
 	got := orderForService("TSPU_RESTRICTED", "MATCH", "zapret_first")
-	want := []string{"zapret", "smart_dns", "vless", "direct", "drop"}
+	want := []string{"zapret", "vless", "drop"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("TSPU fallback order = %v, want %v", got, want)
 	}
 }
 
-func TestTSPUCheckUsesSmartDNSBeforeTouchingVLESS(t *testing.T) {
+func TestTSPUCheckFallsBackFromZapretToVLESS(t *testing.T) {
 	cfg := discoveryConfig(t)
 	prober := &scriptedProber{results: map[string]probe.RouteResult{
 		"zapret":    failedResult("zapret", "zapret", "strategy_failed"),
@@ -340,12 +358,12 @@ func TestTSPUCheckUsesSmartDNSBeforeTouchingVLESS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Selected == nil || result.Selected.Route != "smart-one" {
-		t.Fatalf("Smart DNS was not selected before VPN: %+v", result)
+	if result.Selected == nil || result.Selected.Route != "vless-one" {
+		t.Fatalf("VLESS was not selected after Zapret failed: %+v", result)
 	}
-	want := []string{"zapret", "smart-one"}
+	want := []string{"zapret", "vless-one"}
 	if !reflect.DeepEqual(prober.calls, want) {
-		t.Fatalf("VPN was touched before Smart DNS completed: calls=%v", prober.calls)
+		t.Fatalf("unexpected TSPU fallback calls=%v", prober.calls)
 	}
 }
 
@@ -437,10 +455,10 @@ func TestBuildCandidatesUsesSelectedVLESSFirst(t *testing.T) {
 	}
 }
 
-func TestSelectedVLESSCannotJumpAheadOfSmartDNS(t *testing.T) {
+func TestSelectedVLESSRemainsAfterZapretForTSPU(t *testing.T) {
 	cfg := discoveryConfig(t)
 	cfg.Services["observed"] = config.Service{
-		Category: "TSPU_RESTRICTED", AllowedPaths: []string{"zapret", "smart_dns", "vless", "direct", "drop"},
+		Category: "TSPU_RESTRICTED", AllowedPaths: []string{"zapret", "vless", "drop"},
 		SelectedRouteTag: "vless-one",
 	}
 	plan, err := BuildCandidates(cfg, "observed.example", "observed", Options{
@@ -453,9 +471,9 @@ func TestSelectedVLESSCannotJumpAheadOfSmartDNS(t *testing.T) {
 	for _, candidate := range plan.Candidates {
 		got = append(got, candidate.Tag)
 	}
-	want := []string{"zapret", "smart-one", "vless-one", "direct", "drop"}
+	want := []string{"zapret", "vless-one", "drop"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("selected VLESS bypassed Smart DNS: got=%v want=%v", got, want)
+		t.Fatalf("selected VLESS changed TSPU fallback: got=%v want=%v", got, want)
 	}
 }
 

@@ -69,6 +69,9 @@ type Policy struct {
 	FailAfterConsecutiveErrors       int    `json:"fail_after_consecutive_errors"`
 	RecoverAfterConsecutiveSuccess   int    `json:"recover_after_consecutive_successes"`
 	HealthCheckIntervalSeconds       int    `json:"health_check_interval_seconds"`
+	InventoryHealthIntervalSeconds   int    `json:"inventory_health_interval_seconds,omitempty"`
+	ProbeBudget                      int    `json:"probe_budget,omitempty"`
+	DiscoveryQueueLimit              int    `json:"discovery_queue_limit,omitempty"`
 	DomainDecisionTTLSeconds         int    `json:"domain_decision_ttl_seconds"`
 	SubscriptionUpdateIntervalSecs   int    `json:"subscription_update_interval_seconds"`
 	TSPUListUpdateIntervalSeconds    int    `json:"tspu_list_update_interval_seconds"`
@@ -276,6 +279,12 @@ func (c *Config) Validate() error {
 	}
 	if len(c.Routes) == 0 {
 		return fmt.Errorf("routes are empty")
+	}
+	// A route check is deliberately finite. These limits keep a malformed or
+	// accidentally generated configuration from turning one logical decision
+	// into an unbounded candidate/probe fan-out.
+	if len(c.Routes) > 64 {
+		return fmt.Errorf("routes exceed the maximum of 64")
 	}
 	seenRoutes := map[string]bool{}
 	routesByTag := map[string]Route{}
@@ -577,6 +586,9 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("service %s probe %s invalid body_mode: %s", name, p.Name, p.BodyMode)
 			}
 		}
+		if len(svc.ProbeURLs) > 16 {
+			return fmt.Errorf("service %s has too many probe urls (maximum 16)", name)
+		}
 		c.Services[name] = svc
 	}
 	if err := c.validateOverrides(routesByTag); err != nil {
@@ -614,6 +626,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Policy.DiscoveryMaxConsecutiveRollbacks < 0 || c.Policy.DiscoveryMaxConsecutiveRollbacks > 100 {
 		return fmt.Errorf("discovery_max_consecutive_rollbacks must be between 0 and 100")
+	}
+	if c.Policy.InventoryHealthIntervalSeconds < 0 {
+		return fmt.Errorf("inventory_health_interval_seconds cannot be negative")
+	}
+	if c.Policy.ProbeBudget < 0 || c.Policy.ProbeBudget > 4 {
+		return fmt.Errorf("probe_budget must be between 0 and 4")
+	}
+	if c.Policy.DiscoveryQueueLimit < 0 || c.Policy.DiscoveryQueueLimit > 32 {
+		return fmt.Errorf("discovery_queue_limit must be between 0 and 32")
 	}
 	if c.Notifications.TelegramSecretFile != "" && !portableAbsolutePath(c.Notifications.TelegramSecretFile) {
 		return fmt.Errorf("notifications.telegram_secret_file must be absolute")

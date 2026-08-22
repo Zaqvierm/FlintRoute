@@ -1059,6 +1059,7 @@ func fetchTextViaRoute(ctx context.Context, cfg *config.Config, route config.Rou
 
 	dialer := &net.Dialer{Timeout: 8 * time.Second}
 	transport := &http.Transport{TLSClientConfig: &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}}
+	defer transport.CloseIdleConnections()
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		if route.SOCKS5 != "" {
 			if target.IsValid() {

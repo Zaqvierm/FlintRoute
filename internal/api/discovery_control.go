@@ -14,36 +14,40 @@ import (
 	"router-policy/internal/discovery"
 	"router-policy/internal/planner"
 	"router-policy/internal/probe"
+	"router-policy/internal/tspu"
 )
 
 const (
 	discoveryStateKey       = "control"
 	maxDiscoverySuggestions = 256
-	discoveryDedupeWindow   = 30 * time.Second
+	// A DNS cache miss can be reported repeatedly by several clients.  Treat
+	// the eTLD+1 as one discovery subject for a bounded observation window;
+	// ordinary repeat queries must not restart route probes.
+	discoveryDedupeWindow = 30 * time.Minute
 )
 
 func (s *Server) beginDiscoveryObservation(domain string, now time.Time) bool {
-	domain = strings.ToLower(strings.TrimSpace(domain))
-	if domain == "" {
+	key := discoveryDedupeKey(domain)
+	if key == "" {
 		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.discoveryInFlight[domain] {
+	if s.discoveryInFlight[key] {
 		return false
 	}
-	if last := s.discoveryRecent[domain]; !last.IsZero() && now.Sub(last) < discoveryDedupeWindow {
+	if last := s.discoveryRecent[key]; !last.IsZero() && now.Sub(last) < discoveryDedupeWindow {
 		return false
 	}
-	s.discoveryInFlight[domain] = true
+	s.discoveryInFlight[key] = true
 	return true
 }
 
 func (s *Server) finishDiscoveryObservation(domain string, observedAt time.Time) {
-	domain = strings.ToLower(strings.TrimSpace(domain))
+	key := discoveryDedupeKey(domain)
 	s.mu.Lock()
-	delete(s.discoveryInFlight, domain)
-	s.discoveryRecent[domain] = observedAt
+	delete(s.discoveryInFlight, key)
+	s.discoveryRecent[key] = observedAt
 	if len(s.discoveryRecent) > maxDiscoverySuggestions*2 {
 		cutoff := observedAt.Add(-discoveryDedupeWindow)
 		for name, seenAt := range s.discoveryRecent {
@@ -53,6 +57,17 @@ func (s *Server) finishDiscoveryObservation(domain string, observedAt time.Time)
 		}
 	}
 	s.mu.Unlock()
+}
+
+func discoveryDedupeKey(domain string) string {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if domain == "" {
+		return ""
+	}
+	if etld := tspu.ETLDPlusOne(domain); etld != "" {
+		return etld
+	}
+	return domain
 }
 
 func discoveryCandidateDetails(results []probe.RouteResult) []map[string]any {
@@ -111,15 +126,18 @@ type discoveryControlState struct {
 }
 
 type discoverySuggestion struct {
-	Domain       string    `json:"domain"`
-	Category     string    `json:"category"`
-	Route        string    `json:"route,omitempty"`
-	RouteType    string    `json:"route_type,omitempty"`
-	PathVerified bool      `json:"path_verified"`
-	Confidence   float64   `json:"confidence"`
-	Reason       string    `json:"reason"`
-	QueryType    string    `json:"query_type"`
-	ObservedAt   time.Time `json:"observed_at"`
+	Domain              string    `json:"domain"`
+	Category            string    `json:"category"`
+	Route               string    `json:"route,omitempty"`
+	RouteType           string    `json:"route_type,omitempty"`
+	PathVerified        bool      `json:"path_verified"`
+	Confidence          float64   `json:"confidence"`
+	Reason              string    `json:"reason"`
+	QueryType           string    `json:"query_type"`
+	ObservedAt          time.Time `json:"observed_at"`
+	ClassificationState string    `json:"classification_state"`
+	ProbeState          string    `json:"probe_state"`
+	PolicyState         string    `json:"policy_state"`
 }
 
 type discoveryConfigureRequest struct {
@@ -326,11 +344,16 @@ func (s *Server) saveDiscoverySuggestion(observation discovery.Observation, chec
 	suggestion := discoverySuggestion{
 		Domain: check.Domain, Category: check.Category, Confidence: check.Confidence,
 		QueryType: observation.QueryType, ObservedAt: s.discoveryNow(), Reason: "no verified route selected",
+		ClassificationState: "unresolved", ProbeState: "no_safe_route", PolicyState: "suggested",
+	}
+	if check.Confidence > 0 {
+		suggestion.ClassificationState = "classified"
 	}
 	if check.Selected != nil {
 		suggestion.Route = check.Selected.Route
 		suggestion.RouteType = check.Selected.RouteType
 		suggestion.PathVerified = check.Selected.PathVerified
+		suggestion.ProbeState = "verified_candidate"
 		suggestion.Reason = check.Selected.ReasonCode
 		if suggestion.Reason == "" && check.Selected.Reason != nil {
 			suggestion.Reason = *check.Selected.Reason

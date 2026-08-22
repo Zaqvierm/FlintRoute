@@ -65,6 +65,9 @@ type Manager struct {
 	Checker       OutboundChecker
 	Parallelism   int
 	CheckAttempts int
+	// ProbeBudget is shared with the control-plane schedulers. Candidate
+	// verification must not bypass the global route-probe limit.
+	ProbeBudget   chan struct{}
 	ResolveIPs    func(context.Context, string) []string
 	SpeedTester   ThroughputTester
 	TariffMbps    float64
@@ -224,7 +227,17 @@ func (m *Manager) checkSupported(ctx context.Context, servers []ServerStatus) []
 		go func() {
 			defer workers.Done()
 			for next := range jobs {
+				if m.ProbeBudget != nil {
+					select {
+					case m.ProbeBudget <- struct{}{}:
+					case <-ctx.Done():
+						return
+					}
+				}
 				results <- checked{index: next.index, value: m.checkWithRetry(ctx, next.server.Tag, next.server.SOCKS5)}
+				if m.ProbeBudget != nil {
+					<-m.ProbeBudget
+				}
 			}
 		}()
 	}

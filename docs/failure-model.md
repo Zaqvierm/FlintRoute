@@ -32,9 +32,9 @@
 |---|---|---|
 | `GEO_LOCKED` | smart_dns → VLESS (non-RU) → DROP | direct, Zapret, RU egress |
 | `TELEGRAM` | external_socks → VLESS → DROP | внешний SOCKS должен пройти preflight и PathVerified |
-| `TSPU_RESTRICTED` | zapret → smart_dns → VLESS → DROP | небезопасный direct |
+| `TSPU_RESTRICTED` | zapret → VLESS → DROP | небезопасный direct, Smart DNS как DPI bypass |
 | `DIRECT_ONLY` | только direct; при отказе — ошибка, не VLESS | зарубежный proxy |
-| `DIRECT_PREFERRED` | direct → zapret → smart_dns → VLESS | глобальный VLESS |
+| `DIRECT_PREFERRED` | direct; расширение только после конкретного GEO/TSPU evidence | глобальный VLESS |
 | `BLOCKED` | DROP | любой обход |
 
 ## Четыре уровня при отказе

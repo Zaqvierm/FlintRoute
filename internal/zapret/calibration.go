@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"router-policy/internal/netpolicy"
 	"router-policy/internal/tspu"
 )
 
@@ -21,10 +23,11 @@ const calibrationConcurrencyReason = "upstream blockcheck uses shared nft, NFQUE
 var errCalibrationUpstreamTimeout = errors.New("upstream Zapret blockcheck timed out")
 
 type CalibrationRequest struct {
-	Domain              string `json:"domain"`
-	BundleID            string `json:"bundle_id"`
-	NetworkFingerprint  string `json:"network_fingerprint"`
-	AllowManagedRestart bool   `json:"allow_managed_restart,omitempty"`
+	Domain              string   `json:"domain"`
+	BundleID            string   `json:"bundle_id"`
+	NetworkFingerprint  string   `json:"network_fingerprint"`
+	ResolvedIPv4        []string `json:"-"`
+	AllowManagedRestart bool     `json:"allow_managed_restart,omitempty"`
 }
 
 type CalibrationCandidate struct {
@@ -51,6 +54,9 @@ type CalibrationStatus struct {
 	ChecksCompleted      int                    `json:"checks_completed,omitempty"`
 	ChecksTotal          int                    `json:"checks_total,omitempty"`
 	Candidates           []CalibrationCandidate `json:"candidates,omitempty"`
+	RecommendedProfileID string                 `json:"recommended_profile_id,omitempty"`
+	LogTail              []string               `json:"log_tail,omitempty"`
+	WorkingStrategies    []string               `json:"working_strategies,omitempty"`
 	StartedAt            time.Time              `json:"started_at,omitempty"`
 	FinishedAt           time.Time              `json:"finished_at,omitempty"`
 	DurationMilliseconds int64                  `json:"duration_ms,omitempty"`
@@ -65,6 +71,10 @@ type CalibrationRunner interface {
 
 type CalibrationProgressProvider interface {
 	Progress() (completed int, total int)
+}
+
+type CalibrationLiveProvider interface {
+	Live() (logTail []string, workingStrategies []string)
 }
 
 // ExecCalibrationRunner is implemented per platform. Production uses the
@@ -94,6 +104,22 @@ func NewCalibrationManager(runner CalibrationRunner) *CalibrationManager {
 	return &CalibrationManager{Runner: runner, Timeout: 42 * time.Minute}
 }
 
+// CatalogPath returns the durable catalog produced by the runner. The path is
+// intentionally not exposed in CalibrationStatus because it is an internal
+// deployment detail, not part of the user-facing calibration evidence.
+func (m *CalibrationManager) CatalogPath() string {
+	if m == nil || m.Runner == nil {
+		return ""
+	}
+	provider, ok := m.Runner.(interface{ CatalogPath() string })
+	if !ok {
+		return ""
+	}
+	return provider.CatalogPath()
+}
+
+func (r ExecCalibrationRunner) CatalogPath() string { return r.CatalogOut }
+
 func (m *CalibrationManager) now() time.Time {
 	if m.Now != nil {
 		return m.Now().UTC()
@@ -116,6 +142,11 @@ func (m *CalibrationManager) Start(request CalibrationRequest) (CalibrationStatu
 	if !digestPattern.MatchString(request.NetworkFingerprint) {
 		return CalibrationStatus{}, errors.New("verified network fingerprint is required")
 	}
+	resolvedIPv4, err := normalizeCalibrationIPv4(request.ResolvedIPv4)
+	if err != nil {
+		return CalibrationStatus{}, err
+	}
+	request.ResolvedIPv4 = resolvedIPv4
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.current.State == "running" || m.current.State == "queued" {
@@ -138,6 +169,27 @@ func (m *CalibrationManager) Start(request CalibrationRequest) (CalibrationStatu
 	return cloneCalibrationStatus(m.current), nil
 }
 
+func normalizeCalibrationIPv4(values []string) ([]string, error) {
+	if len(values) > 8 {
+		return nil, errors.New("too many pre-resolved calibration addresses")
+	}
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		addr, err := netip.ParseAddr(strings.TrimSpace(value))
+		if err != nil || !addr.Is4() || !netpolicy.PublicResolverAddr(addr) {
+			return nil, errors.New("pre-resolved calibration address is not a public IPv4 address")
+		}
+		value = addr.String()
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result, nil
+}
+
 func (m *CalibrationManager) Status() CalibrationStatus {
 	if m == nil {
 		return CalibrationStatus{State: "unavailable", Stage: "not_configured", Concurrency: 1, ConcurrencyReason: calibrationConcurrencyReason}
@@ -156,6 +208,9 @@ func (m *CalibrationManager) Status() CalibrationStatus {
 			if total > 0 {
 				m.current.ChecksTotal = total
 			}
+		}
+		if live, ok := m.Runner.(CalibrationLiveProvider); ok {
+			m.current.LogTail, m.current.WorkingStrategies = live.Live()
 		}
 	}
 	return cloneCalibrationStatus(m.current)
@@ -199,6 +254,9 @@ func (m *CalibrationManager) run(ctx context.Context, request CalibrationRequest
 			status.Candidates = candidates
 			status.CandidateCount = len(candidates)
 			status.ActivationRequired = len(candidates) > 0
+			if len(candidates) > 0 {
+				status.RecommendedProfileID = candidates[0].ProfileID
+			}
 		}
 	}
 	m.mu.Lock()
@@ -307,8 +365,52 @@ func countCompletedCalibrationChecks(raw []byte) int {
 	return completed
 }
 
+func calibrationLiveSnapshot(raw []byte) ([]string, []string) {
+	const maxLines = 80
+	lines := make([]string, 0, maxLines)
+	working := make([]string, 0, 8)
+	seenWorking := map[string]struct{}{}
+	previous := ""
+	for _, rawLine := range strings.Split(string(raw), "\n") {
+		line := strings.Map(func(r rune) rune {
+			if r == '\t' {
+				return ' '
+			}
+			if r < 0x20 || r == 0x7f {
+				return -1
+			}
+			return r
+		}, rawLine)
+		line = strings.Join(strings.Fields(line), " ")
+		if line == "" {
+			continue
+		}
+		if len(line) > 240 {
+			line = line[:240]
+		}
+		lines = append(lines, line)
+		if len(lines) > maxLines {
+			lines = lines[len(lines)-maxLines:]
+		}
+		if strings.Contains(line, "!!!!! AVAILABLE !!!!!") {
+			candidate := previous
+			if candidate == "" {
+				candidate = fmt.Sprintf("working strategy %d", len(working)+1)
+			}
+			if _, exists := seenWorking[candidate]; !exists {
+				seenWorking[candidate] = struct{}{}
+				working = append(working, candidate)
+			}
+		}
+		previous = line
+	}
+	return append([]string(nil), lines...), append([]string(nil), working...)
+}
+
 func cloneCalibrationStatus(status CalibrationStatus) CalibrationStatus {
 	status.Candidates = append([]CalibrationCandidate(nil), status.Candidates...)
+	status.LogTail = append([]string(nil), status.LogTail...)
+	status.WorkingStrategies = append([]string(nil), status.WorkingStrategies...)
 	for index := range status.Candidates {
 		status.Candidates[index].Transports = append([]string(nil), status.Candidates[index].Transports...)
 		status.Candidates[index].Ports = append([]uint16(nil), status.Candidates[index].Ports...)

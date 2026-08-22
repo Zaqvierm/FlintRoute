@@ -1161,33 +1161,6 @@ func run(args []string) error {
 			return err
 		}
 		return printJSON(security.Audit(cfg))
-	case "daemon":
-		cfg, err := config.Load(cfgPath)
-		if err != nil {
-			return err
-		}
-		interval := time.Duration(cfg.Policy.HealthCheckIntervalSeconds) * time.Second
-		if interval <= 0 {
-			interval = 5 * time.Minute
-		}
-		fmt.Fprintln(os.Stderr, "router-policy daemon started")
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			for _, serviceName := range []string{"openai", "telegram", "youtube"} {
-				svc, ok := cfg.Services[serviceName]
-				if !ok || len(svc.Domains) == 0 {
-					continue
-				}
-				result, err := planner.CheckDomain(context.Background(), cfg, svc.Domains[0], serviceName, planner.Options{})
-				if err == nil {
-					_ = printJSON(result)
-				} else {
-					fmt.Fprintln(os.Stderr, "check failed:", serviceName, err)
-				}
-			}
-			<-ticker.C
-		}
 	case "version":
 		return printJSON(map[string]any{"name": "router-policy", "built_at": time.Now().UTC().Format(time.RFC3339)})
 	default:

@@ -7,15 +7,19 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"router-policy/internal/config"
+	"router-policy/internal/discovery"
 	"router-policy/internal/health"
+	"router-policy/internal/platform"
 	"router-policy/internal/probe"
 	"router-policy/internal/tspu"
+	"router-policy/internal/vpnsub"
 )
 
 type apiHealthEngine struct {
@@ -170,6 +174,92 @@ func TestTSPUDelayUsesStartupJitterAndBoundedFailureBackoff(t *testing.T) {
 	base := time.Hour
 	if low, high := jitterTSPUDelay(base, 0), jitterTSPUDelay(base, ^uint16(0)); low != 54*time.Minute || high != 66*time.Minute {
 		t.Fatalf("jitter bounds low=%s high=%s", low, high)
+	}
+}
+
+func TestInventoryHealthIntervalIsDailyAndJittered(t *testing.T) {
+	base := 24 * time.Hour
+	for i := 0; i < 20; i++ {
+		got := jitteredHealthInterval(base)
+		if got < 21*time.Hour || got > 27*time.Hour {
+			t.Fatalf("inventory interval outside jitter window: %s", got)
+		}
+	}
+	if got := jitteredHealthInterval(time.Minute); got != time.Hour {
+		t.Fatalf("short inventory interval was not safely clamped: %s", got)
+	}
+}
+
+func TestInventoryHealthDoesNotProbeImmediatelyAfterStartup(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		got := startupHealthDelay()
+		if got < 30*time.Second || got > 90*time.Second {
+			t.Fatalf("startup health delay=%s outside 30-90s", got)
+		}
+	}
+}
+
+func TestServerUsesBoundedGlobalProbeBudgetAndDiscoveryQueue(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Policy.ProbeBudget = 2
+	cfg.Policy.DiscoveryQueueLimit = 3
+	srv, err := NewServerWithOptions(cfg, Options{Provider: platform.DevelopmentMockProvider{}, ProductionAdapter: newFakeAdapter(), Development: true, DeferRecovery: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	if got := cap(srv.probeBudget); got != 2 {
+		t.Fatalf("global probe budget capacity=%d want=2", got)
+	}
+	if got := cap(srv.discoveryQueue); got != 3 {
+		t.Fatalf("discovery queue capacity=%d want=3", got)
+	}
+}
+
+func TestDiscoveryStormIsBoundedAndDrainsToBaseline(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Policy.ProbeBudget = 4
+	cfg.Policy.DiscoveryQueueLimit = 32
+	srv, err := NewServerWithOptions(cfg, Options{
+		Provider: platform.DevelopmentMockProvider{}, ProductionAdapter: newFakeAdapter(),
+		Development: true, DeferRecovery: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	accepted := 0
+	for i := 0; i < 1000; i++ {
+		observation := discovery.Observation{Domain: "storm-" + strconv.Itoa(i) + ".example", QueryType: "A"}
+		select {
+		case srv.discoveryQueue <- observation:
+			accepted++
+		default:
+		}
+	}
+	if accepted != 32 || len(srv.discoveryQueue) != 32 {
+		t.Fatalf("DNS storm escaped queue bound: accepted=%d queued=%d cap=%d", accepted, len(srv.discoveryQueue), cap(srv.discoveryQueue))
+	}
+	for len(srv.discoveryQueue) > 0 {
+		<-srv.discoveryQueue
+	}
+	if got := len(srv.discoveryQueue); got != 0 {
+		t.Fatalf("discovery queue did not return to baseline: %d", got)
+	}
+}
+
+func TestSubscriptionRefreshDelayUsesProviderExpiry(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Storage.StateDir = t.TempDir()
+	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	pool := vpnsub.PoolSnapshot{Sources: []vpnsub.SubscriptionSource{{ID: "source-1", ExpiresAt: now.Add(6 * time.Hour).Format(time.RFC3339)}}}
+	if err := vpnsub.StorePool(vpnsub.PoolPath(cfg.Storage.StateDir), pool); err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{activeConfig: cfg}
+	if got, want := srv.subscriptionRefreshDelay(now), 5*time.Hour; got != want {
+		t.Fatalf("expiry-aware refresh delay=%s want=%s", got, want)
 	}
 }
 

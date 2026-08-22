@@ -38,8 +38,8 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/health` | unauthenticated local watchdog health |
 | `/api/v1/auth/login` `setup` `logout` `me` | session lifecycle |
 | `/api/v1/overview` | provider overview |
-| `/api/v1/topology` | topology assembled from ubus, leases, neighbours, bridge FDB and wireless stations |
-| `/api/v1/devices` | LAN/guest/remote clients; addresses are masked unless `privacy=revealed` is explicitly requested |
+| `/api/v1/topology` | topology assembled from ubus, leases, neighbours, bridge FDB and wireless stations; `privacy=hidden` redacts client addresses |
+| `/api/v1/devices` | LAN/guest/remote clients; addresses are visible by default and `privacy=hidden` removes raw values before serialization |
 | `/api/v1/services` | configured and dynamically observed services |
 | `/api/v1/services/classify` | create or edit a domain rule through a draft ChangeSet; optional `allowed_paths` preserves the user-defined fallback order |
 | `/api/v1/discovery` | current discovery mode, limits, circuit-breaker state and suggestions |
@@ -104,11 +104,10 @@ metadata only. Subscription and manual outbounds are merged before the same
 candidate health check; adding a manual server does not silently enable managed
 Xray or change routing.
 
-Device privacy is enforced by the provider, not CSS. In the default response
-raw `ip`/`mac` are `null`; masks exist only in `ip_display`/`mac_display`.
-`privacy=revealed` is an explicit authenticated
-request used by the temporary reveal control; the hidden values are therefore
-absent from the DOM in normal mode.
+Device privacy is enforced by the provider, not CSS. Authenticated responses
+show real client addresses by default. `privacy=hidden` sets raw `ip`/`mac` to
+`null` and keeps masks only in `ip_display`/`mac_display`; hidden values are
+therefore absent from the DOM. The UI stores this display preference locally.
 
 `/api/v1/lifecycle` различает `router-policy-xray` и штатный OpenWrt-сервис
 `xray`. `inactive` у системного сервиса не считается ошибкой, если production
@@ -137,7 +136,8 @@ client. `GET /api/v1/tgws` возвращает состояние без сек
 настроенный route `direct` имеет `managed=true` и список доменов, для которых
 созданы FlintRoute sets/rules. Baseline не создаёт catch-all правило.
 
-Discovery по умолчанию работает в `observe_only`. `suggest` сохраняет
+Discovery по умолчанию работает в `observe_only`: он только принимает DNS-наблюдения и
+не запускает активные route probes. `suggest` сохраняет
 классифицированное предложение в bounded RAM cache (до 256 доменов), `locked`
 останавливает probe, а
 `auto_apply_verified` требует `PathVerified`, свободный transaction slot и

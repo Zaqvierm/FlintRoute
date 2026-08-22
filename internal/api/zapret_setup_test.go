@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -46,6 +48,23 @@ func TestZapretSetupCheckDoesNotCreateChangeSet(t *testing.T) {
 	srv.mu.Unlock()
 	if count != 0 {
 		t.Fatalf("preflight created %d ChangeSets", count)
+	}
+}
+
+func TestZapretSetupAcceptsComponentVersionWithVPrefix(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	configureZapretSetupTestServer(srv)
+	checker := &fakeZapretSetupChecker{report: zapret.SetupReport{Ready: true, DryRun: true, NFQueueAvailable: true, TestDomain: "example.com"}}
+	srv.zapretSetupChecker = checker
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client, csrf := login(t, ts.URL)
+	body := strings.Replace(zapretSetupJSON, `"provider_version":"72.12"`, `"provider_version":"v72.12"`, 1)
+	response := postZapretSetup(t, client, csrf, ts.URL+"/api/v1/zapret/setup/check", body)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || checker.calls != 1 {
+		t.Fatalf("component version was rejected: status=%d calls=%d", response.StatusCode, checker.calls)
 	}
 }
 
@@ -126,6 +145,47 @@ func TestZapretSetupFailureCreatesNoChangeSet(t *testing.T) {
 	srv.mu.Unlock()
 	if count != 0 {
 		t.Fatalf("failed setup created %d ChangeSets", count)
+	}
+}
+
+func TestCalibratedZapretActivationBindsRecommendedProfile(t *testing.T) {
+	catalogPath := filepath.Join(t.TempDir(), "catalog.json")
+	strategy := "--qnum=200\n--filter-tcp=443\n--dpi-desync=fake\n"
+	document := zapret.CatalogFile{
+		Version: 1,
+		Profiles: []zapret.CatalogFileProfile{{
+			ID: "profile-best", Provider: "nfqws-v1", ProviderVersion: "72.13",
+			BinaryDigest: "sha256:" + strings.Repeat("a", 64), RouteType: "zapret",
+			IPFamilies: []string{"ipv4"}, Transports: []string{"tcp"}, Ports: []uint16{443},
+			Queue: 200, Safety: "reviewed", StrategyDigest: zapret.Digest([]byte(strategy)), Strategy: strategy,
+		}},
+		Bundles: []zapret.BundleSpec{{
+			ID: "auto-example", Category: "TSPU_RESTRICTED", RequiredDomains: []string{"example.com"},
+			Protocols: []zapret.Protocol{{Transport: "tcp", Port: 443}}, IPFamilies: []string{"ipv4"},
+			AllowedProfiles: []string{"profile-best"}, FailureRoute: "drop",
+		}},
+	}
+	raw, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(catalogPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status := zapret.CalibrationStatus{
+		State: "completed", Domain: "example.com", BundleID: "auto-example",
+		NetworkFingerprint: "sha256:" + strings.Repeat("b", 64), ActivationRequired: true,
+		RecommendedProfileID: "profile-best",
+	}
+	ops, profileID, err := calibratedZapretActivationOps(testAPIConfig(t), status, status.NetworkFingerprint, catalogPath, "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profileID != "profile-best" || len(ops) != 3 {
+		t.Fatalf("unexpected calibrated activation: profile=%s ops=%+v", profileID, ops)
+	}
+	if _, _, err := calibratedZapretActivationOps(testAPIConfig(t), status, "sha256:"+strings.Repeat("c", 64), catalogPath, "example.com"); err == nil {
+		t.Fatal("calibration from another network was accepted")
 	}
 }
 

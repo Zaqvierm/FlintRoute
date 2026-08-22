@@ -1,13 +1,20 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
+	"net/netip"
 	"strings"
+	"time"
 
+	"router-policy/internal/netpolicy"
 	"router-policy/internal/platform"
+	"router-policy/internal/probe"
 	"router-policy/internal/zapret"
 )
 
@@ -35,9 +42,15 @@ func (s *Server) handleZapretCalibration(w http.ResponseWriter, r *http.Request)
 			writeError(w, r, http.StatusPreconditionFailed, "zapret_network_unverified", err.Error())
 			return
 		}
+		resolvedIPv4, err := s.zapretCalibrationIPv4(r.Context(), request.Domain)
+		if err != nil {
+			writeError(w, r, http.StatusPreconditionFailed, "zapret_dns_resolution_failed", err.Error())
+			return
+		}
 		bundleID := "auto-" + shortCalibrationHash(strings.ToLower(strings.TrimSpace(request.Domain)))
 		status, err := s.zapretCalibration.Start(zapret.CalibrationRequest{
 			Domain: request.Domain, BundleID: bundleID, NetworkFingerprint: fingerprint,
+			ResolvedIPv4:        resolvedIPv4,
 			AllowManagedRestart: request.AllowManagedRestart,
 		})
 		if err != nil {
@@ -53,6 +66,58 @@ func (s *Server) handleZapretCalibration(w http.ResponseWriter, r *http.Request)
 	default:
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "GET, POST or DELETE required")
 	}
+}
+
+func (s *Server) zapretCalibrationIPv4(ctx context.Context, domain string) ([]string, error) {
+	active := s.currentConfig()
+	if active == nil {
+		return nil, nil
+	}
+	hasSmartDNS := false
+	var lastErr error
+	for _, route := range active.Routes {
+		if route.Type != "smart_dns" || !route.Enabled() || strings.TrimSpace(route.DNSServer) == "" {
+			continue
+		}
+		hasSmartDNS = true
+		probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		udp, udpErr := probe.ValidateDNSResolverTransport(probeCtx, route.DNSServer, domain, "udp")
+		tcp, tcpErr := probe.ValidateDNSResolverTransport(probeCtx, route.DNSServer, domain, "tcp")
+		cancel()
+		if udpErr != nil || tcpErr != nil || !udp.Safe || !tcp.Safe {
+			lastErr = fmt.Errorf("Smart DNS resolver %s did not return a verified UDP/TCP answer", route.Tag)
+			continue
+		}
+		values := append(append([]string{}, udp.Addresses...), tcp.Addresses...)
+		result := make([]string, 0, len(values))
+		seen := make(map[string]struct{}, len(values))
+		for _, value := range values {
+			addr, parseErr := netip.ParseAddr(value)
+			if parseErr != nil || !addr.Is4() || !netpolicy.PublicResolverAddr(addr) {
+				continue
+			}
+			value = addr.String()
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			result = append(result, value)
+			if len(result) == 8 {
+				break
+			}
+		}
+		if len(result) > 0 {
+			return result, nil
+		}
+		lastErr = fmt.Errorf("Smart DNS resolver %s returned no safe public IPv4 address", route.Tag)
+	}
+	if !hasSmartDNS {
+		return nil, nil
+	}
+	if lastErr == nil {
+		lastErr = errors.New("configured Smart DNS resolvers could not resolve the calibration domain")
+	}
+	return nil, lastErr
 }
 
 func (s *Server) verifiedCalibrationNetworkFingerprint() (string, error) {

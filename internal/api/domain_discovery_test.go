@@ -1,8 +1,12 @@
 package api
 
 import (
+	"context"
+	"reflect"
+	"strings"
 	"testing"
 
+	"router-policy/internal/config"
 	"router-policy/internal/planner"
 	"router-policy/internal/probe"
 )
@@ -17,7 +21,7 @@ func TestAutomaticServiceUsesVerifiedTSPUFallbackOrder(t *testing.T) {
 	if !ok || id != "auto_video_example" || service.Category != "TSPU_RESTRICTED" || service.SelectedRouteTag != "zapret" {
 		t.Fatalf("automatic TSPU service mismatch: id=%q service=%+v ok=%v", id, service, ok)
 	}
-	expected := []string{"zapret", "smart_dns", "vless", "direct", "drop"}
+	expected := []string{"zapret", "vless", "drop"}
 	if len(service.AllowedPaths) != len(expected) {
 		t.Fatalf("fallback count=%d", len(service.AllowedPaths))
 	}
@@ -117,5 +121,129 @@ func TestManualServiceRuleSupportsDirectAndDrop(t *testing.T) {
 				t.Fatalf("unexpected service: category=%q service=%+v", category, service)
 			}
 		})
+	}
+}
+
+func TestTSPUDefaultFallbackIsZapretThenVLESSThenDrop(t *testing.T) {
+	_, service, err := serviceForClassifyRequest(serviceClassifyRequest{
+		Domain: "discord.com", Category: "TSPU_RESTRICTED",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"zapret", "vless", "drop"}
+	if !reflect.DeepEqual(service.AllowedPaths, want) {
+		t.Fatalf("TSPU fallback=%v, want %v", service.AllowedPaths, want)
+	}
+}
+
+func TestManualServiceRuleStoresOnlyVerifiedSelectedRoute(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Routes = append(cfg.Routes, config.Route{Type: "vless", Tag: "vpn"})
+	srv := &Server{activeConfig: cfg, activeRevision: "rev-test"}
+	srv.domainChecker = func(_ context.Context, candidate *config.Config, domain, serviceID string, opts planner.Options) (planner.DomainCheck, error) {
+		if domain != "discord.com" || serviceID != "user_discord_com" {
+			t.Fatalf("unexpected verification target: %s %s", domain, serviceID)
+		}
+		if got := candidate.Services[serviceID].AllowedPaths; len(got) != 3 || got[0] != "zapret" || got[1] != "vless" || got[2] != "drop" {
+			t.Fatalf("candidate lost fallback order: %v", got)
+		}
+		if opts.TSPUResult.Status != "MATCH" {
+			t.Fatalf("manual TSPU classification did not start with Zapret: %+v", opts.TSPUResult)
+		}
+		return planner.DomainCheck{
+			Domain: domain, Service: serviceID, Status: "SELECTED",
+			Selected: &probe.RouteResult{Route: "vpn", RouteType: "vless", Status: "OK", ServiceOK: true, PathVerified: true},
+		}, nil
+	}
+	service := config.Service{
+		Category: "TSPU_RESTRICTED", Domains: []string{"discord.com"},
+		AllowedPaths: []string{"zapret", "vless", "drop"},
+		ProbeURLs:    []config.ProbeCheck{{URL: "https://discord.com/", Required: true}},
+	}
+	check, err := srv.selectVerifiedServiceRoute(context.Background(), "user_discord_com", service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.Selected == nil || check.Selected.Route != "vpn" {
+		t.Fatalf("verified route was not selected: %+v", check)
+	}
+}
+
+func TestManualServiceRuleAcceptsTransportVerifiedCandidateForGuardedApply(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Routes = append(cfg.Routes, config.Route{Type: "vless", Tag: "vpn"})
+	srv := &Server{activeConfig: cfg, activeRevision: "rev-test"}
+	srv.domainChecker = func(context.Context, *config.Config, string, string, planner.Options) (planner.DomainCheck, error) {
+		return planner.DomainCheck{
+			Status: "NO_SAFE_ROUTE",
+			Results: []probe.RouteResult{{
+				Route: "vpn", RouteType: "vless", Status: "UNVERIFIED",
+				DNSOK: true, TransportOK: true, TLSOK: true, HTTPOK: true, ContentOK: true, ServiceOK: true,
+				ReasonCode: "route_not_bound_to_verification_plan",
+			}},
+		}, nil
+	}
+	check, err := srv.selectVerifiedServiceRoute(context.Background(), "user_chatgpt_com", config.Service{
+		Category: "GEO_LOCKED", Domains: []string{"chatgpt.com"}, AllowedPaths: []string{"smart_dns", "vless", "drop"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.Selected == nil || check.Selected.Route != "vpn" || check.Selected.PathVerified || check.Status != "CANDIDATE_REQUIRES_APPLY" {
+		t.Fatalf("guarded apply candidate was not preserved honestly: %+v", check)
+	}
+}
+
+func TestManualServiceRuleRejectsUnboundCandidateWithoutServiceProof(t *testing.T) {
+	cfg := testAPIConfig(t)
+	srv := &Server{activeConfig: cfg, activeRevision: "rev-test"}
+	srv.domainChecker = func(context.Context, *config.Config, string, string, planner.Options) (planner.DomainCheck, error) {
+		return planner.DomainCheck{Results: []probe.RouteResult{{
+			Route: "smart", RouteType: "smart_dns", Status: "UNVERIFIED", DNSOK: true, TransportOK: true,
+			ReasonCode: "route_not_bound_to_verification_plan",
+		}}}, nil
+	}
+	_, err := srv.selectVerifiedServiceRoute(context.Background(), "user_chatgpt_com", config.Service{
+		Category: "GEO_LOCKED", Domains: []string{"chatgpt.com"}, AllowedPaths: []string{"smart_dns", "vless", "drop"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "no safe route") {
+		t.Fatalf("candidate without service proof was accepted: %v", err)
+	}
+}
+
+func TestObservationClassificationDoesNotExposeResolvedDirectAsUnknown(t *testing.T) {
+	classification, display := observationClassification("UNKNOWN:chess.com", "DIRECT_PREFERRED", "direct", 1)
+	if classification != "direct" || display != "chess.com" {
+		t.Fatalf("direct observation classification=(%q,%q)", classification, display)
+	}
+	classification, display = observationClassification("UNKNOWN:sentry.io", "DIRECT_PREFERRED", "", 0)
+	if classification != "unknown" || display != "sentry.io" {
+		t.Fatalf("unresolved observation classification=(%q,%q)", classification, display)
+	}
+	classification, _ = observationClassification("discord", "TSPU_RESTRICTED", "zapret", 1)
+	if classification != "known_service" {
+		t.Fatalf("known service classification=%q", classification)
+	}
+}
+
+func TestRouteTypeInOrderRejectsStaleDirectForTSPU(t *testing.T) {
+	order := []string{"zapret", "vless", "drop"}
+	if routeTypeInOrder(order, "direct") || !routeTypeInOrder(order, "vless") {
+		t.Fatalf("route order membership is wrong for TSPU: %v", order)
+	}
+}
+
+func TestManualServiceRuleRejectsNoSafeRouteBeforeDraft(t *testing.T) {
+	cfg := testAPIConfig(t)
+	srv := &Server{activeConfig: cfg, activeRevision: "rev-test"}
+	srv.domainChecker = func(context.Context, *config.Config, string, string, planner.Options) (planner.DomainCheck, error) {
+		return planner.DomainCheck{Status: "NO_SAFE_ROUTE", TSPUStatus: "UNAVAILABLE"}, nil
+	}
+	_, err := srv.selectVerifiedServiceRoute(context.Background(), "user_example_com", config.Service{
+		Category: "DIRECT_PREFERRED", Domains: []string{"example.com"}, AllowedPaths: []string{"direct", "drop"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "no safe route") {
+		t.Fatalf("unsafe rule was accepted: %v", err)
 	}
 }

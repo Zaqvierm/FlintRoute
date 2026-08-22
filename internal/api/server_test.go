@@ -19,6 +19,25 @@ import (
 	"router-policy/internal/probe"
 )
 
+type privacyRecordingProvider struct {
+	platform.DevelopmentMockProvider
+	deviceReveal   bool
+	topologyReveal bool
+}
+
+func (p *privacyRecordingProvider) DevicesWithPrivacy(_ *config.Config, reveal bool) []map[string]any {
+	p.deviceReveal = reveal
+	if reveal {
+		return []map[string]any{{"id": "device-one", "name": "Computer", "ip": "192.0.2.10", "mac": "02:00:00:00:10:01", "ip_display": "192.0.2.10", "addresses_revealed": true}}
+	}
+	return []map[string]any{{"id": "device-one", "name": "Computer", "ip": nil, "mac": nil, "ip_display": "192.0.*.*", "addresses_revealed": false}}
+}
+
+func (p *privacyRecordingProvider) TopologyWithPrivacy(_ *config.Config, reveal bool) map[string]any {
+	p.topologyReveal = reveal
+	return map[string]any{"status": "OK", "addresses_revealed": reveal}
+}
+
 func TestAuthAndOverview(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
@@ -50,6 +69,8 @@ func TestAuthAndOverview(t *testing.T) {
 func TestDevicesPrivacyIsAppliedBeforeSerialization(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
+	provider := &privacyRecordingProvider{}
+	srv.provider = provider
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client, _ := login(t, ts.URL)
@@ -58,20 +79,29 @@ func TestDevicesPrivacyIsAppliedBeforeSerialization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	masked, _ := io.ReadAll(response.Body)
+	revealed, _ := io.ReadAll(response.Body)
 	_ = response.Body.Close()
-	if strings.Contains(string(masked), "192.0.2.10") || strings.Contains(string(masked), "02:00:00:00:10:01") || !strings.Contains(string(masked), `"ip":null`) || !strings.Contains(string(masked), `"ip_display":"192.0.*.*"`) {
-		t.Fatalf("default device response leaked or confused identity/display fields: %s", masked)
+	if !provider.deviceReveal || !strings.Contains(string(revealed), "192.0.2.10") || !strings.Contains(string(revealed), "02:00:00:00:10:01") {
+		t.Fatalf("default device response did not show real addresses: %s", revealed)
 	}
 
-	response, err = client.Get(ts.URL + "/api/v1/devices?privacy=revealed")
+	response, err = client.Get(ts.URL + "/api/v1/devices?privacy=hidden")
 	if err != nil {
 		t.Fatal(err)
 	}
-	revealed, _ := io.ReadAll(response.Body)
+	masked, _ := io.ReadAll(response.Body)
 	_ = response.Body.Close()
-	if strings.Contains(string(revealed), "192.0.2.10") || strings.Contains(string(revealed), "02:00:00:00:10:01") || !strings.Contains(string(revealed), `"simulation":true`) || !strings.Contains(string(revealed), `"addresses_revealed":false`) {
-		t.Fatalf("simulation provider fabricated an identity when reveal was requested: %s", revealed)
+	if provider.deviceReveal || strings.Contains(string(masked), "192.0.2.10") || strings.Contains(string(masked), "02:00:00:00:10:01") || !strings.Contains(string(masked), `"ip":null`) || !strings.Contains(string(masked), `"ip_display":"192.0.*.*"`) {
+		t.Fatalf("privacy mode leaked or confused identity/display fields: %s", masked)
+	}
+
+	response, err = client.Get(ts.URL + "/api/v1/topology")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if !provider.topologyReveal {
+		t.Fatal("topology did not reveal addresses by default")
 	}
 }
 

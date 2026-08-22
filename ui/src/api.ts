@@ -29,6 +29,7 @@ export type ChangeSet = {
   revision_id?: string;
   transaction_id?: string;
   adapter_status?: string;
+  noop?: boolean;
   artifacts_ready?: boolean;
   artifact_block_reason?: string;
   operations: ChangeOp[];
@@ -186,6 +187,9 @@ export type ZapretCalibrationStatus = {
   checks_completed?: number;
   checks_total?: number;
   candidates?: ZapretCalibrationCandidate[];
+  recommended_profile_id?: string;
+  log_tail?: string[];
+  working_strategies?: string[];
   started_at?: string;
   finished_at?: string;
   duration_ms?: number;
@@ -329,9 +333,9 @@ export async function logout(): Promise<void> {
 }
 
 export async function getOverview(): Promise<Overview> { return request<Overview>('/overview'); }
-export async function getTopology(): Promise<any> { return request('/topology'); }
-export async function getDevices(revealAddresses = false): Promise<any[]> {
-  return request(`/devices?privacy=${revealAddresses ? 'revealed' : 'private'}`);
+export async function getTopology(hideAddresses = false): Promise<any> { return request(`/topology?privacy=${hideAddresses ? 'hidden' : 'visible'}`); }
+export async function getDevices(hideAddresses = false): Promise<any[]> {
+  return request(`/devices?privacy=${hideAddresses ? 'hidden' : 'visible'}`);
 }
 export async function getServices(): Promise<any[]> { return request('/services'); }
 export async function classifyService(
@@ -455,7 +459,7 @@ export async function cancelZapretCalibration(): Promise<ZapretCalibrationStatus
 export async function checkZapretSetup(input: ZapretSetupRequest, baseVersion: number): Promise<{ report: ZapretSetupReport }> {
   return request('/zapret/setup/check', { method: 'POST', body: JSON.stringify({ ...input, base_version: baseVersion }) });
 }
-export async function activateZapretSetup(input: ZapretSetupRequest, baseVersion: number): Promise<{ report: ZapretSetupReport; change: ChangeSet }> {
+export async function activateZapretSetup(input: ZapretSetupRequest, baseVersion: number): Promise<{ report: ZapretSetupReport; change: ChangeSet; calibrated_profile_id?: string }> {
   return request('/zapret/setup/activate', { method: 'POST', body: JSON.stringify({ ...input, base_version: baseVersion }) });
 }
 export async function createChange(title: string, baseVersion: number, operations: ChangeOp[]): Promise<ChangeSet> {

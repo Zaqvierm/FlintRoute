@@ -9,11 +9,21 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
 
 func (r ExecCalibrationRunner) Progress() (int, int) {
+	raw := r.latestCalibrationLog()
+	return countCompletedCalibrationChecks(raw), 0
+}
+
+func (r ExecCalibrationRunner) Live() ([]string, []string) {
+	return calibrationLiveSnapshot(r.latestCalibrationLog())
+}
+
+func (r ExecCalibrationRunner) latestCalibrationLog() []byte {
 	matches, _ := filepath.Glob(filepath.Join(r.RuntimeDir, "zapret-calibration.*", "blockcheck.log"))
 	var selected string
 	var selectedTime time.Time
@@ -27,13 +37,13 @@ func (r ExecCalibrationRunner) Progress() (int, int) {
 		}
 	}
 	if selected == "" {
-		return 0, 0
+		return nil
 	}
 	raw, err := os.ReadFile(selected)
 	if err != nil {
-		return 0, 0
+		return nil
 	}
-	return countCompletedCalibrationChecks(raw), 0
+	return raw
 }
 
 func (r ExecCalibrationRunner) Run(ctx context.Context, request CalibrationRequest) ([]byte, error) {
@@ -53,6 +63,9 @@ func (r ExecCalibrationRunner) Run(ctx context.Context, request CalibrationReque
 		"ROUTER_POLICY_RUNTIME_DIR="+r.RuntimeDir,
 		"ZAPRET_CATALOG_OUT="+r.CatalogOut,
 	)
+	if len(request.ResolvedIPv4) > 0 {
+		command.Env = append(command.Env, "ZAPRET_CALIBRATION_IPV4="+strings.Join(request.ResolvedIPv4, ","))
+	}
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var output bytes.Buffer
 	command.Stdout = &output

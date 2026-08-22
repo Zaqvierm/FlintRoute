@@ -275,12 +275,12 @@ func TestDiscoveryRunsAfterBaselineWithoutApplyingOpenWrtState(t *testing.T) {
 	srv.probeEngineFactory = func(*config.Config) health.ProbeEngine { return engine }
 
 	srv.discoverDomain(context.Background(), discovery.Observation{Domain: "fresh.example", QueryType: "A"})
-	if engine.calls == 0 {
-		t.Fatal("discovery still exits before probing after baseline creation")
+	if engine.calls != 0 {
+		t.Fatal("observe-only discovery performed an active probe after baseline creation")
 	}
 	classified := false
 	for _, event := range srv.broker.Recent(0, 32) {
-		if event.ReasonCode == "domain_observed_and_classified" {
+		if event.ReasonCode == "domain_observed_only" {
 			classified = true
 			break
 		}

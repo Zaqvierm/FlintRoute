@@ -33,8 +33,9 @@ probe.ProbeRoute(ctx, cfg, domain, service, route)
 
 DNS observation и изменение committed config — разные действия:
 
-- `observe_only` (заводской режим) запускает классификацию и пишет reason/evidence
-  в runtime/event stream, но не создаёт правило;
+- `observe_only` (заводской режим) только принимает DNS-наблюдения и пишет
+  bounded observation/reason в runtime/event stream; активные DNS/TLS/HTTP/SOCKS
+  probes и новые правила не запускаются;
 - `suggest` дополнительно сохраняет предложение для UI;
 - `auto_apply_verified` допускает только `PathVerified` решение, одну активную
   транзакцию, bounded hourly rate и rollback timer; management/firewall paths
@@ -119,8 +120,8 @@ flowchart TD
     MANUAL -- "DIRECT_ONLY" --> BUILD_DIRECT["Очередь: direct"]
     MANUAL -- "GEO_LOCKED" --> KILLSWITCH["Kill-switch на WAN, запрет direct/zapret"]
     MANUAL -- "TELEGRAM" --> BUILD_TG["Проверенный внешний SOCKS -> VLESS -> DROP"]
-    MANUAL -- "TSPU_RESTRICTED" --> BUILD_TSPU["Очередь: zapret -> smart_dns -> VLESS"]
-    MANUAL -- "DIRECT_PREFERRED" --> BUILD_DP["Очередь: direct -> zapret -> smart_dns -> VLESS"]
+    MANUAL -- "TSPU_RESTRICTED" --> BUILD_TSPU["Очередь: zapret -> VLESS -> DROP"]
+    MANUAL -- "DIRECT_PREFERRED" --> BUILD_DP["Очередь: direct; расширение только по evidence"]
     MANUAL -- "обычная/unknown" --> TSPU_LIST{"TSPU evidence match?"}
     TSPU_LIST -- "да" --> BUILD_TSPU
     TSPU_LIST -- "нет" --> BUILD_UNKNOWN["Очередь: direct"]
@@ -161,7 +162,7 @@ flowchart TD
     DISCOVERY{"Discovery: regional/TSPU/fallback?"}
     DISCOVERY -- "regional, не GEO_LOCKED" --> MARK_GEO["Пометить GEO_LOCKED, убрать direct/zapret"]
     DISCOVERY -- "TSPU на direct, нет zapret" --> ADD_ZAPRET["Добавить zapret в очередь"]
-    DISCOVERY -- "fail, есть fallback" --> ADD_FALLBACK["Добавить smart_dns/VLESS"]
+    DISCOVERY -- "GEO evidence" --> ADD_FALLBACK["Добавить smart_dns -> VLESS -> DROP"]
     DISCOVERY -- "ok / fallback есть" --> NEXT_ROUTE
     MARK_GEO --> NEXT_ROUTE
     ADD_ZAPRET --> NEXT_ROUTE

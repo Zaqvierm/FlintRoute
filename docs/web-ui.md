@@ -109,11 +109,11 @@ wireless station. Имя устройства и IP для этого не ис�
 несколько LAN/SSID, guest/mesh-пути, unknown connection и недавно отключённые
 клиенты; неполные данные не превращаются в выдуманное подключение.
 
-MAC и IP по умолчанию удаляются из raw API fields на backend. Полные значения не
-лежат в DOM; маски приходят отдельно как `ip_display`/`mac_display` и никогда не
-используются как network identity. Кнопка privacy mode запрашивает раскрытую
-выдачу на пять минут и затем снова получает только display-маски. Simulation
-provider не выдумывает raw IP/MAC даже при reveal. Карточка устройства содержит тип подключения, interface,
+MAC и IP показываются по умолчанию. Переключатель privacy mode сохраняется в
+браузере и запрашивает `privacy=hidden`; backend удаляет raw values до
+serialization, а маски приходят отдельно как `ip_display`/`mac_display` и
+никогда не используются как network identity. Simulation provider не выдумывает
+raw IP/MAC. Карточка устройства содержит тип подключения, interface,
 SSID, RSSI, трафик, first/last seen, policy и последние решения. Действия без
 готового API честно disabled.
 
@@ -164,6 +164,13 @@ concurrency отображаются явно. Upstream blockcheck исполь�
 показывает число реально завершённых вариантов; total не выдумывается, если
 upstream не публикует его заранее. Найденные кандидаты не включаются молча:
 apply проходит через ChangeSet и PathVerified.
+
+Для TSPU основной порядок проверки — `Zapret → VLESS → Drop`. Smart DNS не
+вклинивается в эту цепочку: он проверяется перед VLESS для GEO-сервисов, где
+порядок равен `Smart DNS → VLESS → Drop`. Перед blockcheck FlintRoute может
+получить свежие IPv4-ответы тестового домена через настроенный Smart DNS и
+передать только эти проверенные адреса в DNS cache upstream-скрипта. Системный
+resolver и `resolv.conf` при этом не подменяются.
 
 ## Smart DNS
 

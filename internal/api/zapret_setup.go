@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"router-policy/internal/config"
@@ -52,6 +53,24 @@ func (s *Server) handleZapretSetupActivate(w http.ResponseWriter, r *http.Reques
 		{Type: "set", Path: "/routes", Value: routes},
 		{Type: "set", Path: "/services", Value: services},
 	}
+	calibratedProfile := ""
+	if s.zapretCalibration != nil {
+		status := s.zapretCalibration.Status()
+		if status.State == "completed" && strings.EqualFold(strings.TrimSuffix(status.Domain, "."), strings.TrimSuffix(request.TestDomain, ".")) {
+			fingerprint, fingerprintErr := s.verifiedCalibrationNetworkFingerprint()
+			if fingerprintErr != nil {
+				writeError(w, r, http.StatusPreconditionFailed, "zapret_calibration_network_unverified", fingerprintErr.Error())
+				return
+			}
+			adaptiveOps, profileID, adaptiveErr := calibratedZapretActivationOps(active, status, fingerprint, s.zapretCalibration.CatalogPath(), request.TestDomain)
+			if adaptiveErr != nil {
+				writeError(w, r, http.StatusPreconditionFailed, "zapret_calibration_stale", adaptiveErr.Error())
+				return
+			}
+			operations = append(operations, adaptiveOps...)
+			calibratedProfile = profileID
+		}
+	}
 	change, err := s.createDraftChange("Activate managed Zapret", "Bind the verified nfqws component and enable its route in one transaction", request.BaseVersion, operations, currentSession(r).User)
 	if err != nil {
 		if errors.Is(err, errBaseVersionConflict) {
@@ -62,7 +81,58 @@ func (s *Server) handleZapretSetupActivate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.publishEvent(Event{Type: "zapret.managed_activation_prepared", Severity: "info", ReasonCode: "transaction_required", Details: map[string]any{"change_id": change.ID, "provider_version": request.ProviderVersion, "test_domain": report.TestDomain}})
-	writeData(w, r, map[string]any{"report": report, "change": change})
+	writeData(w, r, map[string]any{"report": report, "change": change, "calibrated_profile_id": calibratedProfile})
+}
+
+func calibratedZapretActivationOps(active *config.Config, status zapret.CalibrationStatus, currentFingerprint, catalogPath, domain string) ([]ChangeOp, string, error) {
+	if active == nil || status.State != "completed" || !status.ActivationRequired || status.RecommendedProfileID == "" {
+		return nil, "", errors.New("completed Zapret calibration is required")
+	}
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	if domain == "" || !strings.EqualFold(domain, strings.TrimSuffix(status.Domain, ".")) {
+		return nil, "", errors.New("calibration belongs to another domain")
+	}
+	if currentFingerprint == "" || currentFingerprint != status.NetworkFingerprint {
+		return nil, "", errors.New("network changed after calibration; run the strategy check again")
+	}
+	if catalogPath == "" || !filepath.IsAbs(catalogPath) {
+		return nil, "", errors.New("calibration catalog path is unavailable")
+	}
+	profiles, bundles, err := zapret.LoadCatalogFile(catalogPath)
+	if err != nil {
+		return nil, "", errors.New("calibration catalog failed validation")
+	}
+	bundle, ok := bundles.Lookup(status.BundleID)
+	if !ok || !containsDomainFold(bundle.RequiredDomains, domain) {
+		return nil, "", errors.New("calibration catalog is not bound to the tested domain")
+	}
+	if _, ok := profiles.Lookup(status.RecommendedProfileID); !ok || !containsStringValue(bundle.AllowedProfiles, status.RecommendedProfileID) {
+		return nil, "", errors.New("recommended profile is outside the calibrated bundle")
+	}
+	assignments := []config.ZapretProfileAssignment{{BundleID: status.BundleID, ProfileID: status.RecommendedProfileID}}
+	return []ChangeOp{
+		{Type: "set", Path: "/zapret/adaptive_enabled", Value: true},
+		{Type: "set", Path: "/zapret/adaptive_catalog_file", Value: catalogPath},
+		{Type: "set", Path: "/zapret/adaptive_assignments", Value: assignments},
+	}, status.RecommendedProfileID, nil
+}
+
+func containsDomainFold(values []string, target string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSuffix(strings.TrimSpace(value), "."), target) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsStringValue(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) checkZapretSetup(w http.ResponseWriter, r *http.Request) (zapretSetupRequest, zapret.SetupReport, bool) {
@@ -87,9 +157,13 @@ func (s *Server) checkZapretSetup(w http.ResponseWriter, r *http.Request) (zapre
 		writeError(w, r, http.StatusConflict, "base_version_conflict", "base_version does not match current revision")
 		return zapretSetupRequest{}, zapret.SetupReport{}, false
 	}
+	request.ProviderVersion = strings.TrimSpace(request.ProviderVersion)
+	if strings.HasPrefix(request.ProviderVersion, "v") {
+		request.ProviderVersion = strings.TrimPrefix(request.ProviderVersion, "v")
+	}
 	report, err := s.zapretSetupChecker.Check(r.Context(), zapret.SetupRequest{
 		Binary: active.Zapret.Binary, SourceURL: strings.TrimSpace(request.SourceURL),
-		ProviderVersion: strings.TrimSpace(request.ProviderVersion), BinaryDigest: strings.TrimSpace(request.BinarySHA256),
+		ProviderVersion: request.ProviderVersion, BinaryDigest: strings.TrimSpace(request.BinarySHA256),
 		TestDomain: strings.TrimSpace(request.TestDomain), QueueNum: active.Zapret.QueueNum,
 	})
 	if err != nil || !report.Ready || !report.DryRun || !report.NFQueueAvailable {
@@ -101,7 +175,6 @@ func (s *Server) checkZapretSetup(w http.ResponseWriter, r *http.Request) (zapre
 		return zapretSetupRequest{}, zapret.SetupReport{}, false
 	}
 	request.SourceURL = strings.TrimSpace(request.SourceURL)
-	request.ProviderVersion = strings.TrimSpace(request.ProviderVersion)
 	request.BinarySHA256 = strings.TrimSpace(request.BinarySHA256)
 	request.TestDomain = strings.TrimSpace(request.TestDomain)
 	return request, report, true

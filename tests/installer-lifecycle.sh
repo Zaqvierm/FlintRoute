@@ -12,7 +12,11 @@ SOURCE_BINARY="$TMP/router-policy-source"
 FAKE_CALL_LOG="$TMP/router-policy-calls.log"
 SERVICE_CONTROL_LOG="$TMP/service-control.log"
 BACKUP_SOURCES="$SYSTEM_ROOT/etc/config/network $SYSTEM_ROOT/etc/router-policy"
-mkdir -p "$SYSTEM_ROOT/etc/config" "$BACKUP_BASE"
+mkdir -p "$SYSTEM_ROOT/etc/config" "$SYSTEM_ROOT/usr/bin" "$SYSTEM_ROOT/usr/lib" \
+  "$SYSTEM_ROOT/etc/init.d" "$SYSTEM_ROOT/etc/hotplug.d" "$BACKUP_BASE"
+chmod 755 "$SYSTEM_ROOT" "$SYSTEM_ROOT/etc" "$SYSTEM_ROOT/etc/config" \
+  "$SYSTEM_ROOT/usr" "$SYSTEM_ROOT/usr/bin" "$SYSTEM_ROOT/usr/lib" \
+  "$SYSTEM_ROOT/etc/init.d" "$SYSTEM_ROOT/etc/hotplug.d"
 printf 'network-fixture\n' > "$SYSTEM_ROOT/etc/config/network"
 
 write_fake_binary() {
@@ -37,6 +41,7 @@ SH
 
 run_install() {
   BACKUP_DIR="$1" \
+  BACKUP_ROOT="$BACKUP_BASE" \
   ROUTER_POLICY_SYSTEM_ROOT="$SYSTEM_ROOT" \
   SOURCE_BINARY="$SOURCE_BINARY" \
   BACKUP_SOURCES="$BACKUP_SOURCES" \
@@ -196,6 +201,7 @@ fi
 MODE_TARGET="$TMP/mode-target"
 printf 'mode-check\n' > "$MODE_TARGET"
 chmod 600 "$MODE_TARGET"
+# shellcheck disable=SC2329 # this shadows stat to prove the mode check is portable.
 stat() {
   echo "external stat must not be called" >&2
   return 99
@@ -205,6 +211,7 @@ if regular_file_mode_matches "$MODE_TARGET" 755; then
   echo "portable mode check accepted the wrong mode" >&2
   exit 1
 fi
+unset -f stat
 
 LEGACY_ROOT="$TMP/legacy-maintenance"
 mkdir -p "$LEGACY_ROOT/etc/router-policy/config" "$LEGACY_ROOT/etc/init.d"
@@ -427,6 +434,41 @@ fi
 printf '%s\n' "$corrupted_output" | grep -F 'snapshot hash mismatch' >/dev/null
 [ "$(cat "$ROLLBACK_TARGET")" = "changed-again" ]
 
+# Rollback must never replay umask-created staging parents onto the OpenWrt
+# tree.  This reproduces the historical failure with a mock root whose
+# critical directories all start at 0755.
+PERM_ROOT="$TMP/permission-root"
+PERM_BACKUP="$TMP/permission-backup"
+mkdir -p "$PERM_ROOT/etc/init.d" "$PERM_ROOT/etc/hotplug.d" "$PERM_ROOT/usr/bin" "$PERM_ROOT/usr/lib/router-policy"
+for directory in "$PERM_ROOT" "$PERM_ROOT/etc" "$PERM_ROOT/usr" "$PERM_ROOT/usr/bin" "$PERM_ROOT/usr/lib" "$PERM_ROOT/etc/init.d" "$PERM_ROOT/etc/hotplug.d"; do
+  chmod 755 "$directory"
+done
+printf 'old-runtime\n' > "$PERM_ROOT/usr/lib/router-policy/runtime.txt"
+chmod 644 "$PERM_ROOT/usr/lib/router-policy/runtime.txt"
+SYSTEM_ROOT="$PERM_ROOT"
+PREFIX="$PERM_ROOT/usr/lib/router-policy"
+ETC_DIR="$PERM_ROOT/etc/router-policy"
+STATE_DIR="$ETC_DIR/state"
+BACKUP_ROOT="$TMP"
+BACKUP_DIR="$PERM_BACKUP"
+INSTALL_TARGETS="$PREFIX"
+ENABLE_SERVICES="router-policy"
+CRITICAL_SYSTEM_DIRS="$PERM_ROOT $PERM_ROOT/etc $PERM_ROOT/usr $PERM_ROOT/usr/bin $PERM_ROOT/usr/lib $PERM_ROOT/etc/init.d $PERM_ROOT/etc/hotplug.d"
+snapshot_installation
+printf 'new-runtime\n' > "$PERM_ROOT/usr/lib/router-policy/runtime.txt"
+chmod 700 "$PERM_ROOT/usr/lib/router-policy/runtime.txt"
+# Exercise the same automatic rollback entry point used by a failed install,
+# rather than only calling the restore helper directly.
+set +e
+(INSTALL_ROLLBACK_ARMED=1; install_exit 1) >/dev/null 2>&1
+rollback_status=$?
+set -e
+[ "$rollback_status" -eq 1 ]
+[ "$(cat "$PERM_ROOT/usr/lib/router-policy/runtime.txt")" = "old-runtime" ]
+for directory in "$PERM_ROOT" "$PERM_ROOT/etc" "$PERM_ROOT/usr" "$PERM_ROOT/usr/bin" "$PERM_ROOT/usr/lib" "$PERM_ROOT/etc/init.d" "$PERM_ROOT/etc/hotplug.d"; do
+  (umask 022; [ "$(stat -c '%a' "$directory")" = "755" ]) || { echo "rollback changed critical parent mode: $directory" >&2; exit 1; }
+done
+
 UNINSTALL_DEACTIVATE_ROOT="$TMP/uninstall-deactivate"
 mkdir -p \
   "$UNINSTALL_DEACTIVATE_ROOT/bin" \
@@ -547,6 +589,19 @@ export UNINSTALL_DNS_READY_COUNTER
   wait_dnsmasq_ready
 )
 [ "$(cat "$UNINSTALL_DNS_READY_COUNTER")" = 3 ]
+
+# A missing critical OpenWrt parent is not a reason to create it under
+# umask 077. Preflight must stop and leave recovery to the operator.
+MISSING_ROOT="$TMP/missing-critical-root"
+mkdir -p "$MISSING_ROOT/etc" "$MISSING_ROOT/usr"
+chmod 755 "$MISSING_ROOT" "$MISSING_ROOT/etc" "$MISSING_ROOT/usr"
+SYSTEM_ROOT="$MISSING_ROOT"
+CRITICAL_SYSTEM_DIRS="$SYSTEM_ROOT $SYSTEM_ROOT/etc $SYSTEM_ROOT/usr $SYSTEM_ROOT/usr/bin $SYSTEM_ROOT/usr/lib $SYSTEM_ROOT/etc/init.d $SYSTEM_ROOT/etc/hotplug.d"
+if validate_critical_system_dirs >/dev/null 2>&1; then
+  echo "preflight accepted missing critical system directory" >&2
+  exit 1
+fi
+echo "installer_blocks_missing_critical_parent=true"
 
 echo "installer_clean_install=true"
 echo "installer_idempotent_upgrade=true"

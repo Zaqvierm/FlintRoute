@@ -77,7 +77,8 @@ describe('decision cards', () => {
     reason_code: 'path_verified',
     details: {
       device_name: 'Phone', device_ip: '192.0.*.*', category: 'TSPU_RESTRICTED', strategy: 'Zapret',
-      fallback_path: ['zapret', 'vless', 'direct'], path_verified: true, http_status: 'HTTP 200 OK', decision_duration_ms: 43
+      fallback_path: ['zapret', 'vless', 'direct'], path_verified: true, http_status: 'HTTP 200 OK', decision_duration_ms: 43,
+      classification_state: 'classified', probe_state: 'verified_candidate', policy_state: 'suggested'
     }
   };
 
@@ -94,6 +95,9 @@ describe('decision cards', () => {
     expect(card.verified).toBe(true);
     expect(card.fallback).toBe(true);
     expect(card.durationMS).toBe(43);
+    expect(card.classificationState).toBe('classified');
+    expect(card.probeState).toBe('verified_candidate');
+    expect(card.policyState).toBe('suggested');
     expect(card.route).toBe('Direct (системный маршрут)');
   });
 
@@ -101,5 +105,15 @@ describe('decision cards', () => {
     const card = toDecisionCard({ ...event, details: { latency_ms: 75, path_verified: true } });
     expect(card.durationMS).toBeUndefined();
     expect(card.probeLatencyMS).toBe(75);
+  });
+
+  it('shows resolved observation classification instead of internal UNKNOWN id', () => {
+    const card = toDecisionCard({
+      ...event,
+      service_id: undefined,
+      details: { service: 'UNKNOWN:chess.com', service_name: 'chess.com', category: 'DIRECT_PREFERRED', classification: 'direct' }
+    });
+    expect(card.service).toBe('chess.com');
+    expect(card.category).toBe('direct');
   });
 });

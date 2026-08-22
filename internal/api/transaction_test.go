@@ -22,7 +22,9 @@ import (
 	"router-policy/internal/auth"
 	"router-policy/internal/config"
 	"router-policy/internal/managementproof"
+	"router-policy/internal/planner"
 	"router-policy/internal/platform"
+	"router-policy/internal/probe"
 )
 
 type artifactDiagnosticsTestProvider struct {
@@ -252,6 +254,12 @@ func TestServiceClassifyCanExplicitlyDisableFlowOffloading(t *testing.T) {
 	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
 	defer srv.Close()
 	defer ts.Close()
+	srv.domainChecker = func(_ context.Context, _ *config.Config, domain, serviceID string, _ planner.Options) (planner.DomainCheck, error) {
+		return planner.DomainCheck{
+			Domain: domain, Service: serviceID, Status: "SELECTED",
+			Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", ServiceOK: true, PathVerified: true},
+		}, nil
+	}
 
 	body := `{"domain":"example.com","category":"GEO_LOCKED","allowed_paths":["smart_dns","vless","drop"],"base_version":1,"allow_disable_flow_offloading":true}`
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/classify", strings.NewReader(body))

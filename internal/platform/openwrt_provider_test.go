@@ -172,6 +172,39 @@ func TestDeviceInventoryTracksDynamicClientAddress(t *testing.T) {
 	}
 }
 
+func TestOpenWrtProviderFallsBackToBrctlFDB(t *testing.T) {
+	runner := newOpenWrtFixtureRunner()
+	runner.errors[fakeCommandKey(commandBridgeFDB, "")] = os.ErrNotExist
+	runner.outputs[fakeCommandKey(commandBridgeFDBLegacy, "home0")] = []byte("PORT 0x3 port-a\nport no mac addr is local? ageing timer\n  3 02:11:22:33:44:55 no 2.07\n")
+	provider := NewOpenWrtProvider(WithOpenWrtRunner(runner), WithOpenWrtCacheTTL(time.Hour))
+	devices := provider.DevicesWithPrivacy(nil, true)
+	for _, device := range devices {
+		if device["ip"] == "192.0.2.10" && device["kind"] == "ethernet" && device["interface"] == "port-a" {
+			return
+		}
+	}
+	t.Fatalf("legacy bridge FDB did not identify the wired client: %#v", devices)
+}
+
+func TestDeviceInventoryCollapsesStaleRandomizedMACLeaseByHostname(t *testing.T) {
+	now := time.Now().UTC()
+	snapshot := &openWrtSnapshot{
+		CollectedAt: now,
+		DHCPLeases: []dhcpLease{
+			{ExpiresAt: now.Add(time.Hour), MAC: "02:00:00:00:00:02", IP: "192.0.2.20", Hostname: "phone"},
+			{ExpiresAt: now.Add(2 * time.Hour), MAC: "02:00:00:00:00:01", IP: "192.0.2.10", Hostname: "phone"},
+		},
+		Neighbors: []neighborInfo{
+			{Dst: "192.0.2.10", State: neighborState("FAILED")},
+			{Dst: "192.0.2.20", State: neighborState("FAILED")},
+		},
+	}
+	devices := buildDeviceItems(snapshot, "test", true)
+	if len(devices) != 1 || devices[0]["ip"] != "192.0.2.10" {
+		t.Fatalf("stale randomized MAC lease was not collapsed: %#v", devices)
+	}
+}
+
 func deviceInventoryContainsIP(items []map[string]any, expected string) bool {
 	for _, item := range items {
 		if item["ip"] == expected {
@@ -261,6 +294,7 @@ func TestFixedOpenWrtCommandsRejectUntrustedParameters(t *testing.T) {
 		{commandDeviceStatus, "eth0;reboot"},
 		{commandDeviceStatus, "../../etc/shadow"},
 		{commandWirelessClients, "wlan0;reboot"},
+		{commandBridgeFDBLegacy, "br-lan;reboot"},
 		{commandInterfaceDump, "wan;reboot"},
 		{commandProcess, "xray --config /tmp/evil"},
 		{commandComponentPresent, "../../xray"},
