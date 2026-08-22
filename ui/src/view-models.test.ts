@@ -102,9 +102,16 @@ describe('decision cards', () => {
   });
 
   it('does not pass route latency off as total decision duration', () => {
-    const card = toDecisionCard({ ...event, details: { latency_ms: 75, path_verified: true } });
+    const card = toDecisionCard({ ...event, details: { route_latency_ms: 75, route_latency_available: true, path_verified: true } });
     expect(card.durationMS).toBeUndefined();
     expect(card.probeLatencyMS).toBe(75);
+  });
+
+  it('does not turn unavailable route latency into a zero millisecond measurement', () => {
+    const card = toDecisionCard({ ...event, details: { route_latency_ms: 0, route_latency_available: false, verification_duration_ms: 3910 } });
+    expect(card.routeLatencyAvailable).toBe(false);
+    expect(card.routeLatencyMS).toBeUndefined();
+    expect(card.verificationDurationMS).toBe(3910);
   });
 
   it('shows resolved observation classification instead of internal UNKNOWN id', () => {

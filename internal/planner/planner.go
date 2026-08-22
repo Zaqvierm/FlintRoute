@@ -44,21 +44,26 @@ type CandidatePlan struct {
 }
 
 type DomainCheck struct {
-	Domain       string              `json:"domain"`
-	ETLDPlusOne  string              `json:"etld_plus_one"`
-	Service      string              `json:"service"`
-	Category     string              `json:"category"`
-	TSPUStatus   string              `json:"tspu_status"`
-	PolicySource string              `json:"policy_source,omitempty"`
-	OverrideID   string              `json:"override_id,omitempty"`
-	Cached       bool                `json:"cached"`
-	Status       string              `json:"status"`
-	Reason       string              `json:"reason,omitempty"`
-	Confidence   float64             `json:"confidence"`
-	Results      []probe.RouteResult `json:"results"`
-	Selected     *probe.RouteResult  `json:"selected"`
-	CheckedAt    time.Time           `json:"checked_at"`
-	ExpiresAt    time.Time           `json:"expires_at"`
+	Domain                   string              `json:"domain"`
+	ETLDPlusOne              string              `json:"etld_plus_one"`
+	Service                  string              `json:"service"`
+	Category                 string              `json:"category"`
+	TSPUStatus               string              `json:"tspu_status"`
+	PolicySource             string              `json:"policy_source,omitempty"`
+	OverrideID               string              `json:"override_id,omitempty"`
+	Cached                   bool                `json:"cached"`
+	Status                   string              `json:"status"`
+	Reason                   string              `json:"reason,omitempty"`
+	Confidence               float64             `json:"confidence"`
+	ClassificationConfidence float64             `json:"classification_confidence"`
+	ClassificationSource     string              `json:"classification_source,omitempty"`
+	ClassificationEvidence   string              `json:"classification_evidence,omitempty"`
+	VerificationState        string              `json:"verification_state"`
+	VerificationDurationMS   int64               `json:"verification_duration_ms,omitempty"`
+	Results                  []probe.RouteResult `json:"results"`
+	Selected                 *probe.RouteResult  `json:"selected"`
+	CheckedAt                time.Time           `json:"checked_at"`
+	ExpiresAt                time.Time           `json:"expires_at"`
 }
 
 type serviceProfile struct {
@@ -91,6 +96,7 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 	}
 	plan := buildCandidates(cfg, profile, opts)
 	now := optionNow(opts)
+	verificationStarted := time.Now()
 
 	if profile.unknown && profile.override == nil && opts.DecisionCache != nil && opts.ActiveRevision != "" {
 		decision, ok, err := opts.DecisionCache.Lookup(profile.domain, opts.ActiveRevision, now)
@@ -111,9 +117,10 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 
 	out := DomainCheck{
 		Domain: profile.domain, ETLDPlusOne: profile.base, Service: profile.name,
-		Category: profile.service.Category, TSPUStatus: plan.TSPUStatus, Status: "NO_SAFE_ROUTE",
-		Reason: "no_verified_policy_allowed_route", CheckedAt: now,
+		Category: profile.service.Category, TSPUStatus: plan.TSPUStatus, Status: "VERIFYING",
+		VerificationState: "in_progress", CheckedAt: now,
 	}
+	out.ClassificationConfidence, out.ClassificationSource, out.ClassificationEvidence = classificationMetadata(profile, opts.TSPUResult)
 	if profile.override != nil {
 		out.PolicySource = profile.override.Source
 		out.OverrideID = profile.override.Override.ID
@@ -131,7 +138,12 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 	directAttempted := false
 	directLookedLikeTSPU := false
 	regionalBlock := false
+	allCandidatesTerminal := true
 	for _, route := range plan.Candidates {
+		if ctx.Err() != nil {
+			allCandidatesTerminal = false
+			break
+		}
 		if regionalBlock && (route.Type == "direct" || route.Type == "zapret") {
 			continue
 		}
@@ -146,6 +158,10 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 		out.Results = append(out.Results, result)
 		if opts.HealthTracker != nil {
 			opts.HealthTracker.Observe(result, cfg.Policy, optionNow(opts))
+		}
+		if ctx.Err() != nil {
+			allCandidatesTerminal = false
+			break
 		}
 
 		if route.Type == "direct" {
@@ -173,8 +189,25 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 			break
 		}
 	}
+	if !allCandidatesTerminal {
+		out.Status = "VERIFYING"
+		out.VerificationState = "in_progress"
+		out.Reason = "verification_incomplete"
+		out.Confidence = 0
+		out.CheckedAt = optionNow(opts)
+		out.VerificationDurationMS = time.Since(verificationStarted).Milliseconds()
+		return out, nil
+	}
+	if out.Selected == nil {
+		out.Status = "NO_SAFE_ROUTE"
+		out.VerificationState = "terminal_no_safe_route"
+		out.Reason = "no_verified_policy_allowed_route"
+	} else {
+		out.VerificationState = "verified"
+	}
 
 	out.CheckedAt = optionNow(opts)
+	out.VerificationDurationMS = time.Since(verificationStarted).Milliseconds()
 	ttl := time.Duration(cfg.Policy.DomainDecisionTTLSeconds) * time.Second
 	if ttl <= 0 {
 		ttl = 24 * time.Hour
@@ -219,7 +252,21 @@ func resultRank(result probe.RouteResult) int64 {
 	if priority <= 0 {
 		priority = 500
 	}
-	return int64(priority)*1_000_000 + result.LatencyMS
+	latency := result.RouteLatencyMS
+	latencyKnown := result.RouteLatencyAvailable
+	if !latencyKnown && latency <= 0 && result.LatencyMS > 0 {
+		// Compatibility for older persisted/test evidence. New probe results
+		// set LatencyMS to zero whenever no route measurement exists.
+		latency = result.LatencyMS
+		latencyKnown = true
+	}
+	if !latencyKnown || latency <= 0 {
+		// Unknown latency must never beat a measured path merely because the
+		// old compatibility field is zero. Keep the candidate selectable, but
+		// rank it after paths with an honest network measurement.
+		latency = 1_000_000_000
+	}
+	return int64(priority)*1_000_000 + latency
 }
 
 func resolveService(cfg *config.Config, domain, serviceName string) (serviceProfile, error) {
@@ -457,8 +504,10 @@ func cachedCheck(decision domaincache.Decision, plan CandidatePlan, profile serv
 		Domain: profile.domain, ETLDPlusOne: profile.base, Service: decision.Service,
 		Category: decision.Category, TSPUStatus: decision.TSPUStatus, Cached: true,
 		Status: decision.Status, Reason: decision.Reason, Confidence: decision.Confidence,
-		Results: decision.Results, CheckedAt: decision.CheckedAt, ExpiresAt: decision.ExpiresAt,
+		VerificationState: "verified",
+		Results:           decision.Results, CheckedAt: decision.CheckedAt, ExpiresAt: decision.ExpiresAt,
 	}
+	out.ClassificationConfidence, out.ClassificationSource, out.ClassificationEvidence = classificationMetadata(profile, tspu.Match{Status: plan.TSPUStatus})
 	if decision.SelectedRoute == "" {
 		return out, false
 	}
@@ -499,6 +548,31 @@ func decisionConfidence(check DomainCheck, _ tspu.Match) float64 {
 	// TSPU source confidence is classification metadata and must not dilute or
 	// inflate the verification state of the selected route.
 	return 1
+}
+
+func classificationMetadata(profile serviceProfile, match tspu.Match) (float64, string, string) {
+	if profile.override != nil {
+		return 1, "explicit_override", "user policy override"
+	}
+	if !profile.unknown {
+		return 1, "configured_service", "configured service classification"
+	}
+	confidence := match.Confidence
+	if confidence < 0 {
+		confidence = 0
+	}
+	if confidence > 1 {
+		confidence = 1
+	}
+	source := strings.TrimSpace(match.Source)
+	if source == "" {
+		source = "none"
+	}
+	evidence := strings.TrimSpace(match.Evidence)
+	if evidence == "" {
+		evidence = strings.ToLower(strings.TrimSpace(match.Status))
+	}
+	return confidence, source, evidence
 }
 
 func unknownExpectedCodes() []int {

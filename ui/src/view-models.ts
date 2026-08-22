@@ -22,6 +22,9 @@ export type DecisionCard = {
   status: string;
   durationMS?: number;
   probeLatencyMS?: number;
+  routeLatencyMS?: number;
+  routeLatencyAvailable: boolean;
+  verificationDurationMS?: number;
   candidates: unknown[];
   timeline: unknown[];
   details: Record<string, unknown>;
@@ -160,7 +163,16 @@ export function toDecisionCard(event: EventItem): DecisionCard {
   const route = first(details, ['route_label'], event.route || first(details, ['route', 'selected_route', 'route_type'], 'Не выбран'));
   const status = first(details, ['final_status', 'http_status', 'status', 'result'], event.reason_code || event.type);
   const duration = Number(details.decision_duration_ms ?? details.duration_ms);
-  const probeLatency = Number(details.probe_latency_ms ?? details.latency_ms);
+  const explicitRouteLatencyAvailable = typeof details.route_latency_available === 'boolean' || typeof details.route_latency_available === 'string';
+  const rawRouteLatency = details.route_latency_ms ?? details.probe_latency_ms;
+  const inferredRouteLatency = Number(rawRouteLatency);
+  const routeLatencyAvailable = explicitRouteLatencyAvailable
+    ? bool(details, ['route_latency_available'])
+    : Number.isFinite(inferredRouteLatency) && inferredRouteLatency > 0;
+  const probeLatency = routeLatencyAvailable
+    ? Number(rawRouteLatency ?? details.latency_ms)
+    : NaN;
+  const verificationDuration = Number(details.verification_duration_ms ?? details.path_verification_duration_ms ?? duration);
   return {
     id: `${event.time}:${event.id}`,
     time: event.time,
@@ -181,6 +193,9 @@ export function toDecisionCard(event: EventItem): DecisionCard {
     status: humanStatus(status),
     durationMS: Number.isFinite(duration) ? duration : undefined,
     probeLatencyMS: Number.isFinite(probeLatency) ? probeLatency : undefined,
+    routeLatencyMS: Number.isFinite(probeLatency) ? probeLatency : undefined,
+    routeLatencyAvailable,
+    verificationDurationMS: Number.isFinite(verificationDuration) ? verificationDuration : undefined,
     candidates: asArray(details.candidates),
     timeline: asArray(details.timeline ?? details.evidence_timeline),
     details,

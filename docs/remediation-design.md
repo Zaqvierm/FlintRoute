@@ -150,3 +150,27 @@ four workers, the discovery queue capacity is 32, route probe targets are
 capped at four per candidate, and probe/observation rings are bounded. These
 are logical limits covered by local tests, not claims about router CPU, socket,
 or NAND behavior.
+
+## Decision verification semantics
+
+`NO_SAFE_ROUTE` is a terminal exhaustion result. The planner now starts a
+check in `verification_state=in_progress`/`status=VERIFYING`; it may become
+`terminal_no_safe_route` only after every policy-allowed candidate has returned
+a bounded result (or a verified policy skip) and none has complete path proof.
+An outer cancellation or timeout before that point remains `VERIFYING` and is
+not persisted as a failed route decision. The API emits a `VERIFYING` event
+before active discovery and maps terminal exhaustion separately from an
+in-progress check.
+
+Classification confidence is independent from route confidence. The API
+exposes `classification_confidence`, `classification_source`, and
+`classification_evidence`; `confidence` remains the binary confidence of a
+fully verified selected route. A TSPU match with weak source confidence can
+therefore be classified while verification is still running.
+
+`latency_ms` is the measured request/path latency for compatibility with older
+clients. It is populated only when `route_latency_available=true` and is never
+the orchestration duration. `route_latency_ms` is the explicit equivalent
+field. `verification_duration_ms` includes DNS, preparation, retries, proof
+verification, and cleanup. When a route type cannot expose a meaningful path
+measurement, latency is unavailable rather than a disguised job duration.

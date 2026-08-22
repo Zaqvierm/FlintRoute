@@ -68,6 +68,41 @@ func TestProbeHTTP200WithMarker(t *testing.T) {
 	if result.Status != "UNVERIFIED" || result.ApplicationStatus != "OK" || !result.ServiceOK || result.PathVerified {
 		t.Fatalf("application success without route proof must be UNVERIFIED, got %+v", result)
 	}
+	if !result.RouteLatencyAvailable || result.RouteLatencyMS <= 0 || result.LatencyMS != result.RouteLatencyMS {
+		t.Fatalf("route latency was not measured separately: %+v", result)
+	}
+	if result.VerificationDurationMS < result.RouteLatencyMS {
+		t.Fatalf("verification duration %dms is shorter than route latency %dms: %+v", result.VerificationDurationMS, result.RouteLatencyMS, result)
+	}
+}
+
+type fixedProofVerifier struct {
+	proof evidence.RouteResult
+}
+
+func (v fixedProofVerifier) Verify(context.Context, PathProofRequest) (evidence.RouteResult, error) {
+	return v.proof, nil
+}
+
+func TestPathVerificationDurationIsNotRouteLatency(t *testing.T) {
+	engine := NewEngine(fixedProofVerifier{proof: evidence.RouteResult{
+		RouteLatencyMS: 74, RouteLatencyAvailable: true, LatencyMS: 74,
+		ReasonCode: "verified", Status: "OK", Simulation: true,
+	}})
+	started := time.Now().Add(-250 * time.Millisecond)
+	result := engine.finishWithPathProof(context.Background(), testConfig(), config.Route{Type: "direct", Tag: "direct"}, RouteResult{
+		Domain: "example.test", Route: "direct", RouteType: "direct", Status: "OK", ApplicationStatus: "OK",
+		ServiceOK: true, RouteLatencyMS: 74, RouteLatencyAvailable: true,
+	}, started, PathProofSession{StartedAt: started})
+	if result.LatencyMS != 74 || result.RouteLatencyMS != 74 || !result.RouteLatencyAvailable {
+		t.Fatalf("route latency was overwritten by verification duration: %+v", result)
+	}
+	if result.VerificationDurationMS < 200 {
+		t.Fatalf("verification duration did not cover orchestration time: %+v", result)
+	}
+	if result.VerificationDurationMS == result.LatencyMS {
+		t.Fatalf("latency and verification duration remain indistinguishable: %+v", result)
+	}
 }
 
 func TestProbeHTTP204EmptyBodyIsOK(t *testing.T) {

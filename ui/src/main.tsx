@@ -2104,7 +2104,9 @@ function DecisionDetails({ decision }: { decision: ReturnType<typeof toDecisionC
     ['PathVerified', decision.verified ? 'Да' : 'Нет'], ['Итог', decision.status], ['Решение заняло', decision.durationMS !== undefined ? `${decision.durationMS} мс` : null],
     ['DNS', d.dns_status], ['Destination IP', d.destination_ip], ['Задержка маршрута', decision.probeLatencyMS !== undefined ? `${decision.probeLatencyMS} мс` : null],
     ['HTTP/TLS', d.http_status ?? d.tls_status], ['nft mark', d.nft_mark], ['Routing table', d.routing_table], ['Выходной интерфейс', d.egress_interface],
-    ['Xray outbound', d.xray_outbound], ['SOCKS endpoint', d.socks_endpoint], ['Policy ID', d.policy_id], ['Revision', d.revision_id], ['Transaction ID', d.transaction_id]
+    ['Xray outbound', d.xray_outbound], ['SOCKS endpoint', d.socks_endpoint], ['Policy ID', d.policy_id], ['Revision', d.revision_id], ['Transaction ID', d.transaction_id],
+    ['Route latency evidence', decision.routeLatencyAvailable && decision.routeLatencyMS !== undefined ? `${decision.routeLatencyMS} ms` : 'unavailable'],
+    ['Path verification duration', decision.verificationDurationMS !== undefined ? `${decision.verificationDurationMS} ms` : 'unavailable']
   ]} />
   <h3>Кандидаты</h3><EvidenceList values={decision.candidates} empty="Backend не передал список кандидатов." />
   <h3>Временная шкала</h3><EvidenceList values={decision.timeline} empty="Подробная временная шкала отсутствует." />

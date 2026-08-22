@@ -81,6 +81,27 @@ func TestDiscoveryCandidateDetailsExcludeProxySecrets(t *testing.T) {
 	if _, ok := items[0]["xray_outbound"]; ok {
 		t.Fatal("Xray outbound leaked into decision event")
 	}
+	if items[0]["route_latency_available"] != false || items[0]["verification_duration_ms"] != int64(0) {
+		t.Fatalf("missing explicit latency/verification semantics: %+v", items[0])
+	}
+	if _, ok := items[0]["latency_ms"]; ok {
+		t.Fatal("unavailable route latency was serialized as a zero measurement")
+	}
+}
+
+func TestPlannerProbeStateNeverTreatsVerificationAsNoSafeRoute(t *testing.T) {
+	if got := plannerProbeState(planner.DomainCheck{Status: "VERIFYING", VerificationState: "in_progress"}); got != "verifying" {
+		t.Fatalf("in-progress check mapped to %q", got)
+	}
+	if got := plannerProbeState(planner.DomainCheck{Status: "NO_SAFE_ROUTE", VerificationState: "terminal_no_safe_route"}); got != "no_safe_route" {
+		t.Fatalf("terminal exhaustion mapped to %q", got)
+	}
+	if got := plannerProbeState(planner.DomainCheck{Status: "SELECTED", VerificationState: "verified", Selected: &probe.RouteResult{PathVerified: true}}); got != "verified_candidate" {
+		t.Fatalf("verified check mapped to %q", got)
+	}
+	if got := plannerProbeState(planner.DomainCheck{Status: "SELECTED", VerificationState: "verified", Selected: &probe.RouteResult{PathVerified: false}}); got != "verifying" {
+		t.Fatalf("unverified candidate mapped to %q", got)
+	}
 }
 
 func TestDiscoveryObservationStatusDistinguishesWaitingAndReceiving(t *testing.T) {

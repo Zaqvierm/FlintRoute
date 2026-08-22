@@ -624,6 +624,17 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 			return
 		}
 	}
+	classification := "unknown"
+	if match.Status == "MATCH" || match.Status == "STALE_MATCH" {
+		classification = "TSPU_RESTRICTED"
+	}
+	s.publishEvent(Event{Type: "route.decision", Severity: "info", ReasonCode: "domain_verification_started", Details: map[string]any{
+		"domain": observation.Domain, "category": classification, "status": "VERIFYING",
+		"classification": classification, "classification_confidence": match.Confidence,
+		"classification_source": match.Source, "classification_evidence": match.Evidence,
+		"verification_state": "in_progress", "probe_state": "verifying", "policy_state": "observed",
+		"tspu_status": match.Status, "query_type": observation.QueryType, "mode": mode,
+	}})
 	checkCtx, cancel := context.WithTimeout(ctx, time.Duration(maxInt(active.Policy.MaxProbeSeconds, 15))*time.Second)
 	defer cancel()
 	check, err := s.domainChecker(checkCtx, active, observation.Domain, "", planner.Options{
@@ -637,8 +648,13 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 	details := map[string]any{
 		"domain": check.Domain, "category": check.Category, "status": check.Status,
 		"confidence": check.Confidence, "tspu_status": check.TSPUStatus, "query_type": observation.QueryType, "mode": mode,
-		"service": check.Service, "decision_duration_ms": s.discoveryNow().Sub(startedAt).Milliseconds(),
-		"candidates": discoveryCandidateDetails(check.Results),
+		"classification_confidence": check.ClassificationConfidence,
+		"classification_source":     check.ClassificationSource,
+		"classification_evidence":   check.ClassificationEvidence,
+		"verification_state":        check.VerificationState,
+		"service":                   check.Service, "decision_duration_ms": s.discoveryNow().Sub(startedAt).Milliseconds(),
+		"verification_duration_ms": checkVerificationDuration(check, startedAt),
+		"candidates":               discoveryCandidateDetails(check.Results),
 	}
 	selectedType := ""
 	if check.Selected != nil {
@@ -651,7 +667,7 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 	if check.Confidence > 0 {
 		details["classification_state"] = "classified"
 	}
-	details["probe_state"] = "no_safe_route"
+	details["probe_state"] = plannerProbeState(check)
 	details["policy_state"] = "observed"
 	if mode == "suggest" {
 		details["policy_state"] = "suggested"
@@ -689,7 +705,6 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 		details["fallback_performed"] = len(attempted) > 1
 	}
 	if check.Selected != nil {
-		details["probe_state"] = "verified_candidate"
 		details["route"] = check.Selected.Route
 		details["route_label"] = discoveryRouteLabel(*check.Selected)
 		details["route_type"] = check.Selected.RouteType
@@ -699,7 +714,12 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 		if details["destination_ip"] == "" {
 			details["destination_ip"] = check.Selected.ResolvedIP
 		}
-		details["probe_latency_ms"] = check.Selected.LatencyMS
+		details["route_latency_available"] = check.Selected.RouteLatencyAvailable
+		if check.Selected.RouteLatencyAvailable {
+			details["probe_latency_ms"] = check.Selected.RouteLatencyMS
+			details["route_latency_ms"] = check.Selected.RouteLatencyMS
+		}
+		details["path_verification_duration_ms"] = check.Selected.VerificationDurationMS
 		details["http_status"] = discoveryHTTPStatus(*check.Selected)
 		details["tls_status"] = map[bool]string{true: "TLS OK", false: "TLS не подтверждён"}[check.Selected.TLSOK]
 		details["dns_status"] = map[bool]string{true: "DNS resolved", false: "DNS не подтверждён"}[check.Selected.DNSOK]
@@ -711,6 +731,9 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 		return
 	}
 	s.saveDiscoverySuggestion(observation, check)
+	if plannerProbeState(check) == "verifying" {
+		return
+	}
 	if mode == "suggest" {
 		return
 	}
@@ -1333,9 +1356,16 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 			if confidence > 0 || category == "GEO_LOCKED" || category == "TSPU_RESTRICTED" {
 				classificationState = "classified"
 			}
-			probeState := "no_safe_route"
-			if selectedRoute != "" {
-				probeState = "verified_candidate"
+			probeState := "not_checked"
+			switch status {
+			case "SELECTED", "DROP":
+				if selectedRoute != "" {
+					probeState = "verified_candidate"
+				}
+			case "NO_SAFE_ROUTE":
+				probeState = "no_safe_route"
+			case "VERIFYING":
+				probeState = "verifying"
 			}
 			policyState := "observed"
 			if discoveryMode == "suggest" {
