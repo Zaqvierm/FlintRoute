@@ -217,6 +217,11 @@ function App() {
   const [privacyHidden, setPrivacyHidden] = useState(() => {
     try { return window.localStorage.getItem('flintroute-address-privacy') !== 'visible'; } catch { return true; }
   });
+  const screenRef = useRef(screen);
+
+  useEffect(() => {
+    screenRef.current = screen;
+  }, [screen]);
 
   function selectScreen(next: string) {
     setScreen(next);
@@ -246,6 +251,23 @@ function App() {
     const operation = (async () => {
     setRefreshing(true);
     try {
+      const activeScreen = screenRef.current;
+      const needsTopology = ['Обзор', 'Карта сети', 'Устройства', 'Карточка устройства'].includes(activeScreen);
+      const needsDevices = needsTopology;
+      const needsServices = ['Обзор', 'Сервисы', 'Группа сервиса'].includes(activeScreen);
+      const needsRoutes = ['Маршруты', 'VLESS-серверы', 'Zapret'].includes(activeScreen);
+      const needsTraffic = ['Обзор', 'Трафик'].includes(activeScreen);
+      const needsEvents = ['Обзор', 'Устройства', 'Карточка устройства', 'Поток решений', 'Telegram'].includes(activeScreen);
+      const needsChanges = ['Обзор', 'Операции', 'Advanced'].includes(activeScreen);
+      const needsDiscovery = ['Обзор', 'Discovery', 'Поток решений'].includes(activeScreen);
+      const needsOnboarding = ['Обзор', 'Быстрая настройка'].includes(activeScreen);
+      const needsRevisions = needsOnboarding || needsServices || needsRoutes || needsChanges || ['Smart DNS', 'External SOCKS', 'TG WS Proxy', 'Telegram', 'Ревизии и recovery'].includes(activeScreen);
+      const needsSecurity = ['Обзор', 'Безопасность'].includes(activeScreen);
+      const needsDiagnostics = activeScreen === 'Диагностика';
+      const needsLifecycle = needsDiagnostics || activeScreen === 'Ревизии и recovery';
+      const needsStorage = needsDiagnostics;
+      const needsSettings = activeScreen === 'Настройки';
+      const needsBackups = activeScreen === 'Ревизии и recovery' || activeScreen === 'Резервное копирование';
       const optionalErrors: Array<{ name: string; message: string }> = [];
       async function safe<T>(name: string, load: Promise<T>, fallback: T): Promise<T> {
         try {
@@ -255,18 +277,21 @@ function App() {
           return fallback;
         }
       }
+      async function maybe<T>(needed: boolean, name: string, load: () => Promise<T>, fallback: T): Promise<T> {
+        return needed ? safe(name, load(), fallback) : fallback;
+      }
       const [nextOverview, nextTopology, nextDevices, nextServices, nextRoutes, nextTraffic, nextEvents, nextSystem, nextRevisions, nextDiscovery, nextOnboarding, nextHealth] = await Promise.all([
         safe('overview', getOverview(), staleFallback(overview)),
-        safe('topology', getTopology(hideAddresses), hideAddresses ? { nodes: [], edges: [], status: 'unavailable', source: 'privacy-fallback' } : staleFallback(topology)),
-        safe('devices', getDevices(hideAddresses), hideAddresses ? [] : devices),
-        safe('services', getServices(), services),
-        safe('routes', getRoutes(), routes),
-        safe('traffic', getTraffic(), traffic),
-        safe('events', getEvents(), hideAddresses ? [] : events),
+        maybe(needsTopology, 'topology', () => getTopology(hideAddresses), hideAddresses ? { nodes: [], edges: [], status: 'unavailable', source: 'privacy-fallback' } : staleFallback(topology)),
+        maybe(needsDevices, 'devices', () => getDevices(hideAddresses), hideAddresses ? [] : devices),
+        maybe(needsServices, 'services', () => getServices(), services),
+        maybe(needsRoutes, 'routes', () => getRoutes(), routes),
+        maybe(needsTraffic, 'traffic', () => getTraffic(), traffic),
+        maybe(needsEvents, 'events', () => getEvents(), hideAddresses ? [] : events),
         safe('system', getSystem(), staleFallback(system)),
-        safe('revisions', getRevisions(), revisions),
-        safe('discovery', getDiscovery(), discovery),
-        safe('onboarding', getOnboarding(), onboarding),
+        maybe(needsRevisions, 'revisions', () => getRevisions(), revisions),
+        maybe(needsDiscovery, 'discovery', () => getDiscovery(), discovery),
+        maybe(needsOnboarding, 'onboarding', () => getOnboarding(), onboarding),
         safe('health', getHealth(), { status: 'unavailable', recovery_status: 'unknown', recovery_reason: 'Статус восстановления недоступен' })
       ]);
       if (generation !== refreshGeneration.current) return;
@@ -287,7 +312,7 @@ function App() {
       }
       setDiscovery(nextDiscovery);
       setOnboarding(nextOnboarding);
-      if (nextRevisions && nextRevisions.config_version <= 1 && nextServices.length === 0 && nextOnboarding?.completed !== true && screen === 'Обзор') {
+      if (nextRevisions && nextRevisions.config_version <= 1 && nextServices.length === 0 && nextOnboarding?.completed !== true && activeScreen === 'Обзор') {
         try {
           if (window.localStorage.getItem('flintroute-first-run-opened') !== '1') {
             window.localStorage.setItem('flintroute-first-run-opened', '1');
@@ -299,7 +324,14 @@ function App() {
       }
 
       const optional = await Promise.allSettled([
-        getChanges(), getSecurity(), getSecuritySummary(), getDiagnostics(), getLifecycle(), getStorage(), getSettings(), getBackups()
+        maybe(needsChanges, 'changes', () => getChanges(), changes),
+        maybe(needsSecurity, 'security', () => getSecurity(), security),
+        maybe(needsSecurity, 'security-summary', () => getSecuritySummary(), securitySummary),
+        maybe(needsDiagnostics, 'diagnostics', () => getDiagnostics(), diagnostics),
+        maybe(needsLifecycle, 'lifecycle', () => getLifecycle(), lifecycle),
+        maybe(needsStorage, 'storage', () => getStorage(), storage),
+        maybe(needsSettings, 'settings', () => getSettings(), settings),
+        maybe(needsBackups, 'backups', () => getBackups(), backups)
       ]);
       const setters = [setChanges, setSecurity, setSecuritySummary, setDiagnostics, setLifecycle, setStorage, setSettings, setBackups];
       optional.forEach((result, index) => {

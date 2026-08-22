@@ -94,4 +94,18 @@ test.describe('FlintRoute UI v2', () => {
     await expect.poll(() => new URL(page.url()).searchParams.get('screen')).toBe('Быстрая настройка');
     await expect(page.getByRole('heading', { name: 'Быстрая настройка' })).toBeVisible();
   });
+
+  test('loads screen-specific data instead of polling the whole dashboard', async ({ page }) => {
+    const apiPaths: string[] = [];
+    page.on('request', (request) => {
+      const url = new URL(request.url());
+      if (url.pathname.startsWith('/api/v1/')) apiPaths.push(url.pathname.replace('/api/v1', ''));
+    });
+    await mockAPI(page);
+    await page.goto('/?screen=Сервисы');
+    await expect(page.getByText('Правила сервисов', { exact: true })).toBeVisible();
+    expect(apiPaths.filter((path) => ['/topology', '/devices', '/routes', '/traffic', '/events', '/discovery', '/diagnostics', '/backups'].includes(path))).toHaveLength(0);
+    expect(apiPaths.filter((path) => path === '/services')).toHaveLength(1);
+    expect(apiPaths.length).toBeLessThanOrEqual(8);
+  });
 });
