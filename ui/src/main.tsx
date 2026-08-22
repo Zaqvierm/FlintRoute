@@ -129,7 +129,7 @@ function humanChangeBlock(reason?: string): string {
     lan_interfaces_unverified: 'FlintRoute не смог надёжно определить LAN-интерфейсы. Сеть не изменена; открой диагностику.',
     wan_interface_unverified: 'FlintRoute не смог надёжно определить выход в интернет. Сеть не изменена; открой диагностику.'
   };
-  return messages[reason ?? ''] ?? `Правило проверено, но применять его пока небезопасно${reason ? `: ${reason}` : ''}. Сеть не изменена.`;
+  return messages[reason ?? ''] ?? `Проверка на роутере не завершена${reason ? ` (${reason})` : ''}. Сеть не изменена. Открой «Диагностика», проверь состояние роутера и повтори применение.`;
 }
 
 function humanChangeFailure(change: ChangeSet): string {
@@ -592,9 +592,9 @@ function Content(props: any) {
     case 'Политики: доска':
       return <Policies mode="board" />;
     case 'Advanced':
-      return <Changes changes={props.changes} refresh={props.refresh} role={props.session.role} configVersion={props.configVersion} mutationLocked={props.mutationLocked} mode="developer" />;
+      return <Changes changes={props.changes} refresh={props.refresh} role={props.session.role} configVersion={props.configVersion} mutationLocked={props.mutationLocked} navigate={props.navigate} mode="developer" />;
     case 'Операции':
-      return <Changes changes={props.changes} refresh={props.refresh} role={props.session.role} configVersion={props.configVersion} mutationLocked={props.mutationLocked} mode="operations" />;
+      return <Changes changes={props.changes} refresh={props.refresh} role={props.session.role} configVersion={props.configVersion} mutationLocked={props.mutationLocked} navigate={props.navigate} mode="operations" />;
     case 'Маршруты':
       return <Routes routes={props.routes} navigate={props.navigate} />;
     case 'Компоненты':
@@ -1135,7 +1135,7 @@ function Policies({ mode }: { mode: string }) {
   return <Card title={`Политики: ${mode}`}>{items.map((p, i) => <div class="row"><b>{i + 1}</b><span>{p}</span><small>формальный приоритет</small></div>)}</Card>;
 }
 
-function Changes({ changes, refresh, role, configVersion, mutationLocked, mode = 'developer' }: { changes: ChangeSet[]; refresh: () => void; role: SessionInfo['role']; configVersion: number; mutationLocked: boolean; mode?: 'developer' | 'operations' }) {
+function Changes({ changes, refresh, role, configVersion, mutationLocked, navigate, mode = 'developer' }: { changes: ChangeSet[]; refresh: () => void; role: SessionInfo['role']; configVersion: number; mutationLocked: boolean; navigate: (screen: string) => void; mode?: 'developer' | 'operations' }) {
   const [title, setTitle] = useState('');
   const [operationType, setOperationType] = useState<ChangeOp['type']>('set');
   const [path, setPath] = useState('');
@@ -1197,7 +1197,7 @@ function Changes({ changes, refresh, role, configVersion, mutationLocked, mode =
           <div class="actions">
              {actionsForChange(c.state).map((a) => <button disabled={mutationLocked} onClick={() => act(c.id, a)}>{changeActionLabel(a)}</button>)}
           </div>
-          {['failed', 'rolled_back', 'requires_device', 'recovery_required'].includes(c.state) && <p class="reason">{humanChangeFailure(c)}</p>}
+          {['failed', 'rolled_back', 'requires_device', 'recovery_required'].includes(c.state) && <div class="reason"><p>{humanChangeFailure(c)}</p>{c.state === 'requires_device' && <button type="button" onClick={() => navigate('Диагностика')}>Открыть диагностику</button>}</div>}
         </div>
       ))}
     </Card>

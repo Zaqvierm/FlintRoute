@@ -183,6 +183,14 @@ covered by the exact SHA above:
 - Zapret process-group safety: [run 32580583820](https://github.com/Zaqvierm/FlintRoute/actions/runs/32580583820)
 - UI browser/responsive: [run 32580583755](https://github.com/Zaqvierm/FlintRoute/actions/runs/32580583755)
 
+The follow-up UI change at the next code head makes a `requires_device`
+ChangeSet actionable without weakening the safety fence. The operation center
+now explains that router verification did not finish, states that the network
+was not changed, and offers a direct `Open diagnostics` action. Unknown block
+reasons use the same safe human explanation instead of exposing only an
+internal lifecycle enum. A browser regression covers the message and the
+navigation target; this is presentation only and does not grant mutation.
+
 ## Known limitation
 
 The packaged helper boundary is tested, but the production `router-policy`

@@ -7,7 +7,7 @@ function envelope(data: unknown, status = 200) {
   return { status, contentType: 'application/json', body: JSON.stringify({ data }) };
 }
 
-export async function mockAPI(page: Page, options: { securityFailure?: boolean; recoveryStatus?: string; bootstrapRequired?: boolean; decisionState?: 'verifying' | 'no_safe_route' } = {}) {
+export async function mockAPI(page: Page, options: { securityFailure?: boolean; recoveryStatus?: string; bootstrapRequired?: boolean; decisionState?: 'verifying' | 'no_safe_route'; changeState?: 'requires_device' } = {}) {
   const onboarding = {
     completed: false,
     can_complete: false,
@@ -81,7 +81,18 @@ export async function mockAPI(page: Page, options: { securityFailure?: boolean; 
     if (path === '/smart-dns') return route.fulfill(envelope({ configured_count: 0, ready: 0, routes: [] }));
     if (path === '/tgws') return route.fulfill(envelope({ status: 'not_configured' }));
     if (path === '/zapret') return route.fulfill(envelope({ ready: false }));
-    if (path === '/changes') return route.fulfill(envelope([]));
+    if (path === '/changes') {
+      if (options.changeState) {
+        return route.fulfill(envelope([{
+          id: 'fixture-change', state: options.changeState, title: 'Rule fixture', description: 'fixture',
+          base_version: 1, version: 1, operations: [{ type: 'set', path: '/services/discord/route', value: 'VLESS' }],
+          validation: [], diff: [], data_plane_verified: false,
+          created_at: new Date().toISOString(), updated_at: new Date().toISOString(), author: 'fixture',
+          artifact_block_reason: 'fixture_unknown'
+        }]));
+      }
+      return route.fulfill(envelope([]));
+    }
     if (path === '/security' && options.securityFailure) return route.fulfill(envelope({ error: { code: 'fixture_security_down', message: 'security fixture unavailable' } }, 503));
     if (path === '/security') return route.fulfill(envelope({ status: 'ready', checks: [] }));
     if (path === '/security/summary') return route.fulfill(envelope({ status: 'ready', secrets: 'hidden', auth: 'ready' }));
@@ -95,6 +106,14 @@ export async function mockAPI(page: Page, options: { securityFailure?: boolean; 
 }
 
 test.describe('FlintRoute UI v2', () => {
+  test('explains requires-device and offers a diagnostics next step', async ({ page }) => {
+    await mockAPI(page, { changeState: 'requires_device' });
+    await page.goto('/?screen=%D0%9E%D0%BF%D0%B5%D1%80%D0%B0%D1%86%D0%B8%D0%B8');
+    await expect(page.getByText(/\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u043d\u0430 \u0440\u043e\u0443\u0442\u0435\u0440\u0435 \u043d\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0430/)).toBeVisible();
+    await page.getByRole('button', { name: /\u041e\u0442\u043a\u0440\u044b\u0442\u044c \u0434\u0438\u0430\u0433\u043d\u043e\u0441\u0442\u0438\u043a\u0443/ }).click();
+    await expect(page).toHaveURL(/screen=.*%D0%94%D0%B8%D0%B0%D0%B3%D0%BD%D0%BE%D1%81%D1%82%D0%B8%D0%BA%D0%B0/);
+  });
+
   test('keeps the shell usable and navigable on a phone', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await mockAPI(page);
