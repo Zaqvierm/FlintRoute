@@ -192,6 +192,19 @@ internal lifecycle enum. A browser regression covers the message and the
 navigation target (12 browser tests total); this is presentation only and does
 not grant mutation.
 
+The same code head `44865acfcfae316ff1220270fd08f1ba3a4597cf` passed the full
+local runner in 320.1 seconds (`all_tests_ok=true`). The focused frontend gate
+passed typecheck, 37 unit tests, 12 browser tests and production build; the
+bundle is 185.46 kB JS (58.10 kB gzip) and 26.52 kB CSS (6.28 kB gzip).
+Linux CI also passed for this exact code head:
+
+- nft transition safety: [run 32581217696](https://github.com/Zaqvierm/FlintRoute/actions/runs/32581217696)
+- Zapret process-group safety: [run 32581217782](https://github.com/Zaqvierm/FlintRoute/actions/runs/32581217782)
+- UI browser/responsive: [run 32581217757](https://github.com/Zaqvierm/FlintRoute/actions/runs/32581217757)
+
+The current documentation head is `9f304923721b68775d4b34694543bbad86780261`;
+it records evidence only and does not alter the production behavior above.
+
 ## Known limitation
 
 The packaged helper boundary is tested, but the production `router-policy`
