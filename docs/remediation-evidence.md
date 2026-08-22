@@ -7,10 +7,11 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 
 - Base review SHA: `d45a779dfa9dc024b426cef358d3df4d32478897`
 - Branch: `remediation/transaction-and-privilege-boundaries`
-- Code verification SHA: `ef44eefa197eb70e9537297787dde374788077b0` (recovery
-  fence, route-verification semantics, bounded Zapret modes, and truthful
-  UI/browser coverage). This document may be advanced by docs-only commits; the
-  code evidence remains bound to this SHA.
+- Code verification SHA: `163b17cec7e0d1445fa4360ac2dce8ceaf997974` (recovery
+  fence, route-verification semantics, bounded Zapret modes, truthful UI/browser
+  coverage, screen-specific request budget, refresh cancellation, and robust
+  Zapret process ownership). This document may be advanced by docs-only
+  commits; the code evidence remains bound to this SHA.
 - Verification scope: the exact code SHA recorded here; older evidence is not
   inherited by this follow-up.
 - Hardware scope: **not run**. Flint 2 was not contacted, installed, rebooted,
@@ -30,14 +31,15 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | recovery mutation allowlist | `go test ./internal/api -run 'TestRecovery|TestAutomaticDomainCommit|TestHealthScheduler'` | PASS | local |
 | recovery status persistence failure | `TestRecoveryStatusPersistenceFailureInstallsMemoryFence` | PASS | local |
 | concurrent recovery/apply fence | `TestRecoveryTransitionExcludesConcurrentMutation` | PASS | local |
-| frontend recovery mutation fence | `npm run test`, `npm run browser:test` (`recovery=starting`) | PASS (32 unit tests; 5 browser tests) | local Chromium |
+| frontend recovery mutation fence | `npm run test`, `npm run browser:test` (`recovery=starting`) | PASS (32 unit tests; 8 browser tests) | local Chromium |
 | immutable bootstrap | `tests/openwrt-adapter-integration.sh` | PASS | local/mock |
 | installer parent modes | `tests/installer-lifecycle.sh` | PASS | local/mock |
+| legacy shell atomic write | `tests/shell-library.sh` | PASS (mode check is Linux-only; Windows reports `NOT RUN LOCALLY`) | local/mock |
 | boot guard | `tests/boot-guard-policy.sh`, `tests/boot-guard-service.sh` | PASS | local/mock |
 | privileged helper boundary | `tests/helper-service.sh`, `go test ./internal/helper` | PASS | local/mock |
-| nft transition | `tests/nft-transition-namespace.sh` | PASS — [run 32566577997](https://github.com/Zaqvierm/FlintRoute/actions/runs/32566577997), exact code SHA `ef44eefa197eb70e9537297787dde374788077b0` | Linux namespace |
+| nft transition | `tests/nft-transition-namespace.sh` | PASS — [run 32574915080](https://github.com/Zaqvierm/FlintRoute/actions/runs/32574915080), exact code SHA `163b17cec7e0d1445fa4360ac2dce8ceaf997974` | Linux namespace |
 | hotplug boundedness | `tests/hotplug-bounded.sh` | PASS | local/mock |
-| Zapret cleanup | `tests/zapret-calibration-runtime.sh` | PASS — [run 32566577938](https://github.com/Zaqvierm/FlintRoute/actions/runs/32566577938), exact code SHA `ef44eefa197eb70e9537297787dde374788077b0` | Linux process/procfs |
+| Zapret cleanup | `tests/zapret-calibration-runtime.sh` | PASS — [run 32574915074](https://github.com/Zaqvierm/FlintRoute/actions/runs/32574915074), exact code SHA `163b17cec7e0d1445fa4360ac2dce8ceaf997974` | Linux process/procfs |
 | SSRF and decompression limits | `go test ./internal/remotefetch ./internal/vpnsub ./internal/tspu ./internal/geoip` | PASS | local |
 | Xray typed input | `go test ./internal/vpnsub` | PASS | local |
 | resource budget | `go test ./internal/api ./internal/probe` | PASS | local |
@@ -47,7 +49,7 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | unknown route latency scoring | `TestSelectBestDoesNotTreatUnknownLatencyAsZero` | PASS | local |
 | frontend build | `npm run build` | PASS | local |
 | frontend tests | `npm test` | PASS (32 tests) | local |
-| browser smoke/responsive | `npm run browser:test` | PASS (5 tests; 10 viewport matrix); [CI run 32566577975](https://github.com/Zaqvierm/FlintRoute/actions/runs/32566577975) | local Chromium + Linux CI |
+| browser smoke/responsive | `npm run browser:test` | PASS (8 tests; 10 viewport matrix); [CI run 32574604648](https://github.com/Zaqvierm/FlintRoute/actions/runs/32574604648) | local Chromium + Linux CI |
 | ShellCheck | `.tools/shellcheck-v0.11.0/shellcheck.exe -x <tracked shell files>` | PASS | local |
 | race/vet | `go test -race ./...`, `go vet ./...` | PASS | local |
 
@@ -58,6 +60,20 @@ the Linux evidence. The earlier `e04778e` nft run failed because the fixture's
 background traffic generator died before the counter assertion. Follow-up
 `abf26b6` keeps the namespace-side generator alive and the rerun passed. That
 failure remains part of the evidence trail rather than being erased.
+
+The previous Zapret CI runs for `2a61405`, `29680f1` and `d598278` exposed
+three real harness errors: trusting `setsid`'s launcher PID, using `$11`/`$13`
+instead of braced positional parameters, and a release-file race. The current
+`163b17c` test publishes the child PID from inside the new session, stops it
+before ownership validation, resumes it only after the PGID check, and then
+performs owned cleanup. Those failures remain recorded here; they are not
+being hidden behind a retry.
+
+The UI refresh budget is explicit: a Services-screen refresh requests only the
+always-on overview/system/health snapshots plus services and revisions. The
+browser regression asserts that unrelated collections are not requested, and a
+second regression asserts that a delayed services response is aborted when
+navigation changes.
 
 The Zapret calibration UI now has two explicit modes. `quick` is the bounded
 default and passes the pinned upstream `SCANLEVEL=quick`; `exhaustive` is an

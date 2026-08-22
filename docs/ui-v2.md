@@ -47,6 +47,25 @@ privacy purge, partial API failure, navigation/back-forward and a ten-viewport
 matrix (360×800 through 3840×2160). The fixture is test-only and is never
 enabled by the production build.
 
+The browser suite also proves that a slow screen-specific request is aborted
+when navigation changes; an old response cannot overwrite the new screen.
+
+## Request budget and cancellation
+
+Overview refresh always reads only the compact overview, system and health
+snapshots, plus data needed by the active screen. Expensive collections are not
+polled globally: topology/devices, services, routes, traffic, events,
+discovery, diagnostics, backups and operations are loaded only for screens that
+display them. The Services screen is covered by a request-budget test and
+loads no topology, devices, routes, traffic, events, discovery, diagnostics or
+backup collection.
+
+Every refresh generation owns an `AbortController`. A screen or privacy change
+aborts the previous generation, and aborted responses are ignored. The
+30-second timer and SSE reconnect share the same in-flight guard, so they do
+not multiply router commands. Hidden tabs stop the timer; active operations
+are the only case where faster polling is allowed.
+
 ## Scope and limits
 
 This is a progressive-disclosure foundation, not a production-readiness claim.
