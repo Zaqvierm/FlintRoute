@@ -68,7 +68,11 @@ run_nft() {
 
 run_nft -f "$old"
 foreign_before="$(run_nft list table inet foreign)"
-traffic_pid="$(ip netns exec "$ns" sh -c 'while :; do ping -c 1 -W 1 127.0.0.1 >/dev/null 2>&1 || true; done' >/dev/null 2>&1 & echo $!)"
+# Keep the namespace-side generator alive for the whole assertion window.  A
+# background job hidden inside command substitution may be reaped when the
+# helper shell exits, leaving the replacement generation with zero packets.
+ip netns exec "$ns" sh -c 'while :; do ping -c 1 -W 1 127.0.0.1 >/dev/null 2>&1 || true; done' >/dev/null 2>&1 &
+traffic_pid=$!
 sleep 1
 
 {
@@ -88,6 +92,7 @@ if run_nft -f "$bad" >/dev/null 2>&1; then
 fi
 run_nft list table inet router_policy >/dev/null
 run_nft list table inet foreign >/dev/null
+sleep 1
 
 foreign_after="$(run_nft list table inet foreign)"
 [ "$foreign_after" = "$foreign_before" ] || {
