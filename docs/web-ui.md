@@ -219,3 +219,15 @@ Zapret, TG WS Proxy, Smart DNS и subscription pool ещё не настроен
 - изменение настроек устройства без отдельного backend API;
 - автоматическое подтверждение TGWS client path без открытия ссылки в Telegram;
 - TLS termination самой панели.
+
+### Zapret: quick vs exhaustive
+
+UI exposes two explicit calibration modes. `quick` uses the pinned upstream
+`SCANLEVEL=quick` with a five-minute default budget. `exhaustive` uses
+`SCANLEVEL=force`, requires a separate confirmation, and may run for up to six
+hours. The current pinned upstream does not provide a reliable fixed
+"21-strategy" catalog, so the UI does not invent that number. Both modes run
+one worker because nft/NFQUEUE/process resources are shared; candidates remain
+draft evidence until a separate ChangeSet activates them. Upstream curl success
+is path evidence for the selected target, not a universal browser/client
+guarantee.

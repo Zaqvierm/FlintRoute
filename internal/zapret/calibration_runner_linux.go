@@ -50,7 +50,7 @@ func (r ExecCalibrationRunner) Run(ctx context.Context, request CalibrationReque
 	if err := r.validatePaths(); err != nil {
 		return nil, err
 	}
-	args := []string{"--apply", "--domain", request.Domain, "--bundle-id", request.BundleID, "--network-fingerprint", request.NetworkFingerprint, "--blockcheck", r.Blockcheck}
+	args := []string{"--apply", "--mode", string(request.Mode), "--domain", request.Domain, "--bundle-id", request.BundleID, "--network-fingerprint", request.NetworkFingerprint, "--blockcheck", r.Blockcheck}
 	if request.AllowManagedRestart {
 		args = append(args, "--allow-managed-restart")
 	}

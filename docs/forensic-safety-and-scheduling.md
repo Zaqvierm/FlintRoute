@@ -52,10 +52,15 @@ the blockcheck session starts at `scripts/calibrate-zapret.sh:327`.
 available, records the process identity, and always executes cleanup on
 success, error, timeout, and signal. Cleanup terminates the owned process
 group, then sweeps only new `nfqws` processes whose PID/start-time/executable
-or command line matches the calibration binary. PID reuse is rejected. It
-also checks for the calibration NFQUEUE/table namespace before restarting a
-previously managed Zapret service, and compares `ip route`/`ip rule` snapshots
-before and after the run. No global `pkill`, `killall`, or nft flush is used.
+matches the calibration binary **and** whose inherited
+`ROUTER_POLICY_CALIBRATION_RUN_ID` marker proves ownership when a provider
+daemonizes into a new session. PID reuse is rejected. An unmarked process is
+treated as foreign and causes cleanup to fail closed; it is never guessed at or
+killed. The marker is passed through both upstream `NFQWS` and `NFQWS_BIN`
+variables. Cleanup also checks for the calibration NFQUEUE/table namespace
+before restarting a previously managed Zapret service, and compares
+`ip route`/`ip rule` snapshots before and after the run. No global `pkill`,
+`killall`, or nft flush is used.
 
 `tests/zapret-calibration-runtime.sh` covers success, failure, timeout, and a
 blockcheck that starts a copied `nfqws` daemon before returning `124`; the
