@@ -8,7 +8,7 @@ function envelope(data: unknown, status = 200) {
 }
 
 /** Deterministic, explicit simulation fixture. It is only imported by browser tests. */
-export async function mockAPI(page: Page, options: { securityFailure?: boolean; recoveryStatus?: string } = {}) {
+export async function mockAPI(page: Page, options: { securityFailure?: boolean; recoveryStatus?: string; bootstrapRequired?: boolean } = {}) {
   await page.route('**/api/v1/**', async (route: Route) => {
     const url = new URL(route.request().url());
     const path = url.pathname.replace('/api/v1', '');
@@ -23,12 +23,12 @@ export async function mockAPI(page: Page, options: { securityFailure?: boolean; 
       const hidden = url.searchParams.get('privacy') === 'hidden';
       return route.fulfill(envelope(hidden ? [{ id: 'phone', name: 'Phone', connected: true, kind: 'wifi', ip_display: 'IP скрыт', mac_display: 'MAC скрыт' }] : [{ id: 'phone', name: 'Phone', connected: true, kind: 'wifi', ip: rawIP, mac: rawMAC }]));
     }
-    if (path === '/services') return route.fulfill(envelope([{ id: 'Discord', name: 'Discord', category: 'TELEGRAM', domains: ['discord.com'], route: 'VLESS' }]));
+    if (path === '/services') return route.fulfill(envelope(options.bootstrapRequired ? [] : [{ id: 'Discord', name: 'Discord', category: 'TELEGRAM', domains: ['discord.com'], route: 'VLESS' }]));
     if (path === '/routes') return route.fulfill(envelope([{ type: 'system_default', tag: 'Direct', status: 'ready' }]));
     if (path === '/events') return route.fulfill(envelope([]));
     if (path === '/traffic') return route.fulfill(envelope({ status: 'ready', source: 'fixture', collected_at: new Date().toISOString(), interfaces: [] }));
     if (path === '/onboarding') return route.fulfill(envelope({ completed: false, can_complete: false, steps: { methods: { status: 'pending' }, sources: { status: 'pending' }, services: { status: 'pending' } } }));
-    if (path === '/revisions') return route.fulfill(envelope({ active_revision: 'fixture', config_version: 2, items: [] }));
+    if (path === '/revisions') return route.fulfill(envelope({ active_revision: 'fixture', config_version: options.bootstrapRequired ? 1 : 2, items: [] }));
     if (path === '/discovery') return route.fulfill(envelope({ mode: 'observe_only', observation_source: { status: 'waiting' }, suggestions: [] }));
     if (path === '/components') return route.fulfill(envelope({ components: [] }));
     if (path === '/xray/pool') return route.fulfill(envelope({ tariff_mbps: 300, sources: [], servers: [] }));

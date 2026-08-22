@@ -287,7 +287,7 @@ function App() {
       }
       setDiscovery(nextDiscovery);
       setOnboarding(nextOnboarding);
-      if (nextRevisions && nextRevisions.config_version <= 1 && nextServices.length === 0 && nextOnboarding?.completed !== true && screen === 'РћР±Р·РѕСЂ') {
+      if (nextRevisions && nextRevisions.config_version <= 1 && nextServices.length === 0 && nextOnboarding?.completed !== true && screen === 'Обзор') {
         try {
           if (window.localStorage.getItem('flintroute-first-run-opened') !== '1') {
             window.localStorage.setItem('flintroute-first-run-opened', '1');
