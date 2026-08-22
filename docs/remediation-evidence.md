@@ -7,9 +7,10 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 
 - Base review SHA: `d45a779dfa9dc024b426cef358d3df4d32478897`
 - Branch: `remediation/transaction-and-privilege-boundaries`
-- Code verification SHA: `f3c7355` (recovery fence, route-verification semantics,
-  bounded Zapret modes, and truthful UI/browser coverage). This document may be
-  advanced by docs-only commits; the code evidence remains bound to this SHA.
+- Code verification SHA: `ef44eefa197eb70e9537297787dde374788077b0` (recovery
+  fence, route-verification semantics, bounded Zapret modes, and truthful
+  UI/browser coverage). This document may be advanced by docs-only commits; the
+  code evidence remains bound to this SHA.
 - Verification scope: the exact code SHA recorded here; older evidence is not
   inherited by this follow-up.
 - Hardware scope: **not run**. Flint 2 was not contacted, installed, rebooted,
@@ -29,13 +30,14 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | recovery mutation allowlist | `go test ./internal/api -run 'TestRecovery|TestAutomaticDomainCommit|TestHealthScheduler'` | PASS | local |
 | recovery status persistence failure | `TestRecoveryStatusPersistenceFailureInstallsMemoryFence` | PASS | local |
 | concurrent recovery/apply fence | `TestRecoveryTransitionExcludesConcurrentMutation` | PASS | local |
+| frontend recovery mutation fence | `npm run test`, `npm run browser:test` (`recovery=starting`) | PASS (32 unit tests; 5 browser tests) | local Chromium |
 | immutable bootstrap | `tests/openwrt-adapter-integration.sh` | PASS | local/mock |
 | installer parent modes | `tests/installer-lifecycle.sh` | PASS | local/mock |
 | boot guard | `tests/boot-guard-policy.sh`, `tests/boot-guard-service.sh` | PASS | local/mock |
 | privileged helper boundary | `tests/helper-service.sh`, `go test ./internal/helper` | PASS | local/mock |
-| nft transition | `tests/nft-transition-namespace.sh` | PASS — [run 32565429108](https://github.com/Zaqvierm/FlintRoute/actions/runs/32565429108), exact code SHA `f3c7355` | Linux namespace |
+| nft transition | `tests/nft-transition-namespace.sh` | PASS — [run 32566577997](https://github.com/Zaqvierm/FlintRoute/actions/runs/32566577997), exact code SHA `ef44eefa197eb70e9537297787dde374788077b0` | Linux namespace |
 | hotplug boundedness | `tests/hotplug-bounded.sh` | PASS | local/mock |
-| Zapret cleanup | `tests/zapret-calibration-runtime.sh` | PASS — [run 32565429013](https://github.com/Zaqvierm/FlintRoute/actions/runs/32565429013), exact code SHA `f3c7355` | Linux process/procfs |
+| Zapret cleanup | `tests/zapret-calibration-runtime.sh` | PASS — [run 32566577938](https://github.com/Zaqvierm/FlintRoute/actions/runs/32566577938), exact code SHA `ef44eefa197eb70e9537297787dde374788077b0` | Linux process/procfs |
 | SSRF and decompression limits | `go test ./internal/remotefetch ./internal/vpnsub ./internal/tspu ./internal/geoip` | PASS | local |
 | Xray typed input | `go test ./internal/vpnsub` | PASS | local |
 | resource budget | `go test ./internal/api ./internal/probe` | PASS | local |
@@ -44,8 +46,8 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | route latency vs verification duration | probe/API separation tests | PASS | local |
 | unknown route latency scoring | `TestSelectBestDoesNotTreatUnknownLatencyAsZero` | PASS | local |
 | frontend build | `npm run build` | PASS | local |
-| frontend tests | `npm test` | PASS (26 tests) | local |
-| browser smoke/responsive | `npm run browser:test` | PASS (4 tests; 10 viewport matrix); [CI run 32565429068](https://github.com/Zaqvierm/FlintRoute/actions/runs/32565429068) | local Chromium + Linux CI |
+| frontend tests | `npm test` | PASS (32 tests) | local |
+| browser smoke/responsive | `npm run browser:test` | PASS (5 tests; 10 viewport matrix); [CI run 32566577975](https://github.com/Zaqvierm/FlintRoute/actions/runs/32566577975) | local Chromium + Linux CI |
 | ShellCheck | `.tools/shellcheck-v0.11.0/shellcheck.exe -x <tracked shell files>` | PASS | local |
 | race/vet | `go test -race ./...`, `go vet ./...` | PASS | local |
 
