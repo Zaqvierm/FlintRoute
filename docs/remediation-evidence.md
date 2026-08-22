@@ -7,7 +7,7 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 
 - Base review SHA: `d45a779dfa9dc024b426cef358d3df4d32478897`
 - Branch: `remediation/transaction-and-privilege-boundaries`
-- Code verification SHA: `4345207ec79e5290a3a6de78a01b8ce84ad702e2` (recovery
+- Code verification SHA: `50fdf63eb79302a10d22c91ad275f5b921630da1` (recovery
   fence, route-verification semantics, bounded Zapret modes, truthful UI/browser
   coverage, screen-specific request budget, refresh cancellation, and robust
   Zapret process ownership). This document may be advanced by docs-only
@@ -86,9 +86,9 @@ The current repository has no authoritative fixed 21-strategy asset, so the
 UI does not invent that number. Neither mode silently activates a production
 profile; the result is a reviewed candidate/draft.
 
-## Current follow-up evidence
+## Prior follow-up evidence
 
-The current follow-up code SHA is `4345207ec79e5290a3a6de78a01b8ce84ad702e2`.
+The prior follow-up code SHA was `4345207ec79e5290a3a6de78a01b8ce84ad702e2`.
 The artifact directory fsync regression now fails closed when both the exact
 directory sync and the explicit global sync fallback fail; the runtime write
 log records `fsync_failed` and `atomic_install` returns an error. The local
@@ -96,7 +96,7 @@ full runner passed at this SHA in about 300.5 seconds with
 `all_tests_ok=true`; Linux-only namespace/process-group checks remain
 `NOT RUN LOCALLY` on Windows.
 
-The current Linux CI evidence for this SHA is:
+The Linux CI evidence for that SHA is:
 
 - nft transition safety: [run 32576221526](https://github.com/Zaqvierm/FlintRoute/actions/runs/32576221526)
 - Zapret process-group safety: [run 32576221472](https://github.com/Zaqvierm/FlintRoute/actions/runs/32576221472)
@@ -104,7 +104,18 @@ The current Linux CI evidence for this SHA is:
 
 The earlier matrix rows retain their original SHAs as historical evidence;
 the entries above are the authoritative follow-up results for the current
-head.
+that prior head; the latest local follow-up is recorded below.
+
+## Latest local follow-up
+
+At `50fdf63eb79302a10d22c91ad275f5b921630da1`, onboarding readiness is
+fail-closed: only explicit route/DNS proof states pass; simulation,
+unverified, missing-upstream, and unknown statuses do not. The UI consumes the
+backend `router_ready` boolean when present and has a tested explicit-status
+fallback, so an object cannot become `[object Object]` or readiness by
+coercion. The full local runner passed in 318.2 seconds with
+`all_tests_ok=true`; Linux-only namespace/process-group checks remain
+`NOT RUN LOCALLY` on Windows.
 
 ## Known limitation
 
