@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"router-policy/internal/remotefetch"
+
 	"router-policy/internal/config"
 )
 
@@ -77,11 +79,11 @@ func TestUpdateUsesHTTPSConditionalRequestAnd304(t *testing.T) {
 	defer server.Close()
 	source := config.TSPUSource{Name: "fixture", Type: "domains", URL: server.URL, MinEntries: 3, MaxDropRatio: 0.5}
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
-	first, err := Update(context.Background(), server.Client(), []config.TSPUSource{source}, 4096, time.Hour, now)
+	first, err := Update(remotefetch.WithLoopbackForTests(context.Background()), server.Client(), []config.TSPUSource{source}, 4096, time.Hour, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := UpdateWithPrevious(context.Background(), server.Client(), []config.TSPUSource{source}, 4096, time.Hour, now.Add(time.Hour), &first)
+	second, err := UpdateWithPrevious(remotefetch.WithLoopbackForTests(context.Background()), server.Client(), []config.TSPUSource{source}, 4096, time.Hour, now.Add(time.Hour), &first)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +97,7 @@ func TestUpdateRejectsOversizedSourceInsteadOfTruncating(t *testing.T) {
 		_, _ = writer.Write([]byte(strings.Repeat("a", 128)))
 	}))
 	defer server.Close()
-	cache, err := Update(context.Background(), server.Client(), []config.TSPUSource{{Name: "fixture", Type: "domains", URL: server.URL, MinEntries: 1}}, 64, time.Hour, time.Now().UTC())
+	cache, err := Update(remotefetch.WithLoopbackForTests(context.Background()), server.Client(), []config.TSPUSource{{Name: "fixture", Type: "domains", URL: server.URL, MinEntries: 1}}, 64, time.Hour, time.Now().UTC())
 	if err == nil || len(cache.Sources) != 1 || cache.Sources[0].Reason != "source_size_limit_exceeded" || len(cache.Entries) != 0 {
 		t.Fatalf("oversized source was not rejected: cache=%+v err=%v", cache, err)
 	}
@@ -110,7 +112,7 @@ func TestDropRatioRetainsPreviousAcceptedVersion(t *testing.T) {
 	}))
 	defer server.Close()
 	source := config.TSPUSource{Name: "fixture", Type: "domains", URL: server.URL, MinEntries: 1, MaxDropRatio: 0.25}
-	cache, err := UpdateWithPrevious(context.Background(), server.Client(), []config.TSPUSource{source}, 4096, time.Hour, now.Add(time.Hour), &previous)
+	cache, err := UpdateWithPrevious(remotefetch.WithLoopbackForTests(context.Background()), server.Client(), []config.TSPUSource{source}, 4096, time.Hour, now.Add(time.Hour), &previous)
 	if err == nil || len(cache.Entries) != 4 || !cache.Sources[0].RetainedPrevious || cache.Sources[0].Accepted || cache.Sources[0].DropRatio != 0.75 || !strings.HasPrefix(cache.Sources[0].Reason, "drop_ratio_exceeded") {
 		t.Fatalf("suspicious source shrink replaced previous data: cache=%+v err=%v", cache, err)
 	}
@@ -132,7 +134,7 @@ func TestRefreshFilePreservesValidCacheWhenAllSourcesFail(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "tspu-cache.json")
 	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
-	first, err := RefreshFile(context.Background(), server.Client(), cfg, path, now)
+	first, err := RefreshFile(remotefetch.WithLoopbackForTests(context.Background()), server.Client(), cfg, path, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +144,7 @@ func TestRefreshFilePreservesValidCacheWhenAllSourcesFail(t *testing.T) {
 	}
 
 	fail = true
-	retained, err := RefreshFile(context.Background(), server.Client(), cfg, path, now.Add(time.Hour))
+	retained, err := RefreshFile(remotefetch.WithLoopbackForTests(context.Background()), server.Client(), cfg, path, now.Add(time.Hour))
 	if err == nil || len(retained.Entries) != len(first.Entries) || !retained.Sources[0].RetainedPrevious {
 		t.Fatalf("failed source did not report retained previous cache: cache=%+v err=%v", retained, err)
 	}
@@ -340,7 +342,7 @@ func TestHTTPSRedirectToHTTPIsRejected(t *testing.T) {
 		http.Redirect(writer, &http.Request{}, httpTarget.URL, http.StatusFound)
 	}))
 	defer tlsSource.Close()
-	_, err := Update(context.Background(), tlsSource.Client(), []config.TSPUSource{{Name: "fixture", Type: "domains", URL: tlsSource.URL, MinEntries: 1}}, 4096, time.Hour, time.Now().UTC())
+	_, err := Update(remotefetch.WithLoopbackForTests(context.Background()), tlsSource.Client(), []config.TSPUSource{{Name: "fixture", Type: "domains", URL: tlsSource.URL, MinEntries: 1}}, 4096, time.Hour, time.Now().UTC())
 	if err == nil {
 		t.Fatal("HTTPS to HTTP redirect was accepted")
 	}

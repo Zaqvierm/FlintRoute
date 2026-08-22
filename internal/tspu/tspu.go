@@ -24,6 +24,7 @@ import (
 	"golang.org/x/net/publicsuffix"
 
 	"router-policy/internal/config"
+	"router-policy/internal/remotefetch"
 )
 
 const (
@@ -419,18 +420,18 @@ func UpdateWithPrevious(ctx context.Context, client *http.Client, sources []conf
 }
 
 func fetchSource(ctx context.Context, client *http.Client, rawURL string, maxBytes int64, previous SourceReport, maxRedirects int) (fetchedSource, error) {
-	parsed, err := url.Parse(rawURL)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
-		return fetchedSource{}, errors.New("source_url_must_be_https")
-	}
-	copyClient := *client
 	redirects := 0
-	copyClient.CheckRedirect = func(request *http.Request, via []*http.Request) error {
-		redirects = len(via)
-		if redirects > maxRedirects || request.URL.Scheme != "https" || request.URL.Host == "" || request.URL.User != nil || request.URL.Fragment != "" {
-			return errors.New("unsafe_source_redirect")
-		}
-		return nil
+	requestClient, err := remotefetch.NewClient(ctx, client, rawURL, remotefetch.Options{
+		MaxRedirects: maxRedirects,
+		Timeout:      2 * time.Minute,
+		Redirects:    &redirects,
+	})
+	if err != nil {
+		return fetchedSource{}, errors.New("source_url_is_not_allowed")
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fetchedSource{}, errors.New("source_url_is_not_allowed")
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
@@ -443,7 +444,7 @@ func fetchSource(ctx context.Context, client *http.Client, rawURL string, maxByt
 	if previous.LastModified != "" {
 		request.Header.Set("If-Modified-Since", previous.LastModified)
 	}
-	response, err := copyClient.Do(request)
+	response, err := requestClient.Do(request)
 	if err != nil {
 		return fetchedSource{}, err
 	}
@@ -462,12 +463,12 @@ func fetchSource(ctx context.Context, client *http.Client, rawURL string, maxByt
 	if response.StatusCode != http.StatusOK {
 		return fetchedSource{}, fmt.Errorf("http_%d", response.StatusCode)
 	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
+	raw, err := remotefetch.ReadBounded(response.Body, maxBytes)
 	if err != nil {
+		if errors.Is(err, remotefetch.ErrResponseTooLarge) {
+			return fetchedSource{}, errors.New("source_size_limit_exceeded")
+		}
 		return fetchedSource{}, err
-	}
-	if int64(len(raw)) > maxBytes {
-		return fetchedSource{}, errors.New("source_size_limit_exceeded")
 	}
 	result.Bytes = len(raw)
 	result.SHA256 = hashBytes(raw)

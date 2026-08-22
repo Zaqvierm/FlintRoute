@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -377,9 +378,130 @@ func rawMessagesToOutbounds(items []json.RawMessage) ([]rawOutbound, error) {
 		if err := json.Unmarshal(raw, &o); err != nil {
 			return nil, err
 		}
-		out = append(out, rawOutbound{Outbound: o, Raw: append(json.RawMessage(nil), raw...)})
+		canonical := append(json.RawMessage(nil), raw...)
+		if o.Protocol == "vless" {
+			var err error
+			canonical, err = canonicalizeVLESSOutbound(raw)
+			if err != nil {
+				return nil, err
+			}
+		}
+		out = append(out, rawOutbound{Outbound: o, Raw: canonical})
 	}
 	return out, nil
+}
+
+func canonicalizeVLESSOutbound(raw json.RawMessage) (json.RawMessage, error) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return nil, errors.New("invalid VLESS outbound object")
+	}
+	if err := rejectUnknownKeys(object, map[string]struct{}{
+		"tag": {}, "remarks": {}, "protocol": {}, "settings": {}, "streamSettings": {},
+	}); err != nil {
+		return nil, err
+	}
+	protocol := ""
+	if err := json.Unmarshal(object["protocol"], &protocol); err != nil || protocol != "vless" {
+		return nil, errors.New("provider outbound protocol is not VLESS")
+	}
+	settings, err := canonicalSettings(object["settings"])
+	if err != nil {
+		return nil, err
+	}
+	stream, err := canonicalStreamSettings(object["streamSettings"])
+	if err != nil {
+		return nil, err
+	}
+	canonical := map[string]json.RawMessage{
+		"protocol":       object["protocol"],
+		"settings":       settings,
+		"streamSettings": stream,
+	}
+	for _, key := range []string{"tag", "remarks"} {
+		if value, ok := object[key]; ok {
+			canonical[key] = value
+		}
+	}
+	return json.Marshal(canonical)
+}
+
+func rejectUnknownKeys(object map[string]json.RawMessage, allowed map[string]struct{}) error {
+	for key := range object {
+		if _, ok := allowed[key]; !ok {
+			return fmt.Errorf("unsupported provider field: %s", key)
+		}
+	}
+	return nil
+}
+
+func canonicalSettings(raw json.RawMessage) (json.RawMessage, error) {
+	var settings map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		return nil, errors.New("VLESS settings must be an object")
+	}
+	if err := rejectUnknownKeys(settings, map[string]struct{}{"vnext": {}}); err != nil {
+		return nil, err
+	}
+	var endpoints []map[string]json.RawMessage
+	if err := json.Unmarshal(settings["vnext"], &endpoints); err != nil || len(endpoints) == 0 || len(endpoints) > 8 {
+		return nil, errors.New("invalid VLESS endpoint list")
+	}
+	for _, endpoint := range endpoints {
+		if err := rejectUnknownKeys(endpoint, map[string]struct{}{"address": {}, "port": {}, "users": {}}); err != nil {
+			return nil, err
+		}
+		var address string
+		if err := json.Unmarshal(endpoint["address"], &address); err != nil || !safeServerAddress(address) {
+			return nil, errors.New("invalid VLESS server address")
+		}
+		var port int
+		if err := json.Unmarshal(endpoint["port"], &port); err != nil || port < 1 || port > 65535 {
+			return nil, errors.New("invalid VLESS server port")
+		}
+		var users []map[string]json.RawMessage
+		if err := json.Unmarshal(endpoint["users"], &users); err != nil || len(users) == 0 || len(users) > 16 {
+			return nil, errors.New("invalid VLESS user list")
+		}
+		for _, user := range users {
+			if err := rejectUnknownKeys(user, map[string]struct{}{"id": {}, "encryption": {}, "flow": {}}); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return json.Marshal(map[string]any{"vnext": endpoints})
+}
+
+func canonicalStreamSettings(raw json.RawMessage) (json.RawMessage, error) {
+	var stream map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &stream); err != nil {
+		return nil, errors.New("VLESS streamSettings must be an object")
+	}
+	if err := rejectUnknownKeys(stream, map[string]struct{}{
+		"network": {}, "security": {}, "tlsSettings": {}, "realitySettings": {},
+		"wsSettings": {}, "grpcSettings": {}, "httpupgradeSettings": {}, "xhttpSettings": {},
+	}); err != nil {
+		return nil, err
+	}
+	for key, allowed := range map[string]map[string]struct{}{
+		"tlsSettings":         {"serverName": {}, "alpn": {}, "fingerprint": {}, "allowInsecure": {}},
+		"realitySettings":     {"serverName": {}, "publicKey": {}, "shortId": {}, "fingerprint": {}, "spiderX": {}},
+		"wsSettings":          {"path": {}, "headers": {}},
+		"grpcSettings":        {"serviceName": {}, "authority": {}, "multiMode": {}},
+		"httpupgradeSettings": {"path": {}, "host": {}},
+		"xhttpSettings":       {"path": {}, "host": {}, "mode": {}},
+	} {
+		if value, ok := stream[key]; ok {
+			var nested map[string]json.RawMessage
+			if err := json.Unmarshal(value, &nested); err != nil {
+				return nil, fmt.Errorf("%s must be an object", key)
+			}
+			if err := rejectUnknownKeys(nested, allowed); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return json.Marshal(stream)
 }
 
 func prepareRawOutbounds(items []rawOutbound) ([]rawOutbound, outboundNormalization, error) {
@@ -744,6 +866,28 @@ func safeServerAddress(value string) bool {
 	value = strings.TrimSpace(value)
 	if value == "" || len(value) > 253 || strings.ContainsAny(value, "\x00\r\n\t /\\") {
 		return false
+	}
+	// Hostnames are resolved later by the path-bound probe.  Reject names that
+	// are unambiguously local before that resolution step so a provider cannot
+	// smuggle a loopback/private target through a hostname-shaped value.
+	host := strings.ToLower(strings.TrimSuffix(value, "."))
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") ||
+		host == "local" || strings.HasSuffix(host, ".local") ||
+		host == "lan" || strings.HasSuffix(host, ".lan") ||
+		host == "internal" || strings.HasSuffix(host, ".internal") ||
+		host == "home.arpa" || strings.HasSuffix(host, ".home.arpa") {
+		return false
+	}
+	if address, err := netip.ParseAddr(value); err == nil {
+		if address.IsLoopback() || address.IsUnspecified() || address.IsMulticast() || address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast() || address.IsPrivate() {
+			return false
+		}
+		if address.Is4() {
+			octets := address.As4()
+			if octets[0] == 100 && octets[1]&0xc0 == 64 {
+				return false
+			}
+		}
 	}
 	return true
 }

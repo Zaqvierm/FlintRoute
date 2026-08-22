@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"router-policy/internal/remotefetch"
 )
 
 const maxSubscriptionSources = 5
@@ -105,21 +106,14 @@ func FetchSubscription(ctx context.Context, client *http.Client, subscriptionURL
 	if timeout <= 0 || timeout > time.Minute {
 		timeout = 30 * time.Second
 	}
-	if client == nil {
-		client = &http.Client{}
-	}
-	requestClient := *client
-	requestClient.Timeout = timeout
 	redirects := 0
-	requestClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		redirects = len(via)
-		if len(via) > maxRedirects {
-			return errors.New("subscription redirect limit exceeded")
-		}
-		if _, err := validateSubscriptionURL(req.URL.String()); err != nil {
-			return err
-		}
-		return nil
+	requestClient, err := remotefetch.NewClient(ctx, client, parsed.String(), remotefetch.Options{
+		MaxRedirects: maxRedirects,
+		Timeout:      timeout,
+		Redirects:    &redirects,
+	})
+	if err != nil {
+		return FetchSummary{}, errors.New("subscription endpoint is not allowed")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
@@ -137,11 +131,14 @@ func FetchSubscription(ctx context.Context, client *http.Client, subscriptionURL
 	if resp.ContentLength > maxBytes {
 		return FetchSummary{}, errors.New("subscription size limit exceeded")
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	raw, err := remotefetch.ReadBounded(resp.Body, maxBytes)
 	if err != nil {
+		if errors.Is(err, remotefetch.ErrResponseTooLarge) {
+			return FetchSummary{}, errors.New("subscription size limit exceeded")
+		}
 		return FetchSummary{}, errors.New("subscription read failed")
 	}
-	if int64(len(raw)) == 0 || int64(len(raw)) > maxBytes {
+	if len(raw) == 0 {
 		return FetchSummary{}, errors.New("subscription size limit exceeded")
 	}
 	if err := writeFileAtomic(outputPath, raw, 0o600); err != nil {

@@ -67,10 +67,10 @@ type Manager struct {
 	CheckAttempts int
 	// ProbeBudget is shared with the control-plane schedulers. Candidate
 	// verification must not bypass the global route-probe limit.
-	ProbeBudget   chan struct{}
-	ResolveIPs    func(context.Context, string) []string
-	SpeedTester   ThroughputTester
-	TariffMbps    float64
+	ProbeBudget chan struct{}
+	ResolveIPs  func(context.Context, string) []string
+	SpeedTester ThroughputTester
+	TariffMbps  float64
 }
 
 func (m *Manager) PrepareBundle(ctx context.Context, subscriptionPath string, basePort int) (PreparedBundle, error) {

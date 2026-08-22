@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/oschwald/maxminddb-golang"
+
+	"router-policy/internal/remotefetch"
 )
 
 type UpdateResult struct {
@@ -32,26 +34,22 @@ type UpdateResult struct {
 }
 
 func Update(ctx context.Context, client *http.Client, sourceURL, databasePath string, maxBytes int64, now time.Time) (UpdateResult, error) {
-	parsed, err := url.Parse(sourceURL)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
-		return UpdateResult{}, errors.New("GeoIP source must be HTTPS without credentials or fragment")
-	}
 	if strings.TrimSpace(databasePath) == "" {
 		return UpdateResult{}, errors.New("GeoIP database path is required")
 	}
 	if maxBytes <= 0 || maxBytes > DefaultMaxBytes {
 		maxBytes = DefaultMaxBytes
 	}
-	if client == nil {
-		client = &http.Client{}
+	requestClient, err := remotefetch.NewClient(ctx, client, sourceURL, remotefetch.Options{
+		MaxRedirects: 5,
+		Timeout:      2 * time.Minute,
+	})
+	if err != nil {
+		return UpdateResult{}, errors.New("GeoIP source is not allowed")
 	}
-	requestClient := *client
-	requestClient.Timeout = 2 * time.Minute
-	requestClient.CheckRedirect = func(request *http.Request, via []*http.Request) error {
-		if len(via) > 5 || request.URL.Scheme != "https" || request.URL.User != nil {
-			return errors.New("unsafe GeoIP redirect")
-		}
-		return nil
+	parsed, err := url.Parse(sourceURL)
+	if err != nil {
+		return UpdateResult{}, errors.New("GeoIP source is not allowed")
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
@@ -98,7 +96,7 @@ func Update(ctx context.Context, client *http.Client, sourceURL, databasePath st
 		return UpdateResult{}, err
 	}
 	hasher := sha256.New()
-	written, copyErr := io.Copy(io.MultiWriter(temporary, hasher), io.LimitReader(response.Body, maxBytes+1))
+	written, copyErr := remotefetch.CopyBounded(io.MultiWriter(temporary, hasher), response.Body, maxBytes)
 	if copyErr != nil || written <= 0 || written > maxBytes {
 		_ = temporary.Close()
 		return UpdateResult{}, errors.New("GeoIP database download is empty, truncated or oversized")
@@ -241,7 +239,7 @@ func copyFileAtomic(source, target string, maxBytes int64) error {
 		_ = temporary.Close()
 		return err
 	}
-	written, err := io.Copy(temporary, io.LimitReader(input, maxBytes+1))
+	written, err := remotefetch.CopyBounded(temporary, input, maxBytes)
 	if err != nil || written <= 0 || written > maxBytes {
 		_ = temporary.Close()
 		return errors.New("GeoIP copy failed")

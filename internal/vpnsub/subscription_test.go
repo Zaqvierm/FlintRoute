@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"router-policy/internal/config"
+	"router-policy/internal/remotefetch"
 )
 
 func TestSubscriptionServiceDownloadsChecksAndStagesBundle(t *testing.T) {
@@ -38,7 +39,7 @@ func TestSubscriptionServiceDownloadsChecksAndStagesBundle(t *testing.T) {
 		}}},
 		Services: map[string]config.Service{},
 	}
-	result, err := service.Prepare(context.Background(), cfg)
+	result, err := service.Prepare(remotefetch.WithLoopbackForTests(context.Background()), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

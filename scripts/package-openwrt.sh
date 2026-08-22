@@ -6,10 +6,12 @@ DIST="$ROOT/dist"
 STAGING="$DIST/.flintroute-openwrt-arm64"
 ARCHIVE="$DIST/flintroute-openwrt-arm64.tar.gz"
 BINARY="$DIST/router-policy-linux-arm64"
+HELPER_BINARY="$DIST/router-policy-helper-linux-arm64"
 FILE_LIST="$DIST/.flintroute-package-files.$$"
 trap 'rm -rf "$STAGING"; rm -f "$FILE_LIST" "$ARCHIVE.tmp"' EXIT HUP INT TERM
 
 [ -f "$BINARY" ] || { echo "missing $BINARY; build the ARM64 binary first" >&2; exit 1; }
+[ -f "$HELPER_BINARY" ] || { echo "missing $HELPER_BINARY; build the ARM64 helper first" >&2; exit 1; }
 command -v sha256sum >/dev/null 2>&1 || { echo "sha256sum is required" >&2; exit 1; }
 command -v tar >/dev/null 2>&1 || { echo "tar is required" >&2; exit 1; }
 command -v gzip >/dev/null 2>&1 || { echo "gzip is required" >&2; exit 1; }
@@ -23,7 +25,9 @@ mkdir -p "$STAGING/dist"
 cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$ROOT/LICENSE" "$ROOT/NOTICE" "$STAGING/"
 cp -R "$ROOT/config" "$ROOT/openwrt" "$ROOT/scripts" "$STAGING/"
 cp "$BINARY" "$STAGING/dist/router-policy-linux-arm64"
+cp "$HELPER_BINARY" "$STAGING/dist/router-policy-helper-linux-arm64"
 chmod +x "$STAGING/install.sh" "$STAGING/uninstall.sh" "$STAGING/dist/router-policy-linux-arm64"
+chmod +x "$STAGING/dist/router-policy-helper-linux-arm64"
 
 (
   cd "$STAGING"

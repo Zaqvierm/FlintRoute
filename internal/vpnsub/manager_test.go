@@ -59,8 +59,8 @@ type sequenceChecker struct {
 }
 
 type budgetTrackingChecker struct {
-	mu       sync.Mutex
-	active   int
+	mu        sync.Mutex
+	active    int
 	maxActive int
 }
 
