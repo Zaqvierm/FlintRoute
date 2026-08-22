@@ -334,8 +334,8 @@ export async function me(): Promise<SessionInfo> {
   return session;
 }
 
-export async function getHealth(): Promise<HealthSnapshot> {
-  return request<HealthSnapshot>('/health');
+export async function getHealth(signal?: AbortSignal): Promise<HealthSnapshot> {
+  return request<HealthSnapshot>('/health', { signal });
 }
 
 export async function login(username: string, password: string): Promise<SessionInfo> {
@@ -359,16 +359,16 @@ export async function logout(): Promise<void> {
   csrf = '';
 }
 
-export async function getOverview(): Promise<Overview> { return request<Overview>('/overview'); }
-export async function getOnboarding(): Promise<OnboardingState> { return request<OnboardingState>('/onboarding'); }
+export async function getOverview(signal?: AbortSignal): Promise<Overview> { return request<Overview>('/overview', { signal }); }
+export async function getOnboarding(signal?: AbortSignal): Promise<OnboardingState> { return request<OnboardingState>('/onboarding', { signal }); }
 export async function updateOnboarding(step: string, action: 'skip' | 'accept' | 'automatic' | 'complete'): Promise<OnboardingState> {
   return request<OnboardingState>('/onboarding', { method: 'POST', body: JSON.stringify({ step, action }) });
 }
-export async function getTopology(hideAddresses = false): Promise<any> { return request(`/topology?privacy=${hideAddresses ? 'hidden' : 'visible'}`); }
-export async function getDevices(hideAddresses = false): Promise<any[]> {
-  return request(`/devices?privacy=${hideAddresses ? 'hidden' : 'visible'}`);
+export async function getTopology(hideAddresses = false, signal?: AbortSignal): Promise<any> { return request(`/topology?privacy=${hideAddresses ? 'hidden' : 'visible'}`, { signal }); }
+export async function getDevices(hideAddresses = false, signal?: AbortSignal): Promise<any[]> {
+  return request(`/devices?privacy=${hideAddresses ? 'hidden' : 'visible'}`, { signal });
 }
-export async function getServices(): Promise<any[]> { return request('/services'); }
+export async function getServices(signal?: AbortSignal): Promise<any[]> { return request('/services', { signal }); }
 export async function classifyService(
   domain: string,
   category: string,
@@ -387,7 +387,7 @@ export async function classifyService(
     })
   });
 }
-export async function getRoutes(): Promise<any[]> { return request('/routes'); }
+export async function getRoutes(signal?: AbortSignal): Promise<any[]> { return request('/routes', { signal }); }
 export async function getComponents(): Promise<ComponentStatus[]> {
   const result = await request<{ components: ComponentStatus[] }>('/components');
   return result.components;
@@ -405,7 +405,7 @@ export async function configureSmartDNS(resolvers: SmartDNSResolver[], testDomai
     body: JSON.stringify({ resolvers, test_domain: testDomain, base_version: baseVersion })
   });
 }
-export async function getDiscovery(): Promise<DiscoveryStatus> { return request('/discovery'); }
+export async function getDiscovery(signal?: AbortSignal): Promise<DiscoveryStatus> { return request('/discovery', { signal }); }
 export async function getTelegram(): Promise<TelegramOverview> { return request('/telegram'); }
 export async function configureTelegram(botToken: string, chatID: string, enabled: boolean, eventTypes: string[]): Promise<TelegramStatus> {
   return request('/telegram/configure', { method: 'PUT', body: JSON.stringify({ bot_token: botToken, chat_id: chatID, enabled, event_types: eventTypes }) });
@@ -442,18 +442,18 @@ export async function configureDiscovery(
     })
   });
 }
-export async function getTraffic(): Promise<TrafficSnapshot> { return request('/traffic'); }
-export async function getEvents(limit = 500): Promise<EventItem[]> { return request(`/events?limit=${limit}`); }
-export async function getSecurity(): Promise<any> { return request('/security/audit'); }
-export async function getSecuritySummary(): Promise<any> { return request('/security'); }
-export async function getDiagnostics(): Promise<any> { return request('/diagnostics'); }
-export async function getLifecycle(): Promise<any> { return request('/lifecycle'); }
-export async function getStorage(): Promise<any> { return request('/storage'); }
-export async function getSettings(): Promise<any> { return request('/settings'); }
-export async function getBackups(): Promise<any> { return request('/backups'); }
-export async function getSystem(): Promise<any> { return request('/system'); }
-export async function getChanges(): Promise<ChangeSet[]> { return request('/changes'); }
-export async function getRevisions(): Promise<RevisionSummary> { return request('/revisions'); }
+export async function getTraffic(signal?: AbortSignal): Promise<TrafficSnapshot> { return request('/traffic', { signal }); }
+export async function getEvents(limit = 500, signal?: AbortSignal): Promise<EventItem[]> { return request(`/events?limit=${limit}`, { signal }); }
+export async function getSecurity(signal?: AbortSignal): Promise<any> { return request('/security/audit', { signal }); }
+export async function getSecuritySummary(signal?: AbortSignal): Promise<any> { return request('/security', { signal }); }
+export async function getDiagnostics(signal?: AbortSignal): Promise<any> { return request('/diagnostics', { signal }); }
+export async function getLifecycle(signal?: AbortSignal): Promise<any> { return request('/lifecycle', { signal }); }
+export async function getStorage(signal?: AbortSignal): Promise<any> { return request('/storage', { signal }); }
+export async function getSettings(signal?: AbortSignal): Promise<any> { return request('/settings', { signal }); }
+export async function getBackups(signal?: AbortSignal): Promise<any> { return request('/backups', { signal }); }
+export async function getSystem(signal?: AbortSignal): Promise<any> { return request('/system', { signal }); }
+export async function getChanges(signal?: AbortSignal): Promise<ChangeSet[]> { return request('/changes', { signal }); }
+export async function getRevisions(signal?: AbortSignal): Promise<RevisionSummary> { return request('/revisions', { signal }); }
 export async function getSubscriptionSecretStatus(): Promise<SubscriptionSecretStatus> {
   return request('/xray/subscription/secret');
 }

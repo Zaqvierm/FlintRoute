@@ -214,6 +214,7 @@ function App() {
   const refreshInFlight = useRef<Promise<void> | null>(null);
   const refreshPrivacy = useRef<boolean | undefined>(undefined);
   const refreshScreen = useRef<string | undefined>(undefined);
+  const refreshAbort = useRef<AbortController | null>(null);
   const refreshGeneration = useRef(0);
   const [privacyHidden, setPrivacyHidden] = useState(() => {
     try { return window.localStorage.getItem('flintroute-address-privacy') !== 'visible'; } catch { return true; }
@@ -249,6 +250,10 @@ function App() {
     // click happens at the same time.
     const requestedScreen = screenRef.current;
     if (refreshInFlight.current && refreshPrivacy.current === hideAddresses && refreshScreen.current === requestedScreen) return refreshInFlight.current;
+    refreshAbort.current?.abort();
+    const controller = new AbortController();
+    refreshAbort.current = controller;
+    const signal = controller.signal;
     const generation = ++refreshGeneration.current;
     const operation = (async () => {
     setRefreshing(true);
@@ -275,6 +280,7 @@ function App() {
         try {
           return await load;
         } catch (reason) {
+          if (reason instanceof Error && reason.name === 'AbortError') throw reason;
           if (!(reason instanceof APIError && reason.status === 403)) optionalErrors.push({ name, message: errorInfo(reason).message });
           return fallback;
         }
@@ -283,18 +289,18 @@ function App() {
         return needed ? safe(name, load(), fallback) : fallback;
       }
       const [nextOverview, nextTopology, nextDevices, nextServices, nextRoutes, nextTraffic, nextEvents, nextSystem, nextRevisions, nextDiscovery, nextOnboarding, nextHealth] = await Promise.all([
-        safe('overview', getOverview(), staleFallback(overview)),
-        maybe(needsTopology, 'topology', () => getTopology(hideAddresses), hideAddresses ? { nodes: [], edges: [], status: 'unavailable', source: 'privacy-fallback' } : staleFallback(topology)),
-        maybe(needsDevices, 'devices', () => getDevices(hideAddresses), hideAddresses ? [] : devices),
-        maybe(needsServices, 'services', () => getServices(), services),
-        maybe(needsRoutes, 'routes', () => getRoutes(), routes),
-        maybe(needsTraffic, 'traffic', () => getTraffic(), traffic),
-        maybe(needsEvents, 'events', () => getEvents(), hideAddresses ? [] : events),
-        safe('system', getSystem(), staleFallback(system)),
-        maybe(needsRevisions, 'revisions', () => getRevisions(), revisions),
-        maybe(needsDiscovery, 'discovery', () => getDiscovery(), discovery),
-        maybe(needsOnboarding, 'onboarding', () => getOnboarding(), onboarding),
-        safe('health', getHealth(), { status: 'unavailable', recovery_status: 'unknown', recovery_reason: 'Статус восстановления недоступен' })
+        safe('overview', getOverview(signal), staleFallback(overview)),
+        maybe(needsTopology, 'topology', () => getTopology(hideAddresses, signal), hideAddresses ? { nodes: [], edges: [], status: 'unavailable', source: 'privacy-fallback' } : staleFallback(topology)),
+        maybe(needsDevices, 'devices', () => getDevices(hideAddresses, signal), hideAddresses ? [] : devices),
+        maybe(needsServices, 'services', () => getServices(signal), services),
+        maybe(needsRoutes, 'routes', () => getRoutes(signal), routes),
+        maybe(needsTraffic, 'traffic', () => getTraffic(signal), traffic),
+        maybe(needsEvents, 'events', () => getEvents(500, signal), hideAddresses ? [] : events),
+        safe('system', getSystem(signal), staleFallback(system)),
+        maybe(needsRevisions, 'revisions', () => getRevisions(signal), revisions),
+        maybe(needsDiscovery, 'discovery', () => getDiscovery(signal), discovery),
+        maybe(needsOnboarding, 'onboarding', () => getOnboarding(signal), onboarding),
+        safe('health', getHealth(signal), { status: 'unavailable', recovery_status: 'unknown', recovery_reason: 'Статус восстановления недоступен' })
       ]);
       if (generation !== refreshGeneration.current) return;
       const enrichedOverview = nextOverview && typeof nextOverview === 'object'
@@ -326,14 +332,14 @@ function App() {
       }
 
       const optional = await Promise.allSettled([
-        maybe(needsChanges, 'changes', () => getChanges(), changes),
-        maybe(needsSecurity, 'security', () => getSecurity(), security),
-        maybe(needsSecurity, 'security-summary', () => getSecuritySummary(), securitySummary),
-        maybe(needsDiagnostics, 'diagnostics', () => getDiagnostics(), diagnostics),
-        maybe(needsLifecycle, 'lifecycle', () => getLifecycle(), lifecycle),
-        maybe(needsStorage, 'storage', () => getStorage(), storage),
-        maybe(needsSettings, 'settings', () => getSettings(), settings),
-        maybe(needsBackups, 'backups', () => getBackups(), backups)
+        maybe(needsChanges, 'changes', () => getChanges(signal), changes),
+        maybe(needsSecurity, 'security', () => getSecurity(signal), security),
+        maybe(needsSecurity, 'security-summary', () => getSecuritySummary(signal), securitySummary),
+        maybe(needsDiagnostics, 'diagnostics', () => getDiagnostics(signal), diagnostics),
+        maybe(needsLifecycle, 'lifecycle', () => getLifecycle(signal), lifecycle),
+        maybe(needsStorage, 'storage', () => getStorage(signal), storage),
+        maybe(needsSettings, 'settings', () => getSettings(signal), settings),
+        maybe(needsBackups, 'backups', () => getBackups(signal), backups)
       ]);
       const setters = [setChanges, setSecurity, setSecuritySummary, setDiagnostics, setLifecycle, setStorage, setSettings, setBackups];
       optional.forEach((result, index) => {
@@ -347,12 +353,14 @@ function App() {
       setSliceErrors(optionalErrors);
       setApiError(optionalErrors.length ? 'Некоторые данные устарели или недоступны' : '');
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') return;
       if (generation !== refreshGeneration.current) return;
       if (err instanceof APIError && err.status === 401) {
         setSession(null);
       }
       setApiError(err instanceof Error ? err.message : 'API недоступен');
     } finally {
+      if (refreshAbort.current === controller) refreshAbort.current = null;
       if (generation === refreshGeneration.current) {
         setRefreshing(false);
         setLoading(false);
