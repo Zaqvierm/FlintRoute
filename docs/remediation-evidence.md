@@ -7,9 +7,10 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 
 - Base review SHA: `d45a779dfa9dc024b426cef358d3df4d32478897`
 - Branch: `remediation/transaction-and-privilege-boundaries`
-- Verification tree: current branch HEAD after the local gate; the final
-  implementation SHA is recorded in the completion report and must be checked
-  against this file before reusing the evidence.
+- Code verification SHA: `d7f0562152d5e349d361609638e3a74944617934` (full local gate completed after this code
+  commit; the follow-up commit that records this line is documentation-only).
+- Verification scope: code at `d7f0562`; a later documentation-only HEAD does
+  not upgrade or alter this code evidence.
 - Hardware scope: **not run**. Flint 2 was not contacted, installed, rebooted,
   or modified by this remediation.
 - Evidence levels are independent: local unit/mock, Linux namespace/CI, and
