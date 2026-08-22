@@ -9,7 +9,9 @@ mkdir -p "$TMP"
 # The legacy shell helper is still shipped for compatibility. Its atomic write
 # must never replace the target when writing or applying the requested mode
 # fails, and it must not hide chmod errors.
-# shellcheck source=../scripts/lib/common.sh
+# ShellCheck cannot resolve the repository-relative source path on Windows.
+# The runtime test still sources the exact file from its computed root.
+# shellcheck disable=SC1091
 . "$ROOT/scripts/lib/common.sh"
 
 target="$TMP/state.json"
