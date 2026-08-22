@@ -37,7 +37,7 @@ export async function mockAPI(page: Page, options: { securityFailure?: boolean; 
       const hidden = url.searchParams.get('privacy') === 'hidden';
       return route.fulfill(envelope(hidden ? [{ id: 'phone', name: 'Phone', connected: true, kind: 'wifi', ip_display: 'IP скрыт', mac_display: 'MAC скрыт' }] : [{ id: 'phone', name: 'Phone', connected: true, kind: 'wifi', ip: rawIP, mac: rawMAC }]));
     }
-    if (path === '/services') return route.fulfill(envelope(options.bootstrapRequired ? [] : [{ id: 'Discord', name: 'Discord', category: 'TELEGRAM', domains: ['discord.com'], route: 'VLESS' }]));
+    if (path === '/services') return route.fulfill(envelope(options.bootstrapRequired ? [] : [{ id: 'Discord', name: 'Discord', category: 'TELEGRAM', domains: ['discord.com'], route: 'VLESS', applied: true, source: 'configured', health: 'ready' }]));
     if (path === '/routes') return route.fulfill(envelope([{ type: 'system_default', tag: 'Direct', status: 'ready' }]));
     if (path === '/events') {
       if (!options.decisionState) return route.fulfill(envelope([]));
@@ -147,6 +147,16 @@ test.describe('FlintRoute UI v2', () => {
     await expect(page.getByText('Часть данных недоступна')).toBeVisible();
   });
 
+  test('marks a previously loaded service list stale when its refresh fails', async ({ page }) => {
+    await mockAPI(page);
+    await page.goto('/?screen=Сервисы');
+    await expect(page.locator('.service-table tbody tr')).toHaveCount(1);
+    await page.route('**/api/v1/services', async (route) => route.fulfill(envelope({ error: { code: 'fixture_services_down', message: 'services unavailable' } }, 503)));
+    await page.getByRole('button', { name: 'Обзор', exact: true }).first().click();
+    await page.getByRole('button', { name: 'Сервисы', exact: true }).first().click();
+    await expect(page.locator('.status-badge.warn').filter({ hasText: 'устарели' })).toBeVisible();
+  });
+
   test('fails closed when recovery is not proven safe', async ({ page }) => {
     await mockAPI(page, { recoveryStatus: 'starting' });
     await page.goto('/?screen=Сервисы');
@@ -160,6 +170,19 @@ test.describe('FlintRoute UI v2', () => {
     await page.goto('/?screen=Обзор');
     await expect.poll(() => new URL(page.url()).searchParams.get('screen')).toBe('Быстрая настройка');
     await expect(page.getByRole('heading', { name: 'Быстрая настройка' })).toBeVisible();
+  });
+
+  test('loads setup provider state when the wizard first opens', async ({ page }) => {
+    const setupRequests: string[] = [];
+    page.on('request', (request) => {
+      const path = new URL(request.url()).pathname.replace('/api/v1', '');
+      if (['/components', '/xray/pool', '/smart-dns', '/tgws', '/zapret'].includes(path)) setupRequests.push(path);
+    });
+    await mockAPI(page, { bootstrapRequired: true });
+    await page.goto(`/?screen=${encodeURIComponent('Быстрая настройка')}`);
+    await expect(page.getByRole('heading', { name: 'Быстрая настройка' })).toBeVisible();
+    await expect.poll(() => setupRequests.length).toBeGreaterThan(0);
+    expect(new Set(setupRequests)).toEqual(new Set(['/components', '/xray/pool', '/smart-dns', '/tgws', '/zapret']));
   });
 
   test('completes the backend-driven fast start flow', async ({ page }) => {

@@ -168,6 +168,11 @@ const unavailableOverview = {
 };
 
 function staleFallback<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => item !== null && typeof item === 'object' && !Array.isArray(item)
+      ? { ...(item as Record<string, unknown>), freshness: 'stale' }
+      : item) as T;
+  }
   if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
     return { ...(value as Record<string, unknown>), freshness: 'stale' } as T;
   }
@@ -285,7 +290,10 @@ function App() {
         } catch (reason) {
           if (reason instanceof Error && reason.name === 'AbortError') throw reason;
           if (!(reason instanceof APIError && reason.status === 403)) optionalErrors.push({ name, message: errorInfo(reason).message });
-          return fallback;
+          // Preserve useful data, but mark it stale.  Showing the last known
+          // device/service/route list as a live green state is worse than an
+          // explicit partial failure because it invites a false decision.
+          return staleFallback(fallback);
         }
       }
       async function maybe<T>(needed: boolean, name: string, load: () => Promise<T>, fallback: T): Promise<T> {
@@ -480,6 +488,14 @@ function App() {
   }
 
   async function handleLogout() {
+    // Invalidate any response that is still in flight before clearing the
+    // store.  Without this generation bump a late dashboard response could
+    // repopulate devices, events or diagnostics after the session was gone.
+    refreshAbort.current?.abort();
+    refreshAbort.current = null;
+    refreshGeneration.current += 1;
+    refreshInFlight.current = null;
+    setRefreshing(false);
     await logout().catch(() => undefined);
     setSession(null);
     setOverview(unavailableOverview);
@@ -836,7 +852,7 @@ function Devices({ devices, events }: { devices: any[]; events: EventItem[] }) {
 function DeviceCard({ device, onOpen }: { device: any; onOpen?: () => void }) {
   if (!device) return <EmptyState title="Устройство не выбрано" text="Открой устройство из списка или карты." />;
   return (
-    <EntityCard title={textValue(device.name, 'Неизвестное устройство')} status={device.connected ? 'online' : 'offline'} onOpen={onOpen}>
+    <EntityCard title={textValue(device.name, 'Неизвестное устройство')} status={statusWithFreshness(device.connected ? 'online' : 'offline', device)} onOpen={onOpen}>
       <div class="entity-summary"><span>{device.kind === 'wifi' ? 'Wi‑Fi' : device.kind === 'ethernet' ? 'Ethernet' : 'Тип не определён'}</span><b class="mono">{deviceAddress(device, 'ip')}</b></div>
       <small>{textValue(device.ssid ?? device.interface, 'Интерфейс не определён')}</small>
       <StatusLine label="Маршрут" value={device.active_route ?? device.policy} />
@@ -1016,7 +1032,8 @@ function Services({
           {filteredConfigured.map((item) => {
             const domains = asArray(item.domains).map((domain) => textValue(domain, '')).filter(Boolean);
             const paths = asArray(item.allowed_paths).map((path) => textValue(path, '')).filter(Boolean);
-            return <tr key={String(item.id)}><td><b>{textValue(item.id, 'Неизвестный сервис')}</b><small>{textValue(item.source, 'configured')}</small></td><td>{domains.length || '—'}{domains.length > 0 && <small>{domains.slice(0, 2).join(', ')}{domains.length > 2 ? '…' : ''}</small>}</td><td><StatusBadge value={serviceColumnFor(item.category)} /></td><td>{textValue(item.selected_route_tag ?? paths[0], 'Не выбран')}</td><td><StatusBadge value={item.health ?? item.status ?? (item.applied ? 'configured' : 'observed')} /></td><td><button onClick={() => setSelectedService(item)}>Открыть</button></td></tr>;
+            const health = item.health ?? item.status ?? (item.applied ? 'configured' : 'observed');
+            return <tr key={String(item.id)}><td><b>{textValue(item.id, 'Неизвестный сервис')}</b><small>{textValue(item.source, 'configured')}</small></td><td>{domains.length || '—'}{domains.length > 0 && <small>{domains.slice(0, 2).join(', ')}{domains.length > 2 ? '…' : ''}</small>}</td><td><StatusBadge value={serviceColumnFor(item.category)} /></td><td>{textValue(item.selected_route_tag ?? paths[0], 'Не выбран')}</td><td><StatusBadge value={statusWithFreshness(health, item)} /></td><td><button onClick={() => setSelectedService(item)}>Открыть</button></td></tr>;
           })}
         </tbody></table></div>
         {!filteredConfigured.length && <EmptyState title="Правил пока нет" text="Настрой сервис или сначала дождись наблюдения Discovery." />}
@@ -1270,7 +1287,7 @@ function Routes({ routes, navigate }: { routes: any[]; navigate: (screen: string
     vless: ['Открыть VLESS-серверы', 'VLESS-серверы'], external_socks: ['Настроить внешний SOCKS', 'External SOCKS']
   };
   return <section><PageHeader title="Маршруты" text="Главные способы открыть сервис. FlintRoute покажет, что работает, кто это использует и что настроить дальше." /><Grid>{routeItems.map((route) => (
-    <EntityCard title={titles[route.type] ?? route.tag} status={route.status || (route.disabled ? 'disabled' : 'configured')} onOpen={() => setSelected(route)} key={`${route.type}:${route.tag}`}>
+    <EntityCard title={titles[route.type] ?? route.tag} status={statusWithFreshness(route.status || (route.disabled ? 'disabled' : 'configured'), route)} onOpen={() => setSelected(route)} key={`${route.type}:${route.tag}`}>
       <RouteBadge type={route.type} />
       <div class="row"><b>{humanStatus(route.status || (route.disabled ? 'выключен' : 'настроен'))}</b><span>{route.managed ? 'FlintRoute управляет этим путём' : 'Требует настройки'}</span></div>
       <p>{route.scope}</p>
@@ -1283,7 +1300,7 @@ function Routes({ routes, navigate }: { routes: any[]; navigate: (screen: string
   ))}</Grid>
   <details class="raw-disclosure"><summary>Системные и дополнительные пути</summary>
     <p>Обычный маршрут роутера обслуживает трафик без правил. Внешний SOCKS5 нужен только если у тебя уже есть отдельный прокси, которым FlintRoute не управляет.</p>
-    <Grid>{systemItems.map((route) => <EntityCard title={titles[route.type] ?? route.tag} status={route.status} onOpen={() => setSelected(route)} key={`${route.type}:${route.tag}`}>
+    <Grid>{systemItems.map((route) => <EntityCard title={titles[route.type] ?? route.tag} status={statusWithFreshness(route.status, route)} onOpen={() => setSelected(route)} key={`${route.type}:${route.tag}`}>
       <p>{route.scope}</p>{route.type === 'external_socks' && <button onClick={() => navigate('External SOCKS')}>Добавить внешний SOCKS5</button>}
     </EntityCard>)}</Grid>
   </details>
@@ -1321,6 +1338,7 @@ function Components({ role, mutationLocked, navigate }: { role: SessionInfo['rol
       setMessage('');
     } catch (reason) {
       const info = errorInfo(reason);
+      setItems((old) => staleFallback(old));
       setMessage(`${info.code}: ${info.message}`);
     }
   }
@@ -1355,7 +1373,7 @@ function Components({ role, mutationLocked, navigate }: { role: SessionInfo['rol
     <PageHeader title="Внешние компоненты" text="Установка, проверка integrity, procd lifecycle, обновление и откат — из одного места. Ручные URL и shell-команды для обычного сценария не нужны." />
     {message && <p class="action-status">{message}</p>}
     {stage && <p class="source-note">Этапы: {stage}</p>}
-    <Grid>{items.map((item) => <EntityCard title={componentNames[item.kind]} status={item.installed ? item.health_state : 'not installed'} onOpen={() => setSelected(item)} key={item.kind}>
+    <Grid>{items.map((item) => <EntityCard title={componentNames[item.kind]} status={statusWithFreshness(item.installed ? item.health_state : 'not installed', item)} onOpen={() => setSelected(item)} key={item.kind}>
       <InfoGrid items={[
         ['Версия', item.version || 'не установлена'],
         ['Поддерживаемая', item.latest_supported_version],
@@ -1739,7 +1757,7 @@ function Vless({
       </div>}
       <div class="server-checks">
         {subscriptionServers.map((server: any) => (
-          <EntityCard title={textValue(server.name ?? server.tag, 'VLESS server')} status={server.status ?? server.health} onOpen={() => setSelectedServer({ source: 'subscription', ...server })} key={server.tag}>
+          <EntityCard title={textValue(server.name ?? server.tag, 'VLESS server')} status={statusWithFreshness(server.status ?? server.health, server)} onOpen={() => setSelectedServer({ source: 'subscription', ...server })} key={server.tag}>
             <InfoGrid items={[["Hostname", server.hostname ?? server.address], ["Resolved IP", (server.resolved_ips ?? []).join(', ')], ["Страна", server.country || 'не определена'], ["Protocol / security", `vless / ${textValue(server.security, 'не указано')}`], ["Ping", server.latency_ms ? `${server.latency_ms} мс` : null], ["Скорость", server.measured_mbps ? `${server.measured_mbps.toFixed(0)} Мбит/с` : 'не измерена'], ["Источников", server.source_count ?? 1], ["Роль", server.selected ? 'selected' : server.standby ? 'standby' : server.quarantined ? 'quarantined' : null]]} />
             {server.reason && <p class="reason">{server.reason}</p>}
           </EntityCard>
@@ -1747,7 +1765,7 @@ function Vless({
         {!subscriptionServers.length && <EmptyState title="Серверов из подписок пока нет" text="Добавь HTTPS-подписку и запусти проверку либо используй ручной VLESS ниже." />}
       </div></section>
       <section class="server-section"><h2>Добавленные вручную</h2><div class="server-checks">
-        {manualServerViews.map((server: any) => <EntityCard title={textValue(server.name, 'Свой VPS')} status={server.status ?? 'configured'} onOpen={() => setSelectedServer({ source: 'manual', ...server, uri_masked: `vless://••••@${server.address}:${server.port}` })} key={server.id}>
+        {manualServerViews.map((server: any) => <EntityCard title={textValue(server.name, 'Свой VPS')} status={statusWithFreshness(server.status ?? 'configured', server)} onOpen={() => setSelectedServer({ source: 'manual', ...server, uri_masked: `vless://••••@${server.address}:${server.port}` })} key={server.id}>
           <InfoGrid items={[["Адрес", `${server.address}:${server.port}`], ["Транспорт", server.network], ["Security", server.security], ["Ping", server.latency_ms ? `${server.latency_ms} мс` : 'ещё не измерен'], ["Состояние", server.status ?? 'configured']]} />
           {server.reason && <p class="reason">{humanStatus(server.reason)}</p>}
         </EntityCard>)}
@@ -1760,7 +1778,7 @@ function Vless({
 
 function RouteType({ title, type, routes }: { title: string; type: string; routes: any[] }) {
   const [selected, setSelected] = useState<any>(null);
-  return <section><h2>{title}</h2><Grid>{routes.filter((r) => r.type === type).map((r) => <EntityCard title={r.tag} status={r.status} onOpen={() => setSelected(r)}><RouteBadge type={type} /><p>{humanStatus(r.status)}</p></EntityCard>)}</Grid><DetailDrawer title={selected?.tag ?? title} open={Boolean(selected)} onClose={() => setSelected(null)}><DiagnosticDetails value={selected} /><RawDisclosure value={selected} /></DetailDrawer></section>;
+  return <section><h2>{title}</h2><Grid>{routes.filter((r) => r.type === type).map((r) => <EntityCard title={r.tag} status={statusWithFreshness(r.status, r)} onOpen={() => setSelected(r)}><RouteBadge type={type} /><p>{humanStatus(r.status)}</p></EntityCard>)}</Grid><DetailDrawer title={selected?.tag ?? title} open={Boolean(selected)} onClose={() => setSelected(null)}><DiagnosticDetails value={selected} /><RawDisclosure value={selected} /></DetailDrawer></section>;
 }
 
 function Zapret({ routes, configVersion, role, mutationLocked, refresh, navigate }: { routes: any[]; configVersion: number; role: SessionInfo['role']; mutationLocked: boolean; refresh: () => Promise<void>; navigate: (screen: string) => void }) {
@@ -2315,9 +2333,15 @@ function SetupScreen({ overview, services, routes, discovery, onboarding, onboar
     });
   }
 
-  useEffect(() => () => {
-    requestRef.current?.abort();
-    requestRef.current = null;
+  useEffect(() => {
+    // The setup screen owns its first-run data fetch.  Previously this effect
+    // only installed the unmount cleanup, leaving a freshly opened wizard in
+    // the permanent loading state until the user pressed Retry.
+    void load();
+    return () => {
+      requestRef.current?.abort();
+      requestRef.current = null;
+    };
   }, []);
 
   const routerReady = onboardingRouterReady(onboarding, overview);
@@ -2422,6 +2446,15 @@ function EntityCard({ title, status, children, onOpen }: { title: string; status
 function StatusBadge({ value }: { value: unknown }) {
   const stale = textValue(asRecord(value).freshness, '').toLowerCase() === 'stale';
   return <span class={`status-badge ${stale ? 'warn' : statusTone(value)}`}>{stale ? `${humanStatus(value)} · данные устарели` : humanStatus(value)}</span>;
+}
+
+function statusWithFreshness(status: unknown, record: unknown): unknown {
+  const freshness = textValue(asRecord(record).freshness, '').trim().toLowerCase();
+  if (freshness !== 'stale') return status;
+  if (status !== null && typeof status === 'object' && !Array.isArray(status)) {
+    return { ...(status as Record<string, unknown>), freshness: 'stale' };
+  }
+  return { status, freshness: 'stale' };
 }
 
 function StatusLine({ label, value }: { label: string; value: unknown }) {
