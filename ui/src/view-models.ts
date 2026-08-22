@@ -44,13 +44,14 @@ export function onboardingProgress(input: {
   smartReady?: boolean;
   tgwsReady?: boolean;
   zapretReady?: boolean;
+  /** Legacy display input; it must never prove onboarding completion. */
   serviceCount?: number;
   canComplete?: boolean;
 }): OnboardingProgress {
   const stepDone = (value: unknown) => ['accepted', 'skipped', 'automatic'].includes(textValue(value, 'pending').trim().toLowerCase());
   const methodsDone = stepDone(input.methodsStatus);
   const sourcesDone = stepDone(input.sourcesStatus);
-  const serviceChoiceDone = (input.serviceCount ?? 0) > 0 || stepDone(input.servicesStatus);
+  const serviceChoiceDone = stepDone(input.servicesStatus);
   const providerReady = (input.verifiedServers ?? 0) > 0 || Boolean(input.smartReady || input.tgwsReady || input.zapretReady) || methodsDone;
   return { methodsDone, sourcesDone, serviceChoiceDone, providerReady, setupReady: input.canComplete === true };
 }

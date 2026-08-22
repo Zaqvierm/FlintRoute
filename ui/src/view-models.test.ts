@@ -103,6 +103,11 @@ describe('onboarding truthfulness', () => {
     expect(progress.setupReady).toBe(false);
   });
 
+  it('does not infer the services step from an existing service list', () => {
+    const progress = onboardingProgress({ serviceCount: 12, methodsStatus: 'skipped', sourcesStatus: 'skipped', servicesStatus: 'pending' });
+    expect(progress.serviceChoiceDone).toBe(false);
+  });
+
   it('uses the backend router gate and never treats simulation as ready', () => {
     expect(onboardingRouterReady({ router_ready: false }, { internet: 'ROUTE_AVAILABLE', dns: 'AVAILABLE' })).toBe(false);
     expect(onboardingRouterReady({ router_ready: true }, { internet: 'simulation', dns: 'simulation' })).toBe(true);

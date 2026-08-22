@@ -2328,7 +2328,6 @@ function SetupScreen({ overview, services, routes, discovery, onboarding, onboar
     smartReady,
     tgwsReady,
     zapretReady,
-    serviceCount: asArray(services).length,
     canComplete: onboarding?.can_complete
   });
   const { methodsDone, sourcesDone, providerReady: providerChosen, serviceChoiceDone, setupReady } = progress;
