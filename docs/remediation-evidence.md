@@ -251,6 +251,22 @@ duration. Coverage includes the planner cache round-trip and
 These changes are local source/test evidence only until the next full gate and
 CI run; no hardware evidence is inferred.
 
+For code/docs commit `d3ccfbc` (`d3ccfbcd608b63356368ba850f39b0a115b00ec5`),
+the follow-up local gate is:
+
+- `go test ./...` — PASS;
+- `go test -race ./...` — PASS;
+- `go vet ./...` — PASS;
+- `gofmt` and `git diff --check` — PASS.
+
+The exact-SHA Linux workflows also passed: [nft transition safety run
+32585760475](https://github.com/Zaqvierm/FlintRoute/actions/runs/32585760475),
+[Zapret process-group safety run
+32585760472](https://github.com/Zaqvierm/FlintRoute/actions/runs/32585760472),
+and [UI browser/responsive run
+32585760504](https://github.com/Zaqvierm/FlintRoute/actions/runs/32585760504).
+These are unit/CI evidence levels only; hardware remains untouched.
+
 ## Known limitation
 
 The packaged helper boundary is tested, but the production `router-policy`
