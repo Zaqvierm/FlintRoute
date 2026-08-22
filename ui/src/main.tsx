@@ -25,6 +25,7 @@ import {
   getDiscovery,
   getExternalSOCKS,
   getEvents,
+  getHealth,
   getOverview,
   getOnboarding,
   getRevisions,
@@ -82,6 +83,7 @@ import {
   isDecisionEvent,
   onboardingProgress,
   parseResolverInput,
+  recoveryMutationAllowed,
   serviceColumnFor,
   statusTone,
   stringArray,
@@ -253,7 +255,7 @@ function App() {
           return fallback;
         }
       }
-      const [nextOverview, nextTopology, nextDevices, nextServices, nextRoutes, nextTraffic, nextEvents, nextSystem, nextRevisions, nextDiscovery, nextOnboarding] = await Promise.all([
+      const [nextOverview, nextTopology, nextDevices, nextServices, nextRoutes, nextTraffic, nextEvents, nextSystem, nextRevisions, nextDiscovery, nextOnboarding, nextHealth] = await Promise.all([
         safe('overview', getOverview(), staleFallback(overview)),
         safe('topology', getTopology(hideAddresses), hideAddresses ? { nodes: [], edges: [], status: 'unavailable', source: 'privacy-fallback' } : staleFallback(topology)),
         safe('devices', getDevices(hideAddresses), hideAddresses ? [] : devices),
@@ -264,10 +266,14 @@ function App() {
         safe('system', getSystem(), staleFallback(system)),
         safe('revisions', getRevisions(), revisions),
         safe('discovery', getDiscovery(), discovery),
-        safe('onboarding', getOnboarding(), onboarding)
+        safe('onboarding', getOnboarding(), onboarding),
+        safe('health', getHealth(), { status: 'unavailable', recovery_status: 'unknown', recovery_reason: 'Статус восстановления недоступен' })
       ]);
       if (generation !== refreshGeneration.current) return;
-      setOverview(nextOverview);
+      const enrichedOverview = nextOverview && typeof nextOverview === 'object'
+        ? { ...(nextOverview as Record<string, unknown>), ...nextHealth }
+        : nextOverview;
+      setOverview(enrichedOverview);
       setTopology(nextTopology);
       setDevices(nextDevices);
       setServices(nextServices);
@@ -492,11 +498,22 @@ function App() {
         <PrivacyBar hidden={privacyHidden} onToggle={togglePrivacy} />
         <TopBar overview={overview} navigate={selectScreen} />
         <AlertCenter errors={sliceErrors} onRetry={() => refresh()} />
+        <RecoveryMutationBanner overview={overview} navigate={selectScreen} onRetry={() => refresh()} />
         <OperationCenterSummary changes={changes} navigate={selectScreen} />
-        {loading ? <LoadingSkeleton /> : <Content key={privacyHidden ? 'privacy-hidden' : 'privacy-visible'} screen={screen} session={session} configVersion={configVersion} overview={overview} onboarding={onboarding} topology={topology} devices={devices} services={services} discovery={discovery} routes={routes} traffic={traffic} events={events} changes={changes} security={security} securitySummary={securitySummary} system={system} diagnostics={diagnostics} lifecycle={lifecycle} storage={storage} settings={settings} backups={backups} revisions={revisions} refresh={refresh} onboardingAction={async (step: string, action: 'skip' | 'accept' | 'automatic' | 'complete') => setOnboarding(await updateOnboarding(step, action))} navigate={selectScreen} />}
+        {loading ? <LoadingSkeleton /> : <Content key={privacyHidden ? 'privacy-hidden' : 'privacy-visible'} screen={screen} session={session} configVersion={configVersion} overview={overview} mutationLocked={!recoveryMutationAllowed(overview)} onboarding={onboarding} topology={topology} devices={devices} services={services} discovery={discovery} routes={routes} traffic={traffic} events={events} changes={changes} security={security} securitySummary={securitySummary} system={system} diagnostics={diagnostics} lifecycle={lifecycle} storage={storage} settings={settings} backups={backups} revisions={revisions} refresh={refresh} onboardingAction={async (step: string, action: 'skip' | 'accept' | 'automatic' | 'complete') => setOnboarding(await updateOnboarding(step, action))} navigate={selectScreen} />}
       </main>
     </div>
   );
+}
+
+function RecoveryMutationBanner({ overview, navigate, onRetry }: { overview: any; navigate: (screen: string) => void; onRetry: () => void }) {
+  if (overview?.recovery_status === undefined || recoveryMutationAllowed(overview)) return null;
+  const status = textValue(overview.recovery_status, 'unknown');
+  const reason = textValue(overview.recovery_reason, 'FlintRoute ещё не доказал безопасное состояние восстановления.');
+  return <section class="warning-panel recovery-lock" role="alert">
+    <div><b>Изменения временно заблокированы</b><p>{reason}</p><small>Интернет и просмотр данных остаются доступны. Новые правила и операции не запускаются, пока состояние роутера не подтверждено.</small></div>
+    <div class="actions"><button onClick={onRetry}>Проверить снова</button><button onClick={() => navigate('Ревизии и recovery')}>Открыть восстановление</button><details><summary>Код</summary><span class="mono">{status} · {textValue(overview.recovery_reason_code, 'recovery_not_safe')}</span></details></div>
+  </section>;
 }
 
 function Content(props: any) {
@@ -517,9 +534,9 @@ function Content(props: any) {
     case 'Карточка устройства':
       return <DeviceCard device={props.devices[0]} />;
     case 'Сервисы':
-      return <Services services={props.services} configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} navigate={props.navigate} />;
+      return <Services services={props.services} configVersion={props.configVersion} role={props.session.role} mutationLocked={props.mutationLocked} refresh={props.refresh} navigate={props.navigate} />;
     case 'Discovery':
-      return <Discovery data={props.discovery} configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
+      return <Discovery data={props.discovery} configVersion={props.configVersion} role={props.session.role} mutationLocked={props.mutationLocked} refresh={props.refresh} />;
     case 'Группа сервиса':
       return <ServiceGroup service={props.services[0]} />;
     case 'Политики: таблица':
@@ -527,25 +544,25 @@ function Content(props: any) {
     case 'Политики: доска':
       return <Policies mode="board" />;
     case 'Advanced':
-      return <Changes changes={props.changes} refresh={props.refresh} role={props.session.role} configVersion={props.configVersion} mode="developer" />;
+      return <Changes changes={props.changes} refresh={props.refresh} role={props.session.role} configVersion={props.configVersion} mutationLocked={props.mutationLocked} mode="developer" />;
     case 'Операции':
-      return <Changes changes={props.changes} refresh={props.refresh} role={props.session.role} configVersion={props.configVersion} mode="operations" />;
+      return <Changes changes={props.changes} refresh={props.refresh} role={props.session.role} configVersion={props.configVersion} mutationLocked={props.mutationLocked} mode="operations" />;
     case 'Маршруты':
       return <Routes routes={props.routes} navigate={props.navigate} />;
     case 'Компоненты':
-      return <Components role={props.session.role} navigate={props.navigate} />;
+      return <Components role={props.session.role} mutationLocked={props.mutationLocked} navigate={props.navigate} />;
     case 'VLESS-серверы':
-      return <Vless routes={props.routes} configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} navigate={props.navigate} />;
+      return <Vless routes={props.routes} configVersion={props.configVersion} role={props.session.role} mutationLocked={props.mutationLocked} refresh={props.refresh} navigate={props.navigate} />;
     case 'Smart DNS':
-      return <SmartDNS configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} navigate={props.navigate} />;
+      return <SmartDNS configVersion={props.configVersion} role={props.session.role} mutationLocked={props.mutationLocked} refresh={props.refresh} navigate={props.navigate} />;
     case 'Zapret':
-      return <Zapret routes={props.routes} configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} navigate={props.navigate} />;
+      return <Zapret routes={props.routes} configVersion={props.configVersion} role={props.session.role} mutationLocked={props.mutationLocked} refresh={props.refresh} navigate={props.navigate} />;
     case 'External SOCKS':
-      return <ExternalSOCKS configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} navigate={props.navigate} />;
+      return <ExternalSOCKS configVersion={props.configVersion} role={props.session.role} mutationLocked={props.mutationLocked} refresh={props.refresh} navigate={props.navigate} />;
     case 'TG WS Proxy':
-      return <TGWS role={props.session.role} navigate={props.navigate} />;
+      return <TGWS role={props.session.role} mutationLocked={props.mutationLocked} navigate={props.navigate} />;
     case 'Telegram':
-      return <Telegram role={props.session.role} events={props.events} />;
+      return <Telegram role={props.session.role} mutationLocked={props.mutationLocked} events={props.events} />;
     case 'Поток решений':
       return <DecisionFlow events={props.events} discovery={props.discovery} />;
     case 'Диагностика':
@@ -830,12 +847,14 @@ function Services({
   services,
   configVersion,
   role,
+  mutationLocked,
   refresh,
   navigate
 }: {
   services: any[];
   configVersion: number;
   role: SessionInfo['role'];
+  mutationLocked: boolean;
   refresh: () => Promise<void>;
   navigate: (screen: string) => void;
 }) {
@@ -855,7 +874,7 @@ function Services({
   }, [configuredServices, serviceQuery]);
 
   async function commitRule(domain: string, category: string, paths?: string[]) {
-    if (role !== 'administrator' || !configVersion || moving) return;
+    if (role !== 'administrator' || mutationLocked || !configVersion || moving) return;
     setMoving(domain);
     setMessage(`Создаю черновик правила для ${domain}…`);
     try {
@@ -900,7 +919,7 @@ function Services({
           <label class="service-search"><span class="sr-only">Поиск сервиса или домена</span><input value={serviceQuery} placeholder="Поиск сервиса или домена" onInput={(event) => setServiceQuery(event.currentTarget.value)} /></label>
           <button class={serviceView === 'table' ? 'selected' : ''} onClick={() => setServiceView('table')}>Таблица</button>
           <button class={serviceView === 'board' ? 'selected' : ''} onClick={() => setServiceView('board')}>Доска</button>
-          <button class="primary" disabled={role !== 'administrator'} onClick={() => editRule()}>+ Новое правило</button>
+          <button class="primary" disabled={role !== 'administrator' || mutationLocked} onClick={() => editRule()}>+ Новое правило</button>
         </div>
       </div>
       {editor && (
@@ -939,7 +958,7 @@ function Services({
             </div>
           </div>
           <div class="actions">
-            <button class="primary" disabled={!editor.domain.trim() || editor.paths.length === 0 || Boolean(moving)}>Создать черновик</button>
+            <button class="primary" disabled={mutationLocked || !editor.domain.trim() || editor.paths.length === 0 || Boolean(moving)}>Создать черновик</button>
             <button type="button" onClick={() => setEditor(null)}>Отмена</button>
           </div>
         </form>
@@ -973,7 +992,7 @@ function Services({
                 <ServiceGroup
                   service={item}
                   key={String(item.id)}
-                  draggable={role === 'administrator' && !moving && asArray(item.domains).length === 1}
+                   draggable={role === 'administrator' && !mutationLocked && !moving && asArray(item.domains).length === 1}
                   busy={moving === textValue(asArray(item.domains)[0], '')}
                   onEdit={() => editRule(item)}
                   onOpen={() => setSelectedService(item)}
@@ -997,9 +1016,10 @@ function Services({
           />)}
         </div>
       </section>}
-      <p class={message.includes('создан') ? 'action-status ok' : 'action-status'}>{message || 'Домены появляются после наблюдения и проверки. Перетащи карточку, чтобы создать черновик правила.'}</p>
+       {mutationLocked && <p class="action-status">Изменения заблокированы: FlintRoute ещё не подтвердил безопасное состояние восстановления.</p>}
+       <p class={message.includes('создан') ? 'action-status ok' : 'action-status'}>{message || 'Домены появляются после наблюдения и проверки. Перетащи карточку, чтобы создать черновик правила.'}</p>
       <DetailDrawer title={textValue(selectedService?.id, 'Сервис')} open={Boolean(selectedService)} onClose={() => setSelectedService(null)}>
-        <ServiceDetails service={selectedService} onEdit={() => selectedService && editRule(selectedService)} />
+         <ServiceDetails service={selectedService} onEdit={mutationLocked ? undefined : () => selectedService && editRule(selectedService)} />
       </DetailDrawer>
     </section>
   );
@@ -1057,7 +1077,7 @@ function Policies({ mode }: { mode: string }) {
   return <Card title={`Политики: ${mode}`}>{items.map((p, i) => <div class="row"><b>{i + 1}</b><span>{p}</span><small>формальный приоритет</small></div>)}</Card>;
 }
 
-function Changes({ changes, refresh, role, configVersion, mode = 'developer' }: { changes: ChangeSet[]; refresh: () => void; role: SessionInfo['role']; configVersion: number; mode?: 'developer' | 'operations' }) {
+function Changes({ changes, refresh, role, configVersion, mutationLocked, mode = 'developer' }: { changes: ChangeSet[]; refresh: () => void; role: SessionInfo['role']; configVersion: number; mutationLocked: boolean; mode?: 'developer' | 'operations' }) {
   const [title, setTitle] = useState('');
   const [operationType, setOperationType] = useState<ChangeOp['type']>('set');
   const [path, setPath] = useState('');
@@ -1069,6 +1089,7 @@ function Changes({ changes, refresh, role, configVersion, mode = 'developer' }: 
   }
 
   async function create() {
+    if (mutationLocked) return;
     setError('');
     try {
       const normalizedTitle = title.trim();
@@ -1090,12 +1111,14 @@ function Changes({ changes, refresh, role, configVersion, mode = 'developer' }: 
     }
   }
   async function act(id: string, action: string) {
+    if (mutationLocked) return;
     await changeAction(id, action);
     await refresh();
   }
   return (
     <Card title={mode === 'operations' ? 'Центр операций' : 'Advanced · ChangeSet'}>
-      <p>{mode === 'operations' ? 'Здесь видны черновики, проверки, применение, окно подтверждения и откат. Ничего не считается применённым, пока backend не подтвердил состояние.' : 'Низкоуровневый редактор. Обычная настройка VLESS, Zapret, Smart DNS и discovery делается в их собственных экранах.'}</p>
+       <p>{mode === 'operations' ? 'Здесь видны черновики, проверки, применение, окно подтверждения и откат. Ничего не считается применённым, пока backend не подтвердил состояние.' : 'Низкоуровневый редактор. Обычная настройка VLESS, Zapret, Smart DNS и discovery делается в их собственных экранах.'}</p>
+       {mutationLocked && <div class="warning-panel"><b>Изменения заблокированы</b><p>Сначала завершите recovery или подтвердите baseline. Просмотр очереди и диагностика остаются доступны.</p></div>}
       {mode === 'developer' && <details>
         <summary>Открыть Developer JSON editor</summary>
         <div class="change-editor">
@@ -1105,7 +1128,7 @@ function Changes({ changes, refresh, role, configVersion, mode = 'developer' }: 
         {operationType === 'set' && <label><span>JSON-значение</span><textarea class="mono" placeholder={'"DIRECT_PREFERRED"'} value={value} onInput={(e) => setValue((e.target as HTMLTextAreaElement).value)} /></label>}
         <small>Базовая версия: {configVersion || 'загрузка...'}</small>
         {error && <p class="auth-error">{error}</p>}
-        <button class="primary" disabled={!configVersion} onClick={create}>Создать ChangeSet</button>
+         <button class="primary" disabled={mutationLocked || !configVersion} onClick={create}>Создать ChangeSet</button>
         </div>
       </details>}
       {changes.map((c) => (
@@ -1114,7 +1137,7 @@ function Changes({ changes, refresh, role, configVersion, mode = 'developer' }: 
           {c.data_plane_verified && <small class="verified">Путь проверен backend</small>}
           <ChangeDiff change={c} />
           <div class="actions">
-            {actionsForChange(c.state).map((a) => <button onClick={() => act(c.id, a)}>{changeActionLabel(a)}</button>)}
+             {actionsForChange(c.state).map((a) => <button disabled={mutationLocked} onClick={() => act(c.id, a)}>{changeActionLabel(a)}</button>)}
           </div>
           {['failed', 'rolled_back', 'requires_device', 'recovery_required'].includes(c.state) && <p class="reason">{humanChangeFailure(c)}</p>}
         </div>
@@ -1226,7 +1249,7 @@ function componentNextStep(status: ComponentStatus): string {
   return 'Сервис установлен. Для PASS нужна фактическая проверка Telegram transport, а не один открытый TCP-порт.';
 }
 
-function Components({ role, navigate }: { role: SessionInfo['role']; navigate: (screen: string) => void }) {
+function Components({ role, mutationLocked, navigate }: { role: SessionInfo['role']; mutationLocked: boolean; navigate: (screen: string) => void }) {
   const [items, setItems] = useState<ComponentStatus[]>([]);
   const [selected, setSelected] = useState<ComponentStatus | null>(null);
   const [busy, setBusy] = useState<ComponentKind | null>(null);
@@ -1247,6 +1270,10 @@ function Components({ role, navigate }: { role: SessionInfo['role']; navigate: (
   useEffect(() => { void refresh(); }, []);
 
   async function run(kind: ComponentKind, action: ComponentAction) {
+    if (mutationLocked && action !== 'check') {
+      setMessage('Изменения компонентов заблокированы до подтверждения recovery state.');
+      return;
+    }
     const destructive = action === 'uninstall';
     if (destructive && !(await confirmDialog.ask(`${componentNames[kind]} используется сетевыми маршрутами или может содержать рабочую конфигурацию. Продолжить удаление?`))) return;
     setBusy(kind);
@@ -1283,13 +1310,13 @@ function Components({ role, navigate }: { role: SessionInfo['role']; navigate: (
       {item.installed && item.kind === 'zapret' && <button onClick={() => navigate('Zapret')}>Открыть настройку Zapret</button>}
       {item.installed && item.kind === 'tg_ws_proxy' && <button onClick={() => navigate('TG WS Proxy')}>Настроить Telegram transport</button>}
       {role === 'administrator' && <div class="actions">
-        {!item.installed && <button class="primary" disabled={busy !== null} onClick={() => run(item.kind, 'install')}>Установить</button>}
+         {!item.installed && <button class="primary" disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'install')}>Установить</button>}
         {item.installed && <button disabled={busy !== null} onClick={() => run(item.kind, 'check')}>Проверить</button>}
-        {item.installed && <button disabled={busy !== null} onClick={() => run(item.kind, 'check_updates')}>Проверить обновления</button>}
-        {item.installed && item.update_available && <button class="primary" disabled={busy !== null} onClick={() => run(item.kind, 'update')}>Обновить</button>}
-        {item.installed && <button disabled={busy !== null} onClick={() => run(item.kind, 'restart')}>Перезапустить</button>}
-        {item.rollback_version && <button disabled={busy !== null} onClick={() => run(item.kind, 'rollback')}>Откатить {item.rollback_version}</button>}
-        {item.installed && <button class="danger" disabled={busy !== null} onClick={() => run(item.kind, 'uninstall')}>Удалить</button>}
+         {item.installed && <button disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'check_updates')}>Проверить обновления</button>}
+         {item.installed && item.update_available && <button class="primary" disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'update')}>Обновить</button>}
+         {item.installed && <button disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'restart')}>Перезапустить</button>}
+         {item.rollback_version && <button disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'rollback')}>Откатить {item.rollback_version}</button>}
+         {item.installed && <button class="danger" disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'uninstall')}>Удалить</button>}
       </div>}
     </EntityCard>)}</Grid>
     {!items.length && !message && <LoadingSkeleton />}
@@ -1307,7 +1334,7 @@ function Components({ role, navigate }: { role: SessionInfo['role']; navigate: (
   </section>;
 }
 
-function Discovery({ data, configVersion, role, refresh }: { data: DiscoveryStatus | null; configVersion: number; role: SessionInfo['role']; refresh: () => Promise<void> }) {
+function Discovery({ data, configVersion, role, mutationLocked, refresh }: { data: DiscoveryStatus | null; configVersion: number; role: SessionInfo['role']; mutationLocked: boolean; refresh: () => Promise<void> }) {
   const [mode, setMode] = useState<DiscoveryStatus['mode']>(data?.mode ?? 'observe_only');
   const [hourly, setHourly] = useState(data?.max_new_rules_per_hour ?? 4);
   const [rollbacks, setRollbacks] = useState(data?.max_consecutive_rollbacks ?? 3);
@@ -1320,6 +1347,10 @@ function Discovery({ data, configVersion, role, refresh }: { data: DiscoveryStat
     setRollbacks(data.max_consecutive_rollbacks);
   }, [data?.mode, data?.max_new_rules_per_hour, data?.max_consecutive_rollbacks]);
   async function save(resetFailures = false) {
+    if (mutationLocked) {
+      setMessage('Настройка discovery заблокирована до подтверждения recovery state.');
+      return;
+    }
     setBusy(true);
     setMessage('Сохраняю режим discovery…');
     try {
@@ -1348,8 +1379,9 @@ function Discovery({ data, configVersion, role, refresh }: { data: DiscoveryStat
         </select></label>
         <label><span>Новых правил в час</span><input type="number" min="1" max="1000" value={hourly} onInput={(event) => setHourly(Number((event.target as HTMLInputElement).value))} /></label>
         <label><span>Rollback до остановки</span><input type="number" min="1" max="100" value={rollbacks} onInput={(event) => setRollbacks(Number((event.target as HTMLInputElement).value))} /></label>
-        <button class="primary" disabled={busy || !configVersion} onClick={() => save(false)}>{busy ? 'Применяю…' : 'Применить режим'}</button>
-        {data.paused && <button disabled={busy || !configVersion} onClick={() => save(true)}>Сбросить circuit breaker</button>}
+         <button class="primary" disabled={busy || mutationLocked || !configVersion} onClick={() => save(false)}>{busy ? 'Применяю…' : 'Применить режим'}</button>
+         {data.paused && <button disabled={busy || mutationLocked || !configVersion} onClick={() => save(true)}>Сбросить circuit breaker</button>}
+         {mutationLocked && <p class="action-status">Изменения discovery временно заблокированы recovery fence.</p>}
         {message && <p class="action-status">{message}</p>}
       </div>}
     </Card>
@@ -1416,12 +1448,14 @@ function Vless({
   routes,
   configVersion,
   role,
+  mutationLocked,
   refresh,
   navigate
 }: {
   routes: any[];
   configVersion: number;
   role: SessionInfo['role'];
+  mutationLocked: boolean;
   refresh: () => Promise<void>;
   navigate: (screen: string) => void;
 }) {
@@ -1460,6 +1494,7 @@ function Vless({
   }, [role]);
 
   async function saveTariff() {
+    if (mutationLocked) { setMessage('Скорость тарифа нельзя изменить до подтверждения recovery state.'); return; }
     setBusy(true);
     try {
       await setVLESSTariff(tariff);
@@ -1488,6 +1523,7 @@ function Vless({
   }
 
   async function saveAndPrepare() {
+    if (mutationLocked) { setMessage('Подписка временно заблокирована recovery fence. Просмотр серверов доступен.'); return; }
     const values = urls.map((value) => value.trim()).filter(Boolean);
     if (!values.length) {
       setMessage('Вставь хотя бы одну HTTPS-ссылку подписки.');
@@ -1509,6 +1545,7 @@ function Vless({
   }
 
   async function addManualServer() {
+    if (mutationLocked) { setMessage('Добавление сервера временно заблокировано recovery fence.'); return; }
     if (!manualURI.trim()) {
       setMessage('Вставь полный vless:// URI. UUID останется только в закрытом файле на роутере.');
       return;
@@ -1564,6 +1601,7 @@ function Vless({
   }
 
   async function activateManaged() {
+    if (mutationLocked) { setMessage('Включение managed Xray временно заблокировано recovery fence.'); return; }
     setBusy(true);
     setMessage('Создаю черновик включения managed Xray…');
     try {
@@ -1591,7 +1629,7 @@ function Vless({
         {candidateServers.find((server: any) => server.selected) ? (() => { const active = candidateServers.find((server: any) => server.selected); return <div class="row"><b>{textValue(active.name ?? active.tag, 'VLESS server')}</b><span>{active.latency_ms ? `${active.latency_ms} мс` : 'latency неизвестна'} · {active.measured_mbps ? `${active.measured_mbps.toFixed(0)} Мбит/с` : 'speedtest не запускался'}</span><small>{active.path_verified ? 'PathVerified' : 'путь не подтверждён'} · score {Number(active.score ?? 0).toFixed(1)}</small></div>; })() : <p>Активного проверенного сервера пока нет.</p>}
         <div class="smart-dns-editor">
           <label><span>Скорость интернет-тарифа, Мбит/с</span><input type="number" min="1" max="100000" value={tariff} onInput={(event) => setTariff(Number((event.target as HTMLInputElement).value))} /></label>
-          <div class="actions">{[100, 300, 500, 1000].map((value) => <button class={tariff === value ? 'active' : ''} onClick={() => setTariff(value)} key={value}>{value}</button>)}<button class="primary" disabled={busy || role !== 'administrator'} onClick={saveTariff}>Сохранить</button></div>
+          <div class="actions">{[100, 300, 500, 1000].map((value) => <button disabled={mutationLocked} class={tariff === value ? 'active' : ''} onClick={() => setTariff(value)} key={value}>{value}</button>)}<button class="primary" disabled={busy || mutationLocked || role !== 'administrator'} onClick={saveTariff}>Сохранить</button></div>
           <small>Для score используется min(измеренная скорость, тариф). Значение 850 Мбит/с при тарифе 300 даст эффективные 300.</small>
         </div>
       </Card>
@@ -1603,7 +1641,8 @@ function Vless({
               {urls.map((url, index) => (
                 <label class={`subscription-slot ${index < configuredCount ? 'configured' : ''}`} key={index}>
                   <span>#{index + 1}</span>
-                  <input
+                    <input
+                     disabled={mutationLocked}
                     type="password"
                     value={url}
                     onInput={(event) => {
@@ -1619,10 +1658,10 @@ function Vless({
               ))}
             </div>
             <small>URL хранится в закрытом файле и не возвращается через API.</small>
-            <button class="primary" disabled={busy || !configVersion} onClick={saveAndPrepare}>
+            <button class="primary" disabled={busy || mutationLocked || !configVersion} onClick={saveAndPrepare}>
               {busy ? 'Проверяю серверы…' : 'Сохранить и проверить'}
             </button>
-            {managedAvailable && <button class="primary" disabled={busy || !configVersion} onClick={activateManaged}>Явно включить managed Xray</button>}
+            {managedAvailable && <button class="primary" disabled={busy || mutationLocked || !configVersion} onClick={activateManaged}>Явно включить managed Xray</button>}
             {managedAvailable && <small>Одна транзакция включит TPROXY, bypass mark и проверенные VLESS routes. Без успешной проверки она не будет подтверждена.</small>}
             {message && <div class="action-status"><p>{message}</p>{message.includes('черновик') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
           </div>
@@ -1634,11 +1673,11 @@ function Vless({
         </EntityCard>)}
         {!pool.sources?.length && <EmptyState title="Источников пока нет" text="Добавь HTTPS-подписку или собственный VLESS URI." />}
       </div>{(pool.provider_matches ?? []).map((match: any) => <p class="reason" key={`${match.left_provider_id}:${match.right_provider_id}`}>Пулы похожи: совпало {match.matched_servers}/{match.compared_servers}. Объединение требует подтверждения и не выполняется молча.</p>)}</section>
-      <section class="server-section"><div class="section-title"><div><h2>Серверы из подписок</h2><p>Карточки обновляются раз в 30 секунд при открытой вкладке. Проверка задержки — лёгкая ручная операция, не замер пропускной способности.</p></div><div class="actions"><button disabled={busy || !configVersion || (!present && manualServers.length === 0)} onClick={refreshVLESSHealth}>Обновить health</button><button onClick={() => setManualEditorOpen((open) => !open)}>+ Добавить свой VPS</button></div></div>
+       <section class="server-section"><div class="section-title"><div><h2>Серверы из подписок</h2><p>Карточки обновляются раз в 30 секунд при открытой вкладке. Проверка задержки — лёгкая ручная операция, не замер пропускной способности.</p></div><div class="actions"><button disabled={busy || !configVersion || (!present && manualServers.length === 0)} onClick={refreshVLESSHealth}>Обновить health</button><button disabled={mutationLocked} onClick={() => setManualEditorOpen((open) => !open)}>+ Добавить свой VPS</button></div></div>
       {manualEditorOpen && <div class="service-editor manual-vless-editor">
         <label><span>VLESS URI</span><input type="password" value={manualURI} onInput={(event) => setManualURI((event.target as HTMLInputElement).value)} autocomplete="off" placeholder="vless://UUID@server:443?security=reality&…" /></label>
         <small>URI и UUID не возвращаются через API и хранятся в закрытом файле. До явного managed activation сервер не меняет маршрутизацию.</small>
-        <button class="primary" disabled={busy || !configVersion} onClick={addManualServer}>{busy ? 'Проверяю…' : 'Сохранить и проверить'}</button>
+         <button class="primary" disabled={busy || mutationLocked || !configVersion} onClick={addManualServer}>{busy ? 'Проверяю…' : 'Сохранить и проверить'}</button>
       </div>}
       <div class="server-checks">
         {subscriptionServers.map((server: any) => (
@@ -1666,7 +1705,7 @@ function RouteType({ title, type, routes }: { title: string; type: string; route
   return <section><h2>{title}</h2><Grid>{routes.filter((r) => r.type === type).map((r) => <EntityCard title={r.tag} status={r.status} onOpen={() => setSelected(r)}><RouteBadge type={type} /><p>{humanStatus(r.status)}</p></EntityCard>)}</Grid><DetailDrawer title={selected?.tag ?? title} open={Boolean(selected)} onClose={() => setSelected(null)}><DiagnosticDetails value={selected} /><RawDisclosure value={selected} /></DetailDrawer></section>;
 }
 
-function Zapret({ routes, configVersion, role, refresh, navigate }: { routes: any[]; configVersion: number; role: SessionInfo['role']; refresh: () => Promise<void>; navigate: (screen: string) => void }) {
+function Zapret({ routes, configVersion, role, mutationLocked, refresh, navigate }: { routes: any[]; configVersion: number; role: SessionInfo['role']; mutationLocked: boolean; refresh: () => Promise<void>; navigate: (screen: string) => void }) {
   const [status, setStatus] = useState<any>(null);
   const [component, setComponent] = useState<ComponentStatus | null>(null);
   const [calibration, setCalibration] = useState<ZapretCalibrationStatus | null>(null);
@@ -1701,6 +1740,7 @@ function Zapret({ routes, configVersion, role, refresh, navigate }: { routes: an
   }, [calibration?.state]);
   const input = { source_url: sourceURL.trim(), provider_version: version.trim(), binary_sha256: sha256.trim(), test_domain: testDomain.trim() };
   async function install() {
+    if (mutationLocked) { setMessage('Установка Zapret заблокирована до подтверждения recovery state.'); return; }
     setBusy(true); setMessage('Определяю архитектуру, скачиваю закреплённый release и проверяю SHA-256…');
     try {
       const result = await componentAction('zapret', 'install');
@@ -1710,6 +1750,7 @@ function Zapret({ routes, configVersion, role, refresh, navigate }: { routes: an
     finally { setBusy(false); }
   }
   async function startCalibration(mode: 'quick' | 'exhaustive') {
+    if (mutationLocked) { setMessage('Калибровка Zapret заблокирована до подтверждения recovery state.'); return; }
     setBusy(true); setMessage(mode === 'quick'
       ? 'Запускаю быстрый bounded-тест Zapret. Это не полный перебор и не переключает сеть на найденный профиль автоматически.'
       : 'Запускаю полный подбор Zapret. Он может занять до 6 часов; найденный профиль не включается автоматически.');
@@ -1722,6 +1763,7 @@ function Zapret({ routes, configVersion, role, refresh, navigate }: { routes: an
     finally { setBusy(false); }
   }
   async function cancelCalibration() {
+    if (mutationLocked) { setMessage('Управление калибровкой заблокировано до подтверждения recovery state.'); return; }
     setBusy(true);
     try { setCalibration(await cancelZapretCalibration()); setMessage('Остановка запрошена; test-run выполнит cleanup своих ресурсов.'); }
     catch (error) { const info = errorInfo(error); setMessage(`${info.code}: ${info.message}`); }
@@ -1750,17 +1792,17 @@ function Zapret({ routes, configVersion, role, refresh, navigate }: { routes: an
   return <section class="grid">
     <Card title="Zapret">
       <div class="row"><b>{component?.installed ? `Установлен ${component.version ?? ''}` : 'Не установлен'}</b><span>{component?.service_state ?? 'service unavailable'}</span><small>{component?.health_ready ? 'Health check пройден' : component?.health_reason ?? 'Готов к установке'}</small></div>
-      {role === 'administrator' && !component?.installed && <button class="primary" disabled={busy} onClick={install}>{busy ? 'Устанавливаю…' : 'Установить Zapret'}</button>}
+      {role === 'administrator' && !component?.installed && <button class="primary" disabled={busy || mutationLocked} onClick={install}>{busy ? 'Устанавливаю…' : 'Установить Zapret'}</button>}
       {component?.installed && role === 'administrator' && <div class="change-editor">
         <label><span>Домен для подбора стратегии</span><input class="mono" value={testDomain} onInput={(event) => { setTestDomain((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
-        {calibration?.state === 'running' ? <button disabled={busy} onClick={cancelCalibration}>Остановить тест</button> : <div class="actions">
-          <button class="primary" disabled={busy || !testDomain.trim()} onClick={() => void startCalibration('quick')}>Быстрый тест Zapret</button>
-          <button disabled={busy || !testDomain.trim()} onClick={() => setShowExhaustive(true)}>Полный подбор стратегий</button>
+         {calibration?.state === 'running' ? <button disabled={busy || mutationLocked} onClick={cancelCalibration}>Остановить тест</button> : <div class="actions">
+           <button class="primary" disabled={busy || mutationLocked || !testDomain.trim()} onClick={() => void startCalibration('quick')}>Быстрый тест Zapret</button>
+           <button disabled={busy || mutationLocked || !testDomain.trim()} onClick={() => setShowExhaustive(true)}>Полный подбор стратегий</button>
         </div>}
         {showExhaustive && calibration?.state !== 'running' && <div class="warning-panel" role="alert">
           <b>Глубокий перебор — аварийно-длинная операция</b>
           <p>Будет проверено большое количество комбинаций upstream Zapret. Это может занять до 6 часов. Запускайте полный подбор только если быстрый тест не нашёл рабочую стратегию.</p>
-          <div class="actions"><button class="primary" disabled={busy} onClick={() => void startCalibration('exhaustive')}>Запустить полный подбор</button><button disabled={busy} onClick={() => setShowExhaustive(false)}>Отмена</button></div>
+           <div class="actions"><button class="primary" disabled={busy || mutationLocked} onClick={() => void startCalibration('exhaustive')}>Запустить полный подбор</button><button disabled={busy} onClick={() => setShowExhaustive(false)}>Отмена</button></div>
         </div>}
         <small>Параллельность: {calibration?.concurrency ?? 1}. {calibration?.concurrency_reason ?? 'Общие nft/NFQUEUE ресурсы upstream требуют последовательного прогона.'}</small>
       </div>}
@@ -1782,7 +1824,7 @@ function Zapret({ routes, configVersion, role, refresh, navigate }: { routes: an
     </Card>}
     {component?.installed && <Card title="Явное включение маршрута">
       <p>Установка бинарника и включение маршрута — разные операции. Apply проверит NFQUEUE, data path и подтвердится только через штатную транзакцию.</p>
-      {role === 'administrator' && <div class="actions"><button disabled={busy || !configVersion} onClick={check}>{busy ? 'Проверяю…' : 'Проверить перед черновиком'}</button><button class="primary" disabled={busy || !checked || !configVersion} onClick={activate}>Создать черновик Zapret</button></div>}
+       {role === 'administrator' && <div class="actions"><button disabled={busy || !configVersion} onClick={check}>{busy ? 'Проверяю…' : 'Проверить перед черновиком'}</button><button class="primary" disabled={busy || mutationLocked || !checked || !configVersion} onClick={activate}>Создать черновик Zapret</button></div>}
       <details><summary>Advanced · закреплённый источник</summary><div class="change-editor">
         <label><span>HTTPS source</span><input class="mono" value={sourceURL} onInput={(event) => { setSourceURL((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
         <label><span>Версия</span><input class="mono" value={version} onInput={(event) => { setVersion((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
@@ -1797,11 +1839,13 @@ function Zapret({ routes, configVersion, role, refresh, navigate }: { routes: an
 function SmartDNS({
   configVersion,
   role,
+  mutationLocked,
   refresh,
   navigate
 }: {
   configVersion: number;
   role: SessionInfo['role'];
+  mutationLocked: boolean;
   refresh: () => Promise<void>;
   navigate: (screen: string) => void;
 }) {
@@ -1816,6 +1860,7 @@ function SmartDNS({
     getSmartDNS().then(setStatus).catch((reason) => setError(reason instanceof Error ? reason.message : 'Smart DNS недоступен'));
   }, []);
   async function save() {
+    if (mutationLocked) { setMessage('Smart DNS нельзя изменить до подтверждения recovery state.'); return; }
     let values;
     try {
       values = resolvers.filter((value) => value.trim()).map(parseResolverInput);
@@ -1864,9 +1909,10 @@ function SmartDNS({
             {resolvers.length < 2 && <button type="button" onClick={() => setResolvers((items) => [...items, ''])}>Добавить резервный резолвер</button>}
             <small>Порт необязателен. По умолчанию используется 53. Поддерживаются IPv4, IPv4:порт, IPv6 и [IPv6]:порт.</small>
             <label><span>Домен для DNS + HTTP/TLS</span><input class="mono" value={testDomain} placeholder="example.com" onInput={(event) => setTestDomain((event.target as HTMLInputElement).value)} /></label>
-            <button class="primary" disabled={busy || !configVersion} onClick={save}>
+            <button class="primary" disabled={busy || mutationLocked || !configVersion} onClick={save}>
               {busy ? 'Проверяю…' : 'Проверить и создать черновик'}
             </button>
+            {mutationLocked && <p class="action-status">Настройка Smart DNS временно заблокирована recovery fence.</p>}
             {message && <div class={message.includes('применён') ? 'action-status ok' : 'action-status'}><p>{message}</p>{message.includes('черновик') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
           </div>
         )}
@@ -1894,7 +1940,7 @@ function SmartDNS({
   );
 }
 
-function ExternalSOCKS({ configVersion, role, refresh, navigate }: { configVersion: number; role: SessionInfo['role']; refresh: () => Promise<void>; navigate: (screen: string) => void }) {
+function ExternalSOCKS({ configVersion, role, mutationLocked, refresh, navigate }: { configVersion: number; role: SessionInfo['role']; mutationLocked: boolean; refresh: () => Promise<void>; navigate: (screen: string) => void }) {
   const [status, setStatus] = useState<any>(null);
   const [endpoint, setEndpoint] = useState('127.0.0.1:1180');
   const [domain, setDomain] = useState('web.telegram.org');
@@ -1912,6 +1958,7 @@ function ExternalSOCKS({ configVersion, role, refresh, navigate }: { configVersi
     finally { setBusy(false); }
   }
   async function activate() {
+    if (mutationLocked) { setMessage('Внешний SOCKS-маршрут заблокирован до подтверждения recovery state.'); return; }
     setBusy(true); setMessage('Создаю черновик внешнего SOCKS-маршрута…');
     try {
       const result = await activateExternalSOCKS(endpoint.trim(), domain.trim(), configVersion);
@@ -1928,7 +1975,7 @@ function ExternalSOCKS({ configVersion, role, refresh, navigate }: { configVersi
         <label><span>Loopback SOCKS5 endpoint</span><input class="mono" value={endpoint} onInput={(event) => { setEndpoint((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
         <label><span>Домен для remote DNS + TLS/HTTP</span><input class="mono" value={domain} onInput={(event) => { setDomain((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
         <button class="primary" disabled={busy || !configVersion} onClick={check}>{busy ? 'Проверяю…' : 'Проверить endpoint'}</button>
-        <button class="primary" disabled={busy || !checked || !configVersion} onClick={activate}>Создать черновик маршрута</button>
+        <button class="primary" disabled={busy || mutationLocked || !checked || !configVersion} onClick={activate}>Создать черновик маршрута</button>
         {message && <div class="action-status"><p>{message}</p>{message.includes('черновик') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
       </div>}
     </Card>
@@ -1936,7 +1983,7 @@ function ExternalSOCKS({ configVersion, role, refresh, navigate }: { configVersi
   </section>;
 }
 
-function TGWS({ role, navigate }: { role: SessionInfo['role']; navigate: (screen: string) => void }) {
+function TGWS({ role, mutationLocked, navigate }: { role: SessionInfo['role']; mutationLocked: boolean; navigate: (screen: string) => void }) {
   const [status, setStatus] = useState<any>(null);
   const [port, setPort] = useState(1443);
   const [fakeTLS, setFakeTLS] = useState('');
@@ -1966,6 +2013,7 @@ function TGWS({ role, navigate }: { role: SessionInfo['role']; navigate: (screen
     return () => { cancelled = true; };
   }, [connectLink]);
   async function configure() {
+    if (mutationLocked) { setMessage('Настройка TG WS Proxy заблокирована до подтверждения recovery state.'); return; }
     setBusy(true);
     setConnectLink('');
     setMessage('Создаю секрет, запускаю procd-сервис и проверяю listener и доступ к Telegram DC…');
@@ -2001,7 +2049,8 @@ function TGWS({ role, navigate }: { role: SessionInfo['role']; navigate: (screen
           <label><span>Порт</span><input type="number" min="1024" max="65535" value={port} onInput={(event) => setPort(Number((event.target as HTMLInputElement).value))} /></label>
           <label><span>Fake TLS domain (необязательно)</span><input value={fakeTLS} placeholder="например, ваш домен" onInput={(event) => setFakeTLS((event.target as HTMLInputElement).value)} /></label>
           <small>Адрес роутера берётся из текущего соединения с UI. Секрет генерируется на роутере и не возвращается повторно.</small>
-          <button class="primary" disabled={busy || !status?.installed} onClick={configure}>{busy ? 'Проверяю…' : 'Настроить и запустить'}</button>
+          <button class="primary" disabled={busy || mutationLocked || !status?.installed} onClick={configure}>{busy ? 'Проверяю…' : 'Настроить и запустить'}</button>
+          {mutationLocked && <p class="action-status">Управление транспортом временно заблокировано recovery fence.</p>}
           {message && <p class="action-status">{message}</p>}
         </div>
       </Card>}
@@ -2014,7 +2063,7 @@ function TGWS({ role, navigate }: { role: SessionInfo['role']; navigate: (screen
   </section>;
 }
 
-function Telegram({ role, events: systemEvents }: { role: SessionInfo['role']; events: EventItem[] }) {
+function Telegram({ role, mutationLocked, events: systemEvents }: { role: SessionInfo['role']; mutationLocked: boolean; events: EventItem[] }) {
   const [overview, setOverview] = useState<any>(null);
   const [token, setToken] = useState('');
   const [chatID, setChatID] = useState('');
@@ -2033,6 +2082,7 @@ function Telegram({ role, events: systemEvents }: { role: SessionInfo['role']; e
   }
   useEffect(() => { load(); }, []);
   async function save() {
+    if (mutationLocked) { setMessage('Настройка уведомлений заблокирована до подтверждения recovery state.'); return; }
     setBusy(true); setMessage('Проверяю токен и доступ к чату…');
     try { await configureTelegram(token.trim(), chatID.trim(), enabled, events); setToken(''); setChatID(''); await load(); setMessage(enabled ? 'Конфигурация проверена и сохранена.' : 'Уведомления выключены, настройки сохранены.'); }
     catch (error) { setMessage(error instanceof Error ? error.message : 'Telegram не настроен.'); }
@@ -2054,7 +2104,7 @@ function Telegram({ role, events: systemEvents }: { role: SessionInfo['role']; e
       <label><span>Chat ID {state.chat_configured ? '(уже сохранён; пустое поле оставит прежний)' : ''}</span><input class="mono" value={chatID} onInput={(event) => setChatID((event.target as HTMLInputElement).value)} /></label>
       <label><input type="checkbox" checked={enabled} onChange={(event) => setEnabled((event.target as HTMLInputElement).checked)} /> Включить доставку</label>
       <div class="chips">{overview.event_types.map((name: string) => <label class="chip" key={name}><input type="checkbox" checked={events.includes(name)} onChange={(event) => setEvents((old) => (event.target as HTMLInputElement).checked ? [...old, name] : old.filter((item) => item !== name))} /> {name}</label>)}</div>
-      <button class="primary" disabled={busy} onClick={save}>{busy ? 'Проверяю…' : 'Проверить и сохранить'}</button>
+      <button class="primary" disabled={busy || mutationLocked} onClick={save}>{busy ? 'Проверяю…' : 'Проверить и сохранить'}</button>
       <button class="primary" disabled={busy || !state.enabled} onClick={sendTest}>Отправить тест</button>
       {message && <p class="action-status">{message}</p>}
     </div>}

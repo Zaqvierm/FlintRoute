@@ -7,11 +7,12 @@ function envelope(data: unknown, status = 200) {
   return { status, contentType: 'application/json', body: JSON.stringify({ data }) };
 }
 
-export async function mockAPI(page: Page, options: { securityFailure?: boolean } = {}) {
+export async function mockAPI(page: Page, options: { securityFailure?: boolean; recoveryStatus?: string } = {}) {
   await page.route('**/api/v1/**', async (route: Route) => {
     const url = new URL(route.request().url());
     const path = url.pathname.replace('/api/v1', '');
     if (path === '/auth/me') return route.fulfill(envelope({ user: 'admin', role: 'administrator', csrf_token: 'test-csrf' }));
+    if (path === '/health') return route.fulfill(envelope({ status: 'ready', recovery_status: options.recoveryStatus ?? 'ok', recovery_reason: options.recoveryStatus && options.recoveryStatus !== 'ok' ? 'Восстановление ещё не подтверждено.' : '', checked_at: new Date().toISOString() }));
     if (path === '/overview') return route.fulfill(envelope({ internet: 'route_available', data_plane: 'ready', dns: 'ready', current_route: 'Direct', critical_errors: [], freshness: 'live' }));
     if (path === '/topology') {
       const hidden = url.searchParams.get('privacy') === 'hidden';
@@ -78,5 +79,12 @@ test.describe('FlintRoute UI v2', () => {
     await page.goto('/?screen=Обзор');
     await expect(page.locator('.topbar').getByText('Интернет доступен')).toBeVisible();
     await expect(page.getByText('Часть данных недоступна')).toBeVisible();
+  });
+
+  test('fails closed when recovery is not proven safe', async ({ page }) => {
+    await mockAPI(page, { recoveryStatus: 'starting' });
+    await page.goto('/?screen=Сервисы');
+    await expect(page.getByText('Изменения временно заблокированы')).toBeVisible();
+    await expect(page.getByRole('button', { name: '+ Новое правило' })).toBeDisabled();
   });
 });

@@ -294,6 +294,17 @@ export class APIError extends Error {
   }
 }
 
+export type HealthSnapshot = {
+  status: string;
+  provider?: string;
+  simulation?: boolean;
+  recovery_status?: string;
+  recovery_reason_code?: string;
+  recovery_reason?: string;
+  active_revision?: string;
+  time?: string;
+};
+
 let csrf = '';
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -321,6 +332,10 @@ export async function me(): Promise<SessionInfo> {
   const session = await request<SessionInfo>('/auth/me');
   csrf = session.csrf_token;
   return session;
+}
+
+export async function getHealth(): Promise<HealthSnapshot> {
+  return request<HealthSnapshot>('/health');
 }
 
 export async function login(username: string, password: string): Promise<SessionInfo> {

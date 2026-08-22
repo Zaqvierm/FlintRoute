@@ -234,6 +234,9 @@ pre { max-width: 100%; overflow: auto; background: #070a0f; border: 1px solid va
 .empty-state p { margin: .35rem 0 0; color: var(--muted); }
 .action-status { color: var(--warn); }.action-status.ok { color: var(--ok); }.auth-error { color: var(--bad); }
 .warning-panel { margin-top: .75rem; padding: .85rem; border: 1px solid var(--warn); border-radius: 13px; background: #3a2a111f; }
+.recovery-lock { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.recovery-lock p { margin: .25rem 0; }
+.recovery-lock details { align-self: center; color: var(--muted); }
 .setup-progress { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .5rem; margin: 1rem 0; }
 .setup-progress div { display: flex; align-items: center; gap: .5rem; min-width: 0; padding: .65rem; border: 1px solid var(--line); border-radius: 12px; color: var(--muted); background: #0f151f; }
 .setup-progress div.done { color: var(--ok); border-color: #2d725c; }

@@ -54,6 +54,27 @@ export function onboardingProgress(input: {
   return { methodsDone, sourcesDone, serviceChoiceDone, providerReady, setupReady: input.canComplete === true };
 }
 
+/**
+ * UI-side mirror of the backend mutation fence.  Unknown, missing, starting,
+ * failed and recovery-required states are deliberately unsafe.  A
+ * not_required state is only safe when the backend supplied a bound baseline;
+ * this prevents the UI from presenting a mutation button while recovery data
+ * is merely absent or stale.
+ */
+export function recoveryMutationAllowed(input: unknown): boolean {
+  if (!input || typeof input !== 'object') return false;
+  const value = input as Record<string, unknown>;
+  const nested = value.recovery && typeof value.recovery === 'object'
+    ? value.recovery as Record<string, unknown>
+    : value;
+  const status = textValue(nested.status ?? value.recovery_status, '').trim().toLowerCase();
+  if (status === 'ok') return true;
+  if (status !== 'not_required') return false;
+  const revision = textValue(nested.revision_id ?? value.active_revision, '').trim();
+  const hash = textValue(nested.candidate_hash ?? value.candidate_hash, '').trim();
+  return revision.length > 0 && hash.length > 0;
+}
+
 export type DecisionCard = {
   id: string;
   time: string;

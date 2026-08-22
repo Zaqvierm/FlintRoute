@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatDateTime, groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, onboardingProgress, parseResolverInput, serviceColumnFor, stringArray, textValue, toDecisionCard } from './view-models';
+import { formatDateTime, groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, onboardingProgress, parseResolverInput, recoveryMutationAllowed, serviceColumnFor, stringArray, textValue, toDecisionCard } from './view-models';
 import type { EventItem } from './api';
 
 describe('safe display values', () => {
@@ -93,6 +93,18 @@ describe('onboarding truthfulness', () => {
     expect(progress.sourcesDone).toBe(true);
     expect(progress.serviceChoiceDone).toBe(true);
     expect(progress.setupReady).toBe(true);
+  });
+});
+
+describe('recovery mutation fence', () => {
+  it.each(['starting', 'error', 'recovery_required', '', 'unknown'])('blocks unsafe status %s', (status) => {
+    expect(recoveryMutationAllowed({ recovery_status: status })).toBe(false);
+  });
+
+  it('allows only proven safe statuses', () => {
+    expect(recoveryMutationAllowed({ recovery_status: 'ok' })).toBe(true);
+    expect(recoveryMutationAllowed({ recovery: { status: 'not_required', revision_id: 'rev-1', candidate_hash: 'sha256:a' } })).toBe(true);
+    expect(recoveryMutationAllowed({ recovery_status: 'not_required', active_revision: 'rev-1' })).toBe(false);
   });
 });
 
