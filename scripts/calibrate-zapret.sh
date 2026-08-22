@@ -314,22 +314,28 @@ cleanup() {
   trap - EXIT HUP INT TERM
   calibration_pgid="$blockcheck_pgid"
   if [ -n "$blockcheck_pgid" ]; then
-    kill -TERM "-$blockcheck_pgid" 2>/dev/null || true
-    i=0
-    while [ "$i" -lt 10 ] && process_group_exists "$blockcheck_pgid"; do
-      sleep 1
-      i=$((i + 1))
-    done
-    if process_group_exists "$blockcheck_pgid"; then
-      kill -KILL "-$blockcheck_pgid" 2>/dev/null || true
+    controller_pgid=$(proc_pgid "$$" 2>/dev/null || true)
+    if [ "$blockcheck_pgid" = "$controller_pgid" ]; then
+      echo "refusing to signal the calibration controller process group: $blockcheck_pgid" >&2
+      status=1
+    else
+      kill -TERM "-$blockcheck_pgid" 2>/dev/null || true
       i=0
-      while [ "$i" -lt 5 ] && process_group_exists "$blockcheck_pgid"; do
+      while [ "$i" -lt 10 ] && process_group_exists "$blockcheck_pgid"; do
         sleep 1
         i=$((i + 1))
       done
       if process_group_exists "$blockcheck_pgid"; then
-        echo "calibration process group survived cleanup: $blockcheck_pgid" >&2
-        status=1
+        kill -KILL "-$blockcheck_pgid" 2>/dev/null || true
+        i=0
+        while [ "$i" -lt 5 ] && process_group_exists "$blockcheck_pgid"; do
+          sleep 1
+          i=$((i + 1))
+        done
+        if process_group_exists "$blockcheck_pgid"; then
+          echo "calibration process group survived cleanup: $blockcheck_pgid" >&2
+          status=1
+        fi
       fi
     fi
     blockcheck_pgid=""
@@ -426,13 +432,20 @@ setsid sh -c '
 blockcheck_pid=$!
 blockcheck_pgid=$(proc_pgid "$blockcheck_pid" 2>/dev/null || true)
 case "$blockcheck_pgid" in
-  ""|*[!0-9]*)
+  ""|0|*[!0-9]*)
     echo "unable to determine calibration process group" >&2
     kill -TERM "$blockcheck_pid" 2>/dev/null || true
     wait "$blockcheck_pid" 2>/dev/null || true
     exit 1
     ;;
 esac
+controller_pgid=$(proc_pgid "$$" 2>/dev/null || true)
+[ "$blockcheck_pgid" != "$controller_pgid" ] || {
+  echo "calibration process group is not isolated from the controller" >&2
+  kill -TERM "$blockcheck_pid" 2>/dev/null || true
+  wait "$blockcheck_pid" 2>/dev/null || true
+  exit 1
+}
 blockcheck_start=$(proc_start_time "$blockcheck_pid" 2>/dev/null || true)
 blockcheck_exe=$(proc_executable "$blockcheck_pid")
 printf '%s|%s|%s|%s|%s\n' "$blockcheck_pid" "$blockcheck_start" "$blockcheck_exe" "$blockcheck_pgid" "$calibration_run_id" > "$process_manifest"
