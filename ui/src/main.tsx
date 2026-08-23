@@ -452,13 +452,21 @@ function App() {
         case 'backups': setBackups(await getBackups(controller.signal)); break;
         default: throw new Error('Для этого источника доступен только общий повтор');
       }
-      setSliceErrors((current) => current.filter((item) => item.name !== name));
+      setSliceErrors((current) => {
+        const next = current.filter((item) => item.name !== name);
+        // A successful source-only retry must also clear the aggregate
+        // session warning once no stale slices remain.  Otherwise the source
+        // is healthy again but the shell keeps reporting a false API outage.
+        if (!next.length) setApiError('');
+        return next;
+      });
       setLastUpdated(new Date().toISOString());
     } catch (reason) {
       if (!(reason instanceof Error && reason.name === 'AbortError')) {
         const info = errorInfo(reason);
         setSliceErrors((current) => {
           const next = current.filter((item) => item.name !== name);
+          setApiError('Некоторые данные устарели или недоступны');
           return [...next, { name, message: info.message }];
         });
       }

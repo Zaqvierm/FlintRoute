@@ -21,6 +21,10 @@ branch.
    stopped, deleted, or overwritten automatically.
 6. Observation, health, watchdog, and adaptive calibration have no implicit
    authority to rebuild the production dataplane.
+7. Installer and rollback paths use canonical, dot-component-free allowlist
+   identities. Paths containing `..`, `.`, duplicate separators, or trailing
+   separators are rejected before any recursive delete/copy/restore; lexical
+   spelling is never allowed to bypass ownership checks.
 
 ## Transaction state machine
 

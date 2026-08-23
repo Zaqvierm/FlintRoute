@@ -57,6 +57,33 @@ func TestRouteProbeTargetsAreFamilyFilteredAndBounded(t *testing.T) {
 	}
 }
 
+func TestProbeRouteRejectsUnvalidatedProbeURLFanout(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	service := serviceWithProbe(srv.URL, []int{http.StatusNoContent}, "empty", nil)
+	for i := len(service.ProbeURLs); i <= config.MaxProbeURLsPerService; i++ {
+		service.ProbeURLs = append(service.ProbeURLs, config.ProbeCheck{
+			Name:          fmt.Sprintf("extra-%d", i),
+			URL:           srv.URL,
+			Required:      true,
+			ExpectedCodes: []int{http.StatusNoContent},
+			BodyMode:      "empty",
+		})
+	}
+	result := ProbeRoute(context.Background(), testConfig(), "example.test", "svc", service, config.Route{Type: "direct", Tag: "direct"})
+	if result.ReasonCode != "probe_urls_exceed_bound" || result.ApplicationStatus != "NOT_RUN" || result.FailureStage != "preflight" {
+		t.Fatalf("unvalidated probe fan-out was not rejected: %+v", result)
+	}
+	if requests != 0 {
+		t.Fatalf("probe started network requests before enforcing the bound: %d", requests)
+	}
+}
+
 func TestProbeHTTP200WithMarker(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)

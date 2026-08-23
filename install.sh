@@ -123,6 +123,16 @@ validate_no_symlink_path() {
     /*) ;;
     *) return 1 ;;
   esac
+  # The installer accepts paths from environment overrides (and reuses this
+  # validator for snapshot manifests).  Lexical paths containing dot
+  # components are not safe ownership identifiers: /usr/lib/../bin and
+  # /etc/./init.d can evade exact allowlist comparisons while targeting a
+  # different object after the kernel resolves them.  Empty components also
+  # make canonical identity ambiguous (//etc, /etc//router-policy).
+  [ "$candidate" != "/" ] || return 1
+  case "$candidate" in
+    */) return 1 ;;
+  esac
   remainder=${candidate#/}
   current=""
   while [ -n "$remainder" ]; do
@@ -130,7 +140,9 @@ validate_no_symlink_path() {
       */*) component=${remainder%%/*}; remainder=${remainder#*/} ;;
       *) component=$remainder; remainder= ;;
     esac
-    [ -n "$component" ] || continue
+    case "$component" in
+      ""|.|..) return 1 ;;
+    esac
     current="$current/$component"
     [ ! -L "$current" ] || return 1
   done

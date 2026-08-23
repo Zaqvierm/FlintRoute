@@ -58,6 +58,13 @@ validate_no_symlink_path() {
     /*) ;;
     *) return 1 ;;
   esac
+  # Uninstall paths come from environment-derived roots.  Reject lexical
+  # traversal and ambiguous separators before tar/rm can resolve them to a
+  # parent outside the fixed FlintRoute ownership boundary.
+  [ "$candidate" != "/" ] || return 1
+  case "$candidate" in
+    */) return 1 ;;
+  esac
   remainder=${candidate#/}
   current=""
   while [ -n "$remainder" ]; do
@@ -65,9 +72,44 @@ validate_no_symlink_path() {
       */*) component=${remainder%%/*}; remainder=${remainder#*/} ;;
       *) component=$remainder; remainder= ;;
     esac
-    [ -n "$component" ] || continue
+    case "$component" in
+      ""|.|..) return 1 ;;
+    esac
     current="$current/$component"
     [ ! -L "$current" ] || return 1
+  done
+}
+
+validate_backup_paths() {
+  case "$BACKUP_ROOT:$BACKUP_DIR" in
+    "":*|*:|/:*|*:/)
+      echo "uninstall blocked: invalid backup root" >&2
+      return 1
+      ;;
+  esac
+  case "$BACKUP_DIR" in
+    "$BACKUP_ROOT"/*) ;;
+    *)
+      echo "uninstall blocked: backup directory is outside backup root" >&2
+      return 1
+      ;;
+  esac
+  validate_no_symlink_path "$BACKUP_ROOT" || {
+    echo "uninstall blocked: symlink or non-canonical backup root path" >&2
+    return 1
+  }
+  validate_no_symlink_path "$BACKUP_DIR" || {
+    echo "uninstall blocked: symlink or non-canonical backup directory path" >&2
+    return 1
+  }
+  for critical_path in "$SYSTEM_ROOT" "$SYSTEM_ROOT/etc" "$SYSTEM_ROOT/usr" "$SYSTEM_ROOT/usr/bin" "$SYSTEM_ROOT/usr/lib" "$SYSTEM_ROOT/etc/init.d" "$SYSTEM_ROOT/etc/hotplug.d"; do
+    [ -n "$critical_path" ] || continue
+    case "$BACKUP_ROOT/" in
+      "$critical_path"/*)
+        echo "uninstall blocked: backup root is inside a system directory: $BACKUP_ROOT" >&2
+        return 1
+        ;;
+    esac
   done
 }
 
@@ -227,6 +269,7 @@ fi
   echo "uninstall blocked: non-standard runtime root" >&2
   exit 1
 }
+validate_backup_paths || exit 1
 
 if [ -z "$SYSTEM_ROOT" ] && [ -x "$BIN_DIR/router-policy" ]; then
   ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$BIN_DIR/router-policy" maintenance begin --owner "installer:uninstall-$$" --reason uninstall --lease 30m >/dev/null

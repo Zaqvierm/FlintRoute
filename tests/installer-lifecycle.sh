@@ -614,6 +614,21 @@ if validate_critical_system_dirs >/dev/null 2>&1; then
 fi
 echo "installer_blocks_missing_critical_parent=true"
 
+# Environment overrides and snapshot manifests must not be able to smuggle
+# lexical traversal/ambiguous paths through the ownership allowlist.  The
+# kernel would resolve these to a different parent during rm/copy/restore.
+for unsafe_path in \
+  "$SYSTEM_ROOT/usr/lib/router-policy/../escape" \
+  "$SYSTEM_ROOT/etc/./router-policy" \
+  "$SYSTEM_ROOT/usr//lib/router-policy" \
+  "$SYSTEM_ROOT/etc/router-policy/"; do
+  if validate_no_symlink_path "$unsafe_path" >/dev/null 2>&1; then
+    echo "installer accepted unsafe lexical path: $unsafe_path" >&2
+    exit 1
+  fi
+done
+echo "installer_rejects_lexical_path_traversal=true"
+
 echo "installer_clean_install=true"
 echo "installer_idempotent_upgrade=true"
 echo "installer_preserves_managed_component_runtime=true"

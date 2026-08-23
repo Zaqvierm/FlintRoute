@@ -153,6 +153,19 @@ func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, ser
 		result.Reason = &reason
 		return finalizeUnverifiedResult(result, startAll)
 	}
+	// Config.Validate enforces this bound for active configurations, but the
+	// probe engine is also called from recovery, tests and other defensive
+	// paths that may receive an unvalidated service value. Refuse the whole
+	// check instead of allowing one logical route decision to fan out across an
+	// arbitrary number of DNS/HTTP/SOCKS attempts.
+	if len(svc.ProbeURLs) > config.MaxProbeURLsPerService {
+		reason := "probe_urls_exceed_bound"
+		result.ApplicationStatus = "NOT_RUN"
+		result.FailureStage = "preflight"
+		result.ReasonCode = reason
+		result.Reason = &reason
+		return finalizeUnverifiedResult(result, startAll)
+	}
 	proofSession := e.beginPathProof(ctx, domain, route, startAll)
 
 	if route.Type == "drop" {

@@ -7,12 +7,14 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 
 - Base review SHA: `d45a779dfa9dc024b426cef358d3df4d32478897`
 - Branch: `remediation/transaction-and-privilege-boundaries`
-- Code verification SHA: `82845295b76a0fe1938289de013d46716edfc0df` (recovery
-  fence, route-verification semantics, bounded Zapret modes, truthful UI/browser
-  coverage, screen-specific request budget, refresh cancellation, backend-gated
-  onboarding, stateful Fast Start completion, robust Zapret process ownership,
-  and non-terminal Decision Flow states). Earlier Go/safety evidence remains
-  explicitly attributed to its original SHA.
+- Code verification SHA: `924552adcb9e92d000627c76181b25fcebc17104` (current code head; this consolidated
+  commit includes installer/uninstaller ownership-path validation and the
+  defensive route-probe fan-out guard). The verified code includes recovery fence, route-verification semantics, bounded
+  Zapret modes, truthful UI/browser coverage, screen-specific request budget,
+  independent API-slice retry, backend-gated onboarding, stateful Fast Start
+  completion, robust Zapret process ownership, and non-terminal Decision Flow
+  states). Earlier Go/safety evidence remains explicitly attributed to its
+  original SHA.
 - Verification scope: the exact code SHA recorded here; older evidence is not
   inherited by this follow-up.
 - Hardware scope: **not run**. Flint 2 was not contacted, installed, rebooted,
@@ -22,6 +24,22 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 - Historical hardware records, including `docs/flint2-hardware-report.md` and
   `H:\\LAN\\Versions\\FlintRoute 0.2.0-alpha.1\\hardware\\summary.txt`, are
   `STALE FOR CURRENT SHA` until a new hardware run is captured.
+
+## Current head acceptance summary
+
+This short table is the current source of truth; the longer phase table below
+is historical context and must not be read as current hardware acceptance.
+
+| Scope | Status at code SHA `924552adcb9e92d000627c76181b25fcebc17104` | Evidence |
+|---|---|---|
+| Go/unit/integration, race, vet, formatting | PASS | local `tests/run-all.ps1`, `go test -race ./...`, `gofmt` |
+| Frontend unit/typecheck/build | PASS | 44 Vitest tests, `npm run typecheck`, `npm run build` |
+| Browser/responsive UI | PASS | 20 Playwright tests; [exact CI run 32606215608](https://github.com/Zaqvierm/FlintRoute/actions/runs/32606215608) |
+| Linux nft transition | PASS | [exact CI run 32606215580](https://github.com/Zaqvierm/FlintRoute/actions/runs/32606215580) |
+| Linux Zapret process-group + Quick contract | PASS | [exact CI run 32606215591](https://github.com/Zaqvierm/FlintRoute/actions/runs/32606215591) |
+| Windows Linux-only harnesses | NOT RUN LOCALLY | filesystem mode, namespace/procfs Quick and Zapret steps |
+| Root-helper privilege split | PARTIAL | helper socket exists; production controller still root/direct-adapter by default |
+| Flint 2 hardware | NOT RUN / STALE | no SSH, install, apply, reboot, or runtime evidence for this head |
 
 ## Acceptance matrix
 
@@ -35,6 +53,7 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | frontend recovery mutation fence | `npm run test`, `npm run browser:test` (`recovery=starting`) | PASS (37 unit tests; 11 browser tests) | local Chromium |
 | immutable bootstrap | `tests/openwrt-adapter-integration.sh` | PASS | local/mock |
 | installer parent modes | `tests/installer-lifecycle.sh` | PASS | local/mock |
+| installer/uninstaller canonical ownership paths | `tests/installer-lifecycle.sh`, `tests/installer-backup.sh` | PASS | local/mock |
 | legacy shell atomic write | `tests/shell-library.sh` | PASS (mode check is Linux-only; Windows reports `NOT RUN LOCALLY`) | local/mock |
 | artifact directory fsync failure | `tests/content-aware-install.sh` | PASS — failed exact and fallback sync is surfaced as `fsync_failed` | local/mock |
 | boot guard | `tests/boot-guard-policy.sh`, `tests/boot-guard-service.sh` | PASS | local/mock |
@@ -45,6 +64,7 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | SSRF and decompression limits | `go test ./internal/remotefetch ./internal/vpnsub ./internal/tspu ./internal/geoip` | PASS | local |
 | Xray typed input | `go test ./internal/vpnsub` | PASS | local |
 | resource budget | `go test ./internal/api ./internal/probe` | PASS | local |
+| unvalidated route-probe fan-out | `go test ./internal/probe -run TestProbeRouteRejectsUnvalidatedProbeURLFanout`, `go test -race ./internal/probe -run TestProbeRouteRejectsUnvalidatedProbeURLFanout` | PASS | local |
 | `NO_SAFE_ROUTE` terminal state | planner cancellation/exhaustion and API probe-state tests | PASS | local |
 | classification vs route confidence | `TestClassificationConfidenceIsIndependentFromRouteConfidence` | PASS | local |
 | route latency vs verification duration | probe/API separation tests | PASS | local |
@@ -55,7 +75,8 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | ShellCheck | `.tools/shellcheck-v0.11.0/shellcheck.exe -x <tracked shell files>` | PASS | local |
 | race/vet | `go test -race ./...`, `go vet ./...` | PASS | local |
 
-The full local runner at the recorded code SHA completed in 322.5 seconds with
+The full local runner at consolidated code SHA
+`924552adcb9e92d000627c76181b25fcebc17104` completed in 375.4 seconds with
 `all_tests_ok=true`. Its Linux-only namespace/process-group steps were
 honestly reported as `NOT RUN LOCALLY`; the independent GitHub runs above are
 the Linux evidence. The earlier `e04778e` nft run failed because the fixture's
@@ -88,6 +109,21 @@ failure. `exhaustive` is an explicit maintenance action capped at six hours
 and passes `SCANLEVEL=force`. The current repository has no authoritative
 fixed 21-strategy asset, so the UI does not invent that number. Neither mode
 silently activates a production profile; the result is a reviewed candidate/draft.
+
+### Current route-probe resource bound
+
+At code SHA `924552adcb9e92d000627c76181b25fcebc17104`, the probe engine rejects an unvalidated service whose
+`ProbeURLs` exceed `config.MaxProbeURLsPerService` before opening a network
+connection. This closes the defensive-path gap where a caller could bypass
+`Config.Validate` and turn one logical route decision into arbitrary fan-out.
+The normal configuration bound is four probe checks per service and four
+family-filtered destination addresses per check. The shared process-wide
+probe budget caps concurrent logical route jobs at four; discovery admission is
+bounded by a queue of 32. Egress-country checks are capped at two endpoints.
+The targeted tests, including the race run, pass and assert zero HTTP requests
+when the preflight bound is violated. These are local unit/resource proofs;
+Linux namespace and hardware evidence remain separate levels and are not
+inferred from them.
 
 ## Prior follow-up evidence
 
@@ -668,6 +704,8 @@ The alert center now retries a named failed API slice through its own
 while the existing `Повторить всё` action remains available. The browser
 regression proves that a failed services request is retried once and that the
 other dashboard slices are not re-requested by that button.
+When the retry succeeds, the aggregate session warning is cleared as well;
+the shell no longer reports an API outage after the last stale slice is live.
 
 Curated Zapret checks now share the same
 `<runtime>/zapret-calibration.lock` as exhaustive blockcheck. A stale lock
@@ -682,3 +720,9 @@ and Playwright browser tests (20/20). The runner reported the Linux-only
 filesystem-mode, Zapret process-group, Quick runner, and nft namespace checks
 as `NOT RUN LOCALLY`; no local Windows result is promoted to Linux or hardware
 evidence.
+
+Exact-SHA CI for code head `1440b7878c9f1c59b53bcf6c8dad7d4166ac47ca` passed:
+
+- [nft transition namespace 32602915666](https://github.com/Zaqvierm/FlintRoute/actions/runs/32602915666)
+- [Zapret process-group and Quick contract 32602915678](https://github.com/Zaqvierm/FlintRoute/actions/runs/32602915678)
+- [UI browser/responsive 32602915672](https://github.com/Zaqvierm/FlintRoute/actions/runs/32602915672)

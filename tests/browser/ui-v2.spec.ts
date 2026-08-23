@@ -184,6 +184,7 @@ test.describe('FlintRoute UI v2', () => {
     await page.getByRole('button', { name: /\u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u044c \u044d\u0442\u043e\u0442 \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a/ }).click();
     await expect.poll(() => serviceCalls).toBe(2);
     await expect(page.getByText(/\u0427\u0430\u0441\u0442\u044c \u0434\u0430\u043d\u043d\u044b\u0445 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430/)).toHaveCount(0);
+    await expect(page.locator('.session-bar.warning')).toHaveCount(0);
   });
 
   test('never renders object statuses as [object Object]', async ({ page }) => {
