@@ -7,7 +7,11 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 
 - Base review SHA: `d45a779dfa9dc024b426cef358d3df4d32478897`
 - Branch: `remediation/transaction-and-privilege-boundaries`
-- Code verification SHA: `d7dffaf` (recovery fence plus route-verification semantics follow-up).
+- Code verification SHA: `084898c8898c99203017964de1d5e377b670df0d` (recovery
+  fence, route-verification semantics, bounded Zapret modes, truthful UI/browser
+  coverage, screen-specific request budget, refresh cancellation, backend-gated
+  onboarding, stateful Fast Start completion, and robust Zapret process ownership). This document may be advanced by docs-only
+  commits; the code evidence remains bound to this SHA.
 - Verification scope: the exact code SHA recorded here; older evidence is not
   inherited by this follow-up.
 - Hardware scope: **not run**. Flint 2 was not contacted, installed, rebooted,
@@ -27,13 +31,16 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | recovery mutation allowlist | `go test ./internal/api -run 'TestRecovery|TestAutomaticDomainCommit|TestHealthScheduler'` | PASS | local |
 | recovery status persistence failure | `TestRecoveryStatusPersistenceFailureInstallsMemoryFence` | PASS | local |
 | concurrent recovery/apply fence | `TestRecoveryTransitionExcludesConcurrentMutation` | PASS | local |
+| frontend recovery mutation fence | `npm run test`, `npm run browser:test` (`recovery=starting`) | PASS (35 unit tests; 9 browser tests) | local Chromium |
 | immutable bootstrap | `tests/openwrt-adapter-integration.sh` | PASS | local/mock |
 | installer parent modes | `tests/installer-lifecycle.sh` | PASS | local/mock |
+| legacy shell atomic write | `tests/shell-library.sh` | PASS (mode check is Linux-only; Windows reports `NOT RUN LOCALLY`) | local/mock |
+| artifact directory fsync failure | `tests/content-aware-install.sh` | PASS — failed exact and fallback sync is surfaced as `fsync_failed` | local/mock |
 | boot guard | `tests/boot-guard-policy.sh`, `tests/boot-guard-service.sh` | PASS | local/mock |
 | privileged helper boundary | `tests/helper-service.sh`, `go test ./internal/helper` | PASS | local/mock |
-| nft transition | `tests/nft-transition-namespace.sh` | PASS, GitHub Actions run [32559811433](https://github.com/Zaqvierm/FlintRoute/actions/runs/32559811433) | Linux namespace |
+| nft transition | `tests/nft-transition-namespace.sh` | PASS — [run 32575449189](https://github.com/Zaqvierm/FlintRoute/actions/runs/32575449189), exact code SHA `3173e32c6e040794bdf73078e013908aabc18c38` | Linux namespace |
 | hotplug boundedness | `tests/hotplug-bounded.sh` | PASS | local/mock |
-| Zapret cleanup | `tests/zapret-calibration-runtime.sh` | PASS, GitHub Actions run [32559811439](https://github.com/Zaqvierm/FlintRoute/actions/runs/32559811439) | Linux process/procfs |
+| Zapret cleanup | `tests/zapret-calibration-runtime.sh` | PASS — [run 32575449237](https://github.com/Zaqvierm/FlintRoute/actions/runs/32575449237), exact code SHA `3173e32c6e040794bdf73078e013908aabc18c38` | Linux process/procfs |
 | SSRF and decompression limits | `go test ./internal/remotefetch ./internal/vpnsub ./internal/tspu ./internal/geoip` | PASS | local |
 | Xray typed input | `go test ./internal/vpnsub` | PASS | local |
 | resource budget | `go test ./internal/api ./internal/probe` | PASS | local |
@@ -42,16 +49,108 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 | route latency vs verification duration | probe/API separation tests | PASS | local |
 | unknown route latency scoring | `TestSelectBestDoesNotTreatUnknownLatencyAsZero` | PASS | local |
 | frontend build | `npm run build` | PASS | local |
-| frontend tests | `npm.cmd test -- --run` | PASS (16 tests) | local |
+| frontend tests | `npm test` | PASS (35 tests) | local |
+| browser smoke/responsive | `npm run browser:test` | PASS (9 tests; 10 viewport matrix); [CI run 32575449236](https://github.com/Zaqvierm/FlintRoute/actions/runs/32575449236) | local Chromium + Linux CI |
+| ShellCheck | `.tools/shellcheck-v0.11.0/shellcheck.exe -x <tracked shell files>` | PASS | local |
 | race/vet | `go test -race ./...`, `go vet ./...` | PASS | local |
 
-The full local runner at the recorded SHA completed in 326.6 seconds with
+The full local runner at the recorded code SHA completed in 365.3 seconds with
 `all_tests_ok=true`. Its Linux-only namespace/process-group steps were
 honestly reported as `NOT RUN LOCALLY`; the independent GitHub runs above are
 the Linux evidence. The earlier `e04778e` nft run failed because the fixture's
 background traffic generator died before the counter assertion. Follow-up
 `abf26b6` keeps the namespace-side generator alive and the rerun passed. That
 failure remains part of the evidence trail rather than being erased.
+
+The previous Zapret CI runs for `2a61405`, `29680f1` and `d598278` exposed
+three real harness errors: trusting `setsid`'s launcher PID, using `$11`/`$13`
+instead of braced positional parameters, and a release-file race. The current
+`163b17c` test publishes the child PID from inside the new session, stops it
+before ownership validation, resumes it only after the PGID check, and then
+performs owned cleanup. Those failures remain recorded here; they are not
+being hidden behind a retry.
+
+The final lint-only follow-up `3173e32` makes the shell-library regression
+portable on Windows; its mode assertion remains explicitly Linux-only.
+
+The UI refresh budget is explicit: a Services-screen refresh requests only the
+always-on overview/system/health snapshots plus services and revisions. The
+browser regression asserts that unrelated collections are not requested, and a
+second regression asserts that a delayed services response is aborted when
+navigation changes.
+
+The Zapret calibration UI now has two explicit modes. `quick` is the bounded
+default and passes the pinned upstream `SCANLEVEL=quick`; `exhaustive` is an
+explicit maintenance action capped at six hours and passes `SCANLEVEL=force`.
+The current repository has no authoritative fixed 21-strategy asset, so the
+UI does not invent that number. Neither mode silently activates a production
+profile; the result is a reviewed candidate/draft.
+
+## Prior follow-up evidence
+
+The prior follow-up code SHA was `4345207ec79e5290a3a6de78a01b8ce84ad702e2`.
+The artifact directory fsync regression now fails closed when both the exact
+directory sync and the explicit global sync fallback fail; the runtime write
+log records `fsync_failed` and `atomic_install` returns an error. The local
+full runner passed at this SHA in about 300.5 seconds with
+`all_tests_ok=true`; Linux-only namespace/process-group checks remain
+`NOT RUN LOCALLY` on Windows.
+
+The Linux CI evidence for that SHA is:
+
+- nft transition safety: [run 32576221526](https://github.com/Zaqvierm/FlintRoute/actions/runs/32576221526)
+- Zapret process-group safety: [run 32576221472](https://github.com/Zaqvierm/FlintRoute/actions/runs/32576221472)
+- UI browser/responsive: [run 32576221408](https://github.com/Zaqvierm/FlintRoute/actions/runs/32576221408)
+
+The earlier matrix rows retain their original SHAs as historical evidence;
+the entries above are the authoritative follow-up results for the current
+that prior head; the latest local follow-up is recorded below.
+
+## Latest local follow-up
+
+At `084898c8898c99203017964de1d5e377b670df0d`, onboarding readiness is
+fail-closed: only explicit route/DNS proof states pass; simulation,
+unverified, missing-upstream, and unknown statuses do not. The UI consumes the
+backend `router_ready` boolean when present and has a tested explicit-status
+fallback, so an object cannot become `[object Object]` or readiness by
+coercion. Incomplete Fast Start is now resumable from backend state: stale
+localStorage screen/opened flags cannot suppress the wizard, and invalid or
+old URLs are redirected only after backend onboarding/revision state is read.
+The browser regression explicitly seeds the stale `flintroute-first-run-opened`
+flag and still observes the backend-required wizard. Persisted onboarding step
+statuses now use an explicit accepted/skipped allowlist in both backend and UI;
+corrupt values cannot unlock completion. Fast Start component, VLESS, Smart
+DNS, TGWS and Zapret reads are AbortController-bound and stale results are
+discarded after navigation. Existing service data cannot mark the services step
+complete while its persisted status is pending. The stateful browser fixture
+now completes Direct-only → automatic services → backend completion → Overview,
+and caught/fixed a callback that previously discarded `completed=true`. The
+full local runner at this exact SHA passed in 365.3 seconds with
+`all_tests_ok=true`; full `go test -race ./...`, the focused frontend gate and
+browser gate also passed. Linux-only namespace/process-group checks remain
+`NOT RUN LOCALLY` on Windows.
+
+The prior code-SHA CI runs for this frontend/test state were:
+
+- nft transition safety: [run 32578063407](https://github.com/Zaqvierm/FlintRoute/actions/runs/32578063407)
+- Zapret process-group safety: [run 32578063499](https://github.com/Zaqvierm/FlintRoute/actions/runs/32578063499)
+- UI browser/responsive: [run 32578063388](https://github.com/Zaqvierm/FlintRoute/actions/runs/32578063388)
+
+The latest confirmation runs were triggered by docs-only head `097bb2f`; no
+code changed after `91193d7`:
+
+- nft transition safety: [run 32578987502](https://github.com/Zaqvierm/FlintRoute/actions/runs/32578987502)
+- Zapret process-group safety: [run 32578987408](https://github.com/Zaqvierm/FlintRoute/actions/runs/32578987408)
+- UI browser/responsive: [run 32578987494](https://github.com/Zaqvierm/FlintRoute/actions/runs/32578987494)
+
+The current docs head is `2194119c0814813c4b5316112bfc46d69ca6fd7b`.
+It contains documentation-only evidence updates after the code SHA above;
+the code remains unchanged from `084898c8898c99203017964de1d5e377b670df0d`.
+The latest required CI runs for that head passed:
+
+- nft transition safety: [run 32579761689](https://github.com/Zaqvierm/FlintRoute/actions/runs/32579761689)
+- Zapret process-group safety: [run 32579761688](https://github.com/Zaqvierm/FlintRoute/actions/runs/32579761688)
+- UI browser/responsive: [run 32579761695](https://github.com/Zaqvierm/FlintRoute/actions/runs/32579761695)
 
 ## Known limitation
 

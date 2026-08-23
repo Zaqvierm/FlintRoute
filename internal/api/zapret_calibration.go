@@ -21,6 +21,7 @@ import (
 type zapretCalibrationRequest struct {
 	Domain              string `json:"domain"`
 	AllowManagedRestart bool   `json:"allow_managed_restart,omitempty"`
+	Mode                string `json:"mode,omitempty"`
 }
 
 func (s *Server) handleZapretCalibration(w http.ResponseWriter, r *http.Request) {
@@ -43,6 +44,11 @@ func (s *Server) handleZapretCalibration(w http.ResponseWriter, r *http.Request)
 			writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())
 			return
 		}
+		mode, err := zapret.NormalizeCalibrationMode(request.Mode)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "zapret_calibration_mode_invalid", err.Error())
+			return
+		}
 		fingerprint, err := s.verifiedCalibrationNetworkFingerprint()
 		if err != nil {
 			writeError(w, r, http.StatusPreconditionFailed, "zapret_network_unverified", err.Error())
@@ -58,12 +64,13 @@ func (s *Server) handleZapretCalibration(w http.ResponseWriter, r *http.Request)
 			Domain: request.Domain, BundleID: bundleID, NetworkFingerprint: fingerprint,
 			ResolvedIPv4:        resolvedIPv4,
 			AllowManagedRestart: request.AllowManagedRestart,
+			Mode:                mode,
 		})
 		if err != nil {
 			writeError(w, r, http.StatusConflict, "zapret_calibration_start_failed", err.Error())
 			return
 		}
-		s.publishEvent(Event{Type: "zapret.calibration_started", Severity: "info", ReasonCode: "provider_calibration_started", Details: map[string]any{"domain": status.Domain, "concurrency": status.Concurrency}})
+		s.publishEvent(Event{Type: "zapret.calibration_started", Severity: "info", ReasonCode: "provider_calibration_started", Details: map[string]any{"domain": status.Domain, "mode": status.Mode, "scan_level": status.ScanLevel, "concurrency": status.Concurrency}})
 		writeData(w, r, status)
 	case http.MethodDelete:
 		release, failure := s.acquireMutationLease()

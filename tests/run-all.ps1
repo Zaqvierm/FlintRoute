@@ -118,6 +118,12 @@ if ($LASTEXITCODE -ne 0) {
   throw "content-aware install test failed"
 }
 
+Write-Host "== shell library =="
+& $gitSh tests/shell-library.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "shell library test failed"
+}
+
 Write-Host "== DNS observation bootstrap =="
 & $gitSh tests/dns-observer-bootstrap.sh
 if ($LASTEXITCODE -ne 0) {

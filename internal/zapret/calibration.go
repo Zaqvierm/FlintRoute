@@ -22,12 +22,52 @@ const calibrationConcurrencyReason = "upstream blockcheck uses shared nft, NFQUE
 
 var errCalibrationUpstreamTimeout = errors.New("upstream Zapret blockcheck timed out")
 
+// CalibrationMode deliberately exposes two different user actions. Quick is
+// the bounded/default check; exhaustive is an explicit maintenance operation
+// that may run for hours. The runner still owns the actual upstream search
+// space: we must not invent a fake "21 strategies" count when the pinned
+// blockcheck does not expose one.
+type CalibrationMode string
+
+const (
+	CalibrationModeQuick      CalibrationMode = "quick"
+	CalibrationModeExhaustive CalibrationMode = "exhaustive"
+)
+
+func NormalizeCalibrationMode(value string) (CalibrationMode, error) {
+	mode := CalibrationMode(strings.ToLower(strings.TrimSpace(value)))
+	if mode == "" {
+		return CalibrationModeQuick, nil
+	}
+	switch mode {
+	case CalibrationModeQuick, CalibrationModeExhaustive:
+		return mode, nil
+	default:
+		return "", errors.New("calibration mode must be quick or exhaustive")
+	}
+}
+
+func (mode CalibrationMode) scanLevel() string {
+	if mode == CalibrationModeExhaustive {
+		return "force"
+	}
+	return "quick"
+}
+
+func (mode CalibrationMode) defaultTimeout() time.Duration {
+	if mode == CalibrationModeExhaustive {
+		return 6 * time.Hour
+	}
+	return 5 * time.Minute
+}
+
 type CalibrationRequest struct {
-	Domain              string   `json:"domain"`
-	BundleID            string   `json:"bundle_id"`
-	NetworkFingerprint  string   `json:"network_fingerprint"`
-	ResolvedIPv4        []string `json:"-"`
-	AllowManagedRestart bool     `json:"allow_managed_restart,omitempty"`
+	Domain              string          `json:"domain"`
+	BundleID            string          `json:"bundle_id"`
+	NetworkFingerprint  string          `json:"network_fingerprint"`
+	ResolvedIPv4        []string        `json:"-"`
+	AllowManagedRestart bool            `json:"allow_managed_restart,omitempty"`
+	Mode                CalibrationMode `json:"mode,omitempty"`
 }
 
 type CalibrationCandidate struct {
@@ -48,6 +88,8 @@ type CalibrationStatus struct {
 	Domain               string                 `json:"domain,omitempty"`
 	BundleID             string                 `json:"bundle_id,omitempty"`
 	NetworkFingerprint   string                 `json:"network_fingerprint,omitempty"`
+	Mode                 CalibrationMode        `json:"mode"`
+	ScanLevel            string                 `json:"scan_level"`
 	Concurrency          int                    `json:"concurrency"`
 	ConcurrencyReason    string                 `json:"concurrency_reason"`
 	CandidateCount       int                    `json:"candidate_count"`
@@ -101,7 +143,9 @@ type CalibrationManager struct {
 }
 
 func NewCalibrationManager(runner CalibrationRunner) *CalibrationManager {
-	return &CalibrationManager{Runner: runner, Timeout: 42 * time.Minute}
+	// A zero Timeout means use the mode-specific bounded default. Tests and
+	// maintenance callers may still set Timeout explicitly for fault injection.
+	return &CalibrationManager{Runner: runner}
 }
 
 // CatalogPath returns the durable catalog produced by the runner. The path is
@@ -136,6 +180,11 @@ func (m *CalibrationManager) Start(request CalibrationRequest) (CalibrationStatu
 		return CalibrationStatus{}, errors.New("calibration domain is invalid")
 	}
 	request.Domain = normalized
+	mode, err := NormalizeCalibrationMode(string(request.Mode))
+	if err != nil {
+		return CalibrationStatus{}, err
+	}
+	request.Mode = mode
 	if !profileIDPattern.MatchString(request.BundleID) {
 		return CalibrationStatus{}, errors.New("calibration bundle ID is invalid")
 	}
@@ -155,14 +204,18 @@ func (m *CalibrationManager) Start(request CalibrationRequest) (CalibrationStatu
 	now := m.now()
 	runID := calibrationRunID(request, now)
 	timeout := m.Timeout
-	if timeout <= 0 || timeout > 45*time.Minute {
-		timeout = 42 * time.Minute
+	if timeout <= 0 {
+		timeout = request.Mode.defaultTimeout()
+	}
+	if timeout > 6*time.Hour {
+		timeout = 6 * time.Hour
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	m.cancel = cancel
 	m.current = CalibrationStatus{
 		ID: runID, State: "running", Stage: "upstream_blockcheck", Domain: request.Domain,
 		BundleID: request.BundleID, NetworkFingerprint: request.NetworkFingerprint,
+		Mode: request.Mode, ScanLevel: request.Mode.scanLevel(),
 		Concurrency: 1, ConcurrencyReason: calibrationConcurrencyReason, StartedAt: now,
 	}
 	go m.run(ctx, request, runID)
@@ -234,12 +287,13 @@ func (m *CalibrationManager) run(ctx context.Context, request CalibrationRequest
 	finished := m.now()
 	status := CalibrationStatus{
 		ID: runID, Domain: request.Domain, BundleID: request.BundleID, NetworkFingerprint: request.NetworkFingerprint,
+		Mode: request.Mode, ScanLevel: request.Mode.scanLevel(),
 		Concurrency: 1, ConcurrencyReason: calibrationConcurrencyReason, ActivationRequired: false,
 	}
 	if runErr != nil {
 		status.State, status.Stage, status.ErrorCode, status.Error = "failed", "failed", "zapret_calibration_failed", safeCalibrationError(runErr)
 		if errors.Is(runErr, errCalibrationUpstreamTimeout) {
-			status.ErrorCode, status.Error = "zapret_calibration_timeout", "upstream blockcheck exceeded the 40 minute bounded runtime"
+			status.ErrorCode, status.Error = "zapret_calibration_timeout", "upstream blockcheck exceeded the selected bounded runtime"
 		} else if errors.Is(ctx.Err(), context.Canceled) {
 			status.State, status.Stage, status.ErrorCode, status.Error = "cancelled", "cancelled", "zapret_calibration_cancelled", "calibration was cancelled and cleanup was requested"
 		} else if errors.Is(ctx.Err(), context.DeadlineExceeded) {

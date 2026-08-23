@@ -54,6 +54,39 @@ func TestCalibrationManagerCompletesWithBoundedCandidates(t *testing.T) {
 	}
 }
 
+func TestCalibrationModeDefaultsToQuickAndIsPropagated(t *testing.T) {
+	var got CalibrationRequest
+	raw := []byte(`{"catalog":{"version":1,"profiles":[{"id":"auto-a","provider":"nfqws-v1","provider_version":"72.13","transports":["tcp"],"ports":[443],"strategy_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]},"evidence":[]}`)
+	manager := NewCalibrationManager(calibrationRunnerFunc(func(_ context.Context, request CalibrationRequest) ([]byte, error) {
+		got = request
+		return raw, nil
+	}))
+	request := CalibrationRequest{Domain: "example.com", BundleID: "auto-example", NetworkFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+	if _, err := manager.Start(request); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for manager.Status().State == "running" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got.Mode != CalibrationModeQuick {
+		t.Fatalf("default mode=%q, want quick", got.Mode)
+	}
+	status := manager.Status()
+	if status.Mode != CalibrationModeQuick || status.ScanLevel != "quick" {
+		t.Fatalf("status mode=%q scan_level=%q", status.Mode, status.ScanLevel)
+	}
+}
+
+func TestCalibrationModeRejectsUnknownAndMapsExhaustive(t *testing.T) {
+	if _, err := NormalizeCalibrationMode("bogus"); err == nil {
+		t.Fatal("unknown calibration mode must fail closed")
+	}
+	if mode, err := NormalizeCalibrationMode(" exhaustive "); err != nil || mode != CalibrationModeExhaustive || mode.scanLevel() != "force" || mode.defaultTimeout() != 6*time.Hour {
+		t.Fatalf("unexpected exhaustive mode: mode=%q err=%v", mode, err)
+	}
+}
+
 func TestCalibrationManagerRejectsConcurrentRunAndCancels(t *testing.T) {
 	started := make(chan struct{})
 	var once sync.Once

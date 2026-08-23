@@ -25,7 +25,9 @@ import {
   getDiscovery,
   getExternalSOCKS,
   getEvents,
+  getHealth,
   getOverview,
+  getOnboarding,
   getRevisions,
   getRoutes,
   getSecurity,
@@ -55,6 +57,7 @@ import {
   startZapretCalibration,
   setupAdmin,
   testTelegram,
+  updateOnboarding,
   type ChangeSet,
   type ChangeOp,
   type ComponentAction,
@@ -63,6 +66,7 @@ import {
   type DiscoveryStatus,
   type EventItem,
   type ManualVLESSServer,
+  type OnboardingState,
   type RevisionSummary,
   type SessionInfo,
   type TrafficSnapshot,
@@ -77,20 +81,44 @@ import {
   humanStatus,
   isAdministrativeEvent,
   isDecisionEvent,
+  onboardingRouterReady,
+  onboardingProgress,
   parseResolverInput,
+  recoveryMutationAllowed,
+  serviceColumnFor,
   statusTone,
   stringArray,
   textValue,
   toDecisionCard
 } from './view-models';
+import {
+  AlertCenter,
+  AuthShell,
+  BootScreen,
+  LoadingSkeleton,
+  OperationCenterSummary,
+  PrivacyBar,
+  SessionBar,
+  TopBar
+} from './app/shell';
 import './styles.css';
 
 const navigation = [
-  { title: 'Главное', screens: ['Быстрая настройка', 'Обзор', 'Карта сети', 'Устройства', 'Поток решений'] },
-  { title: 'Маршрутизация', screens: ['Сервисы', 'Маршруты', 'Компоненты', 'VLESS-серверы', 'Smart DNS', 'Zapret', 'TG WS Proxy', 'Discovery'] },
-  { title: 'Система', screens: ['Трафик', 'Telegram', 'Ревизии и recovery', 'Диагностика', 'Безопасность', 'Advanced'] }
+  { title: 'Обзор', screens: ['Быстрая настройка', 'Обзор'] },
+  { title: 'Сеть', screens: ['Карта сети', 'Устройства', 'Трафик'] },
+  { title: 'Правила', screens: ['Сервисы', 'Маршруты', 'Компоненты', 'VLESS-серверы', 'Smart DNS', 'Zapret', 'TG WS Proxy', 'Discovery'] },
+  { title: 'Активность', screens: ['Поток решений', 'Операции', 'Telegram', 'Ревизии и recovery'] },
+  { title: 'Система', screens: ['Диагностика', 'Безопасность', 'Настройки', 'Резервное копирование', 'Advanced', 'External SOCKS'] }
 ];
-const availableScreens = new Set([...navigation.flatMap((group) => group.screens), 'External SOCKS']);
+const notFoundScreen = 'Страница не найдена';
+const availableScreens = new Set([...navigation.flatMap((group) => group.screens), 'External SOCKS', notFoundScreen]);
+
+function screenFromLocation(): string | null {
+  if (typeof window === 'undefined') return null;
+  const raw = new URLSearchParams(window.location.search).get('screen');
+  if (raw === null) return null;
+  return availableScreens.has(raw) ? raw : notFoundScreen;
+}
 
 function humanChangeBlock(reason?: string): string {
   const messages: Record<string, string> = {
@@ -137,9 +165,18 @@ const unavailableOverview = {
   freshness: 'stale'
 };
 
+function staleFallback<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    return { ...(value as Record<string, unknown>), freshness: 'stale' } as T;
+  }
+  return value;
+}
+
 function App() {
   const [screen, setScreen] = useState(() => {
     try {
+      const fromURL = screenFromLocation();
+      if (fromURL) return fromURL;
       const stored = window.localStorage.getItem('flintroute-screen');
       return stored && availableScreens.has(stored) ? stored : 'Обзор';
     } catch {
@@ -147,10 +184,13 @@ function App() {
     }
   });
   const [session, setSession] = useState<SessionInfo | null>(null);
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [authError, setAuthError] = useState('');
   const [apiError, setApiError] = useState('');
   const [overview, setOverview] = useState<any>(unavailableOverview);
+  const [onboarding, setOnboarding] = useState<OnboardingState | null>(null);
+  const [sliceErrors, setSliceErrors] = useState<Array<{ name: string; message: string }>>([]);
   const [topology, setTopology] = useState<any>({ nodes: [], edges: [], status: 'unavailable', source: 'api-unavailable' });
   const [devices, setDevices] = useState<any[]>([]);
   const [services, setServices] = useState<any[]>([]);
@@ -173,40 +213,101 @@ function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState('');
   const refreshInFlight = useRef<Promise<void> | null>(null);
+  const refreshPrivacy = useRef<boolean | undefined>(undefined);
+  const refreshScreen = useRef<string | undefined>(undefined);
+  const refreshAbort = useRef<AbortController | null>(null);
+  const refreshGeneration = useRef(0);
   const [privacyHidden, setPrivacyHidden] = useState(() => {
-    try { return window.localStorage.getItem('flintroute-address-privacy') === 'hidden'; } catch { return false; }
+    try { return window.localStorage.getItem('flintroute-address-privacy') !== 'visible'; } catch { return true; }
   });
+  const screenRef = useRef(screen);
+
+  useEffect(() => {
+    screenRef.current = screen;
+  }, [screen]);
 
   function selectScreen(next: string) {
     setScreen(next);
+    setMobileMoreOpen(false);
     try {
       window.localStorage.setItem('flintroute-screen', next);
+      const url = new URL(window.location.href);
+      url.searchParams.set('screen', next);
+      window.history.pushState({ screen: next }, '', url);
     } catch {
       // Storage may be disabled; navigation still works for this session.
     }
   }
 
+  useEffect(() => {
+    const onPopState = () => setScreen(screenFromLocation() ?? 'Обзор');
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
   async function refresh(hideAddresses = privacyHidden) {
     // One dashboard refresh is enough.  A slow router must not accumulate
     // overlapping command batches when the timer, SSE reconnect, or a user
     // click happens at the same time.
-    if (refreshInFlight.current) return refreshInFlight.current;
+    const requestedScreen = screenRef.current;
+    if (refreshInFlight.current && refreshPrivacy.current === hideAddresses && refreshScreen.current === requestedScreen) return refreshInFlight.current;
+    refreshAbort.current?.abort();
+    const controller = new AbortController();
+    refreshAbort.current = controller;
+    const signal = controller.signal;
+    const generation = ++refreshGeneration.current;
     const operation = (async () => {
     setRefreshing(true);
     try {
-      const [nextOverview, nextTopology, nextDevices, nextServices, nextRoutes, nextTraffic, nextEvents, nextSystem, nextRevisions, nextDiscovery] = await Promise.all([
-        getOverview(),
-        getTopology(hideAddresses),
-        getDevices(hideAddresses),
-        getServices(),
-        getRoutes(),
-        getTraffic(),
-        getEvents(),
-        getSystem(),
-        getRevisions(),
-        getDiscovery()
+      const activeScreen = requestedScreen;
+      const needsTopology = ['Обзор', 'Карта сети', 'Устройства', 'Карточка устройства'].includes(activeScreen);
+      const needsDevices = needsTopology;
+      const needsServices = ['Обзор', 'Сервисы', 'Группа сервиса'].includes(activeScreen);
+      const needsRoutes = ['Маршруты', 'VLESS-серверы', 'Zapret'].includes(activeScreen);
+      const needsTraffic = ['Обзор', 'Трафик'].includes(activeScreen);
+      const needsEvents = ['Обзор', 'Устройства', 'Карточка устройства', 'Поток решений', 'Telegram'].includes(activeScreen);
+      const needsChanges = ['Обзор', 'Операции', 'Advanced'].includes(activeScreen);
+      const needsDiscovery = ['Обзор', 'Discovery', 'Поток решений'].includes(activeScreen);
+      const needsOnboarding = ['Обзор', 'Быстрая настройка'].includes(activeScreen);
+      const needsRevisions = needsOnboarding || needsServices || needsRoutes || needsChanges || ['Smart DNS', 'External SOCKS', 'TG WS Proxy', 'Telegram', 'Ревизии и recovery'].includes(activeScreen);
+      const needsSecurity = ['Обзор', 'Безопасность'].includes(activeScreen);
+      const needsDiagnostics = activeScreen === 'Диагностика';
+      const needsLifecycle = needsDiagnostics || activeScreen === 'Ревизии и recovery';
+      const needsStorage = needsDiagnostics;
+      const needsSettings = activeScreen === 'Настройки';
+      const needsBackups = activeScreen === 'Ревизии и recovery' || activeScreen === 'Резервное копирование';
+      const optionalErrors: Array<{ name: string; message: string }> = [];
+      async function safe<T>(name: string, load: Promise<T>, fallback: T): Promise<T> {
+        try {
+          return await load;
+        } catch (reason) {
+          if (reason instanceof Error && reason.name === 'AbortError') throw reason;
+          if (!(reason instanceof APIError && reason.status === 403)) optionalErrors.push({ name, message: errorInfo(reason).message });
+          return fallback;
+        }
+      }
+      async function maybe<T>(needed: boolean, name: string, load: () => Promise<T>, fallback: T): Promise<T> {
+        return needed ? safe(name, load(), fallback) : fallback;
+      }
+      const [nextOverview, nextTopology, nextDevices, nextServices, nextRoutes, nextTraffic, nextEvents, nextSystem, nextRevisions, nextDiscovery, nextOnboarding, nextHealth] = await Promise.all([
+        safe('overview', getOverview(signal), staleFallback(overview)),
+        maybe(needsTopology, 'topology', () => getTopology(hideAddresses, signal), hideAddresses ? { nodes: [], edges: [], status: 'unavailable', source: 'privacy-fallback' } : staleFallback(topology)),
+        maybe(needsDevices, 'devices', () => getDevices(hideAddresses, signal), hideAddresses ? [] : devices),
+        maybe(needsServices, 'services', () => getServices(signal), services),
+        maybe(needsRoutes, 'routes', () => getRoutes(signal), routes),
+        maybe(needsTraffic, 'traffic', () => getTraffic(signal), traffic),
+        maybe(needsEvents, 'events', () => getEvents(500, signal), hideAddresses ? [] : events),
+        safe('system', getSystem(signal), staleFallback(system)),
+        maybe(needsRevisions || activeScreen === notFoundScreen, 'revisions', () => getRevisions(signal), revisions),
+        maybe(needsDiscovery, 'discovery', () => getDiscovery(signal), discovery),
+        maybe(needsOnboarding || activeScreen === notFoundScreen, 'onboarding', () => getOnboarding(signal), onboarding),
+        safe('health', getHealth(signal), { status: 'unavailable', recovery_status: 'unknown', recovery_reason: 'Статус восстановления недоступен' })
       ]);
-      setOverview(nextOverview);
+      if (generation !== refreshGeneration.current) return;
+      const enrichedOverview = nextOverview && typeof nextOverview === 'object'
+        ? { ...(nextOverview as Record<string, unknown>), ...nextHealth }
+        : nextOverview;
+      setOverview(enrichedOverview);
       setTopology(nextTopology);
       setDevices(nextDevices);
       setServices(nextServices);
@@ -214,49 +315,65 @@ function App() {
       setTraffic((previous) => withTrafficRates(previous, nextTraffic));
       setEvents(nextEvents);
       setSystem(nextSystem);
-      setRevisions(nextRevisions);
-      setConfigVersion(nextRevisions.config_version);
-      setDiscovery(nextDiscovery);
-      if (nextRevisions.config_version <= 1 && nextServices.length === 0) {
-        try {
-          if (window.localStorage.getItem('flintroute-first-run-complete') !== '1' && window.localStorage.getItem('flintroute-first-run-opened') !== '1') {
-            window.localStorage.setItem('flintroute-first-run-opened', '1');
-            selectScreen('Быстрая настройка');
-          }
-        } catch {
-          // The wizard remains available from navigation when storage is disabled.
-        }
+      if (nextRevisions) {
+        setRevisions(nextRevisions);
+        setConfigVersion(nextRevisions.config_version);
       }
-
-      const optionalErrors: string[] = [];
+      setDiscovery(nextDiscovery);
+      setOnboarding(nextOnboarding);
+      if (nextRevisions && nextRevisions.config_version <= 1 && nextServices.length === 0 && nextOnboarding?.completed !== true) {
+        const firstRunScreen = navigation[0].screens[0];
+        // The URL is the navigation source of truth. Invalid/old URLs and
+        // stale local preferences must still land on the resumable wizard.
+        if (screenFromLocation() !== firstRunScreen) selectScreen(firstRunScreen);
+      }
       const optional = await Promise.allSettled([
-        getChanges(), getSecurity(), getSecuritySummary(), getDiagnostics(), getLifecycle(), getStorage(), getSettings(), getBackups()
+        maybe(needsChanges, 'changes', () => getChanges(signal), changes),
+        maybe(needsSecurity, 'security', () => getSecurity(signal), security),
+        maybe(needsSecurity, 'security-summary', () => getSecuritySummary(signal), securitySummary),
+        maybe(needsDiagnostics, 'diagnostics', () => getDiagnostics(signal), diagnostics),
+        maybe(needsLifecycle, 'lifecycle', () => getLifecycle(signal), lifecycle),
+        maybe(needsStorage, 'storage', () => getStorage(signal), storage),
+        maybe(needsSettings, 'settings', () => getSettings(signal), settings),
+        maybe(needsBackups, 'backups', () => getBackups(signal), backups)
       ]);
       const setters = [setChanges, setSecurity, setSecuritySummary, setDiagnostics, setLifecycle, setStorage, setSettings, setBackups];
       optional.forEach((result, index) => {
         if (result.status === 'fulfilled') setters[index](result.value as never);
-        else if (!(result.reason instanceof APIError && result.reason.status === 403)) optionalErrors.push(errorInfo(result.reason).message);
+        else if (!(result.reason instanceof APIError && result.reason.status === 403)) optionalErrors.push({ name: `optional-${index + 1}`, message: errorInfo(result.reason).message });
       });
       if (optional[0].status === 'rejected') setChanges([]);
       if (optional[1].status === 'rejected') setSecurity(null);
       setLastUpdated(new Date().toISOString());
       setLoading(false);
-      setApiError(optionalErrors.join('; '));
+      setSliceErrors(optionalErrors);
+      setApiError(optionalErrors.length ? 'Некоторые данные устарели или недоступны' : '');
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') return;
+      if (generation !== refreshGeneration.current) return;
       if (err instanceof APIError && err.status === 401) {
         setSession(null);
       }
       setApiError(err instanceof Error ? err.message : 'API недоступен');
     } finally {
-      setRefreshing(false);
-      setLoading(false);
+      if (refreshAbort.current === controller) refreshAbort.current = null;
+      if (generation === refreshGeneration.current) {
+        setRefreshing(false);
+        setLoading(false);
+      }
     }
     })();
     refreshInFlight.current = operation;
+    refreshPrivacy.current = hideAddresses;
+    refreshScreen.current = requestedScreen;
     try {
       await operation;
     } finally {
       if (refreshInFlight.current === operation) refreshInFlight.current = null;
+      if (!refreshInFlight.current) {
+        refreshPrivacy.current = undefined;
+        refreshScreen.current = undefined;
+      }
     }
   }
 
@@ -309,12 +426,29 @@ function App() {
     };
   }, [session?.user, session?.role, privacyHidden]);
 
+  useEffect(() => {
+    if (session) void refresh(privacyHidden);
+  }, [screen, session?.user, privacyHidden]);
+
   async function togglePrivacy() {
     const next = !privacyHidden;
     setPrivacyHidden(next);
+    if (next) {
+      // Do not leave a previously revealed entity alive while the hidden
+      // response is in flight. The keyed content tree also closes drawers.
+      setTopology({ nodes: [], edges: [], status: 'unavailable', source: 'privacy-transition' });
+      setDevices([]);
+      setEvents([]);
+    }
     try { window.localStorage.setItem('flintroute-address-privacy', next ? 'hidden' : 'visible'); } catch { /* session state still works */ }
     await refresh(next);
   }
+
+  useEffect(() => {
+    if (privacyHidden) return;
+    const timer = window.setTimeout(() => { void togglePrivacy(); }, 10 * 60 * 1000);
+    return () => window.clearTimeout(timer);
+  }, [privacyHidden]);
 
   async function handleLogin(username: string, password: string) {
     setAuthError('');
@@ -353,6 +487,17 @@ function App() {
     setRoutes([]);
     setEvents([]);
     setChanges([]);
+    setOnboarding(null);
+    setSystem(null);
+    setDiagnostics(null);
+    setLifecycle(null);
+    setStorage(null);
+    setSettings(null);
+    setBackups(null);
+    setRevisions(null);
+    setSecurity(null);
+    setSecuritySummary(null);
+    setSliceErrors([]);
   }
 
   if (!authChecked) {
@@ -377,123 +522,44 @@ function App() {
           {navigation.map((group) => <section class="nav-group" key={group.title}>
             <span class="nav-title">{group.title}</span>
             {group.screens.map((s) => (
-              <button class={screen === s ? 'active' : ''} onClick={() => selectScreen(s)} key={s}>
+              <button class={screen === s ? 'active' : ''} aria-current={screen === s ? 'page' : undefined} title={s} onClick={() => selectScreen(s)} key={s}>
                 <span class="nav-dot" />{s}
               </button>
             ))}
           </section>)}
         </nav>
+        <nav class="mobile-nav" aria-label="Основная навигация">
+          {[
+            ['Обзор', 'Обзор'],
+            ['Карта сети', 'Сеть'],
+            ['Сервисы', 'Правила'],
+            ['Поток решений', 'Активность']
+          ].map(([target, label]) => <button class={screen === target ? 'active' : ''} aria-current={screen === target ? 'page' : undefined} title={target} onClick={() => selectScreen(target)} key={target}><span class="nav-dot" />{label}</button>)}
+          <button class={mobileMoreOpen ? 'active' : ''} aria-expanded={mobileMoreOpen} onClick={() => setMobileMoreOpen((open) => !open)}><span class="nav-dot" />Ещё</button>
+        </nav>
+        {mobileMoreOpen && <div class="mobile-more-backdrop" role="presentation" onClick={() => setMobileMoreOpen(false)}><section class="mobile-more" role="dialog" aria-modal="true" aria-label="Дополнительные разделы" onClick={(event) => event.stopPropagation()}><header><b>Дополнительные разделы</b><button class="icon-button" aria-label="Закрыть" onClick={() => setMobileMoreOpen(false)}>×</button></header>{navigation.flatMap((group) => group.screens).filter((item) => !['Обзор', 'Карта сети', 'Сервисы', 'Поток решений'].includes(item)).map((item) => <button class={screen === item ? 'active' : ''} aria-current={screen === item ? 'page' : undefined} onClick={() => selectScreen(item)} key={item}>{item}</button>)}</section></div>}
       </aside>
       <main>
         <SessionBar session={session} apiError={apiError} loading={refreshing} lastUpdated={lastUpdated} onRetry={() => refresh()} onLogout={handleLogout} />
         <PrivacyBar hidden={privacyHidden} onToggle={togglePrivacy} />
-        <TopBar overview={overview} />
-        {loading ? <LoadingSkeleton /> : <Content screen={screen} session={session} configVersion={configVersion} overview={overview} topology={topology} devices={devices} services={services} discovery={discovery} routes={routes} traffic={traffic} events={events} changes={changes} security={security} securitySummary={securitySummary} system={system} diagnostics={diagnostics} lifecycle={lifecycle} storage={storage} settings={settings} backups={backups} revisions={revisions} refresh={refresh} navigate={selectScreen} />}
+        <TopBar overview={overview} navigate={selectScreen} />
+        <AlertCenter errors={sliceErrors} onRetry={() => refresh()} />
+        <RecoveryMutationBanner overview={overview} navigate={selectScreen} onRetry={() => refresh()} />
+        <OperationCenterSummary changes={changes} navigate={selectScreen} />
+        {loading ? <LoadingSkeleton /> : <Content key={privacyHidden ? 'privacy-hidden' : 'privacy-visible'} screen={screen} session={session} configVersion={configVersion} overview={overview} mutationLocked={!recoveryMutationAllowed(overview)} onboarding={onboarding} topology={topology} devices={devices} services={services} discovery={discovery} routes={routes} traffic={traffic} events={events} changes={changes} security={security} securitySummary={securitySummary} system={system} diagnostics={diagnostics} lifecycle={lifecycle} storage={storage} settings={settings} backups={backups} revisions={revisions} refresh={refresh} onboardingAction={async (step: string, action: 'skip' | 'accept' | 'automatic' | 'complete') => { const next = await updateOnboarding(step, action); setOnboarding(next); return next; }} navigate={selectScreen} />}
       </main>
     </div>
   );
 }
 
-function BootScreen() {
-  return (
-    <main class="auth-page">
-      <section class="auth-card">
-        <div class="mark">RP</div>
-        <h1>Router Policy</h1>
-        <p>Проверка локальной сессии.</p>
-      </section>
-    </main>
-  );
-}
-
-function AuthShell({ error, onLogin, onSetup }: { error: string; onLogin: (u: string, p: string) => Promise<void>; onSetup: (u: string, p: string, t: string) => Promise<void> }) {
-  const [mode, setMode] = useState<'login' | 'setup'>('login');
-  const [username, setUsername] = useState('admin');
-  const [password, setPassword] = useState('');
-  const [setupToken, setSetupToken] = useState('');
-  const [busy, setBusy] = useState(false);
-  async function submit(ev: Event) {
-    ev.preventDefault();
-    setBusy(true);
-    try {
-      if (mode === 'login') {
-        await onLogin(username, password);
-      } else {
-        await onSetup(username, password, setupToken);
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <main class="auth-page">
-      <form class="auth-card" onSubmit={submit}>
-        <div class="mark">RP</div>
-        <h1>{mode === 'login' ? 'Вход' : 'Первичная настройка'}</h1>
-        <label>
-          <span>Пользователь</span>
-          <input value={username} onInput={(e) => setUsername((e.target as HTMLInputElement).value)} autocomplete="username" />
-        </label>
-        <label>
-          <span>Пароль</span>
-          <input type="password" value={password} onInput={(e) => setPassword((e.target as HTMLInputElement).value)} autocomplete={mode === 'login' ? 'current-password' : 'new-password'} />
-        </label>
-        {mode === 'setup' && (
-          <label>
-            <span>Setup token</span>
-            <input value={setupToken} onInput={(e) => setSetupToken((e.target as HTMLInputElement).value)} autocomplete="one-time-code" />
-          </label>
-        )}
-        {error && <p class="auth-error">{error}</p>}
-        <button class="primary" disabled={busy}>{busy ? 'Проверка...' : mode === 'login' ? 'Войти' : 'Создать администратора'}</button>
-        <button type="button" onClick={() => setMode(mode === 'login' ? 'setup' : 'login')}>
-          {mode === 'login' ? 'У меня setup token' : 'Вернуться ко входу'}
-        </button>
-      </form>
-    </main>
-  );
-}
-
-function SessionBar({ session, apiError, loading, lastUpdated, onRetry, onLogout }: { session: SessionInfo; apiError: string; loading: boolean; lastUpdated: string; onRetry: () => void; onLogout: () => void }) {
-  return (
-    <div class={`session-bar ${apiError ? 'warning' : ''}`}>
-      <span>{apiError ? `API недоступен: ${apiError}` : loading ? 'Обновляю данные…' : `Обновлено: ${formatDateTime(lastUpdated, 'ещё не обновлялось')}`}</span>
-      <div class="session-actions">{apiError && <button onClick={onRetry}>Повторить</button>}<span>{session.user}</span><button onClick={onLogout}>Выйти</button></div>
-    </div>
-  );
-}
-
-function PrivacyBar({ hidden, onToggle }: { hidden: boolean; onToggle: () => void }) {
-  return <div class={`privacy-bar ${hidden ? '' : 'revealed'}`}>
-    <div><b>{hidden ? 'Адреса скрыты' : 'Адреса устройств видны'}</b><span>{hidden ? 'IP и MAC не передаются в DOM. Настройка сохранена в этом браузере.' : 'Можно скрыть IP и MAC одним переключателем.'}</span></div>
-    <button onClick={onToggle}>{hidden ? 'Показать адреса' : 'Скрыть адреса'}</button>
-  </div>;
-}
-
-function LoadingSkeleton() {
-  return <section class="loading-grid" aria-label="Загрузка"><div /><div /><div /><div /><div /><div /></section>;
-}
-
-function TopBar({ overview }: { overview: any }) {
-  const candidates = [
-    ['Интернет', overview.internet],
-    ['Data plane', overview.data_plane],
-    ['DNS', overview.dns],
-    ['Маршрут', overview.current_route ?? overview.route],
-    ['Ошибки', overview.critical_errors ?? overview.errors]
-  ];
-  const items = candidates.filter(([, value]) => value !== undefined && value !== null && value !== '');
-  return (
-    <header class="topbar">
-      {items.map(([k, v]) => (
-        <div class={`status-pill ${statusTone(v)}`} key={String(k)}>
-          <span>{k}</span>
-          <b>{humanStatus(v)}</b>
-        </div>
-      ))}
-      {!items.length && <div class="status-pill muted"><span>Состояние</span><b>Нет данных</b></div>}
-    </header>
-  );
+function RecoveryMutationBanner({ overview, navigate, onRetry }: { overview: any; navigate: (screen: string) => void; onRetry: () => void }) {
+  if (overview?.recovery_status === undefined || recoveryMutationAllowed(overview)) return null;
+  const status = textValue(overview.recovery_status, 'unknown');
+  const reason = textValue(overview.recovery_reason, 'FlintRoute ещё не доказал безопасное состояние восстановления.');
+  return <section class="warning-panel recovery-lock" role="alert">
+    <div><b>Изменения временно заблокированы</b><p>{reason}</p><small>Интернет и просмотр данных остаются доступны. Новые правила и операции не запускаются, пока состояние роутера не подтверждено.</small></div>
+    <div class="actions"><button onClick={onRetry}>Проверить снова</button><button onClick={() => navigate('Ревизии и recovery')}>Открыть восстановление</button><details><summary>Код</summary><span class="mono">{status} · {textValue(overview.recovery_reason_code, 'recovery_not_safe')}</span></details></div>
+  </section>;
 }
 
 function Content(props: any) {
@@ -514,9 +580,9 @@ function Content(props: any) {
     case 'Карточка устройства':
       return <DeviceCard device={props.devices[0]} />;
     case 'Сервисы':
-      return <Services services={props.services} configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
+      return <Services services={props.services} configVersion={props.configVersion} role={props.session.role} mutationLocked={props.mutationLocked} refresh={props.refresh} navigate={props.navigate} />;
     case 'Discovery':
-      return <Discovery data={props.discovery} configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
+      return <Discovery data={props.discovery} configVersion={props.configVersion} role={props.session.role} mutationLocked={props.mutationLocked} refresh={props.refresh} />;
     case 'Группа сервиса':
       return <ServiceGroup service={props.services[0]} />;
     case 'Политики: таблица':
@@ -524,23 +590,25 @@ function Content(props: any) {
     case 'Политики: доска':
       return <Policies mode="board" />;
     case 'Advanced':
-      return <Changes changes={props.changes} refresh={props.refresh} role={props.session.role} configVersion={props.configVersion} />;
+      return <Changes changes={props.changes} refresh={props.refresh} role={props.session.role} configVersion={props.configVersion} mutationLocked={props.mutationLocked} mode="developer" />;
+    case 'Операции':
+      return <Changes changes={props.changes} refresh={props.refresh} role={props.session.role} configVersion={props.configVersion} mutationLocked={props.mutationLocked} mode="operations" />;
     case 'Маршруты':
       return <Routes routes={props.routes} navigate={props.navigate} />;
     case 'Компоненты':
-      return <Components role={props.session.role} navigate={props.navigate} />;
+      return <Components role={props.session.role} mutationLocked={props.mutationLocked} navigate={props.navigate} />;
     case 'VLESS-серверы':
-      return <Vless routes={props.routes} configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
+      return <Vless routes={props.routes} configVersion={props.configVersion} role={props.session.role} mutationLocked={props.mutationLocked} refresh={props.refresh} navigate={props.navigate} />;
     case 'Smart DNS':
-      return <SmartDNS configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
+      return <SmartDNS configVersion={props.configVersion} role={props.session.role} mutationLocked={props.mutationLocked} refresh={props.refresh} navigate={props.navigate} />;
     case 'Zapret':
-      return <Zapret routes={props.routes} configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
+      return <Zapret routes={props.routes} configVersion={props.configVersion} role={props.session.role} mutationLocked={props.mutationLocked} refresh={props.refresh} navigate={props.navigate} />;
     case 'External SOCKS':
-      return <ExternalSOCKS configVersion={props.configVersion} role={props.session.role} refresh={props.refresh} />;
+      return <ExternalSOCKS configVersion={props.configVersion} role={props.session.role} mutationLocked={props.mutationLocked} refresh={props.refresh} navigate={props.navigate} />;
     case 'TG WS Proxy':
-      return <TGWS role={props.session.role} navigate={props.navigate} />;
+      return <TGWS role={props.session.role} mutationLocked={props.mutationLocked} navigate={props.navigate} />;
     case 'Telegram':
-      return <Telegram role={props.session.role} events={props.events} />;
+      return <Telegram role={props.session.role} mutationLocked={props.mutationLocked} events={props.events} />;
     case 'Поток решений':
       return <DecisionFlow events={props.events} discovery={props.discovery} />;
     case 'Диагностика':
@@ -557,6 +625,8 @@ function Content(props: any) {
       return <Generic title="Обновление" text="Проверка версии, подпись выпуска, checksum, staged install и rollback." />;
     case 'Резервное копирование':
       return <Generic title="Резервное копирование и откат" text="Резервные копии конфигурации, секретов по явному выбору, nft/dnsmasq/fw4 snapshots." />;
+    case notFoundScreen:
+      return <Generic title="Страница не найдена" text="Такого раздела FlintRoute нет. Вернись в обзор или выбери раздел в меню." />;
     default:
       return <OverviewScreen {...props} />;
   }
@@ -603,7 +673,10 @@ function NetworkMap({ topology, devices, system, expanded = false }: { topology:
   const unknown = online.filter((device) => !['ethernet', 'wifi'].includes(device.kind));
   const portCards = buildPortCards(ports, ethernet);
   const branchCount = Math.max(portCards.length, 1);
-  const canvasWidth = Math.max(1000, branchCount * 190 + 140, viewportWidth);
+  // Keep the desktop canvas readable on ultrawide screens.  The topology is
+  // data-driven, but it must not turn a 4K viewport into a multi-kilometre
+  // wire diagram; larger collections are represented by per-port counts.
+  const canvasWidth = Math.min(1600, Math.max(1000, branchCount * 190 + 140, viewportWidth));
   const portGap = canvasWidth / (branchCount + 1);
   const wifiPositions = wifi.map((device, index) => {
     const side = index % 2 === 0 ? -1 : 1;
@@ -630,7 +703,6 @@ function NetworkMap({ topology, devices, system, expanded = false }: { topology:
         <div class="topology-canvas" style={{ width: `${canvasWidth}px`, height: `${mapHeight}px` }}>
           <svg class="topology-wires" viewBox={`0 0 ${canvasWidth} ${mapHeight}`} aria-hidden="true">
             <path class="map-wire wan-wire" d={`M ${canvasWidth / 2} 91 L ${canvasWidth / 2} 154`} />
-            <circle class="wan-packet" cx={canvasWidth / 2} cy="118" r="3" />
             {portCards.length > 0 && <>
               <path class="map-wire" d={`M ${canvasWidth / 2} 286 L ${canvasWidth / 2} 365`} />
               <path class="map-wire" d={`M ${portGap} 365 L ${canvasWidth - portGap} 365`} />
@@ -669,6 +741,18 @@ function NetworkMap({ topology, devices, system, expanded = false }: { topology:
           </div>}
           <div class="map-legend"><span><i />Ethernet</span><span class="wifi"><i />Wi‑Fi</span></div>
           <div class="map-stamp">Обновлено: <span class="mono">{formatDateTime(topology.collected_at)}</span></div>
+        </div>
+      </div>
+      <div class="network-map-mobile">
+        <div class="topology-mobile-node"><TopologyIcon kind="globe" /><div><b>Интернет</b><small>{wanLabel}</small></div><StatusBadge value={internet?.status ?? topology.status} /></div>
+        <div class="topology-mobile-link" />
+        <button class="topology-mobile-node router" onClick={() => setSelected({ type: 'router', ...router, ...system })}>
+          <TopologyIcon kind="router" /><div><b>{textValue(system?.hostname ?? router?.hostname ?? router?.label, 'OpenWrt router')}</b><small>{textValue(system?.model ?? router?.model, 'Модель не определена')}</small></div><StatusBadge value={topology.status} />
+        </button>
+        <div class="topology-mobile-groups">
+          <section class="topology-mobile-group"><h3>Проводные устройства <small>{ethernet.length}</small></h3>{ethernet.length ? ethernet.map((device) => <button class="topology-mobile-device" key={device.id} onClick={() => setSelected(device)}><TopologyIcon kind={topologyDeviceIcon(device)} /><span><b>{textValue(device.name, 'Устройство')}</b><small>{deviceAddress(device, 'ip')} · {textValue(device.interface, 'Интерфейс не определён')}</small></span><StatusBadge value={device.connected ? 'online' : 'offline'} /></button>) : <EmptyState title="Нет проводных устройств" text="Когда FDB и DHCP подтвердят устройство, оно появится здесь." />}</section>
+          <section class="topology-mobile-group wifi-group"><h3>Wi‑Fi устройства <small>{wifi.length}</small></h3>{wifi.length ? wifi.map((device) => <button class="topology-mobile-device" key={device.id} onClick={() => setSelected(device)}><TopologyIcon kind={topologyDeviceIcon(device)} /><span><b>{textValue(device.name, 'Wi‑Fi устройство')}</b><small>{deviceAddress(device, 'ip')} · {wifiBandLabel(device, radios)}</small></span><StatusBadge value={device.connected ? 'online' : 'offline'} /></button>) : <EmptyState title="Нет Wi‑Fi устройств" text="Данные появятся после подключения станции." />}</section>
+          {unknown.length > 0 && <section class="topology-mobile-group"><h3>Тип подключения неизвестен <small>{unknown.length}</small></h3>{unknown.map((device) => <button class="topology-mobile-device unknown" key={device.id} onClick={() => setSelected(device)}><TopologyIcon kind="desktop" /><span><b>{textValue(device.name, 'Устройство')}</b><small>{deviceAddress(device, 'ip')} · тип не определён</small></span><StatusBadge value={device.connected ? 'online' : 'offline'} /></button>)}</section>}
         </div>
       </div>
       {offline.length > 0 && <div class="recent-offline"><b>Недавно отключились</b>{offline.slice(0, 6).map((device) => <button key={device.id} onClick={() => setSelected(device)}>{device.name}</button>)}</div>}
@@ -787,9 +871,14 @@ function RouterDetails({ router }: { router: any }) {
 const serviceColumns = [
   { category: 'GEO_LOCKED', title: 'GEO · VPN', hint: 'Smart DNS → VLESS → блокировка' },
   { category: 'TSPU_RESTRICTED', title: 'TSPU', hint: 'Zapret → Smart DNS → VLESS → Direct' },
+  { category: 'TELEGRAM', title: 'Telegram', hint: 'Telegram policy — отдельный маршрут' },
+  { category: 'DIRECT_PREFERRED', title: 'Direct предпочтительно', hint: 'Direct → управляемый fallback' },
   { category: 'DIRECT_ONLY', title: 'Direct', hint: 'Только прямое подключение под управлением FlintRoute' },
-  { category: 'BLOCKED', title: 'Drop', hint: 'DNS NXDOMAIN и блокировка forwarding' }
+  { category: 'BLOCKED', title: 'Drop', hint: 'DNS NXDOMAIN и блокировка forwarding' },
+  { category: 'UNRESOLVED', title: 'Не определено', hint: 'Категория не распознана; маршрут не угадывается' }
 ];
+
+const editableServiceColumns = serviceColumns.filter((column) => column.category !== 'TELEGRAM' && column.category !== 'UNRESOLVED');
 
 const serviceRoutePaths = ['direct', 'zapret', 'smart_dns', 'vless', 'drop'];
 
@@ -804,60 +893,43 @@ function Services({
   services,
   configVersion,
   role,
-  refresh
+  mutationLocked,
+  refresh,
+  navigate
 }: {
   services: any[];
   configVersion: number;
   role: SessionInfo['role'];
+  mutationLocked: boolean;
   refresh: () => Promise<void>;
+  navigate: (screen: string) => void;
 }) {
   const [moving, setMoving] = useState('');
   const [message, setMessage] = useState('');
   const [editor, setEditor] = useState<{ domain: string; category: string; paths: string[] } | null>(null);
   const [selectedService, setSelectedService] = useState<any>(null);
+  const [serviceView, setServiceView] = useState<'table' | 'board'>('table');
+  const [serviceQuery, setServiceQuery] = useState('');
   const grouped = useMemo(() => groupServices(services), [services]);
   const configuredServices = useMemo(() => grouped.filter((item) => Boolean(item.applied) || asArray(item.sources).includes('configured')), [grouped]);
   const observedServices = useMemo(() => grouped.filter((item) => !Boolean(item.applied) && !asArray(item.sources).includes('configured')), [grouped]);
+  const filteredConfigured = useMemo(() => {
+    const query = serviceQuery.trim().toLowerCase();
+    if (!query) return configuredServices;
+    return configuredServices.filter((item) => `${textValue(item.id, '')} ${asArray(item.domains).map((domain) => textValue(domain, '')).join(' ')}`.toLowerCase().includes(query));
+  }, [configuredServices, serviceQuery]);
 
   async function commitRule(domain: string, category: string, paths?: string[]) {
-    if (role !== 'administrator' || !configVersion || moving) return;
+    if (role !== 'administrator' || mutationLocked || !configVersion || moving) return;
     setMoving(domain);
-    setMessage(`Меняю правило для ${domain}…`);
-    let changeID = '';
+    setMessage(`Создаю черновик правила для ${domain}…`);
     try {
-      let created = await classifyService(domain, category, configVersion, paths);
-      changeID = created.change.id;
-      let validated = await changeAction(changeID, 'validate');
-      if (validated.artifact_block_reason === 'flow_offloading_incompatible') {
-        await changeAction(changeID, 'rollback');
-        changeID = '';
-        const accepted = window.confirm(
-          'Аппаратное ускорение пакетов мешает выборочной маршрутизации. FlintRoute может безопасно отключить flow offloading в той же транзакции и восстановит прежнее состояние при ошибке. Продолжить?'
-        );
-        if (!accepted) {
-          setMessage('Правило не применено. Для выборочной маршрутизации нужно разрешить FlintRoute отключить flow offloading. Интернет не изменён.');
-          return;
-        }
-        created = await classifyService(domain, category, configVersion, paths, true);
-        changeID = created.change.id;
-        validated = await changeAction(changeID, 'validate');
-      }
-      if (validated.artifacts_ready === false) {
-        throw new Error(humanChangeBlock(validated.artifact_block_reason));
-      }
-      const applied = await changeAction(changeID, 'apply');
-      if (applied.state === 'awaiting_confirmation') {
-        await changeAction(changeID, 'confirm');
-      } else if (applied.state !== 'committed') {
-        throw new Error(humanChangeFailure(applied));
-      }
-      setMessage(`${domain}: правило применено`);
+      await classifyService(domain, category, configVersion, paths);
+      setMessage(`${domain}: черновик создан. Проверь изменения перед применением.`);
       setEditor(null);
       await refresh();
+      navigate('Операции');
     } catch (error) {
-      if (changeID) {
-        try { await changeAction(changeID, 'rollback'); } catch { /* keep original error */ }
-      }
       setMessage(error instanceof Error ? error.message : 'Не удалось изменить маршрут');
     } finally {
       setMoving('');
@@ -886,11 +958,14 @@ function Services({
     <section>
       <div class="service-toolbar">
         <div>
-          <b>Применённые правила</b>
-          <span>Только правила, которые реально сохранены в активной конфигурации FlintRoute.</span>
+          <b>Правила сервисов</b>
+          <span>Изменение сначала попадёт в очередь черновиков. Dataplane меняется только после отдельного review и apply.</span>
         </div>
         <div class="actions">
-          <button class="primary" disabled={role !== 'administrator'} onClick={() => editRule()}>+ Новое правило</button>
+          <label class="service-search"><span class="sr-only">Поиск сервиса или домена</span><input value={serviceQuery} placeholder="Поиск сервиса или домена" onInput={(event) => setServiceQuery(event.currentTarget.value)} /></label>
+          <button class={serviceView === 'table' ? 'selected' : ''} onClick={() => setServiceView('table')}>Таблица</button>
+          <button class={serviceView === 'board' ? 'selected' : ''} onClick={() => setServiceView('board')}>Доска</button>
+          <button class="primary" disabled={role !== 'administrator' || mutationLocked} onClick={() => editRule()}>+ Новое правило</button>
         </div>
       </div>
       {editor && (
@@ -911,7 +986,7 @@ function Services({
                 setEditor({ ...editor, category, paths: defaultServicePaths(category) });
               }}
             >
-              {serviceColumns.map((column) => <option value={column.category}>{column.title}</option>)}
+              {editableServiceColumns.map((column) => <option value={column.category}>{column.title}</option>)}
             </select>
           </label>
           <div>
@@ -929,12 +1004,22 @@ function Services({
             </div>
           </div>
           <div class="actions">
-            <button class="primary" disabled={!editor.domain.trim() || editor.paths.length === 0 || Boolean(moving)}>Применить</button>
+            <button class="primary" disabled={mutationLocked || !editor.domain.trim() || editor.paths.length === 0 || Boolean(moving)}>Создать черновик</button>
             <button type="button" onClick={() => setEditor(null)}>Отмена</button>
           </div>
         </form>
       )}
-      <div class="service-board">
+      {serviceView === 'table' && <section class="service-table-card card">
+        <div class="table-scroll"><table class="service-table"><thead><tr><th>Сервис</th><th>Домены</th><th>Классификация</th><th>Основной путь</th><th>Состояние</th><th aria-label="Действия" /></tr></thead><tbody>
+          {filteredConfigured.map((item) => {
+            const domains = asArray(item.domains).map((domain) => textValue(domain, '')).filter(Boolean);
+            const paths = asArray(item.allowed_paths).map((path) => textValue(path, '')).filter(Boolean);
+            return <tr key={String(item.id)}><td><b>{textValue(item.id, 'Неизвестный сервис')}</b><small>{textValue(item.source, 'configured')}</small></td><td>{domains.length || '—'}{domains.length > 0 && <small>{domains.slice(0, 2).join(', ')}{domains.length > 2 ? '…' : ''}</small>}</td><td><StatusBadge value={serviceColumnFor(item.category)} /></td><td>{textValue(item.selected_route_tag ?? paths[0], 'Не выбран')}</td><td><StatusBadge value={item.health ?? item.status ?? (item.applied ? 'configured' : 'observed')} /></td><td><button onClick={() => setSelectedService(item)}>Открыть</button></td></tr>;
+          })}
+        </tbody></table></div>
+        {!filteredConfigured.length && <EmptyState title="Правил пока нет" text="Настрой сервис или сначала дождись наблюдения Discovery." />}
+      </section>}
+      {serviceView === 'board' && <div class="service-board">
         {serviceColumns.map((column) => (
           <section
             class={`service-column ${column.category.toLowerCase()}`}
@@ -953,7 +1038,7 @@ function Services({
                 <ServiceGroup
                   service={item}
                   key={String(item.id)}
-                  draggable={role === 'administrator' && !moving && asArray(item.domains).length === 1}
+                   draggable={role === 'administrator' && !mutationLocked && !moving && asArray(item.domains).length === 1}
                   busy={moving === textValue(asArray(item.domains)[0], '')}
                   onEdit={() => editRule(item)}
                   onOpen={() => setSelectedService(item)}
@@ -962,7 +1047,7 @@ function Services({
             {!configuredServices.some((item) => serviceColumnFor(textValue(item.category, 'DIRECT_ONLY')) === column.category) && <p class="empty-state">Применённых правил пока нет</p>}
           </section>
         ))}
-      </div>
+      </div>}
       {observedServices.length > 0 && <section class="card">
         <h2>Наблюдения Discovery — не применены</h2>
         <p>FlintRoute заметил эти домены и проверил доступные пути. Они не меняют маршрутизацию, пока ты явно не закрепишь правило.</p>
@@ -977,19 +1062,13 @@ function Services({
           />)}
         </div>
       </section>}
-      <p class={message.includes('применено') ? 'action-status ok' : 'action-status'}>{message || 'Домены появляются после наблюдения и проверки. Перетащи карточку, чтобы закрепить правило.'}</p>
+       {mutationLocked && <p class="action-status">Изменения заблокированы: FlintRoute ещё не подтвердил безопасное состояние восстановления.</p>}
+       <p class={message.includes('создан') ? 'action-status ok' : 'action-status'}>{message || 'Домены появляются после наблюдения и проверки. Перетащи карточку, чтобы создать черновик правила.'}</p>
       <DetailDrawer title={textValue(selectedService?.id, 'Сервис')} open={Boolean(selectedService)} onClose={() => setSelectedService(null)}>
-        <ServiceDetails service={selectedService} onEdit={() => selectedService && editRule(selectedService)} />
+         <ServiceDetails service={selectedService} onEdit={mutationLocked ? undefined : () => selectedService && editRule(selectedService)} />
       </DetailDrawer>
     </section>
   );
-}
-
-function serviceColumnFor(category: string): string {
-  if (category === 'GEO_LOCKED') return 'GEO_LOCKED';
-  if (category === 'TSPU_RESTRICTED') return 'TSPU_RESTRICTED';
-  if (category === 'BLOCKED') return 'BLOCKED';
-  return 'DIRECT_ONLY';
 }
 
 function ServiceGroup({
@@ -1044,7 +1123,7 @@ function Policies({ mode }: { mode: string }) {
   return <Card title={`Политики: ${mode}`}>{items.map((p, i) => <div class="row"><b>{i + 1}</b><span>{p}</span><small>формальный приоритет</small></div>)}</Card>;
 }
 
-function Changes({ changes, refresh, role, configVersion }: { changes: ChangeSet[]; refresh: () => void; role: SessionInfo['role']; configVersion: number }) {
+function Changes({ changes, refresh, role, configVersion, mutationLocked, mode = 'developer' }: { changes: ChangeSet[]; refresh: () => void; role: SessionInfo['role']; configVersion: number; mutationLocked: boolean; mode?: 'developer' | 'operations' }) {
   const [title, setTitle] = useState('');
   const [operationType, setOperationType] = useState<ChangeOp['type']>('set');
   const [path, setPath] = useState('');
@@ -1052,10 +1131,11 @@ function Changes({ changes, refresh, role, configVersion }: { changes: ChangeSet
   const [error, setError] = useState('');
 
   if (role !== 'administrator') {
-    return <Generic title="Advanced" text="Developer mode доступен только администратору." />;
+    return <Generic title={mode === 'operations' ? 'Операции' : 'Advanced'} text="Для этого раздела нужна роль администратора." />;
   }
 
   async function create() {
+    if (mutationLocked) return;
     setError('');
     try {
       const normalizedTitle = title.trim();
@@ -1077,13 +1157,15 @@ function Changes({ changes, refresh, role, configVersion }: { changes: ChangeSet
     }
   }
   async function act(id: string, action: string) {
+    if (mutationLocked) return;
     await changeAction(id, action);
     await refresh();
   }
   return (
-    <Card title="Advanced · ChangeSet">
-      <p>Низкоуровневый редактор. Обычная настройка VLESS, Zapret, Smart DNS и discovery делается в их собственных экранах.</p>
-      <details>
+    <Card title={mode === 'operations' ? 'Центр операций' : 'Advanced · ChangeSet'}>
+       <p>{mode === 'operations' ? 'Здесь видны черновики, проверки, применение, окно подтверждения и откат. Ничего не считается применённым, пока backend не подтвердил состояние.' : 'Низкоуровневый редактор. Обычная настройка VLESS, Zapret, Smart DNS и discovery делается в их собственных экранах.'}</p>
+       {mutationLocked && <div class="warning-panel"><b>Изменения заблокированы</b><p>Сначала завершите recovery или подтвердите baseline. Просмотр очереди и диагностика остаются доступны.</p></div>}
+      {mode === 'developer' && <details>
         <summary>Открыть Developer JSON editor</summary>
         <div class="change-editor">
         <label><span>Название</span><input value={title} onInput={(e) => setTitle((e.target as HTMLInputElement).value)} /></label>
@@ -1092,16 +1174,18 @@ function Changes({ changes, refresh, role, configVersion }: { changes: ChangeSet
         {operationType === 'set' && <label><span>JSON-значение</span><textarea class="mono" placeholder={'"DIRECT_PREFERRED"'} value={value} onInput={(e) => setValue((e.target as HTMLTextAreaElement).value)} /></label>}
         <small>Базовая версия: {configVersion || 'загрузка...'}</small>
         {error && <p class="auth-error">{error}</p>}
-        <button class="primary" disabled={!configVersion} onClick={create}>Создать ChangeSet</button>
+         <button class="primary" disabled={mutationLocked || !configVersion} onClick={create}>Создать ChangeSet</button>
         </div>
-      </details>
+      </details>}
       {changes.map((c) => (
         <div class="change" key={c.id}>
-          <b>{c.title}</b><span>{c.state}</span>
+          <b>{c.title}</b><StatusBadge value={c.state} />
+          {c.data_plane_verified && <small class="verified">Путь проверен backend</small>}
           <ChangeDiff change={c} />
           <div class="actions">
-            {actionsForChange(c.state).map((a) => <button onClick={() => act(c.id, a)}>{a}</button>)}
+             {actionsForChange(c.state).map((a) => <button disabled={mutationLocked} onClick={() => act(c.id, a)}>{changeActionLabel(a)}</button>)}
           </div>
+          {['failed', 'rolled_back', 'requires_device', 'recovery_required'].includes(c.state) && <p class="reason">{humanChangeFailure(c)}</p>}
         </div>
       ))}
     </Card>
@@ -1113,6 +1197,10 @@ function actionsForChange(state: string): string[] {
   if (state === 'validated') return ['apply'];
   if (state === 'awaiting_confirmation') return ['confirm', 'rollback'];
   return [];
+}
+
+function changeActionLabel(action: string): string {
+  return ({ validate: 'Проверить', apply: 'Применить', confirm: 'Подтвердить', rollback: 'Откатить' } as Record<string, string>)[action] ?? action;
 }
 
 function ChangeDiff({ change }: { change: ChangeSet }) {
@@ -1198,18 +1286,22 @@ const componentNames: Record<ComponentKind, string> = {
 
 function componentNextStep(status: ComponentStatus): string {
   if (!status.installed) return 'Компонент не установлен. FlintRoute сам выберет закреплённый build для архитектуры роутера и проверит SHA-256.';
+  if (['stopped', 'disabled', 'not_used'].includes(String(status.service_state).toLowerCase()) && !status.health_ready) {
+    return 'Компонент установлен, но сейчас не используется. Настрой сервисы, чтобы подключить его к маршрутам.';
+  }
   if (!status.health_ready) return status.health_reason || 'Компонент установлен, но health check не пройден.';
   if (status.kind === 'xray') return 'Готово. Следующий шаг — добавить VLESS-подписку или свой сервер.';
   if (status.kind === 'zapret') return 'Готово. Следующий шаг — запустить безопасную калибровку стратегии для текущей сети.';
   return 'Сервис установлен. Для PASS нужна фактическая проверка Telegram transport, а не один открытый TCP-порт.';
 }
 
-function Components({ role, navigate }: { role: SessionInfo['role']; navigate: (screen: string) => void }) {
+function Components({ role, mutationLocked, navigate }: { role: SessionInfo['role']; mutationLocked: boolean; navigate: (screen: string) => void }) {
   const [items, setItems] = useState<ComponentStatus[]>([]);
   const [selected, setSelected] = useState<ComponentStatus | null>(null);
   const [busy, setBusy] = useState<ComponentKind | null>(null);
   const [stage, setStage] = useState('');
   const [message, setMessage] = useState('');
+  const confirmDialog = useConfirmDialog();
 
   async function refresh() {
     try {
@@ -1224,8 +1316,12 @@ function Components({ role, navigate }: { role: SessionInfo['role']; navigate: (
   useEffect(() => { void refresh(); }, []);
 
   async function run(kind: ComponentKind, action: ComponentAction) {
+    if (mutationLocked && action !== 'check') {
+      setMessage('Изменения компонентов заблокированы до подтверждения recovery state.');
+      return;
+    }
     const destructive = action === 'uninstall';
-    if (destructive && !window.confirm(`${componentNames[kind]} используется сетевыми маршрутами или может содержать рабочую конфигурацию. Продолжить удаление?`)) return;
+    if (destructive && !(await confirmDialog.ask(`${componentNames[kind]} используется сетевыми маршрутами или может содержать рабочую конфигурацию. Продолжить удаление?`))) return;
     setBusy(kind);
     setStage(action === 'install' || action === 'update' ? 'Preflight → платформа → download → SHA-256 → install → service → health' : humanStatus(action));
     setMessage('');
@@ -1260,13 +1356,13 @@ function Components({ role, navigate }: { role: SessionInfo['role']; navigate: (
       {item.installed && item.kind === 'zapret' && <button onClick={() => navigate('Zapret')}>Открыть настройку Zapret</button>}
       {item.installed && item.kind === 'tg_ws_proxy' && <button onClick={() => navigate('TG WS Proxy')}>Настроить Telegram transport</button>}
       {role === 'administrator' && <div class="actions">
-        {!item.installed && <button class="primary" disabled={busy !== null} onClick={() => run(item.kind, 'install')}>Установить</button>}
+         {!item.installed && <button class="primary" disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'install')}>Установить</button>}
         {item.installed && <button disabled={busy !== null} onClick={() => run(item.kind, 'check')}>Проверить</button>}
-        {item.installed && <button disabled={busy !== null} onClick={() => run(item.kind, 'check_updates')}>Проверить обновления</button>}
-        {item.installed && item.update_available && <button class="primary" disabled={busy !== null} onClick={() => run(item.kind, 'update')}>Обновить</button>}
-        {item.installed && <button disabled={busy !== null} onClick={() => run(item.kind, 'restart')}>Перезапустить</button>}
-        {item.rollback_version && <button disabled={busy !== null} onClick={() => run(item.kind, 'rollback')}>Откатить {item.rollback_version}</button>}
-        {item.installed && <button class="danger" disabled={busy !== null} onClick={() => run(item.kind, 'uninstall')}>Удалить</button>}
+         {item.installed && <button disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'check_updates')}>Проверить обновления</button>}
+         {item.installed && item.update_available && <button class="primary" disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'update')}>Обновить</button>}
+         {item.installed && <button disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'restart')}>Перезапустить</button>}
+         {item.rollback_version && <button disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'rollback')}>Откатить {item.rollback_version}</button>}
+         {item.installed && <button class="danger" disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'uninstall')}>Удалить</button>}
       </div>}
     </EntityCard>)}</Grid>
     {!items.length && !message && <LoadingSkeleton />}
@@ -1280,10 +1376,11 @@ function Components({ role, navigate }: { role: SessionInfo['role']; navigate: (
       {selected?.update_blocked_reason && <p class="reason">Обновление заблокировано: {selected.update_blocked_reason}</p>}
       <RawDisclosure value={selected} />
     </DetailDrawer>
+    {confirmDialog.dialog}
   </section>;
 }
 
-function Discovery({ data, configVersion, role, refresh }: { data: DiscoveryStatus | null; configVersion: number; role: SessionInfo['role']; refresh: () => Promise<void> }) {
+function Discovery({ data, configVersion, role, mutationLocked, refresh }: { data: DiscoveryStatus | null; configVersion: number; role: SessionInfo['role']; mutationLocked: boolean; refresh: () => Promise<void> }) {
   const [mode, setMode] = useState<DiscoveryStatus['mode']>(data?.mode ?? 'observe_only');
   const [hourly, setHourly] = useState(data?.max_new_rules_per_hour ?? 4);
   const [rollbacks, setRollbacks] = useState(data?.max_consecutive_rollbacks ?? 3);
@@ -1296,6 +1393,10 @@ function Discovery({ data, configVersion, role, refresh }: { data: DiscoveryStat
     setRollbacks(data.max_consecutive_rollbacks);
   }, [data?.mode, data?.max_new_rules_per_hour, data?.max_consecutive_rollbacks]);
   async function save(resetFailures = false) {
+    if (mutationLocked) {
+      setMessage('Настройка discovery заблокирована до подтверждения recovery state.');
+      return;
+    }
     setBusy(true);
     setMessage('Сохраняю режим discovery…');
     try {
@@ -1324,8 +1425,9 @@ function Discovery({ data, configVersion, role, refresh }: { data: DiscoveryStat
         </select></label>
         <label><span>Новых правил в час</span><input type="number" min="1" max="1000" value={hourly} onInput={(event) => setHourly(Number((event.target as HTMLInputElement).value))} /></label>
         <label><span>Rollback до остановки</span><input type="number" min="1" max="100" value={rollbacks} onInput={(event) => setRollbacks(Number((event.target as HTMLInputElement).value))} /></label>
-        <button class="primary" disabled={busy || !configVersion} onClick={() => save(false)}>{busy ? 'Применяю…' : 'Применить режим'}</button>
-        {data.paused && <button disabled={busy || !configVersion} onClick={() => save(true)}>Сбросить circuit breaker</button>}
+         <button class="primary" disabled={busy || mutationLocked || !configVersion} onClick={() => save(false)}>{busy ? 'Применяю…' : 'Применить режим'}</button>
+         {data.paused && <button disabled={busy || mutationLocked || !configVersion} onClick={() => save(true)}>Сбросить circuit breaker</button>}
+         {mutationLocked && <p class="action-status">Изменения discovery временно заблокированы recovery fence.</p>}
         {message && <p class="action-status">{message}</p>}
       </div>}
     </Card>
@@ -1392,12 +1494,16 @@ function Vless({
   routes,
   configVersion,
   role,
-  refresh
+  mutationLocked,
+  refresh,
+  navigate
 }: {
   routes: any[];
   configVersion: number;
   role: SessionInfo['role'];
+  mutationLocked: boolean;
   refresh: () => Promise<void>;
+  navigate: (screen: string) => void;
 }) {
   const vless = routes.filter((r) => r.type === 'vless');
   const [urls, setURLs] = useState(() => Array(5).fill('') as string[]);
@@ -1434,6 +1540,7 @@ function Vless({
   }, [role]);
 
   async function saveTariff() {
+    if (mutationLocked) { setMessage('Скорость тарифа нельзя изменить до подтверждения recovery state.'); return; }
     setBusy(true);
     try {
       await setVLESSTariff(tariff);
@@ -1462,6 +1569,7 @@ function Vless({
   }
 
   async function saveAndPrepare() {
+    if (mutationLocked) { setMessage('Подписка временно заблокирована recovery fence. Просмотр серверов доступен.'); return; }
     const values = urls.map((value) => value.trim()).filter(Boolean);
     if (!values.length) {
       setMessage('Вставь хотя бы одну HTTPS-ссылку подписки.');
@@ -1483,6 +1591,7 @@ function Vless({
   }
 
   async function addManualServer() {
+    if (mutationLocked) { setMessage('Добавление сервера временно заблокировано recovery fence.'); return; }
     if (!manualURI.trim()) {
       setMessage('Вставь полный vless:// URI. UUID останется только в закрытом файле на роутере.');
       return;
@@ -1538,20 +1647,14 @@ function Vless({
   }
 
   async function activateManaged() {
+    if (mutationLocked) { setMessage('Включение managed Xray временно заблокировано recovery fence.'); return; }
     setBusy(true);
-    setMessage('Повторно проверяю подписку, TPROXY и bypass mark перед транзакцией…');
+    setMessage('Создаю черновик включения managed Xray…');
     try {
       const result = await prepareSubscription(configVersion, true);
       if (!result.change) throw new Error('Backend не создал транзакцию managed Xray.');
-      let change = await changeAction(result.change.id, 'validate');
-      change = await changeAction(change.id, 'apply');
-      if (change.state !== 'awaiting_confirmation' || !change.data_plane_verified) {
-        throw new Error(`Xray apply не получил PathVerified: ${change.state}`);
-      }
-      change = await changeAction(change.id, 'confirm');
-      if (change.state !== 'committed') throw new Error(`Xray confirm: ${change.state}`);
       setManagedAvailable(false);
-      setMessage(`Managed Xray включён и подтверждён ревизией ${change.revision_id}.`);
+      setMessage('Черновик managed Xray создан. Проверь diff и запусти применение отдельно в очереди изменений.');
       await refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Managed Xray не включён; транзакция откатилась или ждёт устройство.');
@@ -1572,7 +1675,7 @@ function Vless({
         {candidateServers.find((server: any) => server.selected) ? (() => { const active = candidateServers.find((server: any) => server.selected); return <div class="row"><b>{textValue(active.name ?? active.tag, 'VLESS server')}</b><span>{active.latency_ms ? `${active.latency_ms} мс` : 'latency неизвестна'} · {active.measured_mbps ? `${active.measured_mbps.toFixed(0)} Мбит/с` : 'speedtest не запускался'}</span><small>{active.path_verified ? 'PathVerified' : 'путь не подтверждён'} · score {Number(active.score ?? 0).toFixed(1)}</small></div>; })() : <p>Активного проверенного сервера пока нет.</p>}
         <div class="smart-dns-editor">
           <label><span>Скорость интернет-тарифа, Мбит/с</span><input type="number" min="1" max="100000" value={tariff} onInput={(event) => setTariff(Number((event.target as HTMLInputElement).value))} /></label>
-          <div class="actions">{[100, 300, 500, 1000].map((value) => <button class={tariff === value ? 'active' : ''} onClick={() => setTariff(value)} key={value}>{value}</button>)}<button class="primary" disabled={busy || role !== 'administrator'} onClick={saveTariff}>Сохранить</button></div>
+          <div class="actions">{[100, 300, 500, 1000].map((value) => <button disabled={mutationLocked} class={tariff === value ? 'active' : ''} onClick={() => setTariff(value)} key={value}>{value}</button>)}<button class="primary" disabled={busy || mutationLocked || role !== 'administrator'} onClick={saveTariff}>Сохранить</button></div>
           <small>Для score используется min(измеренная скорость, тариф). Значение 850 Мбит/с при тарифе 300 даст эффективные 300.</small>
         </div>
       </Card>
@@ -1584,7 +1687,8 @@ function Vless({
               {urls.map((url, index) => (
                 <label class={`subscription-slot ${index < configuredCount ? 'configured' : ''}`} key={index}>
                   <span>#{index + 1}</span>
-                  <input
+                    <input
+                     disabled={mutationLocked}
                     type="password"
                     value={url}
                     onInput={(event) => {
@@ -1600,12 +1704,12 @@ function Vless({
               ))}
             </div>
             <small>URL хранится в закрытом файле и не возвращается через API.</small>
-            <button class="primary" disabled={busy || !configVersion} onClick={saveAndPrepare}>
+            <button class="primary" disabled={busy || mutationLocked || !configVersion} onClick={saveAndPrepare}>
               {busy ? 'Проверяю серверы…' : 'Сохранить и проверить'}
             </button>
-            {managedAvailable && <button class="primary" disabled={busy || !configVersion} onClick={activateManaged}>Явно включить managed Xray</button>}
+            {managedAvailable && <button class="primary" disabled={busy || mutationLocked || !configVersion} onClick={activateManaged}>Явно включить managed Xray</button>}
             {managedAvailable && <small>Одна транзакция включит TPROXY, bypass mark и проверенные VLESS routes. Без успешной проверки она не будет подтверждена.</small>}
-            {message && <p class="action-status">{message}</p>}
+            {message && <div class="action-status"><p>{message}</p>{message.includes('черновик') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
           </div>
         ) : <p>Импорт подписки доступен администратору.</p>}
       </Card>
@@ -1615,11 +1719,11 @@ function Vless({
         </EntityCard>)}
         {!pool.sources?.length && <EmptyState title="Источников пока нет" text="Добавь HTTPS-подписку или собственный VLESS URI." />}
       </div>{(pool.provider_matches ?? []).map((match: any) => <p class="reason" key={`${match.left_provider_id}:${match.right_provider_id}`}>Пулы похожи: совпало {match.matched_servers}/{match.compared_servers}. Объединение требует подтверждения и не выполняется молча.</p>)}</section>
-      <section class="server-section"><div class="section-title"><div><h2>Серверы из подписок</h2><p>Карточки обновляются раз в 30 секунд при открытой вкладке. Проверка задержки — лёгкая ручная операция, не замер пропускной способности.</p></div><div class="actions"><button disabled={busy || !configVersion || (!present && manualServers.length === 0)} onClick={refreshVLESSHealth}>Обновить health</button><button onClick={() => setManualEditorOpen((open) => !open)}>+ Добавить свой VPS</button></div></div>
+       <section class="server-section"><div class="section-title"><div><h2>Серверы из подписок</h2><p>Карточки обновляются раз в 30 секунд при открытой вкладке. Проверка задержки — лёгкая ручная операция, не замер пропускной способности.</p></div><div class="actions"><button disabled={busy || !configVersion || (!present && manualServers.length === 0)} onClick={refreshVLESSHealth}>Обновить health</button><button disabled={mutationLocked} onClick={() => setManualEditorOpen((open) => !open)}>+ Добавить свой VPS</button></div></div>
       {manualEditorOpen && <div class="service-editor manual-vless-editor">
         <label><span>VLESS URI</span><input type="password" value={manualURI} onInput={(event) => setManualURI((event.target as HTMLInputElement).value)} autocomplete="off" placeholder="vless://UUID@server:443?security=reality&…" /></label>
         <small>URI и UUID не возвращаются через API и хранятся в закрытом файле. До явного managed activation сервер не меняет маршрутизацию.</small>
-        <button class="primary" disabled={busy || !configVersion} onClick={addManualServer}>{busy ? 'Проверяю…' : 'Сохранить и проверить'}</button>
+         <button class="primary" disabled={busy || mutationLocked || !configVersion} onClick={addManualServer}>{busy ? 'Проверяю…' : 'Сохранить и проверить'}</button>
       </div>}
       <div class="server-checks">
         {subscriptionServers.map((server: any) => (
@@ -1647,7 +1751,7 @@ function RouteType({ title, type, routes }: { title: string; type: string; route
   return <section><h2>{title}</h2><Grid>{routes.filter((r) => r.type === type).map((r) => <EntityCard title={r.tag} status={r.status} onOpen={() => setSelected(r)}><RouteBadge type={type} /><p>{humanStatus(r.status)}</p></EntityCard>)}</Grid><DetailDrawer title={selected?.tag ?? title} open={Boolean(selected)} onClose={() => setSelected(null)}><DiagnosticDetails value={selected} /><RawDisclosure value={selected} /></DetailDrawer></section>;
 }
 
-function Zapret({ routes, configVersion, role, refresh }: { routes: any[]; configVersion: number; role: SessionInfo['role']; refresh: () => Promise<void> }) {
+function Zapret({ routes, configVersion, role, mutationLocked, refresh, navigate }: { routes: any[]; configVersion: number; role: SessionInfo['role']; mutationLocked: boolean; refresh: () => Promise<void>; navigate: (screen: string) => void }) {
   const [status, setStatus] = useState<any>(null);
   const [component, setComponent] = useState<ComponentStatus | null>(null);
   const [calibration, setCalibration] = useState<ZapretCalibrationStatus | null>(null);
@@ -1659,6 +1763,7 @@ function Zapret({ routes, configVersion, role, refresh }: { routes: any[]; confi
   const [checked, setChecked] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [showExhaustive, setShowExhaustive] = useState(false);
   async function load() {
     const [zapretStatus, components, calibrationStatus] = await Promise.all([getZapret(), getComponents(), getZapretCalibration()]);
     const managed = components.find((item) => item.kind === 'zapret') ?? null;
@@ -1681,6 +1786,7 @@ function Zapret({ routes, configVersion, role, refresh }: { routes: any[]; confi
   }, [calibration?.state]);
   const input = { source_url: sourceURL.trim(), provider_version: version.trim(), binary_sha256: sha256.trim(), test_domain: testDomain.trim() };
   async function install() {
+    if (mutationLocked) { setMessage('Установка Zapret заблокирована до подтверждения recovery state.'); return; }
     setBusy(true); setMessage('Определяю архитектуру, скачиваю закреплённый release и проверяю SHA-256…');
     try {
       const result = await componentAction('zapret', 'install');
@@ -1689,15 +1795,21 @@ function Zapret({ routes, configVersion, role, refresh }: { routes: any[]; confi
     } catch (error) { const info = errorInfo(error); setMessage(`${info.code}: ${info.message}`); }
     finally { setBusy(false); }
   }
-  async function startCalibration() {
-    setBusy(true); setMessage('Запускаю изолированный upstream blockcheck. Сеть не переключается на найденный профиль автоматически.');
+  async function startCalibration(mode: 'quick' | 'exhaustive') {
+    if (mutationLocked) { setMessage('Калибровка Zapret заблокирована до подтверждения recovery state.'); return; }
+    setBusy(true); setMessage(mode === 'quick'
+      ? 'Запускаю быстрый bounded-тест Zapret. Это не полный перебор и не переключает сеть на найденный профиль автоматически.'
+      : 'Запускаю полный подбор Zapret. Он может занять до 6 часов; найденный профиль не включается автоматически.');
     try {
-      const result = await startZapretCalibration(testDomain.trim(), true);
-      setCalibration(result); setMessage('Калибровка запущена. FlintRoute использует один worker, потому что upstream делит nft/NFQUEUE ресурсы.');
+      const result = await startZapretCalibration(testDomain.trim(), true, mode);
+      setCalibration(result); setShowExhaustive(false); setMessage(mode === 'quick'
+        ? 'Быстрый тест запущен. FlintRoute использует один worker: upstream делит nft/NFQUEUE ресурсы.'
+        : 'Полный подбор запущен. Один worker сохраняет безопасное владение общими nft/NFQUEUE ресурсами.');
     } catch (error) { const info = errorInfo(error); setMessage(`${info.code}: ${info.message}`); }
     finally { setBusy(false); }
   }
   async function cancelCalibration() {
+    if (mutationLocked) { setMessage('Управление калибровкой заблокировано до подтверждения recovery state.'); return; }
     setBusy(true);
     try { setCalibration(await cancelZapretCalibration()); setMessage('Остановка запрошена; test-run выполнит cleanup своих ресурсов.'); }
     catch (error) { const info = errorInfo(error); setMessage(`${info.code}: ${info.message}`); }
@@ -1712,36 +1824,39 @@ function Zapret({ routes, configVersion, role, refresh }: { routes: any[]; confi
     finally { setBusy(false); }
   }
   async function activate() {
-    setBusy(true); setMessage('Повторяю preflight и применяю managed Zapret транзакцией…');
+    setBusy(true); setMessage('Создаю черновик включения managed Zapret…');
     try {
       const result = await activateZapretSetup(input, configVersion);
-      let change = await changeAction(result.change.id, 'validate');
-      change = await changeAction(change.id, 'apply');
-      if (change.state !== 'awaiting_confirmation' || !change.data_plane_verified) throw new Error(`Zapret apply не получил PathVerified: ${change.state}`);
-      change = await changeAction(change.id, 'confirm');
-      if (change.state !== 'committed') throw new Error(`Zapret confirm: ${change.state}`);
       setChecked(false); setReport(result.report);
       setMessage(result.calibrated_profile_id
-        ? `Zapret включён с проверенным профилем ${result.calibrated_profile_id}; ревизия ${change.revision_id}.`
-        : `Managed Zapret подтверждён ревизией ${change.revision_id}. Калиброванный профиль не использовался.`);
-      setStatus(await getZapret()); await refresh();
+        ? `Создан черновик включения Zapret с профилем ${result.calibrated_profile_id}. Открой очередь, проверь diff и запусти применение отдельно.`
+        : 'Создан черновик включения managed Zapret. Открой очередь, проверь diff и запусти применение отдельно.');
+      await refresh();
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Zapret не включён; транзакция откатилась или ждёт устройство.'); }
     finally { setBusy(false); }
   }
   return <section class="grid">
     <Card title="Zapret">
       <div class="row"><b>{component?.installed ? `Установлен ${component.version ?? ''}` : 'Не установлен'}</b><span>{component?.service_state ?? 'service unavailable'}</span><small>{component?.health_ready ? 'Health check пройден' : component?.health_reason ?? 'Готов к установке'}</small></div>
-      {role === 'administrator' && !component?.installed && <button class="primary" disabled={busy} onClick={install}>{busy ? 'Устанавливаю…' : 'Установить Zapret'}</button>}
+      {role === 'administrator' && !component?.installed && <button class="primary" disabled={busy || mutationLocked} onClick={install}>{busy ? 'Устанавливаю…' : 'Установить Zapret'}</button>}
       {component?.installed && role === 'administrator' && <div class="change-editor">
         <label><span>Домен для подбора стратегии</span><input class="mono" value={testDomain} onInput={(event) => { setTestDomain((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
-        {calibration?.state === 'running' ? <button disabled={busy} onClick={cancelCalibration}>Остановить подбор</button> : <button class="primary" disabled={busy || !testDomain.trim()} onClick={startCalibration}>Запустить подбор стратегии</button>}
+         {calibration?.state === 'running' ? <button disabled={busy || mutationLocked} onClick={cancelCalibration}>Остановить тест</button> : <div class="actions">
+           <button class="primary" disabled={busy || mutationLocked || !testDomain.trim()} onClick={() => void startCalibration('quick')}>Быстрый тест Zapret</button>
+           <button disabled={busy || mutationLocked || !testDomain.trim()} onClick={() => setShowExhaustive(true)}>Полный подбор стратегий</button>
+        </div>}
+        {showExhaustive && calibration?.state !== 'running' && <div class="warning-panel" role="alert">
+          <b>Глубокий перебор — аварийно-длинная операция</b>
+          <p>Будет проверено большое количество комбинаций upstream Zapret. Это может занять до 6 часов. Запускайте полный подбор только если быстрый тест не нашёл рабочую стратегию.</p>
+           <div class="actions"><button class="primary" disabled={busy || mutationLocked} onClick={() => void startCalibration('exhaustive')}>Запустить полный подбор</button><button disabled={busy} onClick={() => setShowExhaustive(false)}>Отмена</button></div>
+        </div>}
         <small>Параллельность: {calibration?.concurrency ?? 1}. {calibration?.concurrency_reason ?? 'Общие nft/NFQUEUE ресурсы upstream требуют последовательного прогона.'}</small>
       </div>}
-      {message && <p class="action-status">{message}</p>}
+      {message && <div class="action-status"><p>{message}</p>{message.includes('черновик') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
     </Card>
     {calibration && calibration.state !== 'idle' && <Card title="Подбор стратегии">
-      <div class="row"><b>{humanStatus(calibration.state)}</b><span>{humanStatus(calibration.stage)}</span><small>{calibration.domain} · {calibration.duration_ms ? `${Math.round(calibration.duration_ms / 1000)} сек` : 'идёт'}</small></div>
-      {calibration.state === 'running' && <div class="row"><b>Проверено вариантов</b><span>{calibration.checks_completed ?? 0}{calibration.checks_total ? ` / ${calibration.checks_total}` : ''}</span><small>Upstream сам определяет число безопасных комбинаций для этой платформы.</small></div>}
+      <div class="row"><b>{humanStatus(calibration.state)}</b><span>{calibration.mode === 'exhaustive' ? 'полный подбор' : 'быстрый тест'} · {calibration.scan_level ?? 'quick'}</span><small>{calibration.domain} · {calibration.duration_ms ? `${Math.round(calibration.duration_ms / 1000)} сек` : 'идёт'}</small></div>
+      {calibration.state === 'running' && <div class="row"><b>Проверено вариантов</b><span>{calibration.checks_completed ?? 0}{calibration.checks_total ? ` / ${calibration.checks_total}` : ''}</span><small>{calibration.mode === 'exhaustive' ? 'Upstream force scan; точное число зависит от версии и платформы.' : 'Upstream quick scan с bounded временем; точное число зависит от версии и платформы.'}</small></div>}
       {calibration.error && <p class="reason">{calibration.error_code}: {calibration.error}</p>}
       <h4>Рабочие стратегии — появляются сразу</h4>
       {(calibration.working_strategies ?? []).length
@@ -1751,11 +1866,11 @@ function Zapret({ routes, configVersion, role, refresh }: { routes: any[]; confi
       {calibration.recommended_profile_id && <p class="action-status">Рекомендован: <span class="mono">{calibration.recommended_profile_id}</span>. Именно он будет привязан при явном включении ниже.</p>}
       <h4>Живой лог</h4>
       <pre>{(calibration.log_tail ?? []).join('\n') || 'blockcheck ещё не успел вывести данные'}</pre>
-      {calibration.activation_required && <p>Профили записаны в проверенный каталог. Выбор не применяется молча: ниже нужно явно включить managed Zapret одной транзакцией.</p>}
+      {calibration.activation_required && <p>Профили записаны в проверенный каталог. Выбор не применяется молча: создай отдельный черновик, проверь diff и запусти транзакцию в центре операций.</p>}
     </Card>}
     {component?.installed && <Card title="Явное включение маршрута">
       <p>Установка бинарника и включение маршрута — разные операции. Apply проверит NFQUEUE, data path и подтвердится только через штатную транзакцию.</p>
-      {role === 'administrator' && <div class="actions"><button disabled={busy || !configVersion} onClick={check}>{busy ? 'Проверяю…' : 'Проверить перед включением'}</button><button class="primary" disabled={busy || !checked || !configVersion} onClick={activate}>Включить managed Zapret</button></div>}
+       {role === 'administrator' && <div class="actions"><button disabled={busy || !configVersion} onClick={check}>{busy ? 'Проверяю…' : 'Проверить перед черновиком'}</button><button class="primary" disabled={busy || mutationLocked || !checked || !configVersion} onClick={activate}>Создать черновик Zapret</button></div>}
       <details><summary>Advanced · закреплённый источник</summary><div class="change-editor">
         <label><span>HTTPS source</span><input class="mono" value={sourceURL} onInput={(event) => { setSourceURL((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
         <label><span>Версия</span><input class="mono" value={version} onInput={(event) => { setVersion((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
@@ -1770,11 +1885,15 @@ function Zapret({ routes, configVersion, role, refresh }: { routes: any[]; confi
 function SmartDNS({
   configVersion,
   role,
-  refresh
+  mutationLocked,
+  refresh,
+  navigate
 }: {
   configVersion: number;
   role: SessionInfo['role'];
+  mutationLocked: boolean;
   refresh: () => Promise<void>;
+  navigate: (screen: string) => void;
 }) {
   const [status, setStatus] = useState<any>(null);
   const [error, setError] = useState('');
@@ -1787,7 +1906,7 @@ function SmartDNS({
     getSmartDNS().then(setStatus).catch((reason) => setError(reason instanceof Error ? reason.message : 'Smart DNS недоступен'));
   }, []);
   async function save() {
-    let changeID = '';
+    if (mutationLocked) { setMessage('Smart DNS нельзя изменить до подтверждения recovery state.'); return; }
     let values;
     try {
       values = resolvers.filter((value) => value.trim()).map(parseResolverInput);
@@ -1809,24 +1928,11 @@ function SmartDNS({
     try {
       const result = await configureSmartDNS(values, testDomain.trim(), configVersion);
       setValidations(result.validations ?? []);
-      changeID = result.change.id;
-      let change = await changeAction(result.change.id, 'validate');
-      if (change.artifacts_ready === false) throw new Error(humanChangeBlock(change.artifact_block_reason));
-      change = await changeAction(change.id, 'apply');
-      if (change.state === 'awaiting_confirmation') {
-        change = await changeAction(change.id, 'confirm');
-      } else if (change.state !== 'committed' || !change.noop) {
-        throw new Error(humanChangeFailure(change));
-      }
-      changeID = '';
       setResolvers(['']);
-      setMessage(change.noop ? `Smart DNS перепроверен, конфигурация уже была актуальна: ${result.endpoint_count}.` : `Smart DNS проверен и применён: ${result.endpoint_count}.`);
+      setMessage(`Smart DNS проверен. Создан черновик для ${result.endpoint_count} резолверов; открой очередь изменений для review и apply.`);
       setStatus(await getSmartDNS());
       await refresh();
     } catch (reason) {
-      if (changeID) {
-        try { await changeAction(changeID, 'rollback'); } catch { /* preserve the original error */ }
-      }
       setMessage(reason instanceof Error ? reason.message : 'Smart DNS не прошёл проверку. Предыдущая конфигурация сохранена.');
     } finally {
       setBusy(false);
@@ -1849,10 +1955,11 @@ function SmartDNS({
             {resolvers.length < 2 && <button type="button" onClick={() => setResolvers((items) => [...items, ''])}>Добавить резервный резолвер</button>}
             <small>Порт необязателен. По умолчанию используется 53. Поддерживаются IPv4, IPv4:порт, IPv6 и [IPv6]:порт.</small>
             <label><span>Домен для DNS + HTTP/TLS</span><input class="mono" value={testDomain} placeholder="example.com" onInput={(event) => setTestDomain((event.target as HTMLInputElement).value)} /></label>
-            <button class="primary" disabled={busy || !configVersion} onClick={save}>
-              {busy ? 'Проверяю…' : 'Проверить и применить'}
+            <button class="primary" disabled={busy || mutationLocked || !configVersion} onClick={save}>
+              {busy ? 'Проверяю…' : 'Проверить и создать черновик'}
             </button>
-            {message && <p class={message.includes('применён') ? 'action-status ok' : 'action-status'}>{message}</p>}
+            {mutationLocked && <p class="action-status">Настройка Smart DNS временно заблокирована recovery fence.</p>}
+            {message && <div class={message.includes('применён') ? 'action-status ok' : 'action-status'}><p>{message}</p>{message.includes('черновик') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
           </div>
         )}
       </Card>
@@ -1879,7 +1986,7 @@ function SmartDNS({
   );
 }
 
-function ExternalSOCKS({ configVersion, role, refresh }: { configVersion: number; role: SessionInfo['role']; refresh: () => Promise<void> }) {
+function ExternalSOCKS({ configVersion, role, mutationLocked, refresh, navigate }: { configVersion: number; role: SessionInfo['role']; mutationLocked: boolean; refresh: () => Promise<void>; navigate: (screen: string) => void }) {
   const [status, setStatus] = useState<any>(null);
   const [endpoint, setEndpoint] = useState('127.0.0.1:1180');
   const [domain, setDomain] = useState('web.telegram.org');
@@ -1897,15 +2004,13 @@ function ExternalSOCKS({ configVersion, role, refresh }: { configVersion: number
     finally { setBusy(false); }
   }
   async function activate() {
-    setBusy(true); setMessage('Повторяю проверку и создаю одну транзакцию маршрутизации…');
+    if (mutationLocked) { setMessage('Внешний SOCKS-маршрут заблокирован до подтверждения recovery state.'); return; }
+    setBusy(true); setMessage('Создаю черновик внешнего SOCKS-маршрута…');
     try {
       const result = await activateExternalSOCKS(endpoint.trim(), domain.trim(), configVersion);
-      let change = await changeAction(result.change.id, 'validate');
-      change = await changeAction(change.id, 'apply');
-      if (change.state !== 'awaiting_confirmation' || !change.data_plane_verified) throw new Error(`External SOCKS не получил PathVerified: ${change.state}`);
-      change = await changeAction(change.id, 'confirm');
-      if (change.state !== 'committed') throw new Error(`Confirm завершился состоянием ${change.state}`);
-      setMessage(`External SOCKS подтверждён ревизией ${change.revision_id}.`); setChecked(false); setStatus(await getExternalSOCKS()); await refresh();
+      if (!result.change) throw new Error('Backend не создал черновик внешнего SOCKS-маршрута.');
+      setMessage('Черновик внешнего SOCKS-маршрута создан. Проверь diff и запусти применение отдельно в очереди изменений.');
+      setChecked(false); await refresh();
     } catch (error) { setMessage(error instanceof Error ? error.message : 'External SOCKS не включён; транзакция откатилась или ждёт устройство.'); }
     finally { setBusy(false); }
   }
@@ -1916,15 +2021,15 @@ function ExternalSOCKS({ configVersion, role, refresh }: { configVersion: number
         <label><span>Loopback SOCKS5 endpoint</span><input class="mono" value={endpoint} onInput={(event) => { setEndpoint((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
         <label><span>Домен для remote DNS + TLS/HTTP</span><input class="mono" value={domain} onInput={(event) => { setDomain((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
         <button class="primary" disabled={busy || !configVersion} onClick={check}>{busy ? 'Проверяю…' : 'Проверить endpoint'}</button>
-        <button class="primary" disabled={busy || !checked || !configVersion} onClick={activate}>Явно включить маршрут</button>
-        {message && <p class="action-status">{message}</p>}
+        <button class="primary" disabled={busy || mutationLocked || !checked || !configVersion} onClick={activate}>Создать черновик маршрута</button>
+        {message && <div class="action-status"><p>{message}</p>{message.includes('черновик') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
       </div>}
     </Card>
     {report && <Card title="Результат проверки"><div class="row"><b>{report.ready ? 'READY' : 'FAILED'}</b><span>SOCKS5: {report.socks5_handshake ? 'OK' : 'FAIL'}</span><small>TLS: {report.tls_verified ? 'OK' : 'FAIL'} · HTTP {report.http_status || '—'}</small></div></Card>}
   </section>;
 }
 
-function TGWS({ role, navigate }: { role: SessionInfo['role']; navigate: (screen: string) => void }) {
+function TGWS({ role, mutationLocked, navigate }: { role: SessionInfo['role']; mutationLocked: boolean; navigate: (screen: string) => void }) {
   const [status, setStatus] = useState<any>(null);
   const [port, setPort] = useState(1443);
   const [fakeTLS, setFakeTLS] = useState('');
@@ -1954,6 +2059,7 @@ function TGWS({ role, navigate }: { role: SessionInfo['role']; navigate: (screen
     return () => { cancelled = true; };
   }, [connectLink]);
   async function configure() {
+    if (mutationLocked) { setMessage('Настройка TG WS Proxy заблокирована до подтверждения recovery state.'); return; }
     setBusy(true);
     setConnectLink('');
     setMessage('Создаю секрет, запускаю procd-сервис и проверяю listener и доступ к Telegram DC…');
@@ -1989,7 +2095,8 @@ function TGWS({ role, navigate }: { role: SessionInfo['role']; navigate: (screen
           <label><span>Порт</span><input type="number" min="1024" max="65535" value={port} onInput={(event) => setPort(Number((event.target as HTMLInputElement).value))} /></label>
           <label><span>Fake TLS domain (необязательно)</span><input value={fakeTLS} placeholder="например, ваш домен" onInput={(event) => setFakeTLS((event.target as HTMLInputElement).value)} /></label>
           <small>Адрес роутера берётся из текущего соединения с UI. Секрет генерируется на роутере и не возвращается повторно.</small>
-          <button class="primary" disabled={busy || !status?.installed} onClick={configure}>{busy ? 'Проверяю…' : 'Настроить и запустить'}</button>
+          <button class="primary" disabled={busy || mutationLocked || !status?.installed} onClick={configure}>{busy ? 'Проверяю…' : 'Настроить и запустить'}</button>
+          {mutationLocked && <p class="action-status">Управление транспортом временно заблокировано recovery fence.</p>}
           {message && <p class="action-status">{message}</p>}
         </div>
       </Card>}
@@ -2002,7 +2109,7 @@ function TGWS({ role, navigate }: { role: SessionInfo['role']; navigate: (screen
   </section>;
 }
 
-function Telegram({ role, events: systemEvents }: { role: SessionInfo['role']; events: EventItem[] }) {
+function Telegram({ role, mutationLocked, events: systemEvents }: { role: SessionInfo['role']; mutationLocked: boolean; events: EventItem[] }) {
   const [overview, setOverview] = useState<any>(null);
   const [token, setToken] = useState('');
   const [chatID, setChatID] = useState('');
@@ -2021,6 +2128,7 @@ function Telegram({ role, events: systemEvents }: { role: SessionInfo['role']; e
   }
   useEffect(() => { load(); }, []);
   async function save() {
+    if (mutationLocked) { setMessage('Настройка уведомлений заблокирована до подтверждения recovery state.'); return; }
     setBusy(true); setMessage('Проверяю токен и доступ к чату…');
     try { await configureTelegram(token.trim(), chatID.trim(), enabled, events); setToken(''); setChatID(''); await load(); setMessage(enabled ? 'Конфигурация проверена и сохранена.' : 'Уведомления выключены, настройки сохранены.'); }
     catch (error) { setMessage(error instanceof Error ? error.message : 'Telegram не настроен.'); }
@@ -2042,7 +2150,7 @@ function Telegram({ role, events: systemEvents }: { role: SessionInfo['role']; e
       <label><span>Chat ID {state.chat_configured ? '(уже сохранён; пустое поле оставит прежний)' : ''}</span><input class="mono" value={chatID} onInput={(event) => setChatID((event.target as HTMLInputElement).value)} /></label>
       <label><input type="checkbox" checked={enabled} onChange={(event) => setEnabled((event.target as HTMLInputElement).checked)} /> Включить доставку</label>
       <div class="chips">{overview.event_types.map((name: string) => <label class="chip" key={name}><input type="checkbox" checked={events.includes(name)} onChange={(event) => setEvents((old) => (event.target as HTMLInputElement).checked ? [...old, name] : old.filter((item) => item !== name))} /> {name}</label>)}</div>
-      <button class="primary" disabled={busy} onClick={save}>{busy ? 'Проверяю…' : 'Проверить и сохранить'}</button>
+      <button class="primary" disabled={busy || mutationLocked} onClick={save}>{busy ? 'Проверяю…' : 'Проверить и сохранить'}</button>
       <button class="primary" disabled={busy || !state.enabled} onClick={sendTest}>Отправить тест</button>
       {message && <p class="action-status">{message}</p>}
     </div>}
@@ -2165,18 +2273,23 @@ function LoginScreen() {
   return <Card title="Вход"><p>Локальный администратор. Сессия защищается HttpOnly cookie и CSRF-токеном.</p><button class="primary">Войти локально</button></Card>;
 }
 
-function SetupScreen({ overview, services, routes, discovery, navigate }: any) {
+function SetupScreen({ overview, services, routes, discovery, onboarding, onboardingAction, navigate }: any) {
   const [state, setState] = useState<any>({ loading: true, components: [], pool: null, smartDNS: null, tgws: null, zapret: null, error: '' });
-  const [directOnly, setDirectOnly] = useState(() => {
-    try { return window.localStorage.getItem('flintroute-first-run-direct') === '1'; } catch { return false; }
-  });
-  const [automaticServices, setAutomaticServices] = useState(() => {
-    try { return window.localStorage.getItem('flintroute-first-run-services-auto') === '1'; } catch { return false; }
-  });
+  const requestRef = useRef<AbortController | null>(null);
 
   async function load() {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     setState((old: any) => ({ ...old, loading: true, error: '' }));
-    const results = await Promise.allSettled([getComponents(), getVLESSPool(), getSmartDNS(), getTGWS(), getZapret()]);
+    const results = await Promise.allSettled([
+      getComponents(controller.signal),
+      getVLESSPool(controller.signal),
+      getSmartDNS(controller.signal),
+      getTGWS(controller.signal),
+      getZapret(controller.signal)
+    ]);
+    if (controller.signal.aborted || requestRef.current !== controller) return;
     const value = (index: number, fallback: any) => results[index].status === 'fulfilled' ? (results[index] as PromiseFulfilledResult<any>).value : fallback;
     const failed = results.filter((item) => item.status === 'rejected');
     setState({
@@ -2190,10 +2303,12 @@ function SetupScreen({ overview, services, routes, discovery, navigate }: any) {
     });
   }
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => () => {
+    requestRef.current?.abort();
+    requestRef.current = null;
+  }, []);
 
-  const routerReady = !['unavailable', 'failed', 'error'].includes(String(overview?.internet ?? '').toLowerCase())
-    && !['unavailable', 'failed', 'error'].includes(String(overview?.dns ?? '').toLowerCase());
+  const routerReady = onboardingRouterReady(onboarding, overview);
   const components = asArray(state.components).map(asRecord);
   const xray = components.find((item) => item.kind === 'xray');
   const zapretComponent = components.find((item) => item.kind === 'zapret');
@@ -2202,22 +2317,35 @@ function SetupScreen({ overview, services, routes, discovery, navigate }: any) {
   const smartReady = Number(state.smartDNS?.ready_resolvers ?? state.smartDNS?.ready ?? 0) > 0;
   const tgwsReady = Boolean(state.tgws?.client_path_verified);
   const zapretReady = Boolean(state.zapret?.ready ?? zapretComponent?.health_ready);
-  const providerChosen = directOnly || verifiedServers > 0 || smartReady || tgwsReady || zapretReady;
-  const serviceChoiceDone = automaticServices || asArray(services).length > 0;
-  const setupReady = routerReady && providerChosen && serviceChoiceDone;
+  const methodsStatus = textValue(onboarding?.steps?.methods?.status, 'pending');
+  const sourcesStatus = textValue(onboarding?.steps?.sources?.status, 'pending');
+  const servicesStatus = textValue(onboarding?.steps?.services?.status, 'pending');
+  const progress = onboardingProgress({
+    methodsStatus,
+    sourcesStatus,
+    servicesStatus,
+    verifiedServers,
+    smartReady,
+    tgwsReady,
+    zapretReady,
+    canComplete: onboarding?.can_complete
+  });
+  const { methodsDone, sourcesDone, providerReady: providerChosen, serviceChoiceDone, setupReady } = progress;
 
-  function chooseDirect() {
-    setDirectOnly(true);
-    try { window.localStorage.setItem('flintroute-first-run-direct', '1'); } catch { /* current session still works */ }
+  async function chooseDirect() {
+    await onboardingAction('methods', 'skip');
+    await onboardingAction('sources', 'skip');
   }
-  function chooseAutomatic() {
-    setAutomaticServices(true);
-    try { window.localStorage.setItem('flintroute-first-run-services-auto', '1'); } catch { /* current session still works */ }
+  async function chooseAutomatic() {
+    await onboardingAction('services', 'automatic');
   }
-  function finish() {
+  async function acceptSources() {
+    await onboardingAction('sources', 'accept');
+  }
+  async function finish() {
     if (!setupReady) return;
-    try { window.localStorage.setItem('flintroute-first-run-complete', '1'); } catch { /* overview is still reachable */ }
-    navigate('Обзор');
+    const result = await onboardingAction('complete', 'complete');
+    if (result?.completed) navigate('Обзор');
   }
 
   return <section>
@@ -2227,8 +2355,8 @@ function SetupScreen({ overview, services, routes, discovery, navigate }: any) {
     {state.error && <div class="inline-error"><b>Не все проверки завершены</b><span>{state.error}</span><button onClick={() => void load()}>Повторить</button></div>}
     <div class="setup-progress">{[
       ['1', 'Роутер', routerReady],
-      ['2', 'Маршруты', providerChosen],
-      ['3', 'Источники', providerChosen],
+       ['2', 'Маршруты', methodsDone],
+       ['3', 'Источники', sourcesDone],
       ['4', 'Сервисы', serviceChoiceDone],
       ['5', 'Проверка', setupReady]
     ].map(([number, label, done]) => <div class={done ? 'done' : ''} key={String(number)}><b>{number}</b><span>{label}</span></div>)}</div>
@@ -2237,21 +2365,22 @@ function SetupScreen({ overview, services, routes, discovery, navigate }: any) {
         <StatusLine label="Интернет" value={overview?.internet} /><StatusLine label="DNS" value={overview?.dns} />
         <p>{routerReady ? 'Базовая сеть работает. FlintRoute может переходить к настройке маршрутов.' : 'Базовая сеть не подтверждена. Открой диагностику и исправь проблему до применения правил.'}</p>
       </EntityCard>
-      <EntityCard title="2. Способы подключения" status={providerChosen ? 'configured' : 'not_configured'} onOpen={() => navigate('Компоненты')}>
+      <EntityCard title="2. Способы подключения" status={methodsDone ? 'configured' : 'not_configured'} onOpen={() => navigate('Компоненты')}>
         <StatusLine label="Zapret" value={zapretReady ? 'ready' : zapretComponent?.installed ? 'requires_config' : 'not_installed'} />
         <StatusLine label="Xray / VLESS" value={verifiedServers > 0 ? `${verifiedServers} verified` : xray?.installed ? 'requires_config' : 'not_installed'} />
         <StatusLine label="TG WS Proxy" value={tgwsReady ? 'verified' : tgwsComponent?.installed ? 'requires_config' : 'not_installed'} />
-        {!providerChosen && <button onClick={chooseDirect}>Пока использовать только обычный интернет</button>}
+        {!providerChosen && <button onClick={() => void chooseDirect()}>Пока использовать только обычный интернет</button>}
       </EntityCard>
-      <EntityCard title="3. Источники и проверка" status={providerChosen ? 'ready' : 'not_configured'} onOpen={() => navigate(verifiedServers ? 'VLESS-серверы' : 'Компоненты')}>
+      <EntityCard title="3. Источники и проверка" status={sourcesDone ? 'ready' : 'not_configured'} onOpen={() => navigate(verifiedServers ? 'VLESS-серверы' : 'Компоненты')}>
         <StatusLine label="VLESS-серверы" value={verifiedServers ? `${verifiedServers} подтверждено` : 'не добавлены'} />
         <StatusLine label="Smart DNS" value={smartReady ? 'ready' : 'not_configured'} />
         <StatusLine label="Telegram proxy" value={tgwsReady ? 'verified' : 'not_configured'} />
         <p>Добавляй только нужные способы. FlintRoute не заставляет ставить всё подряд.</p>
+        {providerChosen && !sourcesDone && <button onClick={() => void acceptSources()}>Подтвердить проверенные источники</button>}
       </EntityCard>
       <EntityCard title="4. Что нужно открыть" status={serviceChoiceDone ? 'configured' : 'not_configured'} onOpen={() => navigate('Сервисы')}>
         <p>{asArray(services).length ? `Настроено сервисов: ${asArray(services).length}.` : 'Можно закрепить Discord, ChatGPT, YouTube и другие сервисы за подходящими маршрутами.'}</p>
-        {!serviceChoiceDone && <button onClick={chooseAutomatic}>Пока выбирать автоматически</button>}
+        {!serviceChoiceDone && <button onClick={() => void chooseAutomatic()}>Пока выбирать автоматически</button>}
         <StatusLine label="Discovery" value={discovery?.mode ?? 'observe_only'} />
       </EntityCard>
       <EntityCard title="5. Финальная проверка" status={setupReady ? 'ready' : 'unverified'} onOpen={() => navigate('Маршруты')}>
@@ -2279,7 +2408,8 @@ function EntityCard({ title, status, children, onOpen }: { title: string; status
 }
 
 function StatusBadge({ value }: { value: unknown }) {
-  return <span class={`status-badge ${statusTone(value)}`}>{humanStatus(value)}</span>;
+  const stale = textValue(asRecord(value).freshness, '').toLowerCase() === 'stale';
+  return <span class={`status-badge ${stale ? 'warn' : statusTone(value)}`}>{stale ? `${humanStatus(value)} · данные устарели` : humanStatus(value)}</span>;
 }
 
 function StatusLine({ label, value }: { label: string; value: unknown }) {
@@ -2292,18 +2422,50 @@ function InfoGrid({ items }: { items: Array<[string, unknown]> }) {
 }
 
 function DetailDrawer({ title, open, onClose, children, wide = false }: { title: string; open: boolean; onClose: () => void; children: any; wide?: boolean }) {
+  const drawerRef = useRef<HTMLElement>(null);
   useEffect(() => {
     if (!open) return;
-    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', close);
-    return () => window.removeEventListener('keydown', close);
+    const previous = document.activeElement as HTMLElement | null;
+    const focusable = () => Array.from(drawerRef.current?.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])') ?? []).filter((item) => !item.hasAttribute('disabled'));
+    window.setTimeout(() => focusable()[0]?.focus(), 0);
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { onClose(); return; }
+      if (event.key !== 'Tab') return;
+      const items = focusable();
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => {
+      window.removeEventListener('keydown', handleKey);
+      previous?.focus?.();
+    };
   }, [open, onClose]);
   if (!open) return null;
-  return <div class="drawer-backdrop" role="presentation" onClick={onClose}><aside class={`detail-drawer ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-label={title} onClick={(event) => event.stopPropagation()}><header><h2>{title}</h2><button class="icon-button" aria-label="Закрыть" onClick={onClose}>×</button></header><div class="drawer-content">{children}</div></aside></div>;
+  return <div class="drawer-backdrop" role="presentation" onClick={onClose}><aside ref={drawerRef} class={`detail-drawer ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-label={title} onClick={(event) => event.stopPropagation()}><header><h2>{title}</h2><button class="icon-button" aria-label="Закрыть" onClick={onClose}>×</button></header><div class="drawer-content">{children}</div></aside></div>;
 }
 
 function RawDisclosure({ value }: { value: unknown }) {
   return <details class="raw-disclosure"><summary>Открыть сырые данные</summary><pre>{JSON.stringify(value ?? {}, null, 2)}</pre></details>;
+}
+
+function useConfirmDialog() {
+  const [request, setRequest] = useState<string | null>(null);
+  const resolver = useRef<((accepted: boolean) => void) | null>(null);
+  const ask = (message: string): Promise<boolean> => new Promise((resolve) => {
+    resolver.current = resolve;
+    setRequest(message);
+  });
+  const answer = (accepted: boolean) => {
+    resolver.current?.(accepted);
+    resolver.current = null;
+    setRequest(null);
+  };
+  const dialog = request ? <div class="modal-backdrop" role="presentation"><section class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title" onClick={(event) => event.stopPropagation()}><h2 id="confirm-title">Подтвердить действие</h2><p>{request}</p><div class="actions"><button autoFocus onClick={() => answer(false)}>Отмена</button><button class="primary" onClick={() => answer(true)}>Продолжить</button></div></section></div> : null;
+  return { ask, dialog };
 }
 
 function EmptyState({ title, text }: { title: string; text: string }) {

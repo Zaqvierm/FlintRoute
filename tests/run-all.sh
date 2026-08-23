@@ -16,6 +16,7 @@ sh tests/package-openwrt.sh
 sh tests/installer-backup.sh
 sh tests/installer-lifecycle.sh
 sh tests/content-aware-install.sh
+sh tests/shell-library.sh
 sh tests/boot-guard-service.sh
 sh tests/adapter-rollback.sh
 sh tests/helper-service.sh

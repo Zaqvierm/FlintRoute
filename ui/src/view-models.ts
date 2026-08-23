@@ -2,6 +2,100 @@ import { APIError, type EventItem } from './api';
 
 export type Tone = 'ok' | 'warn' | 'bad' | 'muted' | 'info';
 
+/**
+ * Maps backend classification values to an explicit UI bucket.
+ * Unknown values must remain visible as unresolved; silently treating them as
+ * Direct is a data-integrity bug because it can suggest a route that was
+ * never selected or verified.
+ */
+export function serviceColumnFor(category: unknown): string {
+  const normalized = textValue(category, '').trim().toUpperCase();
+  switch (normalized) {
+    case 'GEO_LOCKED':
+    case 'TSPU_RESTRICTED':
+    case 'TELEGRAM':
+    case 'DIRECT_PREFERRED':
+    case 'DIRECT_ONLY':
+    case 'BLOCKED':
+      return normalized;
+    default:
+      return 'UNRESOLVED';
+  }
+}
+
+export type OnboardingProgress = {
+  methodsDone: boolean;
+  sourcesDone: boolean;
+  serviceChoiceDone: boolean;
+  providerReady: boolean;
+  setupReady: boolean;
+};
+
+/**
+ * Derive the five setup-step indicators from backend state only.  In
+ * particular, a verified component must not mark the persisted "sources"
+ * step complete, and a local browser preference can never make setupReady.
+ */
+export function onboardingProgress(input: {
+  methodsStatus?: unknown;
+  sourcesStatus?: unknown;
+  servicesStatus?: unknown;
+  verifiedServers?: number;
+  smartReady?: boolean;
+  tgwsReady?: boolean;
+  zapretReady?: boolean;
+  /** Legacy display input; it must never prove onboarding completion. */
+  serviceCount?: number;
+  canComplete?: boolean;
+}): OnboardingProgress {
+  const stepDone = (value: unknown) => ['accepted', 'skipped', 'automatic'].includes(textValue(value, 'pending').trim().toLowerCase());
+  const methodsDone = stepDone(input.methodsStatus);
+  const sourcesDone = stepDone(input.sourcesStatus);
+  const serviceChoiceDone = stepDone(input.servicesStatus);
+  const providerReady = (input.verifiedServers ?? 0) > 0 || Boolean(input.smartReady || input.tgwsReady || input.zapretReady) || methodsDone;
+  return { methodsDone, sourcesDone, serviceChoiceDone, providerReady, setupReady: input.canComplete === true };
+}
+
+/**
+ * The backend boolean is authoritative.  The fallback exists only while the
+ * first response is loading or for older compatible providers; it accepts an
+ * explicit healthy status instead of coercing objects to "[object Object]" or
+ * treating simulation/unverified diagnostics as readiness proof.
+ */
+export function onboardingRouterReady(onboarding: unknown, overview: unknown): boolean {
+  const state = asRecord(onboarding);
+  if (typeof state.router_ready === 'boolean') return state.router_ready;
+  const snapshot = asRecord(overview);
+  return statusAllowed(snapshot.internet, ['route available', 'available', 'online', 'ok', 'ready']) &&
+    statusAllowed(snapshot.dns, ['available', 'online', 'ok', 'ready']);
+}
+
+function statusAllowed(value: unknown, allowed: string[]): boolean {
+  const normalized = textValue(value, '').trim().toLowerCase().replace(/[._-]+/g, ' ');
+  return allowed.includes(normalized);
+}
+
+/**
+ * UI-side mirror of the backend mutation fence.  Unknown, missing, starting,
+ * failed and recovery-required states are deliberately unsafe.  A
+ * not_required state is only safe when the backend supplied a bound baseline;
+ * this prevents the UI from presenting a mutation button while recovery data
+ * is merely absent or stale.
+ */
+export function recoveryMutationAllowed(input: unknown): boolean {
+  if (!input || typeof input !== 'object') return false;
+  const value = input as Record<string, unknown>;
+  const nested = value.recovery && typeof value.recovery === 'object'
+    ? value.recovery as Record<string, unknown>
+    : value;
+  const status = textValue(nested.status ?? value.recovery_status, '').trim().toLowerCase();
+  if (status === 'ok') return true;
+  if (status !== 'not_required') return false;
+  const revision = textValue(nested.revision_id ?? value.active_revision, '').trim();
+  const hash = textValue(nested.candidate_hash ?? value.candidate_hash, '').trim();
+  return revision.length > 0 && hash.length > 0;
+}
+
 export type DecisionCard = {
   id: string;
   time: string;

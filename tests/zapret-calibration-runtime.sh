@@ -53,6 +53,7 @@ esac
 SH
 cat >"$TMP/blockcheck.sh" <<'SH'
 #!/bin/sh
+[ "${SCANLEVEL:-}" = "quick" ]
 [ "${SKIP_DNSCHECK:-}" = "1" ]
 [ "${DNSCACHE_observed_example_4_COUNT:-}" = "2" ]
 [ "${DNSCACHE_observed_example_4_0:-}" = "203.0.113.10" ]
@@ -175,12 +176,34 @@ grep -F 'upstream blockcheck timed out after 30s' "$TMP/timeout.log" >/dev/null
 grep -F 'last bounded strategy' "$TMP/timeout.log" >/dev/null
 [ ! -e "$RUNTIME/zapret-calibration.lock" ]
 
+# The explicit exhaustive mode selects upstream force scanning and a separate
+# long-running budget without executing the scan in this fixture.
+PATH="$BIN:$PATH" TIMEOUT_BIN=fake-timeout \
+  sh "$ROOT/scripts/calibrate-zapret.sh" --dry-run --mode exhaustive \
+    --domain observed.example --bundle-id auto-observed \
+    --network-fingerprint sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --blockcheck "$TMP/blockcheck.sh" >"$TMP/exhaustive-dry-run.txt"
+grep -F 'calibration_mode=exhaustive' "$TMP/exhaustive-dry-run.txt" >/dev/null
+grep -F 'scan_level=force' "$TMP/exhaustive-dry-run.txt" >/dev/null
+grep -F 'timeout_seconds=21600' "$TMP/exhaustive-dry-run.txt" >/dev/null
+
+if PATH="$BIN:$PATH" TIMEOUT_BIN=fake-timeout BLOCKCHECK_TIMEOUT=21601 \
+  sh "$ROOT/scripts/calibrate-zapret.sh" --dry-run --mode exhaustive \
+    --domain observed.example --bundle-id auto-observed \
+    --network-fingerprint sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --blockcheck "$TMP/blockcheck.sh" >"$TMP/invalid-timeout.txt" 2>"$TMP/invalid-timeout.log"; then
+  echo "out-of-range blockcheck timeout unexpectedly passed" >&2
+  exit 1
+fi
+grep -F 'blockcheck timeout must be between 1 and 21600 seconds' "$TMP/invalid-timeout.log" >/dev/null
+
+
 # A provider script may daemonize nfqws before timing out.  The calibration
 # finally path must reap that exact executable rather than leaving PPid=1.
 cp "$(command -v sleep)" "$TMP/nfqws"
 cat >"$TMP/blockcheck-orphan.sh" <<'SH'
 #!/bin/sh
-"$ORPHAN_NFQWS" 60 &
+setsid "$ORPHAN_NFQWS" 60 >/dev/null 2>&1 &
 printf '%s\n' "$!" >"$ORPHAN_PID_FILE"
 sleep 1
 exit 124

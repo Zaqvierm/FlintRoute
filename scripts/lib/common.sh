@@ -72,9 +72,18 @@ rp_lock() {
 rp_atomic_write() {
   target="$1"
   tmp="${target}.$$"
-  cat > "$tmp"
-  chmod "${RP_ATOMIC_MODE:-600}" "$tmp" 2>/dev/null || true
-  mv "$tmp" "$target"
+  if ! cat > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! chmod "${RP_ATOMIC_MODE:-600}" "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! mv "$tmp" "$target"; then
+    rm -f "$tmp"
+    return 1
+  fi
 }
 
 rp_redact() {

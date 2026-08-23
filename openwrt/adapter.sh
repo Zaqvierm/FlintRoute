@@ -846,10 +846,18 @@ atomic_install() {
     rm -f "$install_tmp"
     return 1
   fi
-  sync -f "$(dirname "$install_target")" 2>/dev/null || true
   install_bytes="$(wc -c < "$install_source" | tr -d ' ')"
+  directory_sync_scope="exact"
+  if ! sync -f "$(dirname "$install_target")" 2>/dev/null; then
+    directory_sync_scope="global"
+    if ! sync 2>/dev/null; then
+      record_runtime_write_event "fsync_failed" "$install_bytes" "active_artifact_install_directory"
+      return 1
+    fi
+  fi
   record_runtime_write_event "$install_event" "$install_bytes" "active_artifact_install"
   record_runtime_write_event "fsync" "2" "active_artifact_install"
+  record_runtime_write_event "fsync_scope" "0" "active_artifact_install:$directory_sync_scope"
 }
 
 nft_identity() {

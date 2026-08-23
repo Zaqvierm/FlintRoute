@@ -8,11 +8,12 @@ ZAPRET_INIT="${ZAPRET_INIT:-/etc/init.d/router-policy-zapret}"
 RUNTIME_DIR="${ROUTER_POLICY_RUNTIME_DIR:-/tmp/router-policy}"
 CATALOG_OUT="${ZAPRET_CATALOG_OUT:-/etc/router-policy/zapret/catalog.json}"
 TIMEOUT_BIN="${TIMEOUT_BIN:-timeout}"
-BLOCKCHECK_TIMEOUT="${BLOCKCHECK_TIMEOUT:-2400}"
+BLOCKCHECK_TIMEOUT="${BLOCKCHECK_TIMEOUT:-}"
 QUEUE_NUM="${ZAPRET_QUEUE_NUM:-200}"
 PRE_RESOLVED_IPV4="${ZAPRET_CALIBRATION_IPV4:-}"
 
 mode="dry-run"
+calibration_mode="quick"
 domain=""
 bundle_id=""
 network_fingerprint=""
@@ -20,13 +21,14 @@ blockcheck_script="${BLOCKCHECK_SCRIPT:-}"
 allow_managed_restart=0
 
 usage() {
-  echo "usage: calibrate-zapret.sh [--dry-run|--apply] --domain DOMAIN --bundle-id ID --network-fingerprint sha256:HEX --blockcheck FILE [--allow-managed-restart]" >&2
+  echo "usage: calibrate-zapret.sh [--dry-run|--apply] [--mode quick|exhaustive] --domain DOMAIN --bundle-id ID --network-fingerprint sha256:HEX --blockcheck FILE [--allow-managed-restart]" >&2
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run) mode="dry-run" ;;
     --apply) mode="apply" ;;
+    --mode) shift; [ "$#" -gt 0 ] || { usage; exit 2; }; calibration_mode="$1" ;;
     --domain) shift; [ "$#" -gt 0 ] || { usage; exit 2; }; domain="$1" ;;
     --bundle-id) shift; [ "$#" -gt 0 ] || { usage; exit 2; }; bundle_id="$1" ;;
     --network-fingerprint) shift; [ "$#" -gt 0 ] || { usage; exit 2; }; network_fingerprint="$1" ;;
@@ -58,9 +60,31 @@ case "$fingerprint_hex" in
   *[!0-9a-fA-F]*) echo "network fingerprint must be hexadecimal" >&2; exit 2 ;;
 esac
 [ -n "$blockcheck_script" ] || { echo "upstream blockcheck path is required" >&2; exit 2; }
+case "$calibration_mode" in
+  quick)
+    scan_level="quick"
+    [ -n "$BLOCKCHECK_TIMEOUT" ] || BLOCKCHECK_TIMEOUT=300
+    ;;
+  exhaustive)
+    scan_level="force"
+    [ -n "$BLOCKCHECK_TIMEOUT" ] || BLOCKCHECK_TIMEOUT=21600
+    ;;
+  *) echo "calibration mode must be quick or exhaustive" >&2; exit 2 ;;
+esac
+case "$BLOCKCHECK_TIMEOUT" in
+  ""|*[!0-9]*) echo "blockcheck timeout must be an integer number of seconds" >&2; exit 2 ;;
+esac
+max_blockcheck_timeout=21600
+[ "$BLOCKCHECK_TIMEOUT" -ge 1 ] && [ "$BLOCKCHECK_TIMEOUT" -le "$max_blockcheck_timeout" ] || {
+  echo "blockcheck timeout must be between 1 and ${max_blockcheck_timeout} seconds" >&2
+  exit 2
+}
 
 if [ "$mode" = "dry-run" ]; then
   echo "mode=dry-run"
+  echo "calibration_mode=$calibration_mode"
+  echo "scan_level=$scan_level"
+  echo "timeout_seconds=$BLOCKCHECK_TIMEOUT"
   echo "domain=$domain"
   echo "bundle_id=$bundle_id"
   echo "would_run_upstream_blockcheck=$blockcheck_script"
@@ -110,6 +134,8 @@ routes_baseline="$run_dir/routes.before"
 rules_baseline="$run_dir/rules.before"
 report="$run_dir/blockcheck.log"
 result="$run_dir/import.json"
+blockcheck_pid_file="$run_dir/blockcheck.pid"
+blockcheck_status_file="$run_dir/blockcheck.status"
 maintenance_started=0
 zapret_was_running=0
 blockcheck_pid=""
@@ -131,6 +157,13 @@ proc_executable() {
 proc_commandline() {
   pid="$1"
   tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true
+}
+
+proc_has_calibration_marker() {
+  pid="$1"
+  [ -r "/proc/$pid/environ" ] || return 1
+  tr '\000' '\n' < "/proc/$pid/environ" 2>/dev/null \
+    | grep -Fqx "ROUTER_POLICY_CALIBRATION_RUN_ID=$calibration_run_id"
 }
 
 proc_pgid() {
@@ -165,7 +198,11 @@ list_nfqwss() {
     case "$exe:$commandline" in
       "$NFQWS_BIN":*|*/nfqws:*|*"$NFQWS_BIN"*|*"/nfqws "*)
         start=$(proc_start_time "$pid") || continue
-        printf '%s|%s|%s|%s|%s|%s\n' "$pid" "$start" "$exe" "$(proc_pgid "$pid")" "$(proc_ppid "$pid")" "$commandline"
+        # The ownership snapshot intentionally contains only the identity used
+        # for PID-reuse protection.  PGID/PPID/argv are queried live when the
+        # cleanup decision is made, so they cannot make the snapshot parser
+        # confuse an executable path with trailing fields.
+        printf '%s|%s|%s\n' "$pid" "$start" "$exe"
         ;;
     esac
   done
@@ -196,7 +233,7 @@ terminate_owned_process() {
 cleanup_owned_nfqwss() {
 	current="$run_dir/nfqws.after"
 	list_nfqwss > "$current" || return 1
-	while IFS='|' read -r pid start exe; do
+while IFS='|' read -r pid start exe; do
     [ -n "$pid" ] || continue
     baseline=0
     while IFS='|' read -r old_pid old_start old_exe; do
@@ -208,8 +245,15 @@ cleanup_owned_nfqwss() {
 	    if [ "$baseline" != "1" ]; then
 	      pgid=$(proc_pgid "$pid")
 	      if [ -z "$calibration_pgid" ] || [ "$pgid" != "$calibration_pgid" ]; then
-	        echo "new nfqws has no provable calibration ownership: $pid" >&2
-	        return 1
+	        # A provider is allowed to daemonize, which creates a new session and
+	        # makes the process-group proof disappear.  The child still inherits
+	        # the per-run marker exported below.  Kill only when that independent
+	        # ownership proof matches; an unmarked process remains foreign and
+	        # cleanup fails closed instead of guessing.
+	        if ! proc_has_calibration_marker "$pid"; then
+	          echo "new nfqws has no provable calibration ownership: $pid" >&2
+	          return 1
+	        fi
 	      fi
 	      terminate_owned_process "$pid" "$start" "$exe"
 	    fi
@@ -272,22 +316,28 @@ cleanup() {
   trap - EXIT HUP INT TERM
   calibration_pgid="$blockcheck_pgid"
   if [ -n "$blockcheck_pgid" ]; then
-    kill -TERM "-$blockcheck_pgid" 2>/dev/null || true
-    i=0
-    while [ "$i" -lt 10 ] && process_group_exists "$blockcheck_pgid"; do
-      sleep 1
-      i=$((i + 1))
-    done
-    if process_group_exists "$blockcheck_pgid"; then
-      kill -KILL "-$blockcheck_pgid" 2>/dev/null || true
+    controller_pgid=$(proc_pgid "$$" 2>/dev/null || true)
+    if [ "$blockcheck_pgid" = "$controller_pgid" ]; then
+      echo "refusing to signal the calibration controller process group: $blockcheck_pgid" >&2
+      status=1
+    else
+      kill -TERM "-$blockcheck_pgid" 2>/dev/null || true
       i=0
-      while [ "$i" -lt 5 ] && process_group_exists "$blockcheck_pgid"; do
+      while [ "$i" -lt 10 ] && process_group_exists "$blockcheck_pgid"; do
         sleep 1
         i=$((i + 1))
       done
       if process_group_exists "$blockcheck_pgid"; then
-        echo "calibration process group survived cleanup: $blockcheck_pgid" >&2
-        status=1
+        kill -KILL "-$blockcheck_pgid" 2>/dev/null || true
+        i=0
+        while [ "$i" -lt 5 ] && process_group_exists "$blockcheck_pgid"; do
+          sleep 1
+          i=$((i + 1))
+        done
+        if process_group_exists "$blockcheck_pgid"; then
+          echo "calibration process group survived cleanup: $blockcheck_pgid" >&2
+          status=1
+        fi
       fi
     fi
     blockcheck_pgid=""
@@ -376,25 +426,73 @@ export ROUTER_POLICY_CALIBRATION_RUN_ID="$calibration_run_id"
 set +e
 # shellcheck disable=SC2016 # the child shell expands its positional arguments.
 setsid sh -c '
+  # setsid may fork when its caller is already a process-group leader.  The
+  # background PID is then the short-lived launcher, not the isolated child;
+  # publish the child PID from inside the new session instead of trusting $!.
+  printf "%s\\n" "$$" > "${11}"
+  # Stop before executing provider code. This gives the controller a stable
+  # PID/PGID to validate, even when the blockcheck exits immediately.
+  kill -STOP "$$"
   cd "$1"
-  BATCH=1 IPVS=4 REPEATS=3 SCANLEVEL=standard SKIP_TPWS=1 SKIP_DNSCHECK="$2" DOMAINS="$3" \
+  NFQWS="$8" NFQWS_BIN="$8" ROUTER_POLICY_CALIBRATION_RUN_ID="$9" \
+    BATCH=1 IPVS=4 REPEATS=3 SCANLEVEL="${10}" SKIP_TPWS=1 SKIP_DNSCHECK="$2" DOMAINS="$3" \
     "$4" "$5" sh "$6" >"$7" 2>&1
-' sh "$(dirname "$blockcheck_script")" "$skip_dnscheck" "$domain" "$TIMEOUT_BIN" "$BLOCKCHECK_TIMEOUT" "$blockcheck_script" "$report" &
-blockcheck_pid=$!
-blockcheck_pgid=$(proc_pgid "$blockcheck_pid" 2>/dev/null || true)
-case "$blockcheck_pgid" in
+  status=$?
+  printf "%s\\n" "$status" > "${12}"
+  exit "$status"
+' sh "$(dirname "$blockcheck_script")" "$skip_dnscheck" "$domain" "$TIMEOUT_BIN" "$BLOCKCHECK_TIMEOUT" "$blockcheck_script" "$report" "$NFQWS_BIN" "$calibration_run_id" "$scan_level" "$blockcheck_pid_file" "$blockcheck_status_file" &
+blockcheck_launcher_pid=$!
+i=0
+while [ ! -s "$blockcheck_pid_file" ] && [ "$i" -lt 10 ]; do
+  sleep 1
+  i=$((i + 1))
+done
+blockcheck_pid=$(cat "$blockcheck_pid_file" 2>/dev/null || true)
+case "$blockcheck_pid" in
   ""|*[!0-9]*)
-    echo "unable to determine calibration process group" >&2
-    kill -TERM "$blockcheck_pid" 2>/dev/null || true
-    wait "$blockcheck_pid" 2>/dev/null || true
+    echo "unable to determine isolated calibration process" >&2
+    kill "$blockcheck_launcher_pid" 2>/dev/null || true
+    wait "$blockcheck_launcher_pid" 2>/dev/null || true
     exit 1
     ;;
 esac
+blockcheck_pgid=$(proc_pgid "$blockcheck_pid" 2>/dev/null || true)
+case "$blockcheck_pgid" in
+  ""|0|*[!0-9]*)
+    echo "unable to determine calibration process group" >&2
+    kill -TERM "$blockcheck_pid" 2>/dev/null || true
+    wait "$blockcheck_launcher_pid" 2>/dev/null || true
+    exit 1
+    ;;
+esac
+controller_pgid=$(proc_pgid "$$" 2>/dev/null || true)
+[ "$blockcheck_pgid" != "$controller_pgid" ] || {
+  echo "calibration process group is not isolated from the controller" >&2
+  kill -TERM "$blockcheck_pid" 2>/dev/null || true
+  wait "$blockcheck_launcher_pid" 2>/dev/null || true
+  exit 1
+}
 blockcheck_start=$(proc_start_time "$blockcheck_pid" 2>/dev/null || true)
 blockcheck_exe=$(proc_executable "$blockcheck_pid")
 printf '%s|%s|%s|%s|%s\n' "$blockcheck_pid" "$blockcheck_start" "$blockcheck_exe" "$blockcheck_pgid" "$calibration_run_id" > "$process_manifest"
-wait "$blockcheck_pid"
-blockcheck_status=$?
+kill -CONT "$blockcheck_pid" 2>/dev/null || {
+  echo "unable to resume validated calibration process" >&2
+  exit 1
+}
+wait "$blockcheck_launcher_pid" 2>/dev/null || true
+i=0
+while [ ! -s "$blockcheck_status_file" ] && [ "$i" -lt 30 ]; do
+  process_group_exists "$blockcheck_pgid" || break
+  sleep 1
+  i=$((i + 1))
+done
+blockcheck_status=$(cat "$blockcheck_status_file" 2>/dev/null || true)
+case "$blockcheck_status" in
+  ""|*[!0-9]*)
+    echo "calibration process exited without a semantic status" >&2
+    exit 1
+    ;;
+esac
 blockcheck_pid=""
 set -e
 if [ "$blockcheck_status" -ne 0 ]; then

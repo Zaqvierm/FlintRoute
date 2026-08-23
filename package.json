@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "browser:test": "playwright test"
   },
   "dependencies": {
     "@preact/signals": "^2.5.1",
@@ -16,6 +17,7 @@
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@preact/preset-vite": "^2.10.2",
     "@types/qrcode": "^1.5.6",
     "typescript": "^5.9.3",

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatDateTime, groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, parseResolverInput, stringArray, textValue, toDecisionCard } from './view-models';
+import { formatDateTime, groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, onboardingProgress, onboardingRouterReady, parseResolverInput, recoveryMutationAllowed, serviceColumnFor, stringArray, textValue, toDecisionCard } from './view-models';
 import type { EventItem } from './api';
 
 describe('safe display values', () => {
@@ -44,6 +44,19 @@ describe('Smart DNS endpoint input', () => {
 });
 
 describe('service view model', () => {
+  it.each([
+    ['GEO_LOCKED', 'GEO_LOCKED'],
+    ['TSPU_RESTRICTED', 'TSPU_RESTRICTED'],
+    ['TELEGRAM', 'TELEGRAM'],
+    ['DIRECT_PREFERRED', 'DIRECT_PREFERRED'],
+    ['DIRECT_ONLY', 'DIRECT_ONLY'],
+    ['BLOCKED', 'BLOCKED'],
+    ['future_category', 'UNRESOLVED'],
+    ['', 'UNRESOLVED']
+  ])('maps category %s explicitly', (category, expected) => {
+    expect(serviceColumnFor(category)).toBe(expected);
+  });
+
   it('groups configured and discovered domains into one service', () => {
     const grouped = groupServices([
       { id: 'Discord', category: 'TSPU_RESTRICTED', domains: ['discord.com', 'discord.gg'], source: 'configured' },
@@ -61,6 +74,57 @@ describe('service view model', () => {
     ]);
     expect(observed.applied).toBe(false);
     expect(observed.sources).toEqual(['automatic']);
+  });
+});
+
+describe('onboarding truthfulness', () => {
+  it('does not mark sources complete merely because a route is verified', () => {
+    const progress = onboardingProgress({ verifiedServers: 2, methodsStatus: 'pending', sourcesStatus: 'pending', servicesStatus: 'pending' });
+    expect(progress.providerReady).toBe(true);
+    expect(progress.methodsDone).toBe(false);
+    expect(progress.sourcesDone).toBe(false);
+    expect(progress.serviceChoiceDone).toBe(false);
+    expect(progress.setupReady).toBe(false);
+  });
+
+  it('uses persisted backend statuses for skipped direct and automatic choices', () => {
+    const progress = onboardingProgress({ methodsStatus: 'skipped', sourcesStatus: 'skipped', servicesStatus: 'automatic', canComplete: true });
+    expect(progress.methodsDone).toBe(true);
+    expect(progress.sourcesDone).toBe(true);
+    expect(progress.serviceChoiceDone).toBe(true);
+    expect(progress.setupReady).toBe(true);
+  });
+
+  it('does not treat an unknown persisted step status as complete', () => {
+    const progress = onboardingProgress({ methodsStatus: 'corrupted', sourcesStatus: 'verified', servicesStatus: 'pending' });
+    expect(progress.methodsDone).toBe(false);
+    expect(progress.sourcesDone).toBe(false);
+    expect(progress.serviceChoiceDone).toBe(false);
+    expect(progress.setupReady).toBe(false);
+  });
+
+  it('does not infer the services step from an existing service list', () => {
+    const progress = onboardingProgress({ serviceCount: 12, methodsStatus: 'skipped', sourcesStatus: 'skipped', servicesStatus: 'pending' });
+    expect(progress.serviceChoiceDone).toBe(false);
+  });
+
+  it('uses the backend router gate and never treats simulation as ready', () => {
+    expect(onboardingRouterReady({ router_ready: false }, { internet: 'ROUTE_AVAILABLE', dns: 'AVAILABLE' })).toBe(false);
+    expect(onboardingRouterReady({ router_ready: true }, { internet: 'simulation', dns: 'simulation' })).toBe(true);
+    expect(onboardingRouterReady({}, { internet: 'simulation', dns: 'simulation' })).toBe(false);
+    expect(onboardingRouterReady({}, { internet: { status: 'ROUTE_AVAILABLE' }, dns: { state: 'AVAILABLE' } })).toBe(true);
+  });
+});
+
+describe('recovery mutation fence', () => {
+  it.each(['starting', 'error', 'recovery_required', '', 'unknown'])('blocks unsafe status %s', (status) => {
+    expect(recoveryMutationAllowed({ recovery_status: status })).toBe(false);
+  });
+
+  it('allows only proven safe statuses', () => {
+    expect(recoveryMutationAllowed({ recovery_status: 'ok' })).toBe(true);
+    expect(recoveryMutationAllowed({ recovery: { status: 'not_required', revision_id: 'rev-1', candidate_hash: 'sha256:a' } })).toBe(true);
+    expect(recoveryMutationAllowed({ recovery_status: 'not_required', active_revision: 'rev-1' })).toBe(false);
   });
 });
 

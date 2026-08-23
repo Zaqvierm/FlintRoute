@@ -1,5 +1,15 @@
 export type Envelope<T> = { request_id: string; data: T };
 export type Overview = Record<string, unknown>;
+export type OnboardingState = {
+  version: number;
+  steps: Record<string, { status: string; updated_at?: string }>;
+  completed: boolean;
+  can_complete: boolean;
+  router_ready: boolean;
+  source: 'backend' | string;
+  updated_at?: string;
+  completion_note?: string;
+};
 export type SessionInfo = {
   user: string;
   role: 'administrator' | 'diagnostician' | 'viewer';
@@ -181,6 +191,8 @@ export type ZapretCalibrationStatus = {
   state: 'idle' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unavailable';
   stage: string;
   domain?: string;
+  mode?: 'quick' | 'exhaustive';
+  scan_level?: 'quick' | 'standard' | 'force' | string;
   concurrency: number;
   concurrency_reason: string;
   candidate_count: number;
@@ -282,6 +294,17 @@ export class APIError extends Error {
   }
 }
 
+export type HealthSnapshot = {
+  status: string;
+  provider?: string;
+  simulation?: boolean;
+  recovery_status?: string;
+  recovery_reason_code?: string;
+  recovery_reason?: string;
+  active_revision?: string;
+  time?: string;
+};
+
 let csrf = '';
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -311,6 +334,10 @@ export async function me(): Promise<SessionInfo> {
   return session;
 }
 
+export async function getHealth(signal?: AbortSignal): Promise<HealthSnapshot> {
+  return request<HealthSnapshot>('/health', { signal });
+}
+
 export async function login(username: string, password: string): Promise<SessionInfo> {
   const session = await request<SessionInfo>('/auth/login', {
     method: 'POST',
@@ -332,12 +359,16 @@ export async function logout(): Promise<void> {
   csrf = '';
 }
 
-export async function getOverview(): Promise<Overview> { return request<Overview>('/overview'); }
-export async function getTopology(hideAddresses = false): Promise<any> { return request(`/topology?privacy=${hideAddresses ? 'hidden' : 'visible'}`); }
-export async function getDevices(hideAddresses = false): Promise<any[]> {
-  return request(`/devices?privacy=${hideAddresses ? 'hidden' : 'visible'}`);
+export async function getOverview(signal?: AbortSignal): Promise<Overview> { return request<Overview>('/overview', { signal }); }
+export async function getOnboarding(signal?: AbortSignal): Promise<OnboardingState> { return request<OnboardingState>('/onboarding', { signal }); }
+export async function updateOnboarding(step: string, action: 'skip' | 'accept' | 'automatic' | 'complete'): Promise<OnboardingState> {
+  return request<OnboardingState>('/onboarding', { method: 'POST', body: JSON.stringify({ step, action }) });
 }
-export async function getServices(): Promise<any[]> { return request('/services'); }
+export async function getTopology(hideAddresses = false, signal?: AbortSignal): Promise<any> { return request(`/topology?privacy=${hideAddresses ? 'hidden' : 'visible'}`, { signal }); }
+export async function getDevices(hideAddresses = false, signal?: AbortSignal): Promise<any[]> {
+  return request(`/devices?privacy=${hideAddresses ? 'hidden' : 'visible'}`, { signal });
+}
+export async function getServices(signal?: AbortSignal): Promise<any[]> { return request('/services', { signal }); }
 export async function classifyService(
   domain: string,
   category: string,
@@ -356,9 +387,9 @@ export async function classifyService(
     })
   });
 }
-export async function getRoutes(): Promise<any[]> { return request('/routes'); }
-export async function getComponents(): Promise<ComponentStatus[]> {
-  const result = await request<{ components: ComponentStatus[] }>('/components');
+export async function getRoutes(signal?: AbortSignal): Promise<any[]> { return request('/routes', { signal }); }
+export async function getComponents(signal?: AbortSignal): Promise<ComponentStatus[]> {
+  const result = await request<{ components: ComponentStatus[] }>('/components', { signal });
   return result.components;
 }
 export async function getComponent(kind: ComponentKind, upstream = false): Promise<ComponentStatus> {
@@ -367,14 +398,14 @@ export async function getComponent(kind: ComponentKind, upstream = false): Promi
 export async function componentAction(kind: ComponentKind, action: ComponentAction, confirmDisruption = false, preserveConfig = true): Promise<ComponentResult> {
   return request('/components/action', { method: 'POST', body: JSON.stringify({ kind, action, confirm_disruption: confirmDisruption, preserve_config: preserveConfig }) });
 }
-export async function getSmartDNS(): Promise<any> { return request('/smart-dns'); }
+export async function getSmartDNS(signal?: AbortSignal): Promise<any> { return request('/smart-dns', { signal }); }
 export async function configureSmartDNS(resolvers: SmartDNSResolver[], testDomain: string, baseVersion: number): Promise<{ change: ChangeSet; endpoint_count: number; validations: SmartDNSValidation[] }> {
   return request('/smart-dns/configure', {
     method: 'POST',
     body: JSON.stringify({ resolvers, test_domain: testDomain, base_version: baseVersion })
   });
 }
-export async function getDiscovery(): Promise<DiscoveryStatus> { return request('/discovery'); }
+export async function getDiscovery(signal?: AbortSignal): Promise<DiscoveryStatus> { return request('/discovery', { signal }); }
 export async function getTelegram(): Promise<TelegramOverview> { return request('/telegram'); }
 export async function configureTelegram(botToken: string, chatID: string, enabled: boolean, eventTypes: string[]): Promise<TelegramStatus> {
   return request('/telegram/configure', { method: 'PUT', body: JSON.stringify({ bot_token: botToken, chat_id: chatID, enabled, event_types: eventTypes }) });
@@ -389,7 +420,7 @@ export async function checkExternalSOCKS(endpoint: string, testDomain: string, b
 export async function activateExternalSOCKS(endpoint: string, testDomain: string, baseVersion: number): Promise<{ report: ExternalSOCKSReport; change: ChangeSet }> {
   return request('/external-socks/activate', { method: 'POST', body: JSON.stringify({ endpoint, test_domain: testDomain, base_version: baseVersion }) });
 }
-export async function getTGWS(): Promise<TGWSStatus> { return request('/tgws'); }
+export async function getTGWS(signal?: AbortSignal): Promise<TGWSStatus> { return request('/tgws', { signal }); }
 export async function configureTGWS(port: number, fakeTLSDomain: string): Promise<{ status: TGWSStatus; connect_link: string; one_time: boolean }> {
   return request('/tgws/configure', { method: 'POST', body: JSON.stringify({ port, fake_tls_domain: fakeTLSDomain }) });
 }
@@ -411,18 +442,18 @@ export async function configureDiscovery(
     })
   });
 }
-export async function getTraffic(): Promise<TrafficSnapshot> { return request('/traffic'); }
-export async function getEvents(limit = 500): Promise<EventItem[]> { return request(`/events?limit=${limit}`); }
-export async function getSecurity(): Promise<any> { return request('/security/audit'); }
-export async function getSecuritySummary(): Promise<any> { return request('/security'); }
-export async function getDiagnostics(): Promise<any> { return request('/diagnostics'); }
-export async function getLifecycle(): Promise<any> { return request('/lifecycle'); }
-export async function getStorage(): Promise<any> { return request('/storage'); }
-export async function getSettings(): Promise<any> { return request('/settings'); }
-export async function getBackups(): Promise<any> { return request('/backups'); }
-export async function getSystem(): Promise<any> { return request('/system'); }
-export async function getChanges(): Promise<ChangeSet[]> { return request('/changes'); }
-export async function getRevisions(): Promise<RevisionSummary> { return request('/revisions'); }
+export async function getTraffic(signal?: AbortSignal): Promise<TrafficSnapshot> { return request('/traffic', { signal }); }
+export async function getEvents(limit = 500, signal?: AbortSignal): Promise<EventItem[]> { return request(`/events?limit=${limit}`, { signal }); }
+export async function getSecurity(signal?: AbortSignal): Promise<any> { return request('/security/audit', { signal }); }
+export async function getSecuritySummary(signal?: AbortSignal): Promise<any> { return request('/security', { signal }); }
+export async function getDiagnostics(signal?: AbortSignal): Promise<any> { return request('/diagnostics', { signal }); }
+export async function getLifecycle(signal?: AbortSignal): Promise<any> { return request('/lifecycle', { signal }); }
+export async function getStorage(signal?: AbortSignal): Promise<any> { return request('/storage', { signal }); }
+export async function getSettings(signal?: AbortSignal): Promise<any> { return request('/settings', { signal }); }
+export async function getBackups(signal?: AbortSignal): Promise<any> { return request('/backups', { signal }); }
+export async function getSystem(signal?: AbortSignal): Promise<any> { return request('/system', { signal }); }
+export async function getChanges(signal?: AbortSignal): Promise<ChangeSet[]> { return request('/changes', { signal }); }
+export async function getRevisions(signal?: AbortSignal): Promise<RevisionSummary> { return request('/revisions', { signal }); }
 export async function getSubscriptionSecretStatus(): Promise<SubscriptionSecretStatus> {
   return request('/xray/subscription/secret');
 }
@@ -441,17 +472,17 @@ export async function addManualVLESSServer(uri: string): Promise<ManualVLESSInve
 export async function deleteManualVLESSServer(id: string): Promise<ManualVLESSInventory> {
   return request('/xray/manual-servers', { method: 'DELETE', body: JSON.stringify({ id }) });
 }
-export async function getVLESSPool(): Promise<VLESSPoolSnapshot> { return request('/xray/pool'); }
+export async function getVLESSPool(signal?: AbortSignal): Promise<VLESSPoolSnapshot> { return request('/xray/pool', { signal }); }
 export async function setVLESSTariff(tariffMbps: number): Promise<{ tariff_mbps: number }> {
   return request('/xray/pool/settings', { method: 'PUT', body: JSON.stringify({ tariff_mbps: tariffMbps }) });
 }
 export async function runVLESSSpeedTest(logicalID: string): Promise<{ server: any; measurement: { measured_mbps: number; bytes_used: number; duration_ms: number; tested_at: string } }> {
   return request('/xray/pool/speedtest', { method: 'POST', body: JSON.stringify({ logical_id: logicalID }) });
 }
-export async function getZapret(): Promise<any> { return request('/zapret'); }
+export async function getZapret(signal?: AbortSignal): Promise<any> { return request('/zapret', { signal }); }
 export async function getZapretCalibration(): Promise<ZapretCalibrationStatus> { return request('/zapret/calibration'); }
-export async function startZapretCalibration(domain: string, allowManagedRestart = true): Promise<ZapretCalibrationStatus> {
-  return request('/zapret/calibration', { method: 'POST', body: JSON.stringify({ domain, allow_managed_restart: allowManagedRestart }) });
+export async function startZapretCalibration(domain: string, allowManagedRestart = true, mode: 'quick' | 'exhaustive' = 'quick'): Promise<ZapretCalibrationStatus> {
+  return request('/zapret/calibration', { method: 'POST', body: JSON.stringify({ domain, mode, allow_managed_restart: allowManagedRestart }) });
 }
 export async function cancelZapretCalibration(): Promise<ZapretCalibrationStatus> {
   return request('/zapret/calibration', { method: 'DELETE' });
