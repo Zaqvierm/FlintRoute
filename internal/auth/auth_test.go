@@ -3,6 +3,7 @@ package auth
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"router-policy/internal/config"
 )
@@ -46,6 +47,27 @@ func TestLoginWithoutAdminRequiresSetup(t *testing.T) {
 	store := testStore(t)
 	if _, _, err := store.Login("admin", "CorrectHorse123!", "127.0.0.1:1"); !errors.Is(err, ErrSetupRequired) {
 		t.Fatalf("expected setup required, got %v", err)
+	}
+}
+
+func TestLoginRateLimitBoundsRotatingSourcesBeforePasswordWork(t *testing.T) {
+	store := testStore(t)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	for i := 0; i < maxGlobalLoginAttempts; i++ {
+		if err := store.checkRateLocked("user-"+string(rune('a'+i)), "192.0.2."+string(rune('1'+i))); err != nil {
+			t.Fatalf("attempt %d unexpectedly rate limited: %v", i, err)
+		}
+	}
+	if err := store.checkRateLocked("rotating-user", "198.51.100.9"); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("expected global rate limit after %d attempts, got %v", maxGlobalLoginAttempts, err)
+	}
+	if len(store.globalLoginAttempts) > maxGlobalLoginAttempts {
+		t.Fatalf("global attempt window grew beyond bound: %d", len(store.globalLoginAttempts))
+	}
+	store.globalLoginAttempts[0] = time.Now().UTC().Add(-2 * globalLoginWindow)
+	if err := store.checkRateLocked("new-user", "203.0.113.8"); err != nil {
+		t.Fatalf("expired global attempt should be evicted: %v", err)
 	}
 }
 

@@ -286,6 +286,44 @@ func TestOpenWrtProviderCachesOneCollectionAcrossEndpoints(t *testing.T) {
 	}
 }
 
+func TestOpenWrtProviderMarksCachedSnapshotStaleDuringRefresh(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	runner := newOpenWrtFixtureRunner()
+	provider := NewOpenWrtProvider(
+		WithOpenWrtRunner(runner),
+		WithOpenWrtCacheTTL(time.Second),
+		WithOpenWrtClock(func() time.Time { return now }),
+	)
+	if got := provider.Overview(nil)["freshness"]; got != "live" {
+		t.Fatalf("initial freshness=%v, want live", got)
+	}
+
+	provider.runtime.mu.Lock()
+	provider.runtime.collecting = true
+	provider.runtime.collectDone = make(chan struct{})
+	now = now.Add(2 * time.Second)
+	done := provider.runtime.collectDone
+	provider.runtime.mu.Unlock()
+	defer func() {
+		provider.runtime.mu.Lock()
+		provider.runtime.collecting = false
+		provider.runtime.collectDone = nil
+		close(done)
+		provider.runtime.mu.Unlock()
+	}()
+
+	for name, value := range map[string]any{
+		"overview":    provider.Overview(nil)["freshness"],
+		"system":      provider.System(nil)["freshness"],
+		"topology":    provider.Topology(nil)["freshness"],
+		"diagnostics": provider.Diagnostics(nil)["freshness"],
+	} {
+		if value != "stale" {
+			t.Fatalf("%s freshness=%v, want stale", name, value)
+		}
+	}
+}
+
 func TestFixedOpenWrtCommandsRejectUntrustedParameters(t *testing.T) {
 	for _, test := range []struct {
 		command   OpenWrtCommand

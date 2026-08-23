@@ -35,6 +35,8 @@ const (
 	maxSessionsPerUser            = 8
 	maxLoginFailures              = 12
 	maxLoginFailureEntries        = 1024
+	maxGlobalLoginAttempts        = 8
+	globalLoginWindow             = time.Second
 	setupTokenTTL                 = 30 * time.Minute
 	setupTokenMaxUses             = 1
 	minPasswordLen                = 12
@@ -58,15 +60,16 @@ var ErrRoleDenied = errors.New("role denied")
 var argonSlots = make(chan struct{}, 2)
 
 type Store struct {
-	mu          sync.Mutex
-	usersPath   string
-	setupPath   string
-	sessions    map[string]Session
-	failures    map[string]loginFailure
-	dummyHash   string
-	sessionTTL  time.Duration
-	maxSessions int
-	perUserMax  int
+	mu                  sync.Mutex
+	usersPath           string
+	setupPath           string
+	sessions            map[string]Session
+	failures            map[string]loginFailure
+	dummyHash           string
+	sessionTTL          time.Duration
+	maxSessions         int
+	perUserMax          int
+	globalLoginAttempts []time.Time
 }
 
 type User struct {
@@ -340,11 +343,24 @@ func RemoteKey(addr string) string {
 }
 
 func (s *Store) checkRateLocked(username, remote string) error {
+	now := time.Now().UTC()
+	cutoff := now.Add(-globalLoginWindow)
+	firstFresh := 0
+	for firstFresh < len(s.globalLoginAttempts) && s.globalLoginAttempts[firstFresh].Before(cutoff) {
+		firstFresh++
+	}
+	if firstFresh > 0 {
+		s.globalLoginAttempts = append([]time.Time(nil), s.globalLoginAttempts[firstFresh:]...)
+	}
+	if len(s.globalLoginAttempts) >= maxGlobalLoginAttempts {
+		return ErrRateLimited
+	}
+	s.globalLoginAttempts = append(s.globalLoginAttempts, now)
 	f := s.failures[username+"|"+RemoteKey(remote)]
 	if f.Count >= maxLoginFailures {
 		return ErrRateLimited
 	}
-	if !f.NextTry.IsZero() && time.Now().UTC().Before(f.NextTry) {
+	if !f.NextTry.IsZero() && now.Before(f.NextTry) {
 		return ErrRateLimited
 	}
 	return nil

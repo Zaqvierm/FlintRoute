@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -59,12 +61,14 @@ func (w Watcher) Run(ctx context.Context) error {
 		maxBytes = MaxObservationLogBytes
 	}
 	var offset int64
+	var identity string
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
-		next, reset, err := w.readFrom(ctx, offset, maxBytes)
+		next, reset, nextIdentity, err := w.readFromWithIdentity(ctx, offset, maxBytes, identity)
 		if err == nil {
 			offset = next
+			identity = nextIdentity
 			if reset {
 				offset = 0
 			}
@@ -80,19 +84,25 @@ func (w Watcher) Run(ctx context.Context) error {
 }
 
 func (w Watcher) readFrom(ctx context.Context, offset, maxBytes int64) (int64, bool, error) {
+	next, reset, _, err := w.readFromWithIdentity(ctx, offset, maxBytes, "")
+	return next, reset, err
+}
+
+func (w Watcher) readFromWithIdentity(ctx context.Context, offset, maxBytes int64, previousIdentity string) (int64, bool, string, error) {
 	info, err := os.Lstat(w.Path)
 	if err != nil {
-		return offset, false, err
+		return offset, false, previousIdentity, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return offset, false, errors.New("DNS observation log is not a regular file")
+		return offset, false, previousIdentity, errors.New("DNS observation log is not a regular file")
 	}
-	if info.Size() < offset {
+	identity := observationFileIdentity(info)
+	if (identity != "" && previousIdentity != "" && identity != previousIdentity) || info.Size() < offset {
 		offset = 0
 	}
 	file, err := os.Open(w.Path)
 	if err != nil {
-		return offset, false, err
+		return offset, false, identity, err
 	}
 	if offset > 0 {
 		var boundary [1]byte
@@ -102,7 +112,7 @@ func (w Watcher) readFrom(ctx context.Context, offset, maxBytes int64) (int64, b
 	}
 	if _, err := file.Seek(offset, io.SeekStart); err != nil {
 		_ = file.Close()
-		return offset, false, err
+		return offset, false, identity, err
 	}
 	scanner := bufio.NewScanner(io.LimitReader(file, maxBytes+1))
 	scanner.Buffer(make([]byte, 4096), 128<<10)
@@ -114,18 +124,42 @@ func (w Watcher) readFrom(ctx context.Context, offset, maxBytes int64) (int64, b
 	position, seekErr := file.Seek(0, io.SeekCurrent)
 	closeErr := file.Close()
 	if err := scanner.Err(); err != nil {
-		return offset, false, err
+		return offset, false, identity, err
 	}
 	if seekErr != nil {
-		return offset, false, seekErr
+		return offset, false, identity, seekErr
 	}
 	if closeErr != nil {
-		return offset, false, closeErr
+		return offset, false, identity, closeErr
 	}
 	// The reader is not allowed to truncate a file owned by dnsmasq.  Rotation
 	// or truncation is detected on the next pass by size/boundary checks; an
 	// external writer remains the sole owner of its inode.  Keep the cursor at
 	// the bytes actually consumed so an oversized log is drained in bounded
 	// chunks without replaying or destroying the writer's data.
-	return position, false, nil
+	return position, false, identity, nil
+}
+
+// observationFileIdentity returns the stable device/inode pair on Unix-like
+// filesystems.  Some host platforms do not expose those fields through
+// os.FileInfo; there the existing size/boundary checks remain the fallback.
+func observationFileIdentity(info os.FileInfo) string {
+	if info == nil || info.Sys() == nil {
+		return ""
+	}
+	value := reflect.ValueOf(info.Sys())
+	for value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return ""
+		}
+		value = value.Elem()
+	}
+	if value.Kind() != reflect.Struct {
+		return ""
+	}
+	dev, ino := value.FieldByName("Dev"), value.FieldByName("Ino")
+	if !dev.IsValid() || !ino.IsValid() || !dev.CanInterface() || !ino.CanInterface() {
+		return ""
+	}
+	return fmt.Sprintf("%v:%v", dev.Interface(), ino.Interface())
 }

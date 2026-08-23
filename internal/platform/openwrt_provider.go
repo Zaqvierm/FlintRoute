@@ -224,6 +224,14 @@ func WithOpenWrtCacheTTL(ttl time.Duration) OpenWrtProviderOption {
 	return func(runtime *openWrtRuntime) { runtime.cacheTTL = ttl }
 }
 
+func WithOpenWrtClock(now func() time.Time) OpenWrtProviderOption {
+	return func(runtime *openWrtRuntime) {
+		if now != nil {
+			runtime.now = now
+		}
+	}
+}
+
 func NewOpenWrtProvider(options ...OpenWrtProviderOption) OpenWrtProvider {
 	runtime := defaultOpenWrtRuntime()
 	for _, option := range options {
@@ -560,6 +568,7 @@ type componentState struct {
 
 type openWrtSnapshot struct {
 	CollectedAt time.Time
+	Freshness   string
 	Board       boardInfo
 	System      systemInfo
 	LAN         interfaceInfo
@@ -607,7 +616,7 @@ func (p OpenWrtProvider) snapshot() *openWrtSnapshot {
 		runtime.mu.Lock()
 		now := runtime.now()
 		if runtime.cached != nil && runtime.cacheTTL > 0 && now.Sub(runtime.cached.CollectedAt) < runtime.cacheTTL {
-			cached := runtime.cached
+			cached := snapshotView(runtime.cached, "live")
 			runtime.mu.Unlock()
 			return cached
 		}
@@ -616,7 +625,11 @@ func (p OpenWrtProvider) snapshot() *openWrtSnapshot {
 			// ubus/ip/nft commands across simultaneous UI requests.  The
 			// collector will publish a fresh atomic snapshot for the next call.
 			if runtime.cached != nil {
-				cached := runtime.cached
+				freshness := "live"
+				if runtime.cacheTTL > 0 && now.Sub(runtime.cached.CollectedAt) >= runtime.cacheTTL {
+					freshness = "stale"
+				}
+				cached := snapshotView(runtime.cached, freshness)
 				runtime.mu.Unlock()
 				return cached
 			}
@@ -636,9 +649,26 @@ func (p OpenWrtProvider) snapshot() *openWrtSnapshot {
 		runtime.collecting = false
 		runtime.collectDone = nil
 		close(done)
+		view := snapshotView(fresh, "live")
 		runtime.mu.Unlock()
-		return fresh
+		return view
 	}
+}
+
+func snapshotView(snapshot *openWrtSnapshot, freshness string) *openWrtSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	view := *snapshot
+	view.Freshness = freshness
+	return &view
+}
+
+func snapshotFreshness(snapshot *openWrtSnapshot) string {
+	if snapshot == nil || snapshot.Freshness == "" {
+		return "live"
+	}
+	return snapshot.Freshness
 }
 
 func collectOpenWrtSnapshot(runtime *openWrtRuntime, now time.Time) *openWrtSnapshot {
@@ -920,7 +950,7 @@ func (p OpenWrtProvider) Overview(cfg *config.Config) map[string]any {
 		"status":                    snapshot.Status,
 		"reason":                    nilIfEmpty(snapshot.Reason),
 		"simulation":                false,
-		"freshness":                 "live",
+		"freshness":                 snapshotFreshness(snapshot),
 		"collected_at":              snapshot.CollectedAt,
 		"last_confirmed":            nil,
 	}
@@ -958,7 +988,7 @@ func (p OpenWrtProvider) System(cfg *config.Config) map[string]any {
 		"status":              snapshot.Status,
 		"reason":              nilIfEmpty(snapshot.Reason),
 		"simulation":          false,
-		"freshness":           "live",
+		"freshness":           snapshotFreshness(snapshot),
 		"collected_at":        snapshot.CollectedAt,
 	}
 }
@@ -1005,7 +1035,7 @@ func (p OpenWrtProvider) Diagnostics(*config.Config) map[string]any {
 		"status":       snapshot.Status,
 		"reason":       nilIfEmpty(snapshot.Reason),
 		"simulation":   false,
-		"freshness":    "live",
+		"freshness":    snapshotFreshness(snapshot),
 		"collected_at": snapshot.CollectedAt,
 	}
 }
@@ -1126,7 +1156,7 @@ func (p OpenWrtProvider) topologyWithPrivacy(reveal bool) map[string]any {
 	}
 	return map[string]any{
 		"nodes": nodes, "edges": edges, "source": p.Name(), "status": snapshot.Status,
-		"reason": nilIfEmpty(snapshot.Reason), "simulation": false, "freshness": "live", "collected_at": snapshot.CollectedAt,
+		"reason": nilIfEmpty(snapshot.Reason), "simulation": false, "freshness": snapshotFreshness(snapshot), "collected_at": snapshot.CollectedAt,
 	}
 }
 
@@ -1280,7 +1310,7 @@ func buildDeviceItems(snapshot *openWrtSnapshot, source string, reveal bool) []m
 			"rx_bytes": rxBytes, "tx_bytes": txBytes, "first_seen": connectedAt, "last_seen": snapshot.CollectedAt,
 			"connected": connected, "neighbor_state": neighbor.State, "lease_expires_at": lease.ExpiresAt,
 			"policy": "UNVERIFIED", "active_route": "UNVERIFIED", "source": source + ":dhcp+neighbor",
-			"status": "OK", "simulation": false, "freshness": "live", "collected_at": snapshot.CollectedAt,
+			"status": "OK", "simulation": false, "freshness": snapshotFreshness(snapshot), "collected_at": snapshot.CollectedAt,
 			"addresses_revealed": reveal,
 		})
 	}
@@ -1313,7 +1343,7 @@ func buildDeviceItems(snapshot *openWrtSnapshot, source string, reveal bool) []m
 			"connected":      connected,
 			"neighbor_state": neighbor.State, "policy": "UNVERIFIED", "active_route": "UNVERIFIED",
 			"source": source + ":odhcpd+neighbor", "status": "OK", "simulation": false,
-			"freshness": "live", "collected_at": snapshot.CollectedAt, "addresses_revealed": reveal,
+			"freshness": snapshotFreshness(snapshot), "collected_at": snapshot.CollectedAt, "addresses_revealed": reveal,
 		})
 	}
 	sort.Slice(items, func(i, j int) bool {
