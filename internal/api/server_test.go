@@ -547,6 +547,73 @@ func TestSSEStream(t *testing.T) {
 	}
 }
 
+func TestSSEStreamHonorsPrivacyAndRedactsSecrets(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client, _ := login(t, ts.URL)
+	srv.publishEvent(Event{
+		Type:     "route.decision",
+		Severity: "info",
+		Details: map[string]any{
+			"ip":            "192.0.2.10",
+			"mac":           "02:00:00:00:10:01",
+			"token":         "must-not-leak",
+			"nested":        map[string]any{"client_ip": "192.0.2.11"},
+			"addresses":     []string{"192.0.2.12"},
+			"safe_evidence": "path-verified",
+		},
+	})
+
+	readEvent := func(path string) string {
+		req, err := http.NewRequest(http.MethodGet, ts.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected SSE 200, got %d", resp.StatusCode)
+		}
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "data: ") && strings.Contains(line, `"type":"route.decision"`) {
+				return line
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			t.Fatal(err)
+		}
+		t.Fatal("route.decision event was not received")
+		return ""
+	}
+
+	hidden := readEvent("/api/v1/events/stream?privacy=hidden")
+	for _, secret := range []string{"192.0.2.10", "02:00:00:00:10:01", "192.0.2.11", "192.0.2.12", "must-not-leak"} {
+		if strings.Contains(hidden, secret) {
+			t.Fatalf("hidden SSE leaked %q: %s", secret, hidden)
+		}
+	}
+	if !strings.Contains(hidden, "[redacted]") || !strings.Contains(hidden, "path-verified") {
+		t.Fatalf("hidden SSE did not preserve safe evidence and redaction: %s", hidden)
+	}
+
+	visible := readEvent("/api/v1/events/stream?privacy=visible")
+	for _, address := range []string{"192.0.2.10", "02:00:00:00:10:01", "192.0.2.11"} {
+		if !strings.Contains(visible, address) {
+			t.Fatalf("visible SSE did not reveal explicitly requested address %q: %s", address, visible)
+		}
+	}
+	if strings.Contains(visible, "must-not-leak") {
+		t.Fatalf("visible SSE leaked secret: %s", visible)
+	}
+}
+
 func TestLoginRequiresConfiguredAdmin(t *testing.T) {
 	cfg := testAPIConfig(t)
 	srv, err := NewServerWithOptions(cfg, Options{Provider: platform.NewOpenWrtProvider(), ProductionAdapter: newFakeAdapter()})

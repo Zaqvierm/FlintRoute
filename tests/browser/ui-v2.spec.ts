@@ -141,6 +141,15 @@ test.describe('FlintRoute UI v2', () => {
     await expect(page.locator('body')).not.toContainText(rawMAC);
   });
 
+  test('does not present unfinished device actions as clickable controls', async ({ page }) => {
+    await mockAPI(page);
+    await page.goto(`/?screen=${encodeURIComponent('\u0423\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\u0430')}`);
+    await page.locator('.entity-card').first().getByRole('button', { name: /\u041e\u0442\u043a\u0440\u044b\u0442\u044c/ }).click();
+    await expect(page.getByText(/\u0423\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0438\u0435 \u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\u043e\u043c \u043f\u043e\u043a\u0430 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u043e/)).toBeVisible();
+    await expect(page.getByRole('button', { name: /\u041f\u0435\u0440\u0435\u0438\u043c\u0435\u043d\u043e\u0432\u0430\u0442\u044c/ })).toHaveCount(0);
+    await expect(page.locator('button[title="Not implemented"]')).toHaveCount(0);
+  });
+
   test('isolates a failed security slice from the overview', async ({ page }) => {
     await mockAPI(page, { securityFailure: true });
     await page.goto('/?screen=Обзор');
@@ -156,6 +165,25 @@ test.describe('FlintRoute UI v2', () => {
     await page.getByRole('button', { name: 'Обзор', exact: true }).first().click();
     await page.getByRole('button', { name: 'Сервисы', exact: true }).first().click();
     await expect(page.locator('.status-badge.warn').filter({ hasText: 'устарели' })).toBeVisible();
+  });
+
+  test('retries only the failed source from the alert center', async ({ page }) => {
+    await mockAPI(page);
+    let serviceCalls = 0;
+    await page.route('**/api/v1/services', async (route) => {
+      serviceCalls += 1;
+      if (serviceCalls === 1) {
+        await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'fixture_services_down', message: 'services unavailable' } }) });
+        return;
+      }
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: [{ id: 'Discord', name: 'Discord', category: 'TELEGRAM', domains: ['discord.com'], route: 'VLESS' }] }) });
+    });
+    await page.goto(`/?screen=${encodeURIComponent('\u041e\u0431\u0437\u043e\u0440')}`);
+    await expect(page.getByText(/\u0427\u0430\u0441\u0442\u044c \u0434\u0430\u043d\u043d\u044b\u0445 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430/)).toBeVisible();
+    await page.locator('.alert-center details').first().locator('summary').click();
+    await page.getByRole('button', { name: /\u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u044c \u044d\u0442\u043e\u0442 \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a/ }).click();
+    await expect.poll(() => serviceCalls).toBe(2);
+    await expect(page.getByText(/\u0427\u0430\u0441\u0442\u044c \u0434\u0430\u043d\u043d\u044b\u0445 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430/)).toHaveCount(0);
   });
 
   test('never renders object statuses as [object Object]', async ({ page }) => {

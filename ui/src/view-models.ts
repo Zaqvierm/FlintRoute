@@ -251,14 +251,14 @@ export function isDecisionEvent(event: EventItem): boolean {
   // details, but they must remain in the engineering journal. Do this check
   // before the shape-based fallback below so a transaction event cannot leak
   // into the user-facing decision stream.
-  if (/^(system|change|admin|security)\./.test(event.type)) return false;
+  if (/^(system|auth|change|admin|recovery|security)\./.test(event.type)) return false;
   if (decisionTypes.has(event.type)) return true;
   const details = asRecord(event.details);
   return Boolean(event.domain || details.domain) && Boolean(event.route || details.route || details.selected_route);
 }
 
 export function isAdministrativeEvent(event: EventItem): boolean {
-  return !isDecisionEvent(event) || /^(system|change|admin|security)\./.test(event.type);
+  return !isDecisionEvent(event) || /^(system|auth|change|admin|recovery|security)\./.test(event.type);
 }
 
 export function toDecisionCard(event: EventItem): DecisionCard {

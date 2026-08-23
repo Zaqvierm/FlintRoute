@@ -8,7 +8,7 @@ function envelope(data: unknown, status = 200) {
 }
 
 /** Deterministic, explicit simulation fixture. It is only imported by browser tests. */
-export async function mockAPI(page: Page, options: { securityFailure?: boolean; recoveryStatus?: string; bootstrapRequired?: boolean } = {}) {
+export async function mockAPI(page: Page, options: { securityFailure?: boolean; recoveryStatus?: string; bootstrapRequired?: boolean; topologyPortCount?: number } = {}) {
   await page.route('**/api/v1/**', async (route: Route) => {
     const url = new URL(route.request().url());
     const path = url.pathname.replace('/api/v1', '');
@@ -17,7 +17,9 @@ export async function mockAPI(page: Page, options: { securityFailure?: boolean; 
     if (path === '/overview') return route.fulfill(envelope({ internet: 'route_available', data_plane: 'ready', dns: 'ready', current_route: 'Direct', critical_errors: [], freshness: 'live' }));
     if (path === '/topology') {
       const hidden = url.searchParams.get('privacy') === 'hidden';
-      return route.fulfill(envelope({ status: 'ready', source: 'fixture', collected_at: new Date().toISOString(), freshness: 'live', nodes: [{ type: 'internet', status: 'online' }, { type: 'router', hostname: 'fixture-router', model: 'fixture-model' }], edges: [], raw_ip: hidden ? undefined : rawIP, raw_mac: hidden ? undefined : rawMAC }));
+      const portCount = Math.max(0, Math.min(32, Math.floor(options.topologyPortCount ?? 0)));
+      const ports = Array.from({ length: portCount }, (_, index) => ({ type: 'ethernet', id: `fixture-port-${index + 1}`, interface: `lan${index + 1}`, status: 'up', speed_mbps: 1000 }));
+      return route.fulfill(envelope({ status: 'ready', source: 'fixture', collected_at: new Date().toISOString(), freshness: 'live', nodes: [{ type: 'internet', status: 'online' }, { type: 'router', hostname: 'fixture-router', model: 'fixture-model' }, ...ports], edges: [], raw_ip: hidden ? undefined : rawIP, raw_mac: hidden ? undefined : rawMAC }));
     }
     if (path === '/devices') {
       const hidden = url.searchParams.get('privacy') === 'hidden';

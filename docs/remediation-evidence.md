@@ -437,9 +437,248 @@ latency. Only an explicit measured `route_latency_ms`, with a valid
 availability bit when supplied, is presented as path latency. The card now
 labels route latency and total verification time separately, and the details
 drawer uses the typed route-latency field.
+The backend decision event now emits only `route_latency_ms` plus the separate
+verification-duration field; the ambiguous legacy `probe_latency_ms` key is no
+longer produced for new events.
+Follow-up `9885790` contains this payload cleanup; its exact-SHA nft, Zapret
+process-group and UI workflows also passed (runs `32599102043`, `32599102070`
+and `32599102078`).
 
 Regression coverage on `3b02a85`: 43 frontend unit tests, typecheck and
 production build passed. The generated embedded bundle is included in the
 same commit (188.88 kB JS raw, 59.06 kB gzip; 26.52 kB CSS raw, 6.28 kB
 gzip). This is local source/unit evidence only; Linux-only CI and hardware
 validation are not inherited by this SHA until their exact runs are recorded.
+
+The Zapret screen also now isolates status, component inventory and calibration
+fetch failures with `Promise.allSettled` (`aaaaf18`). One unavailable endpoint
+leaves the other panels usable and reports the failed slice with its code,
+instead of blanking the entire screen. Frontend tests, typecheck and the
+production bundle passed after this change; no router action was performed.
+
+The Components screen no longer shows an infinite skeleton after a successful
+empty response (`225114c`). Loading is tracked independently; an empty
+inventory now gets an actionable empty state, while a failed request keeps its
+error/stale message. Frontend tests, typecheck and production build passed.
+
+### Privacy-safe event stream (`dd3af0e`)
+
+The SSE event stream previously serialized broker events without applying the
+same privacy contract as `/api/v1/events`. That meant a hidden-privacy UI could
+clear its state and then receive a later event containing a raw IP or MAC.
+The stream now accepts `privacy=hidden|visible`, defaults to hidden when the
+parameter is absent or invalid, recursively redacts IP/MAC fields in hidden
+mode, and always redacts credentials/secrets in both modes. The event-history
+endpoint uses the same explicit contract. The frontend reconnects the stream
+with the current privacy mode, requests matching history, and ignores malformed
+SSE JSON without poisoning state.
+
+The regression test proves hidden SSE does not expose nested IP/MAC/address
+lists or token values, while an explicit visible request can reveal addresses
+but still never reveals a secret. Typed provider values are normalized before
+recursive redaction, so a typed slice/map cannot bypass the privacy boundary.
+The UI also invalidates the previous stream callback during
+a privacy transition, closing the small browser dispatch race that could have
+refilled hidden state with one queued visible event. At `dd3af0e`, the local
+full runner passed (`all_tests_ok=true`); the Linux-only namespace/process
+checks remain `NOT RUN LOCALLY`. GitHub Actions runs
+[32596100935](https://github.com/Zaqvierm/FlintRoute/actions/runs/32596100935),
+[32596100928](https://github.com/Zaqvierm/FlintRoute/actions/runs/32596100928),
+and [32596100958](https://github.com/Zaqvierm/FlintRoute/actions/runs/32596100958)
+completed successfully. No hardware validation is implied.
+
+### Nested composite event privacy hardening (`8657f51`)
+
+The privacy boundary now treats normalized typed composite values as part of
+the same recursive redaction domain. Address-like keys such as `ips`,
+`addresses`, `macs`, and `remote` are hidden in `privacy=hidden`, while
+credential-like keys remain redacted in both modes. This closes the remaining
+typed `[]string`/map/struct bypass without changing the explicit visible-mode
+contract for administrators.
+
+Exact-SHA evidence for `8657f51`:
+
+- `go test ./...`, `go vet ./...`, frontend typecheck/build, ShellCheck and
+  the repository runner: PASS (`all_tests_ok=true`); Linux-only namespace,
+  process-group and mode checks: `NOT RUN LOCALLY` on Windows.
+- `go test -race ./...`: PASS.
+- frontend Vitest: 43 tests PASS.
+- nft transition CI [32596556335](https://github.com/Zaqvierm/FlintRoute/actions/runs/32596556335),
+  Zapret process-group CI [32596556337](https://github.com/Zaqvierm/FlintRoute/actions/runs/32596556337),
+  and UI smoke CI [32596556336](https://github.com/Zaqvierm/FlintRoute/actions/runs/32596556336):
+  completed successfully.
+
+These are local/CI software proofs only. Flint 2 was not contacted, installed,
+rebooted, or otherwise mutated, so no hardware PASS is claimed.
+
+The user-facing decision filter also mirrors the backend administrative event
+prefix set for `auth.*` and `recovery.*` (`ui/src/view-models.ts`). A lifecycle
+event carrying accidental domain/route fields therefore stays in the
+engineering journal instead of becoming a user-facing route decision. The
+frontend regression suite now has 44 passing tests for this parity case.
+
+### Final local gate (`6ec71d1`)
+
+The embedded bundle was regenerated after the UI prefix fix and the complete
+repository runner was repeated on the exact pushed code checkpoint. It passed
+Go tests, `go vet`, frontend typecheck/build, package/artifact verification,
+ShellCheck, installer/adapter/helper/hotplug/lifecycle checks, secret scan and
+forbidden-route scan with `all_tests_ok=true` (346.5 seconds). The pinned
+toolchain used by the runner is `.tools/go1.26.5`. Linux namespace, process
+group and filesystem-mode checks remain explicitly `NOT RUN LOCALLY` on
+Windows; their independent CI results are recorded above. This gate is still
+software evidence, not hardware validation.
+
+### External SOCKS primary-flow guard
+
+The External SOCKS screen no longer pre-fills `127.0.0.1:1180` or a Telegram
+domain. It starts empty and requires explicit user input, while stating that
+this is an optional proxy already managed outside FlintRoute. The UI does not
+install, restart, or implicitly connect this integration to TG WS Proxy. The
+focused frontend suite (44 tests), typecheck, build, and a forbidden-default
+scan passed after the change; the embedded bundle was regenerated.
+
+The exact `ff783ac` full local runner was then repeated: Go tests, vet,
+frontend typecheck/build, artifact/package verification, ShellCheck,
+installer/adapter/helper/hotplug/lifecycle checks, secret scan and forbidden
+route scan all passed with `all_tests_ok=true` (405.3 seconds). Linux-only mode,
+Zapret process-group and nft namespace checks remain `NOT RUN LOCALLY` on
+Windows and are represented only by their separate CI runs.
+
+### Smart DNS health freshness (`f038e59`)
+
+The Smart DNS API previously treated any persisted `healthy` route-health
+record as ready, regardless of how long ago its `LastCheckedAt` was written.
+That could make the UI show a green resolver after a long outage or restart.
+The API now bounds health evidence to two configured health-check intervals,
+returns explicit `freshness`/`health_fresh` fields, and exposes a stale status
+instead of a false healthy result. A separate, still-valid resolver validation
+record may independently produce `validated_idle`; these are deliberately
+different proofs. The UI renders the route freshness badge instead of hiding
+it in technical details.
+
+Focused API/probe tests, the frontend 44-test suite, full local runner and
+the exact-SHA Linux/UI workflows pass. Runs:
+
+- nft transition [32598958634](https://github.com/Zaqvierm/FlintRoute/actions/runs/32598958634)
+- Zapret process-group [32598958642](https://github.com/Zaqvierm/FlintRoute/actions/runs/32598958642)
+- UI browser/responsive [32598958640](https://github.com/Zaqvierm/FlintRoute/actions/runs/32598958640)
+
+These are software proofs only; no hardware validation is implied.
+
+### Dense topology layout guard (`2fba482`)
+
+The responsive network map caps its desktop canvas at 1600 px.  A platform
+reporting many Ethernet ports could therefore make the fixed-width port cards
+overlap even though the topology data was correct.  Port cards now derive their
+width from the actual slot gap (with a readable lower bound), and their
+interface/speed labels are allowed to shrink inside that slot.  The browser
+fixture can generate up to 32 deterministic Ethernet ports; the regression
+case uses 12 ports and asserts that adjacent cards do not overlap.
+
+Evidence on the current local checkpoint:
+
+- frontend Vitest: 44 tests PASS;
+- frontend typecheck/build: PASS;
+- Playwright responsive suite: 2 tests PASS, including the 12-port overlap
+  regression;
+- exact pushed CI: nft transition [32599508438](https://github.com/Zaqvierm/FlintRoute/actions/runs/32599508438), Zapret process-group [32599508400](https://github.com/Zaqvierm/FlintRoute/actions/runs/32599508400), UI browser/responsive [32599508461](https://github.com/Zaqvierm/FlintRoute/actions/runs/32599508461): PASS;
+- no router or hardware endpoint was contacted.
+
+### Keyboard and touch affordance guard (`795487d`)
+
+Interactive controls now expose a consistent `:focus-visible` ring and the
+global button baseline is at least 44 px, including icon buttons. The browser
+matrix adds a mobile keyboard/touch regression alongside the dense topology
+case. The full local Playwright suite is 18/18 PASS; this remains UI evidence,
+not hardware validation.
+
+### Screen error isolation guard (`c589ac7`)
+
+The content area is wrapped in a Preact error boundary. A render exception in
+one screen now produces a bounded user-facing message and the stable code
+`ui_screen_render_failed`, with a retry action; raw exception text and stacks
+are not rendered into the page. This is a presentation-plane guard only and
+does not turn an API or dataplane failure into success.
+
+The exact pushed head `c589ac7c460c0c13d14227c94d7554a6774c4088` passed the
+repository runner on Windows (`tests/run-all.ps1`, `all_tests_ok=true`,
+348.8s). The runner reports the Linux-only namespace, process-group, quick
+runner, and filesystem-mode checks as `NOT RUN LOCALLY`; those are separate
+evidence levels and are not converted into local PASS. Exact-SHA CI also
+passed:
+
+- nft transition safety: [run 32599809735](https://github.com/Zaqvierm/FlintRoute/actions/runs/32599809735)
+- Zapret process-group safety: [run 32599809693](https://github.com/Zaqvierm/FlintRoute/actions/runs/32599809693)
+- UI browser/responsive: [run 32599809714](https://github.com/Zaqvierm/FlintRoute/actions/runs/32599809714)
+
+No SSH, install, apply, reboot, or other hardware action was performed for
+this head. The privilege split remains partial: the helper boundary exists,
+but the production controller is not yet non-root.
+
+### Route-screen request cancellation (`worktree after c589ac7`)
+
+The Routes screen has a screen-local VLESS pool request. It now owns an
+`AbortController` and cancels that request on unmount, so leaving the screen
+cannot apply a late pool response to an unmounted/stale view. Abort errors are
+ignored; real failures leave the route summary unavailable instead of showing
+invented health. Frontend tests (44/44), typecheck, production build, and the
+18-test Playwright suite passed after this change. The embedded bundle was
+rebuilt; the follow-up commit records the exact SHA.
+
+The same cancellation contract now covers the initial loads for Components,
+VLESS, Smart DNS, External SOCKS, TG WS Proxy and Telegram. Zapret's running
+calibration poll cancels on unmount and skips a new request while one is still
+in flight. This keeps screen-local polling bounded when navigation or a slow
+router overlaps with the normal dashboard refresh.
+
+### Subscription refresh failure backoff (working tree after `5347064`)
+
+Provider expiry still determines the normal refresh time. If that refresh
+fails after expiry, retries now use an independent jittered exponential delay
+(about 1 minute, 2 minutes, 4 minutes, up to 6 hours) instead of hammering the
+provider every minute. A successful refresh resets the delay. The API scheduler
+regression covers the first retries, the bounded ceiling, and the zero-failure
+case.
+
+The implementation head `786b15d` was rechecked with
+`tests/run-all.ps1`: PASS (`all_tests_ok=true`, 351.2s). Go tests, vet,
+frontend typecheck/build, package/artifact verification, ShellCheck,
+installer/adapter/helper/hotplug/lifecycle checks, secret scan and forbidden
+route scan passed. Windows still reports filesystem-mode, Linux nft namespace,
+Zapret process-group and Quick runtime checks as `NOT RUN LOCALLY`; they are
+not promoted to PASS by this runner. No SSH, install, apply, reboot or other
+ hardware action was performed.
+
+### Unimplemented device actions are not rendered as controls (`working tree`)
+
+Device details no longer render disabled buttons for rename, IP pinning, limits,
+or Internet disable. Those actions are not backed by a ChangeSet/API path yet,
+so the screen explains that they are unavailable and will require a safe
+ChangeSet instead of presenting controls that look clickable. A browser
+regression asserts the explanatory state and the absence of the old
+`Not implemented` buttons. The targeted test and the full 19-test Playwright
+suite pass; this is UI evidence only and does not imply hardware support for
+those actions.
+
+### Source-local retry and calibration serialization (working tree)
+
+The alert center now retries a named failed API slice through its own
+`AbortController`; it no longer has to refresh the whole dashboard to retry,
+while the existing `Повторить всё` action remains available. The browser
+regression proves that a failed services request is retried once and that the
+other dashboard slices are not re-requested by that button.
+
+Curated Zapret checks now share the same
+`<runtime>/zapret-calibration.lock` as exhaustive blockcheck. A stale lock
+fails closed, so quick and exhaustive modes cannot race over NFQUEUE/nft or
+managed Zapret state. This is local/static evidence on Windows; Linux process,
+NFQUEUE and namespace execution remains a separate CI-only evidence level.
+
+At head `825d9e4`, the repository runner completed with `all_tests_ok=true`
+in 341.1 seconds. The explicit follow-up gate also passed `gofmt`,
+`go test -race ./...`, `npm test -- --run` (44/44), frontend typecheck/build,
+and Playwright browser tests (20/20). The runner reported the Linux-only
+filesystem-mode, Zapret process-group, Quick runner, and nft namespace checks
+as `NOT RUN LOCALLY`; no local Windows result is promoted to Linux or hardware
+evidence.

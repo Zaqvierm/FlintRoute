@@ -30,12 +30,23 @@ export function LoadingSkeleton() {
   return <section class="loading-grid" aria-label="Загрузка"><div /><div /><div /><div /><div /><div /></section>;
 }
 
-export function AlertCenter({ errors, onRetry }: { errors: Array<{ name: string; message: string }>; onRetry: () => void }) {
+export function AlertCenter({ errors, onRetry, onRetryAll, retrying }: {
+  errors: Array<{ name: string; message: string }>;
+  onRetry: (name: string) => void;
+  onRetryAll: () => void;
+  retrying?: string;
+}) {
   if (!errors.length) return null;
   return <section class="alert-center" aria-live="polite">
     <b>Часть данных недоступна</b>
-    <div>{errors.slice(0, 4).map((item) => <details key={item.name}><summary>{item.name}</summary><p>{item.message}</p></details>)}</div>
-    <button onClick={onRetry}>Повторить всё</button>
+    <div>{errors.slice(0, 4).map((item) => <details key={item.name}>
+      <summary>{item.name}</summary>
+      <p>{item.message}</p>
+      <button type="button" onClick={() => onRetry(item.name)} disabled={retrying === item.name}>
+        {retrying === item.name ? 'Проверяю…' : 'Повторить этот источник'}
+      </button>
+    </details>)}</div>
+    <button type="button" onClick={onRetryAll} disabled={Boolean(retrying)}>Повторить всё</button>
   </section>;
 }
 

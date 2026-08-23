@@ -168,6 +168,14 @@ describe('decision cards', () => {
     expect(isAdministrativeEvent(administrative)).toBe(true);
   });
 
+  it('keeps auth and recovery events out of the decision stream', () => {
+    for (const type of ['auth.login.succeeded', 'recovery.started']) {
+      const administrative = { ...event, type, details: { route: 'vless', domain: 'example.com' } };
+      expect(isDecisionEvent(administrative)).toBe(false);
+      expect(isAdministrativeEvent(administrative)).toBe(true);
+    }
+  });
+
   it('creates a user-facing card with detailed evidence kept behind open', () => {
     const card = toDecisionCard({ ...event, details: { ...event.details, route_label: 'Direct (системный маршрут)' } });
     expect(card.device).toBe('Phone');

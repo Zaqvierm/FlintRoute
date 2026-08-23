@@ -26,6 +26,8 @@ bundle_id=""
 network_fingerprint=""
 mode=""
 run_dir=""
+lock_dir=""
+lock_acquired=0
 run_token=""
 table=""
 nfq_pid=""
@@ -121,14 +123,10 @@ id "$PROBE_USER" >/dev/null 2>&1 || die "dedicated probe user is unavailable: $P
 
 mkdir -p "$RUNTIME_DIR"
 chmod 700 "$RUNTIME_DIR"
+lock_dir="$RUNTIME_DIR/zapret-calibration.lock"
+mkdir "$lock_dir" 2>/dev/null || die "another Zapret calibration is active"
+lock_acquired=1
 run_token="q$(printf '%s' "$$-$domain" | sha256sum | awk '{print substr($1,1,12)}')"
-run_dir="$RUNTIME_DIR/zapret-quick.$run_token"
-mkdir "$run_dir"
-chmod 700 "$run_dir"
-attempts_file="$run_dir/attempts.jsonl"
-catalog_file="$run_dir/catalog.json"
-catalog_tmp="$run_dir/catalog.tmp"
-: > "$attempts_file"
 
 cleanup() {
   status=$?
@@ -139,10 +137,21 @@ cleanup() {
   if [ -n "$catalog_tmp" ]; then
     rm -f "$catalog_tmp"
   fi
-  rm -rf "$run_dir"
+  [ -n "$run_dir" ] && rm -rf "$run_dir"
+  if [ "$lock_acquired" = "1" ]; then
+    rmdir "$lock_dir" 2>/dev/null || status=1
+  fi
   exit "$status"
 }
 trap cleanup EXIT HUP INT TERM
+
+run_dir="$RUNTIME_DIR/zapret-quick.$run_token"
+mkdir "$run_dir"
+chmod 700 "$run_dir"
+attempts_file="$run_dir/attempts.jsonl"
+catalog_file="$run_dir/catalog.json"
+catalog_tmp="$run_dir/catalog.tmp"
+: > "$attempts_file"
 
 now_ms() {
   value=$(date +%s%3N 2>/dev/null || true)

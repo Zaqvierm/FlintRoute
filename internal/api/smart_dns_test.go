@@ -166,3 +166,21 @@ func TestSmartDNSResolverStateKeepsRealHealthFailureUnavailable(t *testing.T) {
 		t.Fatalf("failed resolver state=(%v,%q), want unavailable unhealthy", ready, status)
 	}
 }
+
+func TestSmartDNSHealthFreshUsesBoundedCheckWindow(t *testing.T) {
+	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	fresh := probe.RouteHealth{LastCheckedAt: now.Add(-9 * time.Minute)}
+	if !smartDNSHealthFresh(fresh, now, 300) {
+		t.Fatal("health result inside two check intervals was marked stale")
+	}
+	stale := probe.RouteHealth{LastCheckedAt: now.Add(-11 * time.Minute)}
+	if smartDNSHealthFresh(stale, now, 300) {
+		t.Fatal("health result outside two check intervals was marked fresh")
+	}
+	if smartDNSHealthFresh(probe.RouteHealth{}, now, 300) {
+		t.Fatal("health result without a check timestamp was marked fresh")
+	}
+	if smartDNSHealthFresh(probe.RouteHealth{LastCheckedAt: now.Add(time.Second)}, now, 300) {
+		t.Fatal("future health timestamp was marked fresh")
+	}
+}

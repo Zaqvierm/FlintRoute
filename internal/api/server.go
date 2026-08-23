@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -477,8 +478,12 @@ func (s *Server) startSubscriptionScheduler(ctx context.Context) {
 	s.schedulerWG.Add(1)
 	go func() {
 		defer s.schedulerWG.Done()
+		failures := 0
 		for {
 			delay := s.subscriptionRefreshDelay(time.Now().UTC())
+			if backoff := subscriptionRefreshBackoff(failures); backoff > delay {
+				delay = backoff
+			}
 			if !waitForScheduler(ctx, delay) {
 				return
 			}
@@ -493,12 +498,43 @@ func (s *Server) startSubscriptionScheduler(ctx context.Context) {
 			cancel()
 			s.subscriptionMu.Unlock()
 			if err != nil {
+				failures++
 				s.publishEvent(Event{Type: "subscription.refresh", Severity: "warning", ReasonCode: "subscription_refresh_failed", Details: map[string]any{"error": err.Error()}})
 			} else {
+				failures = 0
 				s.publishEvent(Event{Type: "subscription.refresh", Severity: "info", ReasonCode: "subscription_refresh_completed"})
 			}
 		}
 	}()
+}
+
+// subscriptionRefreshBackoff prevents a provider that keeps returning an
+// expired/invalid subscription from being fetched every minute forever. The
+// delay is bounded, jittered, and independent from the provider expiry
+// calculation; a successful refresh resets it.
+func subscriptionRefreshBackoff(failures int) time.Duration {
+	if failures <= 0 {
+		return 0
+	}
+	base := time.Minute
+	for attempt := 1; attempt < failures && base < 6*time.Hour; attempt++ {
+		base *= 2
+	}
+	if base > 6*time.Hour {
+		base = 6 * time.Hour
+	}
+	var sample [2]byte
+	if _, err := rand.Read(sample[:]); err != nil {
+		return base
+	}
+	delay := jitterTSPUDelay(base, uint16(sample[0])<<8|uint16(sample[1]))
+	if delay < time.Minute {
+		return time.Minute
+	}
+	if delay > 6*time.Hour {
+		return 6 * time.Hour
+	}
+	return delay
 }
 
 func (s *Server) subscriptionRefreshDelay(now time.Time) time.Duration {
@@ -720,7 +756,6 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 		}
 		details["route_latency_available"] = check.Selected.RouteLatencyAvailable
 		if check.Selected.RouteLatencyAvailable {
-			details["probe_latency_ms"] = check.Selected.RouteLatencyMS
 			details["route_latency_ms"] = check.Selected.RouteLatencyMS
 		}
 		details["path_verification_duration_ms"] = check.Selected.VerificationDurationMS
@@ -1659,7 +1694,12 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
 		return
 	}
-	routes := filterRoutes(s.currentConfig(), "smart_dns")
+	active := s.currentConfig()
+	routes := filterRoutes(active, "smart_dns")
+	healthIntervalSeconds := 300
+	if active != nil && active.Policy.HealthCheckIntervalSeconds > 0 {
+		healthIntervalSeconds = active.Policy.HealthCheckIntervalSeconds
+	}
 	healthByTag := map[string]probe.RouteHealth{}
 	for _, item := range s.healthTracker.Snapshot() {
 		if item.RouteType == "smart_dns" {
@@ -1669,13 +1709,22 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 	items := make([]map[string]any, 0, len(routes))
 	ready := 0
 	configured := 0
+	now := time.Now().UTC()
 	for _, route := range routes {
 		health, observed := healthByTag[route.Tag]
+		healthFresh := observed && smartDNSHealthFresh(health, now, healthIntervalSeconds)
+		freshness := "stale"
+		if healthFresh {
+			freshness = "fresh"
+		}
 		status := route.Status
 		resolverConfigured := route.DNSServer != "" && !strings.Contains(route.DNSServer, "PLACEHOLDER")
 		validation, validationOK := s.loadSmartDNSValidation(route.DNSServer)
-		resolverReady, nextStatus := smartDNSResolverState(route, health, observed, validationOK)
+		resolverReady, nextStatus := smartDNSResolverState(route, health, healthFresh, validationOK)
 		status = nextStatus
+		if observed && health.State == "healthy" && !healthFresh && !validationOK && !route.Disabled && resolverConfigured {
+			status = "stale"
+		}
 		if resolverReady {
 			ready++
 		}
@@ -1687,6 +1736,8 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 			"resolver_configured":    resolverConfigured,
 			"connect_to_resolved_ip": route.ConnectToResolvedIP,
 			"health":                 health,
+			"freshness":              freshness,
+			"health_fresh":           healthFresh,
 			"kind":                   "conditional_dns",
 			"vpn":                    false,
 		}
@@ -1712,6 +1763,25 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 		"success_contract": []string{"safe DNS answer", "connection to returned address", "content check", "egress check when required"},
 		"route_semantics":  "conditional DNS; not a VPN or tunnel",
 	})
+}
+
+// smartDNSHealthFresh prevents a persisted healthy result from becoming an
+// unbounded authorization to use a resolver.  A resolver may be idle and
+// selectable on the basis of a separate, still-valid validation record; the
+// health-cycle result itself must remain within two configured check intervals.
+func smartDNSHealthFresh(health probe.RouteHealth, now time.Time, intervalSeconds int) bool {
+	if health.LastCheckedAt.IsZero() || now.Before(health.LastCheckedAt) {
+		return false
+	}
+	interval := time.Duration(intervalSeconds) * time.Second
+	if interval <= 0 {
+		interval = 5 * time.Minute
+	}
+	maxAge := 2 * interval
+	if maxAge < 2*time.Minute {
+		maxAge = 2 * time.Minute
+	}
+	return now.Sub(health.LastCheckedAt) <= maxAge
 }
 
 func smartDNSResolverState(route config.Route, health probe.RouteHealth, observed, validationOK bool) (bool, string) {
@@ -1959,10 +2029,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		byID[eventIdentity(event)] = event
 	}
 	items := make([]Event, 0, len(byID))
+	// Event history is fail-closed: callers must explicitly opt in to an
+	// address-revealing view.  Secrets are redacted in both views.
+	hideAddresses := r.URL.Query().Get("privacy") != "visible"
 	for _, event := range byID {
-		if s.hideSensitive {
-			event.Details = sanitizeEventDetails(event.Details)
-		}
+		event.Details = sanitizeEventDetailsForPrivacy(event.Details, hideAddresses)
 		items = append(items, event)
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -2245,8 +2316,14 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 	defer s.broker.Unsubscribe(ch)
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
+	// EventSource cannot attach the normal privacy header, so the query is the
+	// explicit contract.  Missing/invalid privacy is hidden by default.
+	hideAddresses := r.URL.Query().Get("privacy") != "visible"
+	writePrivacyEvent := func(ev Event) {
+		writeSSE(w, sanitizeEventForPrivacy(ev, hideAddresses))
+	}
 	for _, ev := range s.broker.Recent(afterID, 20) {
-		writeSSE(w, ev)
+		writePrivacyEvent(ev)
 	}
 	flusher.Flush()
 	for {
@@ -2257,7 +2334,7 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			writeSSE(w, ev)
+			writePrivacyEvent(ev)
 			flusher.Flush()
 		case <-heartbeat.C:
 			fmt.Fprint(w, ": heartbeat\n\n")
@@ -2546,42 +2623,96 @@ func redactProbeResult(result *probe.RouteResult) {
 }
 
 func sanitizeEventDetails(details map[string]any) map[string]any {
+	return sanitizeEventDetailsForPrivacy(details, true)
+}
+
+func sanitizeEventForPrivacy(event Event, hideAddresses bool) Event {
+	event.Details = sanitizeEventDetailsForPrivacy(event.Details, hideAddresses)
+	return event
+}
+
+func sanitizeEventDetailsForPrivacy(details map[string]any, hideAddresses bool) map[string]any {
 	if details == nil {
 		return map[string]any{}
 	}
 	out := make(map[string]any, len(details))
 	for key, value := range details {
-		if sensitiveEventKey(key) {
+		if sensitiveEventKeyForPrivacy(key, hideAddresses) {
 			out[key] = "[redacted]"
 			continue
 		}
-		out[key] = sanitizeEventValue(value)
+		out[key] = sanitizeEventValueForPrivacy(value, hideAddresses)
 	}
 	return out
 }
 
 func sanitizeEventValue(value any) any {
+	return sanitizeEventValueForPrivacy(value, true)
+}
+
+func sanitizeEventValueForPrivacy(value any, hideAddresses bool) any {
 	switch typed := value.(type) {
 	case map[string]any:
-		return sanitizeEventDetails(typed)
+		return sanitizeEventDetailsForPrivacy(typed, hideAddresses)
 	case []any:
 		out := make([]any, len(typed))
 		for i := range typed {
-			out[i] = sanitizeEventValue(typed[i])
+			out[i] = sanitizeEventValueForPrivacy(typed[i], hideAddresses)
 		}
 		return out
 	default:
-		return value
+		// Providers may put typed maps/slices/structs into Details. Normalize
+		// only composite values so []string/map[string]string cannot bypass
+		// recursive redaction; scalar values do not incur JSON work.
+		rv := reflect.ValueOf(value)
+		if !rv.IsValid() {
+			return value
+		}
+		switch rv.Kind() {
+		case reflect.Map, reflect.Slice, reflect.Array, reflect.Struct, reflect.Pointer:
+			if (rv.Kind() == reflect.Map || rv.Kind() == reflect.Slice || rv.Kind() == reflect.Pointer) && rv.IsNil() {
+				return value
+			}
+			raw, err := json.Marshal(value)
+			if err != nil {
+				return "[redacted]"
+			}
+			var normalized any
+			if err := json.Unmarshal(raw, &normalized); err != nil {
+				return "[redacted]"
+			}
+			return sanitizeEventValueForPrivacy(normalized, hideAddresses)
+		default:
+			return value
+		}
 	}
 }
 
 func sensitiveEventKey(key string) bool {
+	return sensitiveEventKeyForPrivacy(key, true)
+}
+
+func sensitiveEventKeyForPrivacy(key string, hideAddresses bool) bool {
 	key = strings.ToLower(strings.TrimSpace(key))
-	if key == "remote" || key == "ip" || key == "address" || strings.HasSuffix(key, "_ip") || strings.HasSuffix(key, "_address") {
+	if hideAddresses && addressEventKey(key) {
 		return true
 	}
 	for _, fragment := range []string{"password", "token", "secret", "private_key", "subscription_url", "uuid", "cookie"} {
 		if strings.Contains(key, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func addressEventKey(key string) bool {
+	key = strings.NewReplacer("-", "_", ".", "_").Replace(strings.ToLower(strings.TrimSpace(key)))
+	if key == "remote" {
+		return true
+	}
+	for _, token := range strings.Split(key, "_") {
+		switch token {
+		case "ip", "ips", "address", "addresses", "mac", "macs":
 			return true
 		}
 	}

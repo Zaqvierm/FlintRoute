@@ -57,5 +57,6 @@ if grep -F -- '--blockcheck' "$ROOT/scripts/quick-zapret-check.sh"; then
   exit 1
 fi
 grep -F 'profiles="quick-fake quick-fake-ttl3 quick-fake-split quick-managed"' "$ROOT/scripts/quick-zapret-check.sh" >/dev/null
+grep -F "lock_dir=\"\$RUNTIME_DIR/zapret-calibration.lock\"" "$ROOT/scripts/quick-zapret-check.sh" >/dev/null
 sh -n "$ROOT/scripts/quick-zapret-check.sh"
 echo "quick_runner_contract_preflight=true"

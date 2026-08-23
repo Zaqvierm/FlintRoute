@@ -77,6 +77,12 @@ own temporary output table for a dedicated probe UID, and starts one owned
 `nfqws` process group per attempt. It records the counter delta, target IP,
 HTTP result, latency and cleanup proof. A request that returns HTTP 200 while
 the owned NFQUEUE counter remains unchanged is `INFRA_ERROR`, never `PASS`.
+
+Both quick and exhaustive runs acquire the same runtime lock
+`/tmp/router-policy/zapret-calibration.lock` (or the configured runtime
+directory). This is deliberate: a curated attempt must not race an upstream
+scan for NFQUEUE numbers, nft transitions, or the managed Zapret service. A
+stale lock fails closed and is not silently removed by the script.
 The catalog emitted after a successful run is rebound to the configured
 production NFQUEUE; the temporary test queue is never persisted into the
 active configuration.

@@ -426,14 +426,14 @@ export async function configureSmartDNS(resolvers: SmartDNSResolver[], testDomai
   });
 }
 export async function getDiscovery(signal?: AbortSignal): Promise<DiscoveryStatus> { return request('/discovery', { signal }); }
-export async function getTelegram(): Promise<TelegramOverview> { return request('/telegram'); }
+export async function getTelegram(signal?: AbortSignal): Promise<TelegramOverview> { return request('/telegram', { signal }); }
 export async function configureTelegram(botToken: string, chatID: string, enabled: boolean, eventTypes: string[]): Promise<TelegramStatus> {
   return request('/telegram/configure', { method: 'PUT', body: JSON.stringify({ bot_token: botToken, chat_id: chatID, enabled, event_types: eventTypes }) });
 }
 export async function testTelegram(): Promise<{ delivered: boolean; status: TelegramStatus }> {
   return request('/telegram/test', { method: 'POST', body: '{}' });
 }
-export async function getExternalSOCKS(): Promise<any> { return request('/external-socks'); }
+export async function getExternalSOCKS(signal?: AbortSignal): Promise<any> { return request('/external-socks', { signal }); }
 export async function checkExternalSOCKS(endpoint: string, testDomain: string, baseVersion: number): Promise<{ report: ExternalSOCKSReport }> {
   return request('/external-socks/check', { method: 'POST', body: JSON.stringify({ endpoint, test_domain: testDomain, base_version: baseVersion }) });
 }
@@ -463,7 +463,7 @@ export async function configureDiscovery(
   });
 }
 export async function getTraffic(signal?: AbortSignal): Promise<TrafficSnapshot> { return request('/traffic', { signal }); }
-export async function getEvents(limit = 500, signal?: AbortSignal): Promise<EventItem[]> { return request(`/events?limit=${limit}`, { signal }); }
+export async function getEvents(limit = 500, hideAddresses = true, signal?: AbortSignal): Promise<EventItem[]> { return request(`/events?limit=${limit}&privacy=${hideAddresses ? 'hidden' : 'visible'}`, { signal }); }
 export async function getSecurity(signal?: AbortSignal): Promise<any> { return request('/security/audit', { signal }); }
 export async function getSecuritySummary(signal?: AbortSignal): Promise<any> { return request('/security', { signal }); }
 export async function getDiagnostics(signal?: AbortSignal): Promise<any> { return request('/diagnostics', { signal }); }
@@ -474,8 +474,8 @@ export async function getBackups(signal?: AbortSignal): Promise<any> { return re
 export async function getSystem(signal?: AbortSignal): Promise<any> { return request('/system', { signal }); }
 export async function getChanges(signal?: AbortSignal): Promise<ChangeSet[]> { return request('/changes', { signal }); }
 export async function getRevisions(signal?: AbortSignal): Promise<RevisionSummary> { return request('/revisions', { signal }); }
-export async function getSubscriptionSecretStatus(): Promise<SubscriptionSecretStatus> {
-  return request('/xray/subscription/secret');
+export async function getSubscriptionSecretStatus(signal?: AbortSignal): Promise<SubscriptionSecretStatus> {
+  return request('/xray/subscription/secret', { signal });
 }
 export async function saveSubscriptionSecrets(urls: string[]): Promise<SubscriptionSecretStatus> {
   return request('/xray/subscription/secret', { method: 'PUT', body: JSON.stringify({ urls }) });
@@ -483,8 +483,8 @@ export async function saveSubscriptionSecrets(urls: string[]): Promise<Subscript
 export async function prepareSubscription(baseVersion: number, activateManaged = false): Promise<SubscriptionPreparation> {
   return request('/xray/subscription/prepare', { method: 'POST', body: JSON.stringify({ base_version: baseVersion, activate_managed: activateManaged }) });
 }
-export async function getManualVLESSServers(): Promise<ManualVLESSInventory> {
-  return request('/xray/manual-servers');
+export async function getManualVLESSServers(signal?: AbortSignal): Promise<ManualVLESSInventory> {
+  return request('/xray/manual-servers', { signal });
 }
 export async function addManualVLESSServer(uri: string): Promise<ManualVLESSInventory> {
   return request('/xray/manual-servers', { method: 'POST', body: JSON.stringify({ uri }) });
@@ -500,7 +500,7 @@ export async function runVLESSSpeedTest(logicalID: string): Promise<{ server: an
   return request('/xray/pool/speedtest', { method: 'POST', body: JSON.stringify({ logical_id: logicalID }) });
 }
 export async function getZapret(signal?: AbortSignal): Promise<any> { return request('/zapret', { signal }); }
-export async function getZapretCalibration(): Promise<ZapretCalibrationStatus> { return request('/zapret/calibration'); }
+export async function getZapretCalibration(signal?: AbortSignal): Promise<ZapretCalibrationStatus> { return request('/zapret/calibration', { signal }); }
 export async function startZapretCalibration(domain: string, allowManagedRestart = true, mode: 'quick' | 'exhaustive' = 'quick'): Promise<ZapretCalibrationStatus> {
   return request('/zapret/calibration', { method: 'POST', body: JSON.stringify({ domain, mode, allow_managed_restart: allowManagedRestart }) });
 }

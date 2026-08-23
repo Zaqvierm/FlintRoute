@@ -1,4 +1,4 @@
-import { render } from 'preact';
+import { Component, render, type ComponentChildren } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import QRCode from 'qrcode';
 import {
@@ -115,6 +115,26 @@ const navigation = [
 const notFoundScreen = 'Страница не найдена';
 const availableScreens = new Set([...navigation.flatMap((group) => group.screens), 'External SOCKS', notFoundScreen]);
 
+class ScreenErrorBoundary extends Component<{ children: ComponentChildren }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  render() {
+    if (this.state.failed) {
+      return <section class="screen-error" role="alert" aria-live="assertive">
+        <h1>Экран временно недоступен</h1>
+        <p>FlintRoute не смог отрисовать этот раздел. Сеть и уже сохранённая конфигурация не изменялись.</p>
+        <p class="mono">Код: ui_screen_render_failed</p>
+        <button class="primary" onClick={() => this.setState({ failed: false })}>Повторить</button>
+      </section>;
+    }
+    return this.props.children;
+  }
+}
+
 function screenFromLocation(): string | null {
   if (typeof window === 'undefined') return null;
   const raw = new URLSearchParams(window.location.search).get('screen');
@@ -198,6 +218,7 @@ function App() {
   const [overview, setOverview] = useState<any>(unavailableOverview);
   const [onboarding, setOnboarding] = useState<OnboardingState | null>(null);
   const [sliceErrors, setSliceErrors] = useState<Array<{ name: string; message: string }>>([]);
+  const [retryingSlice, setRetryingSlice] = useState('');
   const [topology, setTopology] = useState<any>({ nodes: [], edges: [], status: 'unavailable', source: 'api-unavailable' });
   const [devices, setDevices] = useState<any[]>([]);
   const [services, setServices] = useState<any[]>([]);
@@ -223,6 +244,7 @@ function App() {
   const refreshPrivacy = useRef<boolean | undefined>(undefined);
   const refreshScreen = useRef<string | undefined>(undefined);
   const refreshAbort = useRef<AbortController | null>(null);
+  const sliceRetryAbort = useRef<AbortController | null>(null);
   const refreshGeneration = useRef(0);
   const [privacyHidden, setPrivacyHidden] = useState(() => {
     try { return window.localStorage.getItem('flintroute-address-privacy') !== 'visible'; } catch { return true; }
@@ -306,7 +328,7 @@ function App() {
         maybe(needsServices, 'services', () => getServices(signal), services),
         maybe(needsRoutes, 'routes', () => getRoutes(signal), routes),
         maybe(needsTraffic, 'traffic', () => getTraffic(signal), traffic),
-        maybe(needsEvents, 'events', () => getEvents(500, signal), hideAddresses ? [] : events),
+        maybe(needsEvents, 'events', () => getEvents(500, hideAddresses, signal), hideAddresses ? [] : events),
         safe('system', getSystem(signal), staleFallback(system)),
         maybe(needsRevisions || activeScreen === notFoundScreen, 'revisions', () => getRevisions(signal), revisions),
         maybe(needsDiscovery, 'discovery', () => getDiscovery(signal), discovery),
@@ -387,6 +409,65 @@ function App() {
     }
   }
 
+  async function retrySlice(name: string) {
+    if (retryingSlice) return;
+    sliceRetryAbort.current?.abort();
+    const controller = new AbortController();
+    sliceRetryAbort.current = controller;
+    setRetryingSlice(name);
+    try {
+      switch (name) {
+        case 'overview': setOverview(await getOverview(controller.signal)); break;
+        case 'topology': setTopology(await getTopology(privacyHidden, controller.signal)); break;
+        case 'devices': setDevices(await getDevices(privacyHidden, controller.signal)); break;
+        case 'services': setServices(await getServices(controller.signal)); break;
+        case 'routes': setRoutes(await getRoutes(controller.signal)); break;
+        case 'traffic': {
+          const next = await getTraffic(controller.signal);
+          setTraffic((previous) => withTrafficRates(previous, next));
+          break;
+        }
+        case 'events': setEvents(await getEvents(500, privacyHidden, controller.signal)); break;
+        case 'system': setSystem(await getSystem(controller.signal)); break;
+        case 'revisions': {
+          const next = await getRevisions(controller.signal);
+          setRevisions(next);
+          setConfigVersion(next.config_version);
+          break;
+        }
+        case 'discovery': setDiscovery(await getDiscovery(controller.signal)); break;
+        case 'onboarding': setOnboarding(await getOnboarding(controller.signal)); break;
+        case 'health': {
+          const next = await getHealth(controller.signal);
+          setOverview((previous: any) => ({ ...previous, ...next }));
+          break;
+        }
+        case 'changes': setChanges(await getChanges(controller.signal)); break;
+        case 'security': setSecurity(await getSecurity(controller.signal)); break;
+        case 'security-summary': setSecuritySummary(await getSecuritySummary(controller.signal)); break;
+        case 'diagnostics': setDiagnostics(await getDiagnostics(controller.signal)); break;
+        case 'lifecycle': setLifecycle(await getLifecycle(controller.signal)); break;
+        case 'storage': setStorage(await getStorage(controller.signal)); break;
+        case 'settings': setSettings(await getSettings(controller.signal)); break;
+        case 'backups': setBackups(await getBackups(controller.signal)); break;
+        default: throw new Error('Для этого источника доступен только общий повтор');
+      }
+      setSliceErrors((current) => current.filter((item) => item.name !== name));
+      setLastUpdated(new Date().toISOString());
+    } catch (reason) {
+      if (!(reason instanceof Error && reason.name === 'AbortError')) {
+        const info = errorInfo(reason);
+        setSliceErrors((current) => {
+          const next = current.filter((item) => item.name !== name);
+          return [...next, { name, message: info.message }];
+        });
+      }
+    } finally {
+      if (sliceRetryAbort.current === controller) sliceRetryAbort.current = null;
+      setRetryingSlice((current) => current === name ? '' : current);
+    }
+  }
+
   useEffect(() => {
     me()
       .then((next) => {
@@ -409,11 +490,23 @@ function App() {
       if (!document.hidden) void refresh(privacyHidden);
     }, 30000);
     let es: EventSource | undefined;
+    let streamActive = true;
     try {
-      es = new EventSource('/api/v1/events/stream');
+      es = new EventSource(`/api/v1/events/stream?privacy=${privacyHidden ? 'hidden' : 'visible'}`);
       const pushEvent = (ev: Event) => {
-        const item = JSON.parse((ev as MessageEvent).data) as EventItem;
-        setEvents((old) => [item, ...old].slice(0, 80));
+        // A privacy toggle closes the previous stream and opens a new one.
+        // Guard the old callback as well: browsers may dispatch one queued
+        // message during close, and a visible-mode event must never refill a
+        // hidden-mode state slice.
+        if (!streamActive) return;
+        try {
+          const item = JSON.parse((ev as MessageEvent).data) as EventItem;
+          if (!item || typeof item !== 'object') return;
+          setEvents((old) => [item, ...old].slice(0, 80));
+        } catch {
+          // A malformed event must not tear down the stream or poison the UI
+          // state. The next heartbeat/reconnect remains useful evidence.
+        }
       };
       [
         'message',
@@ -431,6 +524,7 @@ function App() {
       // dev mock mode
     }
     return () => {
+      streamActive = false;
       window.clearInterval(timer);
       es?.close();
     };
@@ -442,6 +536,9 @@ function App() {
 
   async function togglePrivacy() {
     const next = !privacyHidden;
+    sliceRetryAbort.current?.abort();
+    sliceRetryAbort.current = null;
+    setRetryingSlice('');
     setPrivacyHidden(next);
     if (next) {
       // Do not leave a previously revealed entity alive while the hidden
@@ -492,7 +589,9 @@ function App() {
     // store.  Without this generation bump a late dashboard response could
     // repopulate devices, events or diagnostics after the session was gone.
     refreshAbort.current?.abort();
+    sliceRetryAbort.current?.abort();
     refreshAbort.current = null;
+    sliceRetryAbort.current = null;
     refreshGeneration.current += 1;
     refreshInFlight.current = null;
     setRefreshing(false);
@@ -561,10 +660,10 @@ function App() {
         <SessionBar session={session} apiError={apiError} loading={refreshing} lastUpdated={lastUpdated} onRetry={() => refresh()} onLogout={handleLogout} />
         <PrivacyBar hidden={privacyHidden} onToggle={togglePrivacy} />
         <TopBar overview={overview} navigate={selectScreen} />
-        <AlertCenter errors={sliceErrors} onRetry={() => refresh()} />
+        <AlertCenter errors={sliceErrors} onRetry={(name) => { void retrySlice(name); }} onRetryAll={() => { void refresh(); }} retrying={retryingSlice} />
         <RecoveryMutationBanner overview={overview} navigate={selectScreen} onRetry={() => refresh()} />
         <OperationCenterSummary changes={changes} navigate={selectScreen} />
-        {loading ? <LoadingSkeleton /> : <Content key={privacyHidden ? 'privacy-hidden' : 'privacy-visible'} screen={screen} session={session} configVersion={configVersion} overview={overview} mutationLocked={!recoveryMutationAllowed(overview)} onboarding={onboarding} topology={topology} devices={devices} services={services} discovery={discovery} routes={routes} traffic={traffic} events={events} changes={changes} security={security} securitySummary={securitySummary} system={system} diagnostics={diagnostics} lifecycle={lifecycle} storage={storage} settings={settings} backups={backups} revisions={revisions} refresh={refresh} onboardingAction={async (step: string, action: 'skip' | 'accept' | 'automatic' | 'complete') => { const next = await updateOnboarding(step, action); setOnboarding(next); return next; }} navigate={selectScreen} />}
+        {loading ? <LoadingSkeleton /> : <ScreenErrorBoundary key={`${screen}:${privacyHidden ? 'hidden' : 'visible'}`}><Content screen={screen} session={session} configVersion={configVersion} overview={overview} mutationLocked={!recoveryMutationAllowed(overview)} onboarding={onboarding} topology={topology} devices={devices} services={services} discovery={discovery} routes={routes} traffic={traffic} events={events} changes={changes} security={security} securitySummary={securitySummary} system={system} diagnostics={diagnostics} lifecycle={lifecycle} storage={storage} settings={settings} backups={backups} revisions={revisions} refresh={refresh} onboardingAction={async (step: string, action: 'skip' | 'accept' | 'automatic' | 'complete') => { const next = await updateOnboarding(step, action); setOnboarding(next); return next; }} navigate={selectScreen} /></ScreenErrorBoundary>}
       </main>
     </div>
   );
@@ -696,6 +795,10 @@ function NetworkMap({ topology, devices, system, expanded = false }: { topology:
   // wire diagram; larger collections are represented by per-port counts.
   const canvasWidth = Math.min(1600, Math.max(1000, branchCount * 190 + 140, viewportWidth));
   const portGap = canvasWidth / (branchCount + 1);
+  // The canvas is deliberately capped on wide screens.  Keep port cards
+  // inside their slot when a platform reports more ports than the canvas can
+  // comfortably show; overlapping cards are a false topology signal.
+  const portCardWidth = Math.max(110, Math.min(162, portGap - 12));
   const wifiPositions = wifi.map((device, index) => {
     const side = index % 2 === 0 ? -1 : 1;
     const row = Math.floor(index / 2);
@@ -740,7 +843,7 @@ function NetworkMap({ topology, devices, system, expanded = false }: { topology:
             <b>{textValue(system?.hostname ?? router?.hostname ?? router?.label, 'OpenWrt router')}</b>
             <small>{textValue(system?.model ?? router?.model, 'Модель не определена')}</small>
           </button>
-          {portCards.map((card, index) => <button class="map-node map-port" key={card.id} style={{ left: `${portGap * (index + 1)}px`, top: '468px' }} onClick={() => setSelected(card.device ?? { type: 'interface', ...card.port })}>
+          {portCards.map((card, index) => <button class="map-node map-port" key={card.id} style={{ left: `${portGap * (index + 1)}px`, top: '468px', width: `${portCardWidth}px` }} onClick={() => setSelected(card.device ?? { type: 'interface', ...card.port })}>
             <div class="map-port-chips"><span>{textValue(card.port.interface, 'Ethernet')}</span><em>{formatLinkSpeed(card.port.speed_mbps)}</em></div>
             <span class="port-glyph"><TopologyIcon kind={card.device ? topologyDeviceIcon(card.device) : 'ethernet'} /></span>
             <b>{card.device ? textValue(card.device.name, 'Неизвестное устройство') : 'Свободно'}</b>
@@ -1259,7 +1362,16 @@ function summarizeValue(value: unknown): string {
 function Routes({ routes, navigate }: { routes: any[]; navigate: (screen: string) => void }) {
   const [selected, setSelected] = useState<any>(null);
   const [vlessPool, setVLESSPool] = useState<any>(null);
-  useEffect(() => { void getVLESSPool().then(setVLESSPool).catch(() => setVLESSPool(null)); }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    getVLESSPool(controller.signal)
+      .then((pool) => setVLESSPool(pool))
+      .catch((reason) => {
+        if (reason instanceof Error && reason.name === 'AbortError') return;
+        setVLESSPool(null);
+      });
+    return () => controller.abort();
+  }, []);
   const poolServers: any[] = Array.isArray(vlessPool?.servers) ? vlessPool.servers : [];
   const activeVLESS: any = poolServers.find((server: any) => server.selected && server.path_verified);
   const withVLESS = routes.some((route) => route.type === 'vless') ? routes : [...routes, {
@@ -1330,24 +1442,39 @@ function componentNextStep(status: ComponentStatus): string {
 
 function Components({ role, mutationLocked, navigate }: { role: SessionInfo['role']; mutationLocked: boolean; navigate: (screen: string) => void }) {
   const [items, setItems] = useState<ComponentStatus[]>([]);
+  const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<ComponentStatus | null>(null);
   const [busy, setBusy] = useState<ComponentKind | null>(null);
   const [stage, setStage] = useState('');
   const [message, setMessage] = useState('');
+  const refreshController = useRef<AbortController | null>(null);
   const confirmDialog = useConfirmDialog();
 
   async function refresh() {
+    refreshController.current?.abort();
+    const controller = new AbortController();
+    refreshController.current = controller;
+    setLoading(true);
     try {
-      setItems(await getComponents());
+      setItems(await getComponents(controller.signal));
       setMessage('');
     } catch (reason) {
+      if (reason instanceof Error && reason.name === 'AbortError') return;
       const info = errorInfo(reason);
       setItems((old) => staleFallback(old));
       setMessage(`${info.code}: ${info.message}`);
+    } finally {
+      if (refreshController.current === controller) {
+        refreshController.current = null;
+        setLoading(false);
+      }
     }
   }
 
-  useEffect(() => { void refresh(); }, []);
+  useEffect(() => {
+    void refresh();
+    return () => refreshController.current?.abort();
+  }, []);
 
   async function run(kind: ComponentKind, action: ComponentAction) {
     if (mutationLocked && action !== 'check') {
@@ -1399,7 +1526,8 @@ function Components({ role, mutationLocked, navigate }: { role: SessionInfo['rol
          {item.installed && <button class="danger" disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'uninstall')}>Удалить</button>}
       </div>}
     </EntityCard>)}</Grid>
-    {!items.length && !message && <LoadingSkeleton />}
+    {loading && <LoadingSkeleton />}
+    {!loading && !items.length && !message && <EmptyState title="Компоненты не найдены" text="Backend не сообщил ни одного управляемого компонента. Повторите проверку или откройте диагностику." />}
     <DetailDrawer title={selected ? componentNames[selected.kind] : 'Компонент'} open={Boolean(selected)} onClose={() => setSelected(null)}>
       <InfoGrid items={[
         ['Установлен', selected?.installed ? 'Да' : 'Нет'], ['Версия', selected?.version], ['Последняя поддерживаемая', selected?.latest_supported_version],
@@ -1555,9 +1683,11 @@ function Vless({
   const [tariff, setTariff] = useState(300);
 
   useEffect(() => {
-    const requests: Promise<any>[] = [getVLESSPool()];
-    if (role === 'administrator') requests.push(getSubscriptionSecretStatus(), getManualVLESSServers());
+    const controller = new AbortController();
+    const requests: Promise<any>[] = [getVLESSPool(controller.signal)];
+    if (role === 'administrator') requests.push(getSubscriptionSecretStatus(controller.signal), getManualVLESSServers(controller.signal));
     Promise.allSettled(requests).then(([poolResult, subscription, manual]) => {
+      if (controller.signal.aborted) return;
       if (poolResult.status === 'fulfilled') {
         setPool(poolResult.value);
         setTariff(poolResult.value.tariff_mbps || 300);
@@ -1570,7 +1700,11 @@ function Vless({
         setPresent(null);
       }
       if (manual.status === 'fulfilled') setManualServers(manual.value.servers);
+    }).catch(() => {
+      // Promise.allSettled itself does not reject; keep this guard for a
+      // provider that returns a thenable with unexpected behavior.
     });
+    return () => controller.abort();
   }, [role]);
 
   async function saveTariff() {
@@ -1798,25 +1932,53 @@ function Zapret({ routes, configVersion, role, mutationLocked, refresh, navigate
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [showExhaustive, setShowExhaustive] = useState(false);
-  async function load() {
-    const [zapretStatus, components, calibrationStatus] = await Promise.all([getZapret(), getComponents(), getZapretCalibration()]);
-    const managed = components.find((item) => item.kind === 'zapret') ?? null;
-    setStatus(zapretStatus);
-    setComponent(managed);
-    setCalibration(calibrationStatus);
+  async function load(signal?: AbortSignal) {
+    const [zapretResult, componentsResult, calibrationResult] = await Promise.allSettled([getZapret(signal), getComponents(signal), getZapretCalibration(signal)]);
+    if (signal?.aborted) return;
+    const failures: string[] = [];
+    if (zapretResult.status === 'fulfilled') setStatus(zapretResult.value);
+    else { const info = errorInfo(zapretResult.reason); failures.push(`Zapret: ${info.code}: ${info.message}`); }
+    if (componentsResult.status === 'fulfilled') {
+      const managed = componentsResult.value.find((item) => item.kind === 'zapret') ?? null;
+      setComponent(managed);
+    } else { const info = errorInfo(componentsResult.reason); failures.push(`Компоненты: ${info.code}: ${info.message}`); }
+    if (calibrationResult.status === 'fulfilled') setCalibration(calibrationResult.value);
+    else { const info = errorInfo(calibrationResult.reason); failures.push(`Калибровка: ${info.code}: ${info.message}`); }
+    if (failures.length) setMessage(failures.join(' · '));
+    else setMessage('');
+    const managed = componentsResult.status === 'fulfilled' ? componentsResult.value.find((item) => item.kind === 'zapret') ?? null : null;
     if (managed?.installed) {
       setSourceURL((value) => value || managed.source || '');
       setVersion((value) => value || managed.version || managed.latest_supported_version || '');
       setSHA256((value) => value || managed.checksum || '');
     }
   }
-  useEffect(() => { void load().catch((error) => setMessage(error instanceof Error ? error.message : 'Zapret API недоступен')); }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    void load(controller.signal).catch((error) => {
+      if (error instanceof Error && error.name === 'AbortError') return;
+      setMessage(error instanceof Error ? error.message : 'Zapret API недоступен');
+    });
+    return () => controller.abort();
+  }, []);
   useEffect(() => {
     if (calibration?.state !== 'running') return;
-    const timer = window.setInterval(() => {
-      void getZapretCalibration().then(setCalibration).catch((error) => setMessage(error instanceof Error ? error.message : 'Не удалось обновить калибровку'));
-    }, 2000);
-    return () => window.clearInterval(timer);
+    const controller = new AbortController();
+    let inFlight = false;
+    const poll = () => {
+      if (inFlight || controller.signal.aborted) return;
+      inFlight = true;
+      void getZapretCalibration(controller.signal)
+        .then(setCalibration)
+        .catch((error) => {
+          if (error instanceof Error && error.name === 'AbortError') return;
+          setMessage(error instanceof Error ? error.message : 'Не удалось обновить калибровку');
+        })
+        .finally(() => { inFlight = false; });
+    };
+    const timer = window.setInterval(poll,
+      2000);
+    return () => { controller.abort(); window.clearInterval(timer); };
   }, [calibration?.state]);
   const input = { source_url: sourceURL.trim(), provider_version: version.trim(), binary_sha256: sha256.trim(), test_domain: testDomain.trim() };
   async function install() {
@@ -1939,7 +2101,14 @@ function SmartDNS({
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   useEffect(() => {
-    getSmartDNS().then(setStatus).catch((reason) => setError(reason instanceof Error ? reason.message : 'Smart DNS недоступен'));
+    const controller = new AbortController();
+    getSmartDNS(controller.signal)
+      .then(setStatus)
+      .catch((reason) => {
+        if (reason instanceof Error && reason.name === 'AbortError') return;
+        setError(reason instanceof Error ? reason.message : 'Smart DNS недоступен');
+      });
+    return () => controller.abort();
   }, []);
   async function save() {
     if (mutationLocked) { setMessage('Smart DNS нельзя изменить до подтверждения recovery state.'); return; }
@@ -2006,7 +2175,7 @@ function SmartDNS({
       </Card>)}
       {(status.routes ?? []).map((route: any) => (
         <Card title={textValue(route.tag, 'Smart DNS route')} key={textValue(route.tag, 'smart-dns-route')}>
-          <div class="row"><RouteBadge type="smart_dns" /><b>{humanStatus(route.status || 'не проверен')}</b><span>{route.resolver_configured ? 'endpoint задан' : 'нужен endpoint'}</span></div>
+          <div class="row"><RouteBadge type="smart_dns" /><StatusBadge value={statusWithFreshness(route.status || 'не проверен', route)} /><span>{route.resolver_configured ? 'endpoint задан' : 'нужен endpoint'}</span></div>
           {route.last_validation && <div class="row"><b>{route.last_validation.result?.udp?.safe ? 'UDP OK' : 'UDP FAIL'}</b><b>{route.last_validation.result?.tcp?.safe ? 'TCP OK' : 'TCP FAIL'}</b><b>{route.last_validation.result?.tls_ok ? 'TLS OK' : 'TLS FAIL'}</b><b>{route.last_validation.result?.http_ok ? `HTTP ${route.last_validation.result.http_status}` : 'HTTP FAIL'}</b></div>}
           {route.status === 'validated_idle' && <p>DNS-сервер работает и готов к выбору. Сейчас он не используется ни одним сервисом.</p>}
           {route.status !== 'validated_idle' && route.health?.last_reason && <p>{humanSmartDNSReason(textValue(route.health.last_reason, 'Причина не указана'))}</p>}
@@ -2024,14 +2193,27 @@ function SmartDNS({
 
 function ExternalSOCKS({ configVersion, role, mutationLocked, refresh, navigate }: { configVersion: number; role: SessionInfo['role']; mutationLocked: boolean; refresh: () => Promise<void>; navigate: (screen: string) => void }) {
   const [status, setStatus] = useState<any>(null);
-  const [endpoint, setEndpoint] = useState('127.0.0.1:1180');
-  const [domain, setDomain] = useState('web.telegram.org');
+  const [endpoint, setEndpoint] = useState('');
+  const [domain, setDomain] = useState('');
   const [report, setReport] = useState<any>(null);
   const [checked, setChecked] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
-  useEffect(() => { getExternalSOCKS().then(setStatus).catch((error) => setMessage(error instanceof Error ? error.message : 'External SOCKS API недоступен')); }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    getExternalSOCKS(controller.signal)
+      .then(setStatus)
+      .catch((error) => {
+        if (error instanceof Error && error.name === 'AbortError') return;
+        setMessage(error instanceof Error ? error.message : 'External SOCKS API недоступен');
+      });
+    return () => controller.abort();
+  }, []);
   async function check() {
+    if (!endpoint.trim() || !domain.trim()) {
+      setMessage('Укажи адрес уже запущенного внешнего SOCKS5 и домен для проверки. Это дополнительная интеграция: FlintRoute сам прокси не устанавливает.');
+      return;
+    }
     setBusy(true); setChecked(false); setMessage('Проверяю TCP, SOCKS5, remote DNS, TLS и HTTP…');
     try {
       const result = await checkExternalSOCKS(endpoint.trim(), domain.trim(), configVersion);
@@ -2051,11 +2233,11 @@ function ExternalSOCKS({ configVersion, role, mutationLocked, refresh, navigate 
     finally { setBusy(false); }
   }
   return <section class="grid">
-    <Card title="External SOCKS · внешняя зависимость">
-      <div class="row"><b>{humanStatus(status?.status ?? 'загрузка')}</b><span>управление процессом: внешнее</span><small>FlintRoute не устанавливает и не перезапускает transport</small></div>
+    <Card title="Внешний SOCKS5 · дополнительная интеграция">
+      <div class="row"><b>{humanStatus(status?.status ?? 'загрузка')}</b><span>управление процессом: внешнее</span><small>Используй только если у тебя уже есть отдельный SOCKS5. FlintRoute его не устанавливает, не связывает с TGWS и не считает обязательным для работы.</small></div>
       {role === 'administrator' && <div class="change-editor">
-        <label><span>Loopback SOCKS5 endpoint</span><input class="mono" value={endpoint} onInput={(event) => { setEndpoint((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
-        <label><span>Домен для remote DNS + TLS/HTTP</span><input class="mono" value={domain} onInput={(event) => { setDomain((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
+        <label><span>Адрес внешнего SOCKS5</span><input class="mono" placeholder="host:port" value={endpoint} onInput={(event) => { setEndpoint((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
+        <label><span>Домен для remote DNS + TLS/HTTP</span><input class="mono" placeholder="example.com" value={domain} onInput={(event) => { setDomain((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
         <button class="primary" disabled={busy || !configVersion} onClick={check}>{busy ? 'Проверяю…' : 'Проверить endpoint'}</button>
         <button class="primary" disabled={busy || mutationLocked || !checked || !configVersion} onClick={activate}>Создать черновик маршрута</button>
         {message && <div class="action-status"><p>{message}</p>{message.includes('черновик') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
@@ -2073,17 +2255,23 @@ function TGWS({ role, mutationLocked, navigate }: { role: SessionInfo['role']; m
   const [connectQR, setConnectQR] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
-  async function load() {
+  async function load(signal?: AbortSignal) {
     try {
-      const value = await getTGWS();
+      const value = await getTGWS(signal);
+      if (signal?.aborted) return;
       setStatus(value);
       if (value.port) setPort(value.port);
     } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') return;
       const info = errorInfo(error);
       setMessage(`${info.code}: ${info.message}`);
     }
   }
-  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
+  }, []);
   useEffect(() => {
     let cancelled = false;
     setConnectQR('');
@@ -2153,16 +2341,24 @@ function Telegram({ role, mutationLocked, events: systemEvents }: { role: Sessio
   const [events, setEvents] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
-  async function load() {
+  async function load(signal?: AbortSignal) {
     try {
-      const value = await getTelegram();
+      const value = await getTelegram(signal);
+      if (signal?.aborted) return;
       setOverview(value);
       setEnabled(Boolean(value.notifications?.enabled));
       setEvents(stringArray(value.notifications?.event_types));
     }
-    catch (error) { setMessage(error instanceof Error ? error.message : 'Telegram API недоступен'); }
+    catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') return;
+      setMessage(error instanceof Error ? error.message : 'Telegram API недоступен');
+    }
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
+  }, []);
   async function save() {
     if (mutationLocked) { setMessage('Настройка уведомлений заблокирована до подтверждения recovery state.'); return; }
     setBusy(true); setMessage('Проверяю токен и доступ к чату…');
@@ -2542,7 +2738,11 @@ function EmptyState({ title, text }: { title: string; text: string }) {
 }
 
 function DisabledActions({ labels }: { labels: string[] }) {
-  return <div class="actions">{labels.map((label) => <button disabled title="Not implemented" key={label}>{label} · не реализовано</button>)}</div>;
+  return <div class="not-available-actions" role="note">
+    <b>Управление устройством пока недоступно</b>
+    <span>Эти действия не притворяются рабочими кнопками и не меняют роутер.</span>
+    <small>{labels.join(' · ')} — будет добавлено через безопасный ChangeSet.</small>
+  </div>;
 }
 
 function EvidenceList({ values, empty }: { values: unknown[]; empty: string }) {

@@ -334,6 +334,24 @@ func TestSubscriptionRefreshDelayUsesProviderExpiry(t *testing.T) {
 	}
 }
 
+func TestSubscriptionRefreshBackoffIsBoundedAndExponential(t *testing.T) {
+	first := subscriptionRefreshBackoff(1)
+	if first < 54*time.Second || first > 66*time.Second {
+		t.Fatalf("first subscription retry backoff=%s, want roughly one minute", first)
+	}
+	second := subscriptionRefreshBackoff(2)
+	if second < 108*time.Second || second > 132*time.Second {
+		t.Fatalf("second subscription retry backoff=%s, want roughly two minutes", second)
+	}
+	maxed := subscriptionRefreshBackoff(32)
+	if maxed < 54*time.Minute || maxed > 6*time.Hour {
+		t.Fatalf("bounded subscription retry backoff=%s, want <=6h with jitter", maxed)
+	}
+	if got := subscriptionRefreshBackoff(0); got != 0 {
+		t.Fatalf("zero subscription failures produced backoff=%s", got)
+	}
+}
+
 func TestTSPUInitialDelayUsesPersistedFreshness(t *testing.T) {
 	cfg := testAPIConfig(t)
 	cfg.Storage.StateDir = t.TempDir()
