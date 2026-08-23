@@ -1,7 +1,7 @@
 # Актуальность документации
 
 Проверено: `2026-08-23`, база production-кода
-`b43d56a45ba26fb93ee3609c5eb190ef60bac29a`.
+`f7a36e63542ef92047c17cca0d5be90987cdd1a4` плюс текущий onboarding-fence delta.
 Документационный commit фиксирует этот code SHA; hardware claims для него не
 наследуются.
 Ветка: `remediation/transaction-and-privilege-boundaries-consolidated`.
@@ -22,7 +22,7 @@
 
 ## Полный реестр
 
-| Документ | Статус на `b43d56a` | Что подтверждено / что нельзя обещать |
+| Документ | Статус на `f7a36e6` + текущий delta | Что подтверждено / что нельзя обещать |
 |---|---|---|
 | `adapter-transaction.md` | АКТУАЛЕН | Typed adapter, recovery и fail-closed состояния; hardware-абзацы исторические. |
 | `adaptive-zapret-strategy.md` | ЧАСТИЧНО | Bounded health/calibration contract есть; старые Flint 2/P12 PASS требуют нового прогона. |
@@ -35,7 +35,7 @@
 | `failure-model.md` | АКТУАЛЕН software | Recovery/fail-closed модель актуальна; аппаратные заявления требуют нового evidence. |
 | `flint2-diagnostics.md` | АКТУАЛЕН как процедура | Это read-only checklist, а не доказательство выполненного запуска. |
 | `flint2-hardware-report.md` | ИСТОРИЯ | Исторический redacted report; `STALE FOR CURRENT SHA`. |
-| `flint2-hardware-validation.md` | ИСТОРИЯ/ПЛАН | Матрица hardware acceptance; не PASS для `b43d56a`. |
+| `flint2-hardware-validation.md` | ИСТОРИЯ/ПЛАН | Матрица hardware acceptance; hardware PASS для текущего delta отсутствует. |
 | `forensic-safety-and-scheduling.md` | АКТУАЛЕН как forensic note | Причины и safety findings сохранены; новые hardware claims не добавлять без прогона. |
 | `hardware-read-only-gate.md` | АКТУАЛЕН как gate | Разрешены только read-only проверки перед deployment. |
 | `headless-dataplane.md` | ЧАСТИЧНО | Service/TPROXY contract есть; реальный hardware dataplane текущего SHA не подтверждён. |
@@ -68,7 +68,7 @@
    а match используется как evidence перед `ProbeRoute`.
 3. `tspu-cache.md` и `tspu-sources.md` явно отделяют старый Flint 2 report от
    текущего software/CI evidence.
-4. `remediation-evidence.md` привязан к `b43d56a45ba26fb93ee3609c5eb190ef60bac29a`
+4. `remediation-evidence.md` привязан к baseline `f7a36e6` и отдельно отмечает текущий onboarding-fence delta.
    и содержит свежие CI run IDs.
 5. DNS rotation, stale freshness, bounded login pressure, route-fetch SSRF
    fallback и Quick maintenance restart policy отражены в evidence matrix.

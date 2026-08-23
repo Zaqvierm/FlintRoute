@@ -42,6 +42,27 @@ func TestRecoveryMutationFenceBlocksEveryUnsafeStatus(t *testing.T) {
 	}
 }
 
+func TestOnboardingMutationRespectsRecoveryFence(t *testing.T) {
+	for _, status := range []string{"starting", "error", "recovery_required", ""} {
+		t.Run("status_"+status, func(t *testing.T) {
+			fake := newFakeAdapter()
+			srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+			defer ts.Close()
+			defer srv.Close()
+
+			if err := srv.setRecoveryStatus(recoveryStatus{Status: status, Reason: "test fence"}); err != nil {
+				t.Fatalf("set recovery status: %v", err)
+			}
+			if code := postOnboarding(t, client, csrf, ts.URL, "methods", "accept"); code != http.StatusServiceUnavailable {
+				t.Fatalf("onboarding status=%d want=%d", code, http.StatusServiceUnavailable)
+			}
+			if value := srv.loadOnboardingState(); value.Steps["methods"].Status != "pending" {
+				t.Fatalf("unsafe recovery status changed onboarding state: %+v", value.Steps["methods"])
+			}
+		})
+	}
+}
+
 func TestRecoveryMutationFenceAllowsOnlyProvenStatuses(t *testing.T) {
 	tests := []struct {
 		name   string

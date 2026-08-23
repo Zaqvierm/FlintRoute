@@ -54,7 +54,10 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
 
 ### Текущий software/CI evidence
 
-Текущий remediation-код: `b43d56a45ba26fb93ee3609c5eb190ef60bac29a`.
+Software/CI baseline: `f7a36e63542ef92047c17cca0d5be90987cdd1a4`.
+Текущий локальный delta добавляет onboarding recovery fence: его exact HEAD и
+локальный regression PASS указаны в release handoff; CI parent evidence не
+выдаётся за доказательство этого delta.
 Ниже перечислены только локальные и CI-проверки этого кода. Flint 2 в этом
 цикле не подключался: аппаратного PASS для текущего SHA нет.
 

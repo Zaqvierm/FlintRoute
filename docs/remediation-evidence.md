@@ -7,7 +7,11 @@
 
 - Базовый SHA аудита: `d45a779dfa9dc024b426cef358d3df4d32478897`.
 - Ветка: `remediation/transaction-and-privilege-boundaries-consolidated`.
-- SHA production-кода: `b43d56a45ba26fb93ee3609c5eb190ef60bac29a`.
+- Проверенный code baseline до текущего onboarding delta: `f7a36e63542ef92047c17cca0d5be90987cdd1a4`.
+- Текущий commit добавляет durable onboarding write fence; локальная regression-проверка
+  привязана к этому commit через историю и команду в acceptance matrix. CI run IDs в
+  следующем разделе относятся к более раннему code head и не выдаются за evidence
+  нового delta до повторного запуска.
 - Документация обновляется в отдельном содержательном commit после code push;
   code evidence ниже привязано именно к SHA выше.
 - Предыдущий docs-head `501d27518dadc829175534a4d8eaf7a1d11699a8` сохранён как
@@ -42,6 +46,7 @@
 | Семантический ответ transaction adapter | `go test ./internal/adapter ./internal/helper ./internal/api` | PASS | local |
 | Fault boundaries transaction | fault-injection в `internal/api/transaction_test.go` | PASS | local |
 | Recovery mutation allowlist | `go test ./internal/api -run 'TestRecovery|TestAutomaticDomainCommit|TestHealthScheduler'` | PASS | local |
+| Onboarding durable write fence | `TestOnboardingMutationRespectsRecoveryFence` | PASS | local |
 | Ошибка сохранения recovery status | `TestRecoveryStatusPersistenceFailureInstallsMemoryFence` | PASS | local |
 | Запрещённый `not_required` identity | `TestRecoveryMutationFenceRejectsUnprovenNotRequiredIdentity` | PASS | local |
 | Гонка recovery/apply | `TestRecoveryTransitionExcludesConcurrentMutation` | PASS | local |

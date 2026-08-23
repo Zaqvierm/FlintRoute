@@ -147,6 +147,15 @@ func (s *Server) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())
 		return
 	}
+	// Onboarding state is durable write state too. Keep it behind the same
+	// recovery fence as every other write-capable endpoint so a controller in
+	// an ambiguous recovery phase cannot make any state transition silently.
+	release, failure := s.acquireMutationLease()
+	if failure != nil {
+		writeError(w, r, failure.Status, failure.Code, failure.Message)
+		return
+	}
+	defer release()
 	request.Step = strings.ToLower(strings.TrimSpace(request.Step))
 	request.Action = strings.ToLower(strings.TrimSpace(request.Action))
 	now := time.Now().UTC()
