@@ -1009,6 +1009,13 @@ func probeExternalIPWithFetcher(ctx context.Context, cfg *config.Config, route c
 	if cfg == nil || len(cfg.GeoIP.Endpoints) == 0 {
 		return "", "", nil, errors.New("egress_country_sources_not_configured")
 	}
+	// Config.Validate rejects oversized endpoint sets, but keep the probe
+	// boundary defensive when a caller constructs an unvalidated config (for
+	// example during recovery or a test). Never let one route check fan out
+	// across an arbitrary number of remote GeoIP requests.
+	if len(cfg.GeoIP.Endpoints) > config.MaxGeoIPEndpoints {
+		return "", "", nil, fmt.Errorf("egress_country_sources_exceed_bound:%d", config.MaxGeoIPEndpoints)
+	}
 	type vote struct {
 		ip      netip.Addr
 		country string

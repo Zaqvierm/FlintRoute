@@ -176,13 +176,17 @@ if (!$candidates.unknown -or $candidates.candidates[0].type -ne "direct") {
 }
 
 Write-Host "== Zapret calibration dry-run =="
-& $gitSh scripts/calibrate-zapret.sh --dry-run --domain observed.example --bundle-id auto-observed --network-fingerprint ("sha256:" + ("a" * 64)) --blockcheck /opt/zapret/blockcheck.sh | Out-Null
+& $gitSh scripts/calibrate-zapret.sh --dry-run --mode exhaustive --domain observed.example --bundle-id auto-observed --network-fingerprint ("sha256:" + ("a" * 64)) --blockcheck /opt/zapret/blockcheck.sh | Out-Null
 if ($LASTEXITCODE -ne 0) {
   throw "Zapret calibration dry-run failed"
 }
 & $gitSh tests/zapret-calibration-runtime.sh
 if ($LASTEXITCODE -ne 0) {
   throw "Zapret calibration runtime test failed"
+}
+& $gitSh tests/zapret-quick-contract.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "Zapret Quick runner contract test failed"
 }
 
 Write-Host "== nft transition namespace harness =="

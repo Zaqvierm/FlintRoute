@@ -26,23 +26,31 @@ type Store interface {
 }
 
 type Decision struct {
-	Key             string              `json:"key"`
-	Scope           string              `json:"scope"`
-	Domain          string              `json:"domain"`
-	ETLDPlusOne     string              `json:"etld_plus_one"`
-	Service         string              `json:"service"`
-	Category        string              `json:"category"`
-	TSPUStatus      string              `json:"tspu_status,omitempty"`
-	SelectedRoute   string              `json:"selected_route,omitempty"`
-	SelectedType    string              `json:"selected_type,omitempty"`
-	Status          string              `json:"status"`
-	Reason          string              `json:"reason,omitempty"`
-	AdapterRevision string              `json:"adapter_revision"`
-	Confidence      float64             `json:"confidence"`
-	Results         []probe.RouteResult `json:"results"`
-	CheckedAt       time.Time           `json:"checked_at"`
-	ExpiresAt       time.Time           `json:"expires_at"`
-	LastUsedAt      time.Time           `json:"last_used_at"`
+	Key             string `json:"key"`
+	Scope           string `json:"scope"`
+	Domain          string `json:"domain"`
+	ETLDPlusOne     string `json:"etld_plus_one"`
+	Service         string `json:"service"`
+	Category        string `json:"category"`
+	TSPUStatus      string `json:"tspu_status,omitempty"`
+	SelectedRoute   string `json:"selected_route,omitempty"`
+	SelectedType    string `json:"selected_type,omitempty"`
+	Status          string `json:"status"`
+	Reason          string `json:"reason,omitempty"`
+	AdapterRevision string `json:"adapter_revision"`
+	// Confidence is route-decision confidence. Classification evidence is
+	// persisted separately so cache hits cannot merge the two meanings.
+	Confidence               float64 `json:"confidence"`
+	ClassificationConfidence float64 `json:"classification_confidence,omitempty"`
+	ClassificationSource     string  `json:"classification_source,omitempty"`
+	ClassificationEvidence   string  `json:"classification_evidence,omitempty"`
+	// VerificationDurationMS is the full planner verification job duration.
+	// Per-candidate path verification durations remain in Results.
+	VerificationDurationMS int64               `json:"verification_duration_ms,omitempty"`
+	Results                []probe.RouteResult `json:"results"`
+	CheckedAt              time.Time           `json:"checked_at"`
+	ExpiresAt              time.Time           `json:"expires_at"`
+	LastUsedAt             time.Time           `json:"last_used_at"`
 }
 
 type Manager struct {
@@ -271,7 +279,7 @@ func (m *Manager) pruneLocked(now time.Time) error {
 }
 
 func validateDecision(decision Decision) error {
-	if decision.Key == "" || (decision.Scope != "exact" && decision.Scope != "etld_plus_one") || decision.Service == "" || decision.Category == "" || decision.Status == "" || decision.AdapterRevision == "" || decision.Confidence < 0 || decision.Confidence > 1 || decision.CheckedAt.IsZero() || decision.ExpiresAt.IsZero() || !decision.CheckedAt.Before(decision.ExpiresAt) {
+	if decision.Key == "" || (decision.Scope != "exact" && decision.Scope != "etld_plus_one") || decision.Service == "" || decision.Category == "" || decision.Status == "" || decision.AdapterRevision == "" || decision.Confidence < 0 || decision.Confidence > 1 || decision.ClassificationConfidence < 0 || decision.ClassificationConfidence > 1 || decision.CheckedAt.IsZero() || decision.ExpiresAt.IsZero() || !decision.CheckedAt.Before(decision.ExpiresAt) {
 		return errors.New("invalid domain decision metadata")
 	}
 	normalized, err := tspu.NormalizeDomain(decision.Domain)

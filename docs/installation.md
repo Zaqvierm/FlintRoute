@@ -70,7 +70,8 @@ observer bootstrap выполняется до штатного dnsmasq и не 
 в конце загрузки. Xray и nfqws не включаются вслепую: ими управляет
 подтверждённая dataplane-транзакция.
 
-Установщик также ставит `scripts/calibrate-zapret.sh`. Заводского домена для
+Установщик также ставит `scripts/calibrate-zapret.sh` и
+`scripts/quick-zapret-check.sh`. Заводского домена для
 `blockcheck` нет: после установки калибровка имеет состояние
 `pending-observed-domain`. Runner принимает только фактически замеченный
 TSPU-домен, по умолчанию работает как dry-run, хранит максимум три

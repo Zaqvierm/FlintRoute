@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -47,14 +48,29 @@ func (r ExecCalibrationRunner) latestCalibrationLog() []byte {
 }
 
 func (r ExecCalibrationRunner) Run(ctx context.Context, request CalibrationRequest) ([]byte, error) {
-	if err := r.validatePaths(); err != nil {
+	if request.Mode == CalibrationModeQuick && r.QuickScript == "" {
+		return nil, errCalibrationQuickEvidenceUnavailable
+	}
+	if err := r.validatePathsFor(request.Mode); err != nil {
 		return nil, err
 	}
-	args := []string{"--apply", "--mode", string(request.Mode), "--domain", request.Domain, "--bundle-id", request.BundleID, "--network-fingerprint", request.NetworkFingerprint, "--blockcheck", r.Blockcheck}
+	script := r.Script
+	blockcheck := r.Blockcheck
+	if request.Mode == CalibrationModeQuick {
+		// The upstream blockcheck is deliberately not used for the default
+		// action. It has no contract for curated strategy count or NFQUEUE
+		// path evidence, so falling back to it here would make the UI lie.
+		script = r.QuickScript
+		blockcheck = ""
+	}
+	args := []string{"--apply", "--mode", string(request.Mode), "--domain", request.Domain, "--bundle-id", request.BundleID, "--network-fingerprint", request.NetworkFingerprint}
+	if blockcheck != "" {
+		args = append(args, "--blockcheck", blockcheck)
+	}
 	if request.AllowManagedRestart {
 		args = append(args, "--allow-managed-restart")
 	}
-	command := exec.Command(r.Script, args...)
+	command := exec.Command(script, args...)
 	command.Env = append(os.Environ(),
 		"ROUTER_POLICY_CONFIG="+r.Config,
 		"ROUTER_POLICY_BIN="+r.RouterPolicyBin,
@@ -63,6 +79,12 @@ func (r ExecCalibrationRunner) Run(ctx context.Context, request CalibrationReque
 		"ROUTER_POLICY_RUNTIME_DIR="+r.RuntimeDir,
 		"ZAPRET_CATALOG_OUT="+r.CatalogOut,
 	)
+	if request.Mode == CalibrationModeQuick {
+		if r.ManagedQueue < 1 || r.ManagedQueue > 65535 {
+			return nil, errors.New("quick Zapret calibration requires the managed production NFQUEUE")
+		}
+		command.Env = append(command.Env, "ZAPRET_MANAGED_QUEUE="+strconv.Itoa(r.ManagedQueue))
+	}
 	if len(request.ResolvedIPv4) > 0 {
 		command.Env = append(command.Env, "ZAPRET_CALIBRATION_IPV4="+strings.Join(request.ResolvedIPv4, ","))
 	}

@@ -27,6 +27,11 @@ var nftTablePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,31}$`)
 // not turn a single DNS observation into an unbounded HTTP/SOCKS fan-out.
 const MaxProbeURLsPerService = 4
 
+// MaxGeoIPEndpoints keeps one route check from turning egress verification
+// into an unbounded series of remote requests. The supported provider set is
+// intentionally limited to one endpoint per provider.
+const MaxGeoIPEndpoints = 2
+
 type Config struct {
 	Version       int                `json:"version"`
 	Platform      Platform           `json:"platform"`
@@ -495,6 +500,9 @@ func (c *Config) Validate() error {
 		}
 	}
 	seenGeoIPProviders := map[string]bool{}
+	if len(c.GeoIP.Endpoints) > MaxGeoIPEndpoints {
+		return fmt.Errorf("too many GeoIP endpoints (maximum %d)", MaxGeoIPEndpoints)
+	}
 	if c.GeoIP.SourceURL != "" {
 		parsed, err := url.Parse(c.GeoIP.SourceURL)
 		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {

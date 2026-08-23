@@ -282,6 +282,15 @@ func TestDiscoveryRunsAfterBaselineWithoutApplyingOpenWrtState(t *testing.T) {
 	for _, event := range srv.broker.Recent(0, 32) {
 		if event.ReasonCode == "domain_observed_only" {
 			classified = true
+			if event.Details["decision_confidence"] != float64(0) && event.Details["decision_confidence"] != 0 {
+				t.Fatalf("observe-only decision confidence was not zero: %#v", event.Details["decision_confidence"])
+			}
+			if _, ok := event.Details["classification_confidence"]; !ok {
+				t.Fatal("observe-only event omitted classification confidence")
+			}
+			if _, ok := event.Details["classification_source"]; !ok {
+				t.Fatal("observe-only event omitted classification source")
+			}
 			break
 		}
 	}

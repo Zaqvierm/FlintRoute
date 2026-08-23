@@ -15,6 +15,13 @@ not hardware evidence.
 - A failed slice does not cancel the other dashboard slices. The alert center
   identifies the unavailable slice and permits a retry; object fallbacks are
   marked stale rather than presented as a fresh health proof.
+- The Fast Start screen owns its first provider read and starts it on mount;
+  opening the wizard never leaves the component/source cards in a fabricated
+  permanent loading state. Logout aborts the current refresh generation and
+  invalidates late responses before clearing entity state.
+- Fast Start writes are handled as user-visible operations: a failed step
+  shows the backend error code plus a readable explanation and does not leave
+  an unhandled promise or a falsely advanced step.
 - Service categories are exhaustive. `TELEGRAM`, `DIRECT_PREFERRED`, and
   future/unknown values do not silently become Direct; unknown values stay in
   `Не определено`.

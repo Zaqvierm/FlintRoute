@@ -1334,9 +1334,10 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 		}
 		zapretRelease := component.SupportedCatalog()[component.KindZapret]
 		zapretCalibration = zapret.NewCalibrationManager(zapret.ExecCalibrationRunner{
-			Script:     "/usr/lib/router-policy/scripts/calibrate-zapret.sh",
-			Blockcheck: filepath.Join("/usr/lib/router-policy/components/zapret", zapretRelease.Version, "blockcheck.sh"),
-			Config:     cfgPath, RouterPolicyBin: "/usr/bin/router-policy", NFQWSBin: cfg.Zapret.Binary,
+			Script:      "/usr/lib/router-policy/scripts/calibrate-zapret.sh",
+			QuickScript: "/usr/lib/router-policy/scripts/quick-zapret-check.sh",
+			Blockcheck:  filepath.Join("/usr/lib/router-policy/components/zapret", zapretRelease.Version, "blockcheck.sh"),
+			Config:      cfgPath, RouterPolicyBin: "/usr/bin/router-policy", NFQWSBin: cfg.Zapret.Binary, ManagedQueue: cfg.Zapret.QueueNum,
 			ZapretInit: cfg.Zapret.InitScript, RuntimeDir: cfg.Storage.RuntimeDir,
 			CatalogOut: "/etc/router-policy/zapret/catalog.json",
 		})

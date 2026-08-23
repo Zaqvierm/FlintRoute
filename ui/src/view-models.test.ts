@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatDateTime, groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, onboardingProgress, onboardingRouterReady, parseResolverInput, recoveryMutationAllowed, serviceColumnFor, stringArray, textValue, toDecisionCard } from './view-models';
+import { decisionVerificationPresentation, formatDateTime, groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, onboardingProgress, onboardingRouterReady, parseResolverInput, recoveryMutationAllowed, serviceColumnFor, statusTone, stringArray, textValue, toDecisionCard, verificationPresentationLabel } from './view-models';
 import type { EventItem } from './api';
 
 describe('safe display values', () => {
@@ -15,6 +15,13 @@ describe('safe display values', () => {
     expect(humanStatus('ROUTE_AVAILABLE')).toBe('Интернет доступен');
     expect(humanStatus('not_installed')).toBe('Не установлен');
     expect(humanStatus('NO_SAFE_ROUTE')).toBe('Ни один безопасный маршрут не прошёл проверку');
+  });
+
+  it('does not paint negative states green because they contain positive words', () => {
+    expect(statusTone('not_configured')).not.toBe('ok');
+    expect(statusTone('unverified')).not.toBe('ok');
+    expect(statusTone('no_verified_route')).not.toBe('ok');
+    expect(statusTone('ready')).toBe('ok');
   });
 
   it('does not render zero-value timestamps as year one', () => {
@@ -60,12 +67,15 @@ describe('service view model', () => {
   it('groups configured and discovered domains into one service', () => {
     const grouped = groupServices([
       { id: 'Discord', category: 'TSPU_RESTRICTED', domains: ['discord.com', 'discord.gg'], source: 'configured' },
-      { id: 'Discord', category: 'TSPU_RESTRICTED', domains: ['discord.media'], source: 'automatic', status: 'VERIFIED' }
+      { id: 'Discord', category: 'TSPU_RESTRICTED', domains: ['discord.media'], source: 'automatic', status: 'VERIFIED', classification_confidence: 0.42, decision_confidence: 1, classification_source: 'fixture', classification_evidence: 'curated_match' }
     ]);
     expect(grouped).toHaveLength(1);
     expect(grouped[0].domains).toEqual(['discord.com', 'discord.gg', 'discord.media']);
     expect(grouped[0].sources).toEqual(['automatic', 'configured']);
     expect(grouped[0].applied).toBe(true);
+    expect(grouped[0].classification_confidence).toBe(0.42);
+    expect(grouped[0].decision_confidence).toBe(1);
+    expect(grouped[0].classification_source).toBe('fixture');
   });
 
   it('keeps a discovery-only item explicitly unapplied', () => {
@@ -152,6 +162,12 @@ describe('decision cards', () => {
     expect(isAdministrativeEvent({ ...event, type: 'system.change.prepared', domain: undefined, route: undefined, details: {} })).toBe(true);
   });
 
+  it('keeps administrative events out of the decision stream even if they carry route fields', () => {
+    const administrative = { ...event, type: 'system.change.verifying', details: { route: 'vless', domain: 'example.com' } };
+    expect(isDecisionEvent(administrative)).toBe(false);
+    expect(isAdministrativeEvent(administrative)).toBe(true);
+  });
+
   it('creates a user-facing card with detailed evidence kept behind open', () => {
     const card = toDecisionCard({ ...event, details: { ...event.details, route_label: 'Direct (системный маршрут)' } });
     expect(card.device).toBe('Phone');
@@ -171,8 +187,24 @@ describe('decision cards', () => {
     expect(card.probeLatencyMS).toBe(75);
   });
 
+  it('keeps classification confidence separate from route decision confidence', () => {
+    const card = toDecisionCard({
+      ...event,
+      details: { ...event.details, classification_confidence: 0.42, decision_confidence: 1 }
+    });
+    expect(card.classificationConfidence).toBe(0.42);
+    expect(card.decisionConfidence).toBe(1);
+  });
+
   it('does not turn unavailable route latency into a zero millisecond measurement', () => {
     const card = toDecisionCard({ ...event, details: { route_latency_ms: 0, route_latency_available: false, verification_duration_ms: 3910 } });
+    expect(card.routeLatencyAvailable).toBe(false);
+    expect(card.routeLatencyMS).toBeUndefined();
+    expect(card.verificationDurationMS).toBe(3910);
+  });
+
+  it('does not treat legacy probe latency as route latency without explicit evidence', () => {
+    const card = toDecisionCard({ ...event, details: { probe_latency_ms: 3910, verification_duration_ms: 3910 } });
     expect(card.routeLatencyAvailable).toBe(false);
     expect(card.routeLatencyMS).toBeUndefined();
     expect(card.verificationDurationMS).toBe(3910);
@@ -186,5 +218,45 @@ describe('decision cards', () => {
     });
     expect(card.service).toBe('chess.com');
     expect(card.category).toBe('direct');
+  });
+
+  it('does not call an in-progress probe a terminal no-safe-route failure', () => {
+    const card = toDecisionCard({
+      ...event,
+      details: { ...event.details, path_verified: false, probe_state: 'verifying', verification_state: 'in_progress', status: 'VERIFYING' }
+    });
+    expect(decisionVerificationPresentation(card)).toBe('checking');
+    expect(verificationPresentationLabel(decisionVerificationPresentation(card))).toBe('Проверяется…');
+  });
+
+  it('fails closed when contradictory evidence says verified and exhausted', () => {
+    const contradictory = toDecisionCard({
+      ...event,
+      details: { ...event.details, path_verified: true, probe_state: 'no_safe_route', verification_state: 'terminal_no_safe_route', status: 'NO_SAFE_ROUTE' }
+    });
+    expect(decisionVerificationPresentation(contradictory)).toBe('no_safe_route');
+  });
+
+  it('keeps observe-only passive and reserves no-safe-route for terminal exhaustion', () => {
+    const observed = toDecisionCard({
+      ...event,
+      details: { ...event.details, path_verified: false, probe_state: 'not_run_observe_only', policy_state: 'observed' }
+    });
+    expect(decisionVerificationPresentation(observed)).toBe('observed');
+
+    const exhausted = toDecisionCard({
+      ...event,
+      details: { ...event.details, path_verified: false, probe_state: 'no_safe_route', verification_state: 'terminal_no_safe_route', status: 'NO_SAFE_ROUTE' }
+    });
+    expect(decisionVerificationPresentation(exhausted)).toBe('no_safe_route');
+    expect(verificationPresentationLabel(decisionVerificationPresentation(exhausted))).toBe('Безопасный маршрут не найден');
+  });
+
+  it('does not trust a no-safe-route string without terminal evidence', () => {
+    const malformed = toDecisionCard({
+      ...event,
+      details: { ...event.details, path_verified: false, probe_state: 'no_safe_route', status: 'NO_SAFE_ROUTE' }
+    });
+    expect(decisionVerificationPresentation(malformed)).toBe('checking');
   });
 });

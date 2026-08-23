@@ -74,8 +74,9 @@ Upstream умеет применять профили. FlintRoute добавля
 
 Calibration API и UI теперь разделяют два явно разных режима:
 
-- `quick` (кнопка «Быстрый тест Zapret») передаёт upstream `SCANLEVEL=quick` и
-  имеет bounded бюджет по умолчанию 5 минут;
+- `quick` (кнопка «Быстрый тест Zapret») запускает четыре встроенных curated
+  профиля через pinned nfqws и имеет bounded бюджет по умолчанию 5 минут. PASS
+  требует счётчик owned NFQUEUE, доказанную process group и cleanup;
 - `exhaustive` (кнопка «Полный подбор стратегий») передаёт `SCANLEVEL=force`,
   требует отдельного подтверждения и имеет верхний бюджет до 6 часов.
 
@@ -118,11 +119,13 @@ TSPU-домена calibration runner нормализует отчёт, отбр
 
 Component Manager устанавливает закреплённый `v72.13` archive и извлекает
 минимальный blockcheck runtime. Calibration API связывает запуск с verified
-fingerprint production-сети, ограничивает время и возвращает максимум три
-кандидата. `blockcheck.sh` использует общие nft/NFQUEUE/temp resources; полная
-изоляция параллельных workers не доказана, поэтому production concurrency равна
-1. Запустить все варианты одновременно без независимых queue, chains и process
-state было бы гонкой, а не оптимизацией.
+fingerprint production-сети и ограничивает время. Quick возвращает полную
+таблицу из четырёх curated попыток, а в кандидаты попадают только доказанные
+PASS; exhaustive сохраняет прежний bounded список кандидатов. `blockcheck.sh`
+использует общие nft/NFQUEUE/temp resources; полная изоляция параллельных
+workers не доказана, поэтому production concurrency равна 1. Запустить все
+варианты одновременно без независимых queue, chains и process state было бы
+гонкой, а не оптимизацией.
 
 ## Service bundle
 
@@ -474,3 +477,9 @@ P12 заканчивается не красивым JSON, а доказател
 После этого P13 закрывает полную аппаратную матрицу: все route types,
 TCP/UDP, IPv4/IPv6, reboot/crash, несколько клиентов, длительная стабильность,
 ресурсные пределы и upgrade/downgrade.
+> **Current contract (2026-08-23):** the default quick action uses the
+> production `QuickScript` runner and never aliases upstream `SCANLEVEL=quick`.
+> It fails closed when the runner or its path/cleanup evidence is unavailable.
+> Upstream `blockcheck.sh` is reserved for the explicit exhaustive maintenance
+> action.
+> See `docs/zapret-calibration-design.md` for the normative contract.

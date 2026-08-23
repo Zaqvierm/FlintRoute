@@ -18,9 +18,12 @@ import (
 	"router-policy/internal/tspu"
 )
 
-const calibrationConcurrencyReason = "upstream blockcheck uses shared nft, NFQUEUE and temporary resources"
+const calibrationConcurrencyReason = "one worker only: curated checks and upstream blockcheck must not share nft/NFQUEUE/process state"
 
 var errCalibrationUpstreamTimeout = errors.New("upstream Zapret blockcheck timed out")
+var errCalibrationQuickEvidenceUnavailable = errors.New("quick Zapret calibration requires a curated dataplane evidence runner")
+
+const quickCuratedProfileCount = 4
 
 // CalibrationMode deliberately exposes two different user actions. Quick is
 // the bounded/default check; exhaustive is an explicit maintenance operation
@@ -54,6 +57,13 @@ func (mode CalibrationMode) scanLevel() string {
 	return "quick"
 }
 
+func (mode CalibrationMode) initialStage() string {
+	if mode == CalibrationModeQuick {
+		return "curated_dataplane"
+	}
+	return "upstream_blockcheck"
+}
+
 func (mode CalibrationMode) defaultTimeout() time.Duration {
 	if mode == CalibrationModeExhaustive {
 		return 6 * time.Hour
@@ -81,6 +91,27 @@ type CalibrationCandidate struct {
 	Occurrences     int      `json:"occurrences,omitempty"`
 }
 
+// CalibrationAttempt is deliberately stricter than the legacy blockcheck
+// evidence. A process starting or curl returning 200 is not enough to call a
+// strategy working: the request must be bound to the tested dataplane and the
+// cleanup must be proven as well.
+type CalibrationAttempt struct {
+	ProfileID                string `json:"profile_id"`
+	Target                   string `json:"target"`
+	Protocol                 string `json:"protocol"`
+	Result                   string `json:"result"`
+	PathVerified             bool   `json:"path_verified"`
+	CleanupVerified          bool   `json:"cleanup_verified"`
+	RouteEvidence            string `json:"route_evidence,omitempty"`
+	NFQueuePackets           int64  `json:"nfqueue_packets,omitempty"`
+	NFQueueCounterDelta      int64  `json:"nfqueue_counter_delta,omitempty"`
+	LatencyMilliseconds      int64  `json:"latency_ms,omitempty"`
+	VerificationMilliseconds int64  `json:"verification_duration_ms,omitempty"`
+	HTTPStatus               int    `json:"http_status,omitempty"`
+	ErrorCode                string `json:"error_code,omitempty"`
+	Error                    string `json:"error,omitempty"`
+}
+
 type CalibrationStatus struct {
 	ID                   string                 `json:"id,omitempty"`
 	State                string                 `json:"state"`
@@ -96,6 +127,9 @@ type CalibrationStatus struct {
 	ChecksCompleted      int                    `json:"checks_completed,omitempty"`
 	ChecksTotal          int                    `json:"checks_total,omitempty"`
 	Candidates           []CalibrationCandidate `json:"candidates,omitempty"`
+	Attempts             []CalibrationAttempt   `json:"attempts,omitempty"`
+	EvidenceLevel        string                 `json:"evidence_level"`
+	PathVerified         bool                   `json:"path_verified"`
 	RecommendedProfileID string                 `json:"recommended_profile_id,omitempty"`
 	LogTail              []string               `json:"log_tail,omitempty"`
 	WorkingStrategies    []string               `json:"working_strategies,omitempty"`
@@ -122,14 +156,22 @@ type CalibrationLiveProvider interface {
 // ExecCalibrationRunner is implemented per platform. Production uses the
 // Linux implementation; other platforms fail closed and remain testable.
 type ExecCalibrationRunner struct {
-	Script          string
+	Script string
+	// QuickScript must implement the curated, per-strategy evidence contract.
+	// It is intentionally separate from the upstream blockcheck script: using
+	// blockcheck with SCANLEVEL=quick is not a substitute for that contract.
+	QuickScript     string
 	Blockcheck      string
 	Config          string
 	RouterPolicyBin string
 	NFQWSBin        string
-	ZapretInit      string
-	RuntimeDir      string
-	CatalogOut      string
+	// ManagedQueue is the production queue used when a verified quick result
+	// is rendered into the owned dataplane. Quick checks use a separate
+	// temporary queue and must never persist that temporary number.
+	ManagedQueue int
+	ZapretInit   string
+	RuntimeDir   string
+	CatalogOut   string
 }
 
 type CalibrationManager struct {
@@ -213,10 +255,13 @@ func (m *CalibrationManager) Start(request CalibrationRequest) (CalibrationStatu
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	m.cancel = cancel
 	m.current = CalibrationStatus{
-		ID: runID, State: "running", Stage: "upstream_blockcheck", Domain: request.Domain,
+		ID: runID, State: "running", Stage: request.Mode.initialStage(), Domain: request.Domain,
 		BundleID: request.BundleID, NetworkFingerprint: request.NetworkFingerprint,
-		Mode: request.Mode, ScanLevel: request.Mode.scanLevel(),
+		Mode: request.Mode, ScanLevel: request.Mode.scanLevel(), EvidenceLevel: "none",
 		Concurrency: 1, ConcurrencyReason: calibrationConcurrencyReason, StartedAt: now,
+	}
+	if request.Mode == CalibrationModeQuick {
+		m.current.ChecksTotal = quickCuratedProfileCount
 	}
 	go m.run(ctx, request, runID)
 	return cloneCalibrationStatus(m.current), nil
@@ -292,6 +337,9 @@ func (m *CalibrationManager) run(ctx context.Context, request CalibrationRequest
 	}
 	if runErr != nil {
 		status.State, status.Stage, status.ErrorCode, status.Error = "failed", "failed", "zapret_calibration_failed", safeCalibrationError(runErr)
+		if errors.Is(runErr, errCalibrationQuickEvidenceUnavailable) {
+			status.Stage, status.ErrorCode, status.Error = "evidence_validation", "zapret_quick_evidence_unavailable", "быстрый тест недоступен: в runtime нет curated runner с доказательством dataplane path"
+		}
 		if errors.Is(runErr, errCalibrationUpstreamTimeout) {
 			status.ErrorCode, status.Error = "zapret_calibration_timeout", "upstream blockcheck exceeded the selected bounded runtime"
 		} else if errors.Is(ctx.Err(), context.Canceled) {
@@ -300,16 +348,26 @@ func (m *CalibrationManager) run(ctx context.Context, request CalibrationRequest
 			status.ErrorCode, status.Error = "zapret_calibration_timeout", "calibration exceeded the bounded runtime"
 		}
 	} else {
-		candidates, parseErr := parseCalibrationResult(raw)
+		parsed, parseErr := parseCalibrationEvidence(raw, request.Mode, request.Domain)
 		if parseErr != nil {
 			status.State, status.Stage, status.ErrorCode, status.Error = "failed", "result_validation", "zapret_calibration_result_invalid", parseErr.Error()
+			if errors.Is(parseErr, errCalibrationQuickEvidenceUnavailable) {
+				status.Stage, status.ErrorCode, status.Error = "evidence_validation", "zapret_quick_evidence_unavailable", "быстрый тест не дал полного доказательства dataplane path"
+			}
 		} else {
 			status.State, status.Stage = "completed", "candidate_review"
-			status.Candidates = candidates
-			status.CandidateCount = len(candidates)
-			status.ActivationRequired = len(candidates) > 0
-			if len(candidates) > 0 {
-				status.RecommendedProfileID = candidates[0].ProfileID
+			status.Candidates = parsed.Candidates
+			status.Attempts = parsed.Attempts
+			status.EvidenceLevel = parsed.EvidenceLevel
+			status.PathVerified = parsed.PathVerified
+			status.CandidateCount = len(parsed.Candidates)
+			status.ChecksCompleted = len(parsed.Attempts)
+			if request.Mode == CalibrationModeQuick {
+				status.ChecksTotal = quickCuratedProfileCount
+			}
+			status.ActivationRequired = len(parsed.Candidates) > 0
+			if len(parsed.Candidates) > 0 {
+				status.RecommendedProfileID = parsed.Candidates[0].ProfileID
 			}
 		}
 	}
@@ -325,20 +383,96 @@ func (m *CalibrationManager) run(ctx context.Context, request CalibrationRequest
 	m.cancel = nil
 }
 
+type parsedCalibrationResult struct {
+	Candidates    []CalibrationCandidate
+	Attempts      []CalibrationAttempt
+	EvidenceLevel string
+	PathVerified  bool
+}
+
+// parseCalibrationResult is kept as a compatibility wrapper for callers that
+// only need the legacy exhaustive candidate list. New code must use
+// parseCalibrationEvidence so quick results cannot silently lose proof fields.
 func parseCalibrationResult(raw []byte) ([]CalibrationCandidate, error) {
+	parsed, err := parseCalibrationEvidence(raw, CalibrationModeExhaustive, "")
+	if err != nil {
+		return nil, err
+	}
+	return parsed.Candidates, nil
+}
+
+func parseCalibrationEvidence(raw []byte, mode CalibrationMode, domain string) (parsedCalibrationResult, error) {
 	var document struct {
-		Catalog  CatalogFile `json:"catalog"`
-		Evidence []struct {
+		Catalog       CatalogFile          `json:"catalog"`
+		EvidenceLevel string               `json:"evidence_level"`
+		PathVerified  bool                 `json:"path_verified"`
+		Attempts      []CalibrationAttempt `json:"attempts"`
+		Evidence      []struct {
 			ProfileID   string   `json:"profile_id"`
 			Tests       []string `json:"tests"`
 			Occurrences int      `json:"occurrences"`
 		} `json:"evidence"`
 	}
 	if len(raw) == 0 || len(raw) > 1<<20 || json.Unmarshal(raw, &document) != nil {
-		return nil, errors.New("calibration returned malformed bounded JSON")
+		return parsedCalibrationResult{}, errors.New("calibration returned malformed bounded JSON")
 	}
-	if document.Catalog.Version != 1 || len(document.Catalog.Profiles) == 0 || len(document.Catalog.Profiles) > 3 {
-		return nil, errors.New("calibration did not return a bounded reviewed catalog")
+	maxCatalogProfiles := 3
+	if mode == CalibrationModeQuick {
+		// Quick must return the complete bounded curated set so the UI can show
+		// every checked strategy. Legacy exhaustive imports remain capped at the
+		// small candidate list they historically exposed.
+		maxCatalogProfiles = MaxProfiles
+	}
+	if document.Catalog.Version != 1 || len(document.Catalog.Profiles) == 0 || len(document.Catalog.Profiles) > maxCatalogProfiles {
+		return parsedCalibrationResult{}, errors.New("calibration did not return a bounded reviewed catalog")
+	}
+	if mode == CalibrationModeQuick {
+		if len(document.Attempts) == 0 || len(document.Attempts) > MaxProfiles || document.EvidenceLevel != "path_verified" {
+			return parsedCalibrationResult{}, errCalibrationQuickEvidenceUnavailable
+		}
+		normalizedDomain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+		profileIDs := make(map[string]struct{}, len(document.Catalog.Profiles))
+		for _, profile := range document.Catalog.Profiles {
+			profileIDs[profile.ID] = struct{}{}
+		}
+		seenAttempts := make(map[string]struct{}, len(document.Attempts))
+		passCount := 0
+		for index := range document.Attempts {
+			attempt := &document.Attempts[index]
+			if attempt.ProfileID == "" || attempt.Target == "" || attempt.Protocol == "" || attempt.Target != normalizedDomain || !attempt.CleanupVerified {
+				return parsedCalibrationResult{}, errCalibrationQuickEvidenceUnavailable
+			}
+			if _, ok := profileIDs[attempt.ProfileID]; !ok {
+				return parsedCalibrationResult{}, errCalibrationQuickEvidenceUnavailable
+			}
+			if _, duplicate := seenAttempts[attempt.ProfileID]; duplicate {
+				return parsedCalibrationResult{}, errCalibrationQuickEvidenceUnavailable
+			}
+			seenAttempts[attempt.ProfileID] = struct{}{}
+			switch attempt.Result {
+			case "PASS":
+				if !attempt.PathVerified {
+					return parsedCalibrationResult{}, errCalibrationQuickEvidenceUnavailable
+				}
+				passCount++
+			case "FAIL", "TIMEOUT":
+				// A bounded strategy failure/timeout is still a valid attempt only
+				// when the runner proved that the request traversed the tested
+				// path. An infrastructure failure is the explicit exception below.
+				if !attempt.PathVerified {
+					return parsedCalibrationResult{}, errCalibrationQuickEvidenceUnavailable
+				}
+			case "INFRA_ERROR":
+				if strings.TrimSpace(attempt.ErrorCode) == "" && strings.TrimSpace(attempt.Error) == "" {
+					return parsedCalibrationResult{}, errCalibrationQuickEvidenceUnavailable
+				}
+			default:
+				return parsedCalibrationResult{}, errCalibrationQuickEvidenceUnavailable
+			}
+		}
+		if document.PathVerified != (passCount > 0) {
+			return parsedCalibrationResult{}, errCalibrationQuickEvidenceUnavailable
+		}
 	}
 	evidence := make(map[string]struct {
 		Tests       []string
@@ -351,7 +485,18 @@ func parseCalibrationResult(raw []byte) ([]CalibrationCandidate, error) {
 		}{Tests: append([]string(nil), value.Tests...), Occurrences: value.Occurrences}
 	}
 	result := make([]CalibrationCandidate, 0, len(document.Catalog.Profiles))
+	quickPass := make(map[string]bool)
+	if mode == CalibrationModeQuick {
+		for _, attempt := range document.Attempts {
+			if attempt.Result == "PASS" && attempt.PathVerified {
+				quickPass[attempt.ProfileID] = true
+			}
+		}
+	}
 	for _, profile := range document.Catalog.Profiles {
+		if mode == CalibrationModeQuick && !quickPass[profile.ID] {
+			continue
+		}
 		item := evidence[profile.ID]
 		result = append(result, CalibrationCandidate{
 			ProfileID: profile.ID, Provider: profile.Provider, ProviderVersion: profile.ProviderVersion,
@@ -365,7 +510,13 @@ func parseCalibrationResult(raw []byte) ([]CalibrationCandidate, error) {
 		}
 		return result[i].ProfileID < result[j].ProfileID
 	})
-	return result, nil
+	evidenceLevel := document.EvidenceLevel
+	if evidenceLevel == "" {
+		// Legacy upstream output is useful as candidate evidence, but it is not
+		// path proof. Keep that distinction explicit in the API.
+		evidenceLevel = "curl_only"
+	}
+	return parsedCalibrationResult{Candidates: result, Attempts: append([]CalibrationAttempt(nil), document.Attempts...), EvidenceLevel: evidenceLevel, PathVerified: document.PathVerified}, nil
 }
 
 func calibrationRunID(request CalibrationRequest, now time.Time) string {
@@ -463,6 +614,7 @@ func calibrationLiveSnapshot(raw []byte) ([]string, []string) {
 
 func cloneCalibrationStatus(status CalibrationStatus) CalibrationStatus {
 	status.Candidates = append([]CalibrationCandidate(nil), status.Candidates...)
+	status.Attempts = append([]CalibrationAttempt(nil), status.Attempts...)
 	status.LogTail = append([]string(nil), status.LogTail...)
 	status.WorkingStrategies = append([]string(nil), status.WorkingStrategies...)
 	for index := range status.Candidates {
@@ -474,7 +626,17 @@ func cloneCalibrationStatus(status CalibrationStatus) CalibrationStatus {
 }
 
 func (r ExecCalibrationRunner) validatePaths() error {
-	for _, path := range []string{r.Script, r.Blockcheck, r.Config, r.RouterPolicyBin, r.NFQWSBin, r.ZapretInit, r.RuntimeDir, r.CatalogOut} {
+	return r.validatePathsFor(CalibrationModeExhaustive)
+}
+
+func (r ExecCalibrationRunner) validatePathsFor(mode CalibrationMode) error {
+	paths := []string{r.Config, r.RouterPolicyBin, r.NFQWSBin, r.ZapretInit, r.RuntimeDir, r.CatalogOut}
+	if mode == CalibrationModeQuick {
+		paths = append(paths, r.QuickScript)
+	} else {
+		paths = append(paths, r.Script, r.Blockcheck)
+	}
+	for _, path := range paths {
 		if path == "" || !filepath.IsAbs(path) || strings.ContainsRune(path, '\x00') {
 			return fmt.Errorf("calibration runner path is invalid")
 		}

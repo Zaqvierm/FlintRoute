@@ -182,6 +182,27 @@ func TestAutomaticDomainCommitRespectsRecoveryFence(t *testing.T) {
 	}
 }
 
+func TestAutomaticDomainCommitNeverRunsFullApplyWhileRouteOnlyIsUnavailable(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, ts, _, _, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer ts.Close()
+	defer srv.Close()
+
+	result := srv.commitAutomaticDomain(context.Background(), planner.DomainCheck{
+		Domain: "verified.example", ETLDPlusOne: "verified.example", Category: "GEO_LOCKED", Confidence: 1,
+		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true},
+	})
+	if result.Applied || result.RolledBack || result.Reason != "automatic_route_assignment_unavailable" {
+		t.Fatalf("automatic discovery unexpectedly mutated or returned the wrong state: %+v", result)
+	}
+	if calls := fakeAdapterCallCount(fake); calls != 0 {
+		t.Fatalf("automatic discovery invoked the adapter despite route-only being unavailable: %d calls", calls)
+	}
+	if service := srv.currentConfig().ServiceForDomain("verified.example"); service != "" {
+		t.Fatalf("automatic discovery persisted a service without route-only support: %q", service)
+	}
+}
+
 func TestHealthSchedulerSkipsProbesWhenRecoveryIsUnsafe(t *testing.T) {
 	for _, status := range []string{"starting", "error"} {
 		t.Run(status, func(t *testing.T) {

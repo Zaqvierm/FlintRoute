@@ -136,6 +136,15 @@ func TestValidateBoundsRouteCheckFanout(t *testing.T) {
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "too many probe urls") {
 		t.Fatalf("probe fan-out limit was not enforced: %v", err)
 	}
+	cfg = validConfig()
+	cfg.GeoIP.Endpoints = []GeoIPEndpoint{
+		{Name: "country-a", Provider: "country_is", URL: "https://country-a.example/"},
+		{Name: "country-b", Provider: "ipwho_is", URL: "https://country-b.example/"},
+		{Name: "country-c", Provider: "future", URL: "https://country-c.example/"},
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "too many GeoIP endpoints") {
+		t.Fatalf("GeoIP fan-out limit was not enforced: %v", err)
+	}
 }
 
 func TestValidateRejectsPathThatIsAllowedAndForbidden(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/netip"
 	"strings"
@@ -131,12 +132,41 @@ func (s *Server) zapretCalibrationIPv4(ctx context.Context, domain string) ([]st
 		lastErr = fmt.Errorf("Smart DNS resolver %s returned no safe public IPv4 address", route.Tag)
 	}
 	if !hasSmartDNS {
-		return nil, nil
+		return lookupPublicCalibrationIPv4(ctx, domain)
 	}
 	if lastErr == nil {
 		lastErr = errors.New("configured Smart DNS resolvers could not resolve the calibration domain")
 	}
 	return nil, lastErr
+}
+
+func lookupPublicCalibrationIPv4(ctx context.Context, domain string) ([]string, error) {
+	lookupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	addresses, err := net.DefaultResolver.LookupNetIP(lookupCtx, "ip4", domain)
+	if err != nil {
+		return nil, fmt.Errorf("system DNS could not resolve the calibration domain: %w", err)
+	}
+	result := make([]string, 0, 4)
+	seen := make(map[string]struct{}, len(addresses))
+	for _, address := range addresses {
+		if !address.Is4() || !netpolicy.PublicResolverAddr(address) {
+			continue
+		}
+		value := address.String()
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+		if len(result) == 4 {
+			break
+		}
+	}
+	if len(result) == 0 {
+		return nil, errors.New("system DNS returned no safe public IPv4 address")
+	}
+	return result, nil
 }
 
 func (s *Server) verifiedCalibrationNetworkFingerprint() (string, error) {

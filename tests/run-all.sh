@@ -30,10 +30,11 @@ else
 fi
 ./dist/router-policy validate-config >/tmp/router-policy-validate.json
 ./dist/router-policy candidates observed.example automatic >/tmp/router-policy-candidates.json
-sh scripts/calibrate-zapret.sh --dry-run --domain observed.example --bundle-id auto-observed \
+sh scripts/calibrate-zapret.sh --dry-run --mode exhaustive --domain observed.example --bundle-id auto-observed \
   --network-fingerprint "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
   --blockcheck /opt/zapret/blockcheck.sh >/tmp/router-policy-zapret-calibration.json
 sh tests/zapret-calibration-runtime.sh
+sh tests/zapret-quick-contract.sh
 sh tests/nft-transition-namespace.sh
 ./dist/router-policy subscription-normalize tests/sample-subscription-array.json >/tmp/router-policy-subscription-summary.json
 ./dist/router-policy subscription-routes tests/sample-subscription-array.json >/tmp/router-policy-subscription-routes.json

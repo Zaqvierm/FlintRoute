@@ -186,6 +186,23 @@ export type ZapretCalibrationCandidate = {
   occurrences?: number;
 };
 
+export type ZapretCalibrationAttempt = {
+  profile_id: string;
+  target: string;
+  protocol: string;
+  result: 'PASS' | 'FAIL' | 'TIMEOUT' | 'INFRA_ERROR' | string;
+  path_verified: boolean;
+  cleanup_verified: boolean;
+  route_evidence?: string;
+  nfqueue_packets?: number;
+  nfqueue_counter_delta?: number;
+  latency_ms?: number;
+  verification_duration_ms?: number;
+  http_status?: number;
+  error_code?: string;
+  error?: string;
+};
+
 export type ZapretCalibrationStatus = {
   id?: string;
   state: 'idle' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unavailable';
@@ -199,6 +216,9 @@ export type ZapretCalibrationStatus = {
   checks_completed?: number;
   checks_total?: number;
   candidates?: ZapretCalibrationCandidate[];
+  attempts?: ZapretCalibrationAttempt[];
+  evidence_level?: 'none' | 'curl_only' | 'path_verified' | string;
+  path_verified?: boolean;
   recommended_profile_id?: string;
   log_tail?: string[];
   working_strategies?: string[];

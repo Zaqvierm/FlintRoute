@@ -71,3 +71,22 @@ func TestExternalCountrySingleOrPrivateSourceIsUnverified(t *testing.T) {
 		t.Fatalf("single safe country source was accepted: %v", err)
 	}
 }
+
+func TestExternalCountryRejectsUnvalidatedEndpointFanout(t *testing.T) {
+	cfg := &config.Config{GeoIP: config.GeoIP{Endpoints: []config.GeoIPEndpoint{
+		{Name: "country-a", Provider: "country_is", URL: "https://country-a.example/"},
+		{Name: "country-b", Provider: "ipwho_is", URL: "https://country-b.example/"},
+		{Name: "country-c", Provider: "future", URL: "https://country-c.example/"},
+	}}}
+	seen := 0
+	_, _, _, err := probeExternalIPWithFetcher(context.Background(), cfg, config.Route{Type: "vless", Tag: "server-a"}, func(context.Context, config.Route, string) (string, error) {
+		seen++
+		return `{"ip":"8.8.8.8","country":"DE"}`, nil
+	})
+	if err == nil || err.Error() != "egress_country_sources_exceed_bound:2" {
+		t.Fatalf("unvalidated GeoIP fan-out was not rejected: %v", err)
+	}
+	if seen != 0 {
+		t.Fatalf("probe started remote requests before enforcing the bound: %d", seen)
+	}
+}

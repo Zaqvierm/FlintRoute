@@ -120,14 +120,26 @@ func discoveryHTTPStatus(result probe.RouteResult) string {
 	return ""
 }
 
-func checkVerificationDuration(check planner.DomainCheck, startedAt time.Time) int64 {
+func checkVerificationDuration(check planner.DomainCheck) int64 {
+	if check.Cached {
+		// A cache hit does not run a verification job. Reuse the stored full
+		// decision duration, falling back to the selected candidate's legacy
+		// evidence; never report cache lookup time as path verification.
+		if check.VerificationDurationMS > 0 {
+			return check.VerificationDurationMS
+		}
+		if check.Selected != nil {
+			return check.Selected.VerificationDurationMS
+		}
+		return 0
+	}
 	if check.VerificationDurationMS > 0 {
 		return check.VerificationDurationMS
 	}
-	if startedAt.IsZero() {
-		return 0
-	}
-	return time.Since(startedAt).Milliseconds()
+	// A missing planner measurement is not permission to substitute the
+	// caller's wall-clock time. That would include queue/cache/orchestration
+	// delay and mislabel it as path verification duration.
+	return 0
 }
 
 type discoveryControlState struct {
@@ -143,18 +155,24 @@ type discoveryControlState struct {
 }
 
 type discoverySuggestion struct {
-	Domain              string    `json:"domain"`
-	Category            string    `json:"category"`
-	Route               string    `json:"route,omitempty"`
-	RouteType           string    `json:"route_type,omitempty"`
-	PathVerified        bool      `json:"path_verified"`
-	Confidence          float64   `json:"confidence"`
-	Reason              string    `json:"reason"`
-	QueryType           string    `json:"query_type"`
-	ObservedAt          time.Time `json:"observed_at"`
-	ClassificationState string    `json:"classification_state"`
-	ProbeState          string    `json:"probe_state"`
-	PolicyState         string    `json:"policy_state"`
+	Domain       string `json:"domain"`
+	Category     string `json:"category"`
+	Route        string `json:"route,omitempty"`
+	RouteType    string `json:"route_type,omitempty"`
+	PathVerified bool   `json:"path_verified"`
+	// Confidence is retained as a compatibility alias for route-decision
+	// confidence. New clients must use the explicit fields below.
+	Confidence               float64   `json:"confidence"`
+	DecisionConfidence       float64   `json:"decision_confidence"`
+	ClassificationConfidence float64   `json:"classification_confidence"`
+	ClassificationSource     string    `json:"classification_source,omitempty"`
+	ClassificationEvidence   string    `json:"classification_evidence,omitempty"`
+	Reason                   string    `json:"reason"`
+	QueryType                string    `json:"query_type"`
+	ObservedAt               time.Time `json:"observed_at"`
+	ClassificationState      string    `json:"classification_state"`
+	ProbeState               string    `json:"probe_state"`
+	PolicyState              string    `json:"policy_state"`
 }
 
 func plannerProbeState(check planner.DomainCheck) string {
@@ -178,7 +196,9 @@ func plannerProbeState(check planner.DomainCheck) string {
 		}
 		return "verifying"
 	case "NO_SAFE_ROUTE":
-		return "no_safe_route"
+		// A bare status is not enough evidence for terminal exhaustion. The
+		// planner must explicitly mark the candidate set terminal first.
+		return "verifying"
 	case "VERIFYING":
 		return "verifying"
 	default:
@@ -384,13 +404,15 @@ func (s *Server) saveDiscoverySuggestion(observation discovery.Observation, chec
 	probeState := plannerProbeState(check)
 	suggestion := discoverySuggestion{
 		Domain: check.Domain, Category: check.Category, Confidence: check.Confidence,
+		DecisionConfidence: check.Confidence, ClassificationConfidence: check.ClassificationConfidence,
+		ClassificationSource: check.ClassificationSource, ClassificationEvidence: check.ClassificationEvidence,
 		QueryType: observation.QueryType, ObservedAt: s.discoveryNow(), Reason: "verification is still in progress",
 		ClassificationState: "unresolved", ProbeState: probeState, PolicyState: "suggested",
 	}
 	if probeState == "no_safe_route" {
 		suggestion.Reason = "no verified route selected"
 	}
-	if check.Confidence > 0 {
+	if check.ClassificationConfidence > 0 || (check.ClassificationEvidence != "" && check.ClassificationEvidence != "none" && check.ClassificationEvidence != "unavailable") || check.Category == "GEO_LOCKED" || check.Category == "TSPU_RESTRICTED" {
 		suggestion.ClassificationState = "classified"
 	}
 	if check.Selected != nil {

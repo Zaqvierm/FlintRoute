@@ -53,7 +53,7 @@ esac
 SH
 cat >"$TMP/blockcheck.sh" <<'SH'
 #!/bin/sh
-[ "${SCANLEVEL:-}" = "quick" ]
+[ "${SCANLEVEL:-}" = "force" ]
 [ "${SKIP_DNSCHECK:-}" = "1" ]
 [ "${DNSCACHE_observed_example_4_COUNT:-}" = "2" ]
 [ "${DNSCACHE_observed_example_4_0:-}" = "203.0.113.10" ]
@@ -84,7 +84,7 @@ ZAPRET_CATALOG_OUT="$TMP/catalog/catalog.json" \
 BLOCKCHECK_TIMEOUT=30 \
 ZAPRET_CALIBRATION_IPV4=203.0.113.10,203.0.113.11 \
 ROUTE_STATE="$TMP/routes.state" RULE_STATE="$TMP/rules.state" \
-  sh "$ROOT/scripts/calibrate-zapret.sh" --apply \
+  sh "$ROOT/scripts/calibrate-zapret.sh" --apply --mode exhaustive \
     --domain observed.example \
     --bundle-id auto-observed \
     --network-fingerprint sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
@@ -109,7 +109,7 @@ if PATH="$BIN:$PATH" \
   ZAPRET_CATALOG_OUT="$TMP/catalog/catalog.json" \
   ROUTE_STATE="$TMP/routes.state" RULE_STATE="$TMP/rules.state" \
   BLOCKCHECK_TIMEOUT=30 \
-  sh "$ROOT/scripts/calibrate-zapret.sh" --apply \
+  sh "$ROOT/scripts/calibrate-zapret.sh" --apply --mode exhaustive \
     --domain observed.example \
     --bundle-id auto-observed \
     --network-fingerprint sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
@@ -137,7 +137,7 @@ if PATH="$BIN:$PATH" \
   ZAPRET_CATALOG_OUT="$TMP/catalog/catalog.json" \
   ROUTE_STATE="$TMP/routes.state" RULE_STATE="$TMP/rules.state" \
   BLOCKCHECK_TIMEOUT=30 \
-  sh "$ROOT/scripts/calibrate-zapret.sh" --apply \
+  sh "$ROOT/scripts/calibrate-zapret.sh" --apply --mode exhaustive \
     --domain observed.example \
     --bundle-id auto-observed \
     --network-fingerprint sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
@@ -164,7 +164,7 @@ if PATH="$BIN:$PATH" \
   ZAPRET_CATALOG_OUT="$TMP/catalog/catalog.json" \
   ROUTE_STATE="$TMP/routes.state" RULE_STATE="$TMP/rules.state" \
   BLOCKCHECK_TIMEOUT=30 \
-  sh "$ROOT/scripts/calibrate-zapret.sh" --apply \
+  sh "$ROOT/scripts/calibrate-zapret.sh" --apply --mode exhaustive \
     --domain observed.example \
     --bundle-id auto-observed \
     --network-fingerprint sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
@@ -197,6 +197,18 @@ if PATH="$BIN:$PATH" TIMEOUT_BIN=fake-timeout BLOCKCHECK_TIMEOUT=21601 \
 fi
 grep -F 'blockcheck timeout must be between 1 and 21600 seconds' "$TMP/invalid-timeout.log" >/dev/null
 
+# The upstream script is never a quick curated runner.  A direct quick apply
+# must fail closed instead of silently widening the search space.
+if PATH="$BIN:$PATH" TIMEOUT_BIN=fake-timeout \
+  sh "$ROOT/scripts/calibrate-zapret.sh" --apply --mode quick \
+    --domain observed.example --bundle-id auto-observed \
+    --network-fingerprint sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --blockcheck "$TMP/blockcheck.sh" >"$TMP/quick.txt" 2>"$TMP/quick.log"; then
+  echo "upstream script unexpectedly accepted quick mode" >&2
+  exit 1
+fi
+grep -F 'quick calibration requires the separate curated dataplane evidence runner' "$TMP/quick.log" >/dev/null
+
 
 # A provider script may daemonize nfqws before timing out.  The calibration
 # finally path must reap that exact executable rather than leaving PPid=1.
@@ -221,7 +233,7 @@ if PATH="$BIN:$PATH" \
   BLOCKCHECK_TIMEOUT=30 \
   ORPHAN_NFQWS="$TMP/nfqws" \
   ORPHAN_PID_FILE="$TMP/orphan.pid" \
-  sh "$ROOT/scripts/calibrate-zapret.sh" --apply \
+  sh "$ROOT/scripts/calibrate-zapret.sh" --apply --mode exhaustive \
     --domain observed.example \
     --bundle-id auto-observed \
     --network-fingerprint sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \

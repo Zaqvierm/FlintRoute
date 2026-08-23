@@ -609,8 +609,10 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 		}
 		s.publishEvent(Event{Type: "route.decision", Severity: "info", ReasonCode: "domain_observed_only", Details: map[string]any{
 			"domain": observation.Domain, "category": category, "status": "OBSERVED", "confidence": 0,
+			"classification_confidence": match.Confidence, "decision_confidence": 0,
 			"tspu_status": match.Status, "query_type": observation.QueryType, "mode": mode,
-			"classification": "unknown", "classification_state": "unresolved", "probe_state": "not_run_observe_only",
+			"classification": category, "classification_source": match.Source, "classification_evidence": match.Evidence,
+			"classification_state": "unresolved", "probe_state": "not_run_observe_only",
 			"policy_state": "observed", "service_name": observation.Domain,
 		}})
 		return
@@ -647,24 +649,26 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 	}
 	details := map[string]any{
 		"domain": check.Domain, "category": check.Category, "status": check.Status,
-		"confidence": check.Confidence, "tspu_status": check.TSPUStatus, "query_type": observation.QueryType, "mode": mode,
+		"confidence": check.Confidence, "decision_confidence": check.Confidence,
+		"tspu_status": check.TSPUStatus, "query_type": observation.QueryType, "mode": mode,
 		"classification_confidence": check.ClassificationConfidence,
 		"classification_source":     check.ClassificationSource,
 		"classification_evidence":   check.ClassificationEvidence,
 		"verification_state":        check.VerificationState,
+		"verification_cached":       check.Cached,
 		"service":                   check.Service, "decision_duration_ms": s.discoveryNow().Sub(startedAt).Milliseconds(),
-		"verification_duration_ms": checkVerificationDuration(check, startedAt),
+		"verification_duration_ms": checkVerificationDuration(check),
 		"candidates":               discoveryCandidateDetails(check.Results),
 	}
 	selectedType := ""
 	if check.Selected != nil {
 		selectedType = check.Selected.RouteType
 	}
-	classification, displayName := observationClassification(check.Service, check.Category, selectedType, check.Confidence)
+	classification, displayName := observationClassification(check.Service, check.Category, selectedType, check.ClassificationConfidence)
 	details["classification"] = classification
 	details["service_name"] = displayName
 	details["classification_state"] = "unresolved"
-	if check.Confidence > 0 {
+	if check.ClassificationConfidence > 0 || (check.ClassificationEvidence != "" && check.ClassificationEvidence != "none" && check.ClassificationEvidence != "unavailable") || check.Category == "GEO_LOCKED" || check.Category == "TSPU_RESTRICTED" {
 		details["classification_state"] = "classified"
 	}
 	details["probe_state"] = plannerProbeState(check)
@@ -766,50 +770,16 @@ func observationClassification(service, category, selectedType string, confidenc
 }
 
 func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.DomainCheck) automaticCommitResult {
+	// The route-only automatic assignment backend is not implemented yet. Never
+	// fall back to a full ChangeSet/apply from a DNS observation: that would
+	// rebuild dataplane topology from a background event. Verified decisions
+	// remain suggestions until an explicit bounded route-only mutation exists.
+	_ = ctx
+	_ = check
 	if failure := s.mutationFailureNow(); failure != nil {
 		return automaticCommitResult{Reason: failure.Message}
 	}
-	service, id, ok := automaticServiceForDecision(check)
-	if !ok {
-		return automaticCommitResult{Reason: "decision_not_eligible"}
-	}
-	operations := []ChangeOp{{Type: "set", Path: "/services/" + escapeJSONPointer(id), Value: service}}
-	if err := validateDiscoveryOperations(operations); err != nil {
-		return automaticCommitResult{Reason: err.Error()}
-	}
-	active := s.currentConfig()
-	if active.ServiceForDomain(check.Domain) != "" {
-		return automaticCommitResult{Reason: "domain_already_configured"}
-	}
-	s.mu.Lock()
-	baseVersion := s.configVersion
-	s.mu.Unlock()
-	change, err := s.createDraftChange("Add discovered domain policy", "Apply verified automatic route decision", baseVersion, operations, "domain-discovery")
-	if err != nil {
-		if errors.Is(err, errBaseVersionConflict) {
-			return automaticCommitResult{Reason: "base_version_conflict"}
-		}
-		return automaticCommitResult{Reason: err.Error()}
-	}
-	change, failure := s.validateChangeSet(change)
-	if failure == nil {
-		change, failure = s.applyChangeSet(withAutomaticManagementProof(ctx), change)
-	}
-	if failure == nil && change.State != "awaiting_confirmation" {
-		failure = conflict("automatic_apply_unverified", "automatic domain policy did not reach confirmation")
-	}
-	if failure == nil {
-		change, failure = s.confirmChangeSet(ctx, change)
-	}
-	if failure != nil {
-		rolledBack := change.State == "rolled_back" || change.State == "expired" || change.State == "failed"
-		if change.TransactionID != "" && change.State != "rolled_back" && change.State != "expired" {
-			rolled, rollbackFailure := s.rollbackChangeSet(context.WithoutCancel(ctx), change, false)
-			rolledBack = rollbackFailure == nil && (rolled.State == "rolled_back" || rolled.State == "expired" || rolled.State == "failed")
-		}
-		return automaticCommitResult{RolledBack: rolledBack, Reason: failure.Code}
-	}
-	return automaticCommitResult{Applied: true, Reason: "committed"}
+	return automaticCommitResult{Reason: "automatic_route_assignment_unavailable"}
 }
 
 func automaticServiceForDecision(check planner.DomainCheck) (config.Service, string, bool) {
@@ -1353,8 +1323,9 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 				status = "STALE_POLICY_MISMATCH"
 				confidence = 0
 			}
+			classificationConfidence := decision.ClassificationConfidence
 			classificationState := "unresolved"
-			if confidence > 0 || category == "GEO_LOCKED" || category == "TSPU_RESTRICTED" {
+			if classificationConfidence > 0 || category == "GEO_LOCKED" || category == "TSPU_RESTRICTED" {
 				classificationState = "classified"
 			}
 			probeState := "not_checked"
@@ -1372,27 +1343,31 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 			if discoveryMode == "suggest" {
 				policyState = "suggested"
 			}
-			classification, displayName := observationClassification(decision.Service, category, selectedType, confidence)
+			classification, displayName := observationClassification(decision.Service, category, selectedType, classificationConfidence)
 			items = append(items, map[string]any{
-				"id":                   decision.Service,
-				"display_name":         displayName,
-				"classification":       classification,
-				"category":             category,
-				"domains":              []string{decision.Domain},
-				"allowed_paths":        allowedPaths,
-				"forbidden_paths":      forbiddenPaths,
-				"selected_route_tag":   selectedRoute,
-				"selected_route_type":  selectedType,
-				"status":               status,
-				"confidence":           confidence,
-				"checked_at":           decision.CheckedAt,
-				"expires_at":           decision.ExpiresAt,
-				"source":               "automatic",
-				"applied":              false,
-				"kind":                 "discovery_observation",
-				"classification_state": classificationState,
-				"probe_state":          probeState,
-				"policy_state":         policyState,
+				"id":                        decision.Service,
+				"display_name":              displayName,
+				"classification":            classification,
+				"category":                  category,
+				"domains":                   []string{decision.Domain},
+				"allowed_paths":             allowedPaths,
+				"forbidden_paths":           forbiddenPaths,
+				"selected_route_tag":        selectedRoute,
+				"selected_route_type":       selectedType,
+				"status":                    status,
+				"confidence":                confidence,
+				"decision_confidence":       confidence,
+				"classification_confidence": classificationConfidence,
+				"classification_source":     decision.ClassificationSource,
+				"classification_evidence":   decision.ClassificationEvidence,
+				"checked_at":                decision.CheckedAt,
+				"expires_at":                decision.ExpiresAt,
+				"source":                    "automatic",
+				"applied":                   false,
+				"kind":                      "discovery_observation",
+				"classification_state":      classificationState,
+				"probe_state":               probeState,
+				"policy_state":              policyState,
 			})
 		}
 	}

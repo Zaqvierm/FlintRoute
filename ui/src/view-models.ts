@@ -114,6 +114,8 @@ export type DecisionCard = {
   probeState: string;
   policyState: string;
   status: string;
+  classificationConfidence?: number;
+  decisionConfidence?: number;
   durationMS?: number;
   probeLatencyMS?: number;
   routeLatencyMS?: number;
@@ -124,6 +126,8 @@ export type DecisionCard = {
   details: Record<string, unknown>;
   raw: EventItem;
 };
+
+export type VerificationPresentation = 'verified' | 'checking' | 'no_safe_route' | 'observed' | 'unverified';
 
 const decisionTypes = new Set([
   'route.decision',
@@ -213,11 +217,14 @@ export function humanStatus(value: unknown): string {
 }
 
 export function statusTone(value: unknown): Tone {
-  const raw = textValue(value, '').toLowerCase();
+  const raw = textValue(value, '').toLowerCase().replace(/[._-]+/g, ' ').trim();
+  // Check negative/uncertain states before positive substrings.  Otherwise
+  // `not_configured`, `unverified`, and `no_verified_route` all contain
+  // `configured`/`verified` and were incorrectly painted green.
+  if (!raw || /unavailable|not configured|not installed|absent|disabled|unsupported/.test(raw)) return 'muted';
+  if (/fail|error|blocked|dropped|rollback|critical|offline|no safe route/.test(raw)) return 'bad';
+  if (/warn|degrad|stale|unverified|pending|await|unknown|requires device|no verified route/.test(raw)) return 'warn';
   if (/ok|ready|running|online|verified|healthy|committed|configured|200/.test(raw)) return 'ok';
-  if (/fail|error|blocked|dropped|rollback|critical|offline/.test(raw)) return 'bad';
-  if (/warn|degrad|stale|unverified|pending|await|unknown/.test(raw)) return 'warn';
-  if (!raw || /unavailable|not.configured|disabled|unsupported/.test(raw)) return 'muted';
   return 'info';
 }
 
@@ -240,6 +247,11 @@ function bool(details: Record<string, unknown>, keys: string[]): boolean {
 }
 
 export function isDecisionEvent(event: EventItem): boolean {
+  // Administrative lifecycle events may carry a domain/route in their
+  // details, but they must remain in the engineering journal. Do this check
+  // before the shape-based fallback below so a transaction event cannot leak
+  // into the user-facing decision stream.
+  if (/^(system|change|admin|security)\./.test(event.type)) return false;
   if (decisionTypes.has(event.type)) return true;
   const details = asRecord(event.details);
   return Boolean(event.domain || details.domain) && Boolean(event.route || details.route || details.selected_route);
@@ -258,15 +270,18 @@ export function toDecisionCard(event: EventItem): DecisionCard {
   const status = first(details, ['final_status', 'http_status', 'status', 'result'], event.reason_code || event.type);
   const duration = Number(details.decision_duration_ms ?? details.duration_ms);
   const explicitRouteLatencyAvailable = typeof details.route_latency_available === 'boolean' || typeof details.route_latency_available === 'string';
-  const rawRouteLatency = details.route_latency_ms ?? details.probe_latency_ms;
+  // `probe_latency_ms` was used by older payloads for the complete probe
+  // duration. It is not safe to infer route latency from that field. Only an
+  // explicit route_latency_ms (and, when present, its availability bit) is
+  // allowed to reach scoring/presentation.
+  const rawRouteLatency = details.route_latency_ms;
   const inferredRouteLatency = Number(rawRouteLatency);
-  const routeLatencyAvailable = explicitRouteLatencyAvailable
-    ? bool(details, ['route_latency_available'])
-    : Number.isFinite(inferredRouteLatency) && inferredRouteLatency > 0;
-  const probeLatency = routeLatencyAvailable
-    ? Number(rawRouteLatency ?? details.latency_ms)
-    : NaN;
+  const hasMeasuredRouteLatency = Number.isFinite(inferredRouteLatency) && inferredRouteLatency > 0;
+  const routeLatencyAvailable = hasMeasuredRouteLatency && (!explicitRouteLatencyAvailable || bool(details, ['route_latency_available']));
+  const probeLatency = routeLatencyAvailable ? inferredRouteLatency : NaN;
   const verificationDuration = Number(details.verification_duration_ms ?? details.path_verification_duration_ms ?? duration);
+  const classificationConfidence = Number(details.classification_confidence);
+  const decisionConfidence = Number(details.decision_confidence ?? details.confidence);
   return {
     id: `${event.time}:${event.id}`,
     time: event.time,
@@ -285,6 +300,8 @@ export function toDecisionCard(event: EventItem): DecisionCard {
     probeState: first(details, ['probe_state'], 'unverified'),
     policyState: first(details, ['policy_state'], 'observed'),
     status: humanStatus(status),
+    classificationConfidence: Number.isFinite(classificationConfidence) ? classificationConfidence : undefined,
+    decisionConfidence: Number.isFinite(decisionConfidence) ? decisionConfidence : undefined,
     durationMS: Number.isFinite(duration) ? duration : undefined,
     probeLatencyMS: Number.isFinite(probeLatency) ? probeLatency : undefined,
     routeLatencyMS: Number.isFinite(probeLatency) ? probeLatency : undefined,
@@ -295,6 +312,36 @@ export function toDecisionCard(event: EventItem): DecisionCard {
     details,
     raw: event
   };
+}
+
+/**
+ * A missing PathVerified bit is not, by itself, proof that every candidate
+ * failed.  Keep the user-facing state aligned with the planner state machine:
+ * VERIFYING is in progress, observe-only is passive, and NO_SAFE_ROUTE is
+ * terminal only after the planner reports exhaustion.
+ */
+export function decisionVerificationPresentation(decision: Pick<DecisionCard, 'verified' | 'probeState' | 'policyState' | 'details'>): VerificationPresentation {
+  const probeState = textValue(decision.probeState, '').toLowerCase().replace(/[._-]+/g, ' ');
+  const verificationState = textValue(decision.details.verification_state, '').toLowerCase().replace(/[._-]+/g, ' ');
+  if (['verifying', 'in progress', 'waiting for verification', 'waiting'].includes(probeState) || verificationState === 'in progress') return 'checking';
+  // NO_SAFE_ROUTE is terminal only with an explicit planner terminal state.
+  // A status string or a malformed probe_state alone is not exhaustion
+  // evidence; keep it visibly in verification rather than lying to the user.
+  if (verificationState === 'terminal no safe route') return 'no_safe_route';
+  if (probeState === 'no safe route') return 'checking';
+  if (probeState === 'not run observe only' || verificationState === 'not run observe only') return 'observed';
+  if (decision.verified) return 'verified';
+  return 'unverified';
+}
+
+export function verificationPresentationLabel(presentation: VerificationPresentation): string {
+  switch (presentation) {
+    case 'verified': return 'Путь подтверждён';
+    case 'checking': return 'Проверяется…';
+    case 'no_safe_route': return 'Безопасный маршрут не найден';
+    case 'observed': return 'Наблюдение — проверка не запускалась';
+    default: return 'Путь пока не подтверждён';
+  }
 }
 
 export function groupServices(items: unknown[]): Array<Record<string, unknown>> {
@@ -313,6 +360,10 @@ export function groupServices(items: unknown[]): Array<Record<string, unknown>> 
     const source = textValue(item.source, '');
     if (source) sources.add(source);
     const configured = source === 'configured' ? item : current;
+    // A configured policy and an automatic observation can share one service
+    // id. Keep policy fields from the configured item, but never discard the
+    // observation's independent confidence/evidence fields while grouping.
+    const evidence = source === 'configured' ? current : item;
     grouped.set(key, {
       ...current,
       ...configured,
@@ -321,7 +372,11 @@ export function groupServices(items: unknown[]): Array<Record<string, unknown>> 
       sources: [...sources].sort(),
       applied: current.applied === true || item.applied === true || source === 'configured',
       health: item.status ?? current.health ?? 'UNVERIFIED',
-      latest_checked_at: item.checked_at ?? current.latest_checked_at
+      latest_checked_at: item.checked_at ?? current.latest_checked_at,
+      classification_confidence: evidence.classification_confidence ?? current.classification_confidence,
+      classification_source: evidence.classification_source ?? current.classification_source,
+      classification_evidence: evidence.classification_evidence ?? current.classification_evidence,
+      decision_confidence: evidence.decision_confidence ?? current.decision_confidence
     });
   }
   return [...grouped.values()].sort((a, b) => textValue(a.id).localeCompare(textValue(b.id), 'ru'));

@@ -87,10 +87,20 @@ if [ "$mode" = "dry-run" ]; then
   echo "timeout_seconds=$BLOCKCHECK_TIMEOUT"
   echo "domain=$domain"
   echo "bundle_id=$bundle_id"
-  echo "would_run_upstream_blockcheck=$blockcheck_script"
+  if [ "$calibration_mode" = "quick" ]; then
+    echo "quick_requires_curated_runner=true"
+    echo "would_run_upstream_blockcheck=false"
+  else
+    echo "would_run_upstream_blockcheck=$blockcheck_script"
+  fi
   echo "would_store_top_candidates=$CATALOG_OUT"
   echo "would_not_activate_candidate=true"
   exit 0
+fi
+
+if [ "$calibration_mode" = "quick" ]; then
+  echo "quick calibration requires the separate curated dataplane evidence runner; upstream blockcheck is exhaustive-only" >&2
+  exit 78
 fi
 
 [ "$(id -u)" = "0" ] || { echo "Zapret calibration requires root" >&2; exit 1; }

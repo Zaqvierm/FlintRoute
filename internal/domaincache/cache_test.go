@@ -275,6 +275,20 @@ func testDecision(now time.Time, route, routeType string) Decision {
 	}
 }
 
+func TestDecisionRejectsOutOfRangeClassificationConfidence(t *testing.T) {
+	store := openTestStore(t)
+	manager, err := New(store, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	decision := testDecision(now, "direct", "direct")
+	decision.ClassificationConfidence = 1.01
+	if _, err := manager.Save("example.com", decision); err == nil {
+		t.Fatal("out-of-range classification confidence was accepted")
+	}
+}
+
 type failingStore struct {
 	entries  map[string][]byte
 	failSave bool

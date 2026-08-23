@@ -916,6 +916,7 @@ dry_run() {
   echo "would_not_enable_services_without=--enable-services"
   echo "would_not_activate_without=--activate --yes"
   echo "would_install_zapret_calibration_runner=$PREFIX/scripts/calibrate-zapret.sh"
+  echo "would_install_zapret_quick_runner=$PREFIX/scripts/quick-zapret-check.sh"
 }
 
 if [ "${ROUTER_POLICY_INSTALL_LIB_ONLY:-0}" = "1" ]; then

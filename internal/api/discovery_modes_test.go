@@ -89,12 +89,38 @@ func TestDiscoveryCandidateDetailsExcludeProxySecrets(t *testing.T) {
 	}
 }
 
+func TestCachedVerificationDurationUsesStoredEvidence(t *testing.T) {
+	check := planner.DomainCheck{
+		Cached: true, VerificationDurationMS: 812,
+		Selected: &probe.RouteResult{VerificationDurationMS: 731},
+	}
+	if got := checkVerificationDuration(check); got != 812 {
+		t.Fatalf("cached decision duration=%d, want full stored evidence 812", got)
+	}
+	check.VerificationDurationMS = 0
+	if got := checkVerificationDuration(check); got != 731 {
+		t.Fatalf("cached legacy decision duration=%d, want selected evidence 731", got)
+	}
+	if got := checkVerificationDuration(planner.DomainCheck{Cached: true}); got != 0 {
+		t.Fatalf("cached decision without selected evidence duration=%d, want 0", got)
+	}
+	if got := checkVerificationDuration(planner.DomainCheck{VerificationState: "verified"}); got != 0 {
+		t.Fatalf("missing planner duration=%d, want 0", got)
+	}
+}
+
 func TestPlannerProbeStateNeverTreatsVerificationAsNoSafeRoute(t *testing.T) {
 	if got := plannerProbeState(planner.DomainCheck{Status: "VERIFYING", VerificationState: "in_progress"}); got != "verifying" {
 		t.Fatalf("in-progress check mapped to %q", got)
 	}
 	if got := plannerProbeState(planner.DomainCheck{Status: "NO_SAFE_ROUTE", VerificationState: "terminal_no_safe_route"}); got != "no_safe_route" {
 		t.Fatalf("terminal exhaustion mapped to %q", got)
+	}
+	if got := plannerProbeState(planner.DomainCheck{Status: "NO_SAFE_ROUTE"}); got != "verifying" {
+		t.Fatalf("unproven exhaustion mapped to %q", got)
+	}
+	if got := plannerProbeState(planner.DomainCheck{Status: "NO_SAFE_ROUTE", VerificationState: "corrupt"}); got != "verifying" {
+		t.Fatalf("corrupt exhaustion mapped to %q", got)
 	}
 	if got := plannerProbeState(planner.DomainCheck{Status: "SELECTED", VerificationState: "verified", Selected: &probe.RouteResult{PathVerified: true}}); got != "verified_candidate" {
 		t.Fatalf("verified check mapped to %q", got)
@@ -131,6 +157,24 @@ func TestDiscoverySuggestKeepsBoundedSuggestionWithoutApply(t *testing.T) {
 	}
 	if items[0].ClassificationState != "classified" || items[0].ProbeState != "verified_candidate" || items[0].PolicyState != "suggested" {
 		t.Fatalf("suggest mode mixed classification, probe and policy states: %+v", items[0])
+	}
+}
+
+func TestDiscoverySuggestionSeparatesClassificationAndDecisionConfidence(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, _ := newDiscoveryModeServer(t, "suggest", true, fake)
+	defer srv.Close()
+	srv.saveDiscoverySuggestion(discovery.Observation{Domain: "evidence.example", QueryType: "A"}, planner.DomainCheck{
+		Domain: "evidence.example", Category: "TSPU_RESTRICTED", Confidence: 1,
+		ClassificationConfidence: 0.42, ClassificationSource: "fixture", ClassificationEvidence: "curated_match",
+	})
+	items := srv.discoverySuggestions(10)
+	if len(items) != 1 {
+		t.Fatalf("suggestion count=%d", len(items))
+	}
+	item := items[0]
+	if item.DecisionConfidence != 1 || item.ClassificationConfidence != 0.42 || item.ClassificationSource != "fixture" || item.ClassificationEvidence != "curated_match" {
+		t.Fatalf("confidence fields were mixed or dropped: %+v", item)
 	}
 }
 

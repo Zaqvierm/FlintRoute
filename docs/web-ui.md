@@ -222,12 +222,18 @@ Zapret, TG WS Proxy, Smart DNS и subscription pool ещё не настроен
 
 ### Zapret: quick vs exhaustive
 
-UI exposes two explicit calibration modes. `quick` uses the pinned upstream
-`SCANLEVEL=quick` with a five-minute default budget. `exhaustive` uses
-`SCANLEVEL=force`, requires a separate confirmation, and may run for up to six
-hours. The current pinned upstream does not provide a reliable fixed
-"21-strategy" catalog, so the UI does not invent that number. Both modes run
-one worker because nft/NFQUEUE/process resources are shared; candidates remain
-draft evidence until a separate ChangeSet activates them. Upstream curl success
-is path evidence for the selected target, not a universal browser/client
-guarantee.
+UI exposes two explicit calibration modes. `quick` runs the four built-in
+curated profiles through the pinned nfqws binary with a five-minute bounded
+budget and requires per-attempt NFQUEUE/path and cleanup evidence.
+`exhaustive` uses the pinned upstream `SCANLEVEL=force`, requires a separate
+confirmation, and may run for up to six hours. The current upstream does not
+provide a reliable fixed "21-strategy" catalog, so the UI does not invent that
+number. Both modes run one worker because nft/NFQUEUE/process resources are
+shared; candidates remain draft evidence until a separate ChangeSet activates
+them. Curl success alone is not enough: Quick requires an owned queue counter
+and process-group proof for the selected target.
+> **Calibration evidence note (2026-08-23):** quick calibration is allowed to
+> report PASS only from a curated runner that proves the tested nfqws/NFQUEUE
+> path and cleanup. If that runner is absent, the API returns
+> `zapret_quick_evidence_unavailable`; upstream blockcheck remains an explicit
+> exhaustive action. See `docs/zapret-calibration-design.md`.

@@ -3,6 +3,7 @@ package zapret
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -33,7 +34,7 @@ func (r *progressCalibrationRunner) Live() ([]string, []string) {
 }
 
 func TestCalibrationManagerCompletesWithBoundedCandidates(t *testing.T) {
-	raw := []byte(`{"catalog":{"version":1,"profiles":[{"id":"auto-a","provider":"nfqws-v1","provider_version":"72.13","binary_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","route_type":"zapret","ip_families":["ipv4"],"transports":["tcp"],"ports":[443],"queue":200,"safety":"reviewed","strategy_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","strategy":"--qnum=200"}],"bundles":[]},"evidence":[{"profile_id":"auto-a","tests":["https_tls12"],"occurrences":3}]}`)
+	raw := []byte(`{"catalog":{"version":1,"profiles":[{"id":"auto-a","provider":"nfqws-v1","provider_version":"72.13","binary_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","route_type":"zapret","ip_families":["ipv4"],"transports":["tcp"],"ports":[443],"queue":200,"safety":"reviewed","strategy_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","strategy":"--qnum=200"}],"bundles":[]},"evidence_level":"path_verified","path_verified":true,"attempts":[{"profile_id":"auto-a","target":"example.com","protocol":"https","result":"PASS","path_verified":true,"cleanup_verified":true,"nfqueue_packets":3}],"evidence":[{"profile_id":"auto-a","tests":["https_tls12"],"occurrences":3}]}`)
 	manager := NewCalibrationManager(calibrationRunnerFunc(func(context.Context, CalibrationRequest) ([]byte, error) { return raw, nil }))
 	manager.Now = func() time.Time { return time.Unix(100, 0).UTC() }
 	_, err := manager.Start(CalibrationRequest{Domain: "example.com", BundleID: "auto-example", NetworkFingerprint: "sha256:bad"})
@@ -49,7 +50,7 @@ func TestCalibrationManagerCompletesWithBoundedCandidates(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	status := manager.Status()
-	if status.State != "completed" || status.CandidateCount != 1 || !status.ActivationRequired || status.RecommendedProfileID != "auto-a" || status.Concurrency != 1 {
+	if status.State != "completed" || status.CandidateCount != 1 || !status.ActivationRequired || status.RecommendedProfileID != "auto-a" || status.Concurrency != 1 || !status.PathVerified || status.EvidenceLevel != "path_verified" || len(status.Attempts) != 1 {
 		t.Fatalf("unexpected status: %+v", status)
 	}
 }
@@ -84,6 +85,98 @@ func TestCalibrationModeRejectsUnknownAndMapsExhaustive(t *testing.T) {
 	}
 	if mode, err := NormalizeCalibrationMode(" exhaustive "); err != nil || mode != CalibrationModeExhaustive || mode.scanLevel() != "force" || mode.defaultTimeout() != 6*time.Hour {
 		t.Fatalf("unexpected exhaustive mode: mode=%q err=%v", mode, err)
+	}
+}
+
+func TestQuickCalibrationRejectsCurlOnlyEvidence(t *testing.T) {
+	raw := []byte(`{"catalog":{"version":1,"profiles":[{"id":"auto-a","provider":"nfqws-v1","provider_version":"72.13","strategy_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]},"evidence":[{"profile_id":"auto-a","occurrences":3}]}`)
+	if _, err := parseCalibrationEvidence(raw, CalibrationModeQuick, "example.com"); !errors.Is(err, errCalibrationQuickEvidenceUnavailable) {
+		t.Fatalf("quick must reject legacy curl-only evidence: %v", err)
+	}
+}
+
+func TestQuickCalibrationReturnsAllAttemptsButOnlyVerifiedPassesAsCandidates(t *testing.T) {
+	raw := []byte(`{"catalog":{"version":1,"profiles":[
+		{"id":"profile-a","provider":"nfqws","provider_version":"72.13","strategy_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+		{"id":"profile-b","provider":"nfqws","provider_version":"72.13","strategy_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+		{"id":"profile-c","provider":"nfqws","provider_version":"72.13","strategy_digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},
+		{"id":"profile-d","provider":"nfqws","provider_version":"72.13","strategy_digest":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}
+	]},"evidence_level":"path_verified","path_verified":true,
+		"attempts":[
+			{"profile_id":"profile-a","target":"example.com","protocol":"https","result":"PASS","path_verified":true,"cleanup_verified":true,"nfqueue_packets":4},
+			{"profile_id":"profile-b","target":"example.com","protocol":"https","result":"FAIL","path_verified":true,"cleanup_verified":true,"nfqueue_packets":2},
+			{"profile_id":"profile-c","target":"example.com","protocol":"https","result":"TIMEOUT","path_verified":true,"cleanup_verified":true,"nfqueue_packets":1},
+			{"profile_id":"profile-d","target":"example.com","protocol":"https","result":"INFRA_ERROR","path_verified":false,"cleanup_verified":true,"error_code":"nfqueue_unavailable"}
+		]}`)
+	parsed, err := parseCalibrationEvidence(raw, CalibrationModeQuick, "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Attempts) != 4 || len(parsed.Candidates) != 1 || parsed.Candidates[0].ProfileID != "profile-a" || !parsed.PathVerified {
+		t.Fatalf("unexpected quick result: %+v", parsed)
+	}
+}
+
+func TestQuickCalibrationAllFailuresRemainTerminalWithoutRecommendation(t *testing.T) {
+	raw := []byte(`{"catalog":{"version":1,"profiles":[
+		{"id":"profile-a","provider":"nfqws","provider_version":"72.13","strategy_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+		{"id":"profile-b","provider":"nfqws","provider_version":"72.13","strategy_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+	]},"evidence_level":"path_verified","path_verified":false,
+		"attempts":[
+			{"profile_id":"profile-a","target":"example.com","protocol":"https","result":"FAIL","path_verified":true,"cleanup_verified":true},
+			{"profile_id":"profile-b","target":"example.com","protocol":"https","result":"TIMEOUT","path_verified":true,"cleanup_verified":true}
+		]}`)
+	parsed, err := parseCalibrationEvidence(raw, CalibrationModeQuick, "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Attempts) != 2 || len(parsed.Candidates) != 0 || parsed.PathVerified {
+		t.Fatalf("all-failure quick run was overstated: %+v", parsed)
+	}
+}
+
+func TestQuickCalibrationRejectsUnboundOrDuplicateAttempts(t *testing.T) {
+	base := `{"catalog":{"version":1,"profiles":[{"id":"profile-a","provider":"nfqws","provider_version":"72.13","strategy_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]},"evidence_level":"path_verified","path_verified":true,"attempts":[%s]}`
+	for name, attempt := range map[string]string{
+		"unknown profile":   `{"profile_id":"profile-b","target":"example.com","protocol":"https","result":"PASS","path_verified":true,"cleanup_verified":true}`,
+		"duplicate profile": `{"profile_id":"profile-a","target":"example.com","protocol":"https","result":"PASS","path_verified":true,"cleanup_verified":true},{"profile_id":"profile-a","target":"example.com","protocol":"https","result":"FAIL","path_verified":true,"cleanup_verified":true}`,
+		"wrong target":      `{"profile_id":"profile-a","target":"other.example","protocol":"https","result":"PASS","path_verified":true,"cleanup_verified":true}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseCalibrationEvidence([]byte(fmt.Sprintf(base, attempt)), CalibrationModeQuick, "example.com"); !errors.Is(err, errCalibrationQuickEvidenceUnavailable) {
+				t.Fatalf("unsafe quick evidence accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestProductionRunnerDoesNotFallBackToUpstreamForQuick(t *testing.T) {
+	runner := ExecCalibrationRunner{Script: "/tmp/calibrate.sh", Blockcheck: "/tmp/blockcheck.sh"}
+	if _, err := runner.Run(context.Background(), CalibrationRequest{Mode: CalibrationModeQuick}); !errors.Is(err, errCalibrationQuickEvidenceUnavailable) {
+		t.Fatalf("quick unexpectedly fell back to upstream blockcheck: %v", err)
+	}
+}
+
+func TestProductionQuickRunnerRequiresManagedQueueBinding(t *testing.T) {
+	runner := ExecCalibrationRunner{
+		QuickScript: "/tmp/quick-zapret-check.sh", Config: "/tmp/config.json",
+		RouterPolicyBin: "/tmp/router-policy", NFQWSBin: "/tmp/nfqws",
+		ZapretInit: "/tmp/zapret-init", RuntimeDir: "/tmp/runtime", CatalogOut: "/tmp/catalog.json",
+	}
+	_, err := runner.Run(context.Background(), CalibrationRequest{Mode: CalibrationModeQuick})
+	if err == nil || !strings.Contains(err.Error(), "managed production NFQUEUE") {
+		t.Fatalf("quick runner must require production queue binding, got %v", err)
+	}
+}
+
+func TestExhaustiveLegacyEvidenceIsExplicitlyCurlOnly(t *testing.T) {
+	raw := []byte(`{"catalog":{"version":1,"profiles":[{"id":"auto-a","provider":"nfqws-v1","provider_version":"72.13","strategy_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]},"evidence":[{"profile_id":"auto-a","occurrences":3}]}`)
+	parsed, err := parseCalibrationEvidence(raw, CalibrationModeExhaustive, "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.EvidenceLevel != "curl_only" || parsed.PathVerified {
+		t.Fatalf("legacy exhaustive evidence was overstated: %+v", parsed)
 	}
 }
 
@@ -132,14 +225,14 @@ func TestCalibrationCommandErrorClassifiesUpstreamTimeout(t *testing.T) {
 }
 
 func TestCalibrationStatusReportsLiveCompletedChecks(t *testing.T) {
-	runner := &progressCalibrationRunner{completed: 17, release: make(chan struct{}), logTail: []string{"checking strategy"}, working: []string{"strategy-a"}}
+	runner := &progressCalibrationRunner{completed: 2, release: make(chan struct{}), logTail: []string{"checking strategy"}, working: []string{"strategy-a"}}
 	manager := NewCalibrationManager(runner)
 	request := CalibrationRequest{Domain: "example.com", BundleID: "auto-example", NetworkFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 	if _, err := manager.Start(request); err != nil {
 		t.Fatal(err)
 	}
 	status := manager.Status()
-	if status.ChecksCompleted != 17 || status.ChecksTotal != 0 || len(status.LogTail) != 1 || len(status.WorkingStrategies) != 1 {
+	if status.ChecksCompleted != 2 || status.ChecksTotal != quickCuratedProfileCount || len(status.LogTail) != 1 || len(status.WorkingStrategies) != 1 {
 		t.Fatalf("unexpected live progress: %+v", status)
 	}
 	close(runner.release)

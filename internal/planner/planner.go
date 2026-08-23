@@ -156,6 +156,13 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 		result := prober.ProbeRoute(ctx, cfg, profile.domain, profile.name, service, route)
 		result = bindResultToCandidate(result, route, opts.ActiveRevision)
 		out.Results = append(out.Results, result)
+		if !probeResultTerminal(result) {
+			// RouteProber is synchronous: an in-progress or malformed result is
+			// not evidence that this candidate failed.  Do not let it fall
+			// through to the terminal NO_SAFE_ROUTE state.
+			allCandidatesTerminal = false
+			break
+		}
 		if opts.HealthTracker != nil {
 			opts.HealthTracker.Observe(result, cfg.Policy, optionNow(opts))
 		}
@@ -219,7 +226,9 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 		decision := domaincache.Decision{
 			Service: profile.name, Category: out.Category, TSPUStatus: out.TSPUStatus,
 			Status: out.Status, Reason: out.Reason, AdapterRevision: opts.ActiveRevision,
-			Confidence: out.Confidence, Results: out.Results, CheckedAt: out.CheckedAt,
+			Confidence: out.Confidence, ClassificationConfidence: out.ClassificationConfidence,
+			ClassificationSource: out.ClassificationSource, ClassificationEvidence: out.ClassificationEvidence,
+			VerificationDurationMS: out.VerificationDurationMS, Results: out.Results, CheckedAt: out.CheckedAt,
 			ExpiresAt: out.ExpiresAt, LastUsedAt: out.CheckedAt,
 		}
 		decision.SelectedRoute = out.Selected.Route
@@ -254,16 +263,10 @@ func resultRank(result probe.RouteResult) int64 {
 	}
 	latency := result.RouteLatencyMS
 	latencyKnown := result.RouteLatencyAvailable
-	if !latencyKnown && latency <= 0 && result.LatencyMS > 0 {
-		// Compatibility for older persisted/test evidence. New probe results
-		// set LatencyMS to zero whenever no route measurement exists.
-		latency = result.LatencyMS
-		latencyKnown = true
-	}
 	if !latencyKnown || latency <= 0 {
-		// Unknown latency must never beat a measured path merely because the
-		// old compatibility field is zero. Keep the candidate selectable, but
-		// rank it after paths with an honest network measurement.
+		// Unknown latency must never beat a measured path. Do not fall back to
+		// the legacy LatencyMS field: older evidence used that field for the
+		// whole verification job duration, which is not a network-path metric.
 		latency = 1_000_000_000
 	}
 	return int64(priority)*1_000_000 + latency
@@ -483,6 +486,21 @@ func verifiedSuccess(result probe.RouteResult) bool {
 	return result.Status == "OK" && result.PathVerified && result.ServiceOK
 }
 
+func probeResultTerminal(result probe.RouteResult) bool {
+	switch strings.ToUpper(strings.TrimSpace(result.Status)) {
+	case "", "VERIFYING", "PROBING", "WAITING", "WAITING_FOR_VERIFICATION", "IN_PROGRESS":
+		return false
+	case "FAIL", "OK", "DEGRADED", "NOT_CONFIGURED", "NOT_APPLICABLE", "UNVERIFIED",
+		"RU_EXIT", "REGION_BLOCK", "SUSPECTED_TSPU", "DROP", "TIMEOUT", "ERROR":
+		return true
+	default:
+		// Unknown evidence is malformed, not proof that the candidate reached
+		// a terminal result. Keep verification open instead of manufacturing
+		// NO_SAFE_ROUTE.
+		return false
+	}
+}
+
 func looksLikeTSPU(result probe.RouteResult) bool {
 	if result.SuspectedTSPU || result.Status == "SUSPECTED_TSPU" {
 		return true
@@ -504,10 +522,17 @@ func cachedCheck(decision domaincache.Decision, plan CandidatePlan, profile serv
 		Domain: profile.domain, ETLDPlusOne: profile.base, Service: decision.Service,
 		Category: decision.Category, TSPUStatus: decision.TSPUStatus, Cached: true,
 		Status: decision.Status, Reason: decision.Reason, Confidence: decision.Confidence,
-		VerificationState: "verified",
-		Results:           decision.Results, CheckedAt: decision.CheckedAt, ExpiresAt: decision.ExpiresAt,
+		VerificationState: "verified", VerificationDurationMS: decision.VerificationDurationMS,
+		Results: decision.Results, CheckedAt: decision.CheckedAt, ExpiresAt: decision.ExpiresAt,
 	}
 	out.ClassificationConfidence, out.ClassificationSource, out.ClassificationEvidence = classificationMetadata(profile, tspu.Match{Status: plan.TSPUStatus})
+	// Persisted classification evidence is independent from route-decision
+	// confidence. Keep the derived legacy value only for old cache records.
+	if decision.ClassificationConfidence > 0 || decision.ClassificationSource != "" || decision.ClassificationEvidence != "" {
+		out.ClassificationConfidence = decision.ClassificationConfidence
+		out.ClassificationSource = decision.ClassificationSource
+		out.ClassificationEvidence = decision.ClassificationEvidence
+	}
 	if decision.SelectedRoute == "" {
 		return out, false
 	}

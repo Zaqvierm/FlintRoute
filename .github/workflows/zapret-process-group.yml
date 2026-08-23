@@ -12,3 +12,5 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run Linux Zapret ownership and timeout cleanup harness
         run: sh tests/zapret-calibration-runtime.sh
+      - name: Run bounded Quick runner contract harness
+        run: sudo sh tests/zapret-quick-contract.sh
