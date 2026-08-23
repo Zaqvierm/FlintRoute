@@ -653,7 +653,10 @@ func TestUnknownAPIIsJSON404(t *testing.T) {
 
 func login(t *testing.T, base string) (*http.Client, string) {
 	t.Helper()
-	client := &http.Client{}
+	// Every API test request must be bounded. Without a client deadline a
+	// deliberately blocked adapter fixture can keep httptest.Server.Close
+	// waiting forever after a scheduler/race failure.
+	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Post(base+"/api/v1/auth/login", "application/json", strings.NewReader(`{"username":"admin","password":"CorrectHorse123!"}`))
 	if err != nil {
 		t.Fatal(err)

@@ -107,7 +107,7 @@ func (f *fakeAdapter) ValidateCandidate(_ context.Context, tx adapter.Transactio
 func (f *fakeAdapter) SnapshotCurrent(_ context.Context, tx adapter.Transaction) adapter.StepResult {
 	return f.result("snapshot_current", tx)
 }
-func (f *fakeAdapter) ApplyCandidate(_ context.Context, tx adapter.Transaction) adapter.StepResult {
+func (f *fakeAdapter) ApplyCandidate(ctx context.Context, tx adapter.Transaction) adapter.StepResult {
 	if f.applyStarted != nil {
 		select {
 		case f.applyStarted <- struct{}{}:
@@ -115,7 +115,15 @@ func (f *fakeAdapter) ApplyCandidate(_ context.Context, tx adapter.Transaction) 
 		}
 	}
 	if f.applyRelease != nil {
-		<-f.applyRelease
+		select {
+		case <-f.applyRelease:
+		case <-ctx.Done():
+			res := f.result("apply_candidate", tx)
+			res.Status = "CANCELED"
+			res.OK = false
+			res.Reason = ctx.Err().Error()
+			return res
+		}
 	}
 	res := f.result("apply_candidate", tx)
 	if res.OK {
