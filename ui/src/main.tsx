@@ -2005,7 +2005,7 @@ function Zapret({ routes, configVersion, role, mutationLocked, refresh, navigate
       ? 'Запускаю быстрый curated-тест Zapret. Каждая стратегия должна доказать путь через nfqws/NFQUEUE; без такого доказательства PASS не будет.'
       : 'Запускаю полный подбор Zapret. Он может занять до 6 часов; найденный профиль не включается автоматически.');
     try {
-      const result = await startZapretCalibration(testDomain.trim(), true, mode);
+      const result = await startZapretCalibration(testDomain.trim(), false, mode);
       setCalibration(result); setShowExhaustive(false); setMessage(mode === 'quick'
         ? 'Быстрый тест запущен. Если runtime не имеет curated evidence runner, FlintRoute остановит его без ложного PASS.'
         : 'Полный подбор запущен. Один worker сохраняет безопасное владение общими nft/NFQUEUE ресурсами.');

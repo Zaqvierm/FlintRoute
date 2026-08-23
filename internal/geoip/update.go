@@ -47,6 +47,7 @@ func Update(ctx context.Context, client *http.Client, sourceURL, databasePath st
 	if err != nil {
 		return UpdateResult{}, errors.New("GeoIP source is not allowed")
 	}
+	defer requestClient.CloseIdleConnections()
 	parsed, err := url.Parse(sourceURL)
 	if err != nil {
 		return UpdateResult{}, errors.New("GeoIP source is not allowed")

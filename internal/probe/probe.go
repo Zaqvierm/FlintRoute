@@ -1118,8 +1118,18 @@ func fetchTextViaRoute(ctx context.Context, cfg *config.Config, route config.Rou
 
 	var target netip.Addr
 	ips, _, _, err := resolveForRoute(ctx, cfg, route, host)
-	if err == nil && len(ips) > 0 {
-		target = ips[0]
+	if err != nil || len(ips) == 0 {
+		return "", errors.New("egress_endpoint_resolution_failed")
+	}
+	for _, candidate := range ips {
+		if !allowPrivateProbe(cfg) && isUnsafeAddr(candidate) {
+			continue
+		}
+		target = candidate
+		break
+	}
+	if !target.IsValid() {
+		return "", errors.New("ssrf_private_address_blocked")
 	}
 
 	dialer := &net.Dialer{Timeout: 8 * time.Second}

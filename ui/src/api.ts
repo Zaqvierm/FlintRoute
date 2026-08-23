@@ -501,7 +501,7 @@ export async function runVLESSSpeedTest(logicalID: string): Promise<{ server: an
 }
 export async function getZapret(signal?: AbortSignal): Promise<any> { return request('/zapret', { signal }); }
 export async function getZapretCalibration(signal?: AbortSignal): Promise<ZapretCalibrationStatus> { return request('/zapret/calibration', { signal }); }
-export async function startZapretCalibration(domain: string, allowManagedRestart = true, mode: 'quick' | 'exhaustive' = 'quick'): Promise<ZapretCalibrationStatus> {
+export async function startZapretCalibration(domain: string, allowManagedRestart = false, mode: 'quick' | 'exhaustive' = 'quick'): Promise<ZapretCalibrationStatus> {
   return request('/zapret/calibration', { method: 'POST', body: JSON.stringify({ domain, mode, allow_managed_restart: allowManagedRestart }) });
 }
 export async function cancelZapretCalibration(): Promise<ZapretCalibrationStatus> {

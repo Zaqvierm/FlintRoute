@@ -8,6 +8,14 @@ import (
 	"router-policy/internal/config"
 )
 
+func TestFetchTextViaRouteRejectsPrivateResolvedEndpoint(t *testing.T) {
+	cfg := &config.Config{}
+	_, err := fetchTextViaRoute(context.Background(), cfg, config.Route{Type: "direct"}, "https://127.0.0.1:443/")
+	if err == nil || err.Error() != "ssrf_private_address_blocked" {
+		t.Fatalf("private resolved endpoint was not blocked: %v", err)
+	}
+}
+
 func TestExternalCountryRequiresTwoMatchingSourcesOnSameRoute(t *testing.T) {
 	cfg := &config.Config{GeoIP: config.GeoIP{Endpoints: []config.GeoIPEndpoint{
 		{Name: "country-a", Provider: "country_is", URL: "https://country-a.example/"},

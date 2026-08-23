@@ -48,6 +48,9 @@ func (r ExecCalibrationRunner) latestCalibrationLog() []byte {
 }
 
 func (r ExecCalibrationRunner) Run(ctx context.Context, request CalibrationRequest) ([]byte, error) {
+	if request.Mode == CalibrationModeQuick && request.AllowManagedRestart {
+		return nil, errors.New("quick Zapret calibration cannot restart the managed service")
+	}
 	if request.Mode == CalibrationModeQuick && r.QuickScript == "" {
 		return nil, errCalibrationQuickEvidenceUnavailable
 	}

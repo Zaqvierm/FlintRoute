@@ -227,6 +227,9 @@ func (m *CalibrationManager) Start(request CalibrationRequest) (CalibrationStatu
 		return CalibrationStatus{}, err
 	}
 	request.Mode = mode
+	if request.Mode == CalibrationModeQuick && request.AllowManagedRestart {
+		return CalibrationStatus{}, errors.New("quick Zapret calibration cannot restart the managed service")
+	}
 	if !profileIDPattern.MatchString(request.BundleID) {
 		return CalibrationStatus{}, errors.New("calibration bundle ID is invalid")
 	}

@@ -429,6 +429,7 @@ func fetchSource(ctx context.Context, client *http.Client, rawURL string, maxByt
 	if err != nil {
 		return fetchedSource{}, errors.New("source_url_is_not_allowed")
 	}
+	defer requestClient.CloseIdleConnections()
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return fetchedSource{}, errors.New("source_url_is_not_allowed")

@@ -88,6 +88,22 @@ func TestCalibrationModeRejectsUnknownAndMapsExhaustive(t *testing.T) {
 	}
 }
 
+func TestQuickCalibrationCannotRestartManagedService(t *testing.T) {
+	manager := NewCalibrationManager(calibrationRunnerFunc(func(context.Context, CalibrationRequest) ([]byte, error) {
+		t.Fatal("quick calibration with managed restart must be rejected before runner invocation")
+		return nil, nil
+	}))
+	_, err := manager.Start(CalibrationRequest{
+		Domain: "example.com", BundleID: "auto-example",
+		NetworkFingerprint:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		AllowManagedRestart: true,
+		Mode:                CalibrationModeQuick,
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot restart") {
+		t.Fatalf("expected quick managed-restart rejection, got %v", err)
+	}
+}
+
 func TestQuickCalibrationRejectsCurlOnlyEvidence(t *testing.T) {
 	raw := []byte(`{"catalog":{"version":1,"profiles":[{"id":"auto-a","provider":"nfqws-v1","provider_version":"72.13","strategy_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]},"evidence":[{"profile_id":"auto-a","occurrences":3}]}`)
 	if _, err := parseCalibrationEvidence(raw, CalibrationModeQuick, "example.com"); !errors.Is(err, errCalibrationQuickEvidenceUnavailable) {

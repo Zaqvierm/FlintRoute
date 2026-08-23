@@ -115,6 +115,7 @@ func FetchSubscription(ctx context.Context, client *http.Client, subscriptionURL
 	if err != nil {
 		return FetchSummary{}, errors.New("subscription endpoint is not allowed")
 	}
+	defer requestClient.CloseIdleConnections()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
 		return FetchSummary{}, errors.New("subscription request creation failed")

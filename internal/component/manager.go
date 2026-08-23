@@ -268,7 +268,9 @@ func (m *Manager) download(ctx context.Context, release Release, asset Asset) (s
 	if err != nil {
 		return "", err
 	}
-	response, err := m.httpClient().Do(req)
+	client := m.httpClient()
+	defer client.CloseIdleConnections()
+	response, err := client.Do(req)
 	if err != nil {
 		return "", errors.New("component download failed")
 	}
