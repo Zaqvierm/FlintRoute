@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -134,6 +135,13 @@ func ValidateRequest(request Request) error {
 		if request.Transaction == nil || request.Transaction.Operation != transactionOperation(request.Command) || !requestBound(request) {
 			return ErrInvalidRequest
 		}
+	case "transaction.reconcile":
+		// Recovery has no rollback capability to bind.  It is still bound to
+		// the exact committed target and may not use the mutation transaction
+		// shape as a substitute for that identity.
+		if request.Transaction == nil || request.Transaction.Operation != "reconcile" || !recoveryRequestBound(request) {
+			return ErrInvalidRequest
+		}
 	case "nft.replace_owned_table":
 		if !requestBound(request) || request.NFT == nil || request.NFT.Family != "inet" || !safeObjectName(request.NFT.Table) || request.NFT.Generation != request.Generation || request.NFT.ArtifactHash != request.ArtifactManifestHash {
 			return ErrInvalidRequest
@@ -160,6 +168,10 @@ func requestBound(request Request) bool {
 	return safeHash(request.RollbackTokenHash) && safeHash(request.CandidateHash) && safeHash(request.ArtifactManifestHash)
 }
 
+func recoveryRequestBound(request Request) bool {
+	return safeHash(request.CandidateHash) && safeHash(request.ArtifactManifestHash)
+}
+
 func transactionOperation(command string) string {
 	switch command {
 	case "transaction.prepare":
@@ -180,6 +192,8 @@ func transactionOperation(command string) string {
 		return "finalize-commit"
 	case "transaction.rollback":
 		return "rollback"
+	case "transaction.reconcile":
+		return "reconcile"
 	default:
 		return ""
 	}
@@ -250,7 +264,7 @@ func ServeUnix(ctx context.Context, options ServerOptions) error {
 	if options.Executor == nil {
 		options.Executor = RejectingExecutor{}
 	}
-	if err := os.Remove(options.SocketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := prepareSocketPath(options.SocketPath); err != nil {
 		return err
 	}
 	listener, err := net.Listen("unix", options.SocketPath)
@@ -282,6 +296,27 @@ func ServeUnix(ctx context.Context, options ServerOptions) error {
 		}
 		go serveConnection(ctx, connection, options.Executor, options.PeerUID)
 	}
+}
+
+// prepareSocketPath only removes a stale Unix socket owned by this fixed
+// helper endpoint.  A regular file, symlink, or live listener is foreign
+// state and must never be silently deleted by a privileged service.
+func prepareSocketPath(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("helper socket path is occupied by a non-socket")
+	}
+	if connection, dialErr := net.DialTimeout("unix", path, 200*time.Millisecond); dialErr == nil {
+		_ = connection.Close()
+		return errors.New("helper socket is already active")
+	}
+	return os.Remove(path)
 }
 
 func serveConnection(ctx context.Context, connection net.Conn, executor Executor, expectedPeerUID int) {

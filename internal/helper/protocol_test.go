@@ -64,6 +64,20 @@ func TestValidateRequestRequiresTypedOperationAndAllBindings(t *testing.T) {
 	}
 }
 
+func TestValidateRequestAllowsBoundRecoveryWithoutRollbackCapability(t *testing.T) {
+	request := validRequest("transaction.reconcile")
+	request.RollbackTokenHash = ""
+	request.Generation = request.RevisionID
+	request.Transaction = &TransactionRequest{Operation: "reconcile"}
+	if err := ValidateRequest(request); err != nil {
+		t.Fatalf("recovery reconcile rejected without rollback capability: %v", err)
+	}
+	request.CandidateHash = ""
+	if err := ValidateRequest(request); err == nil {
+		t.Fatal("recovery reconcile accepted without candidate binding")
+	}
+}
+
 func TestOwnedVerbMappingIsClosed(t *testing.T) {
 	for command, want := range map[string]string{
 		"nft.replace_owned_table": "replace-owned-nft",
@@ -186,5 +200,49 @@ func TestServeUnixBindsSocketAndPeerCredentials(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("helper server did not stop after context cancellation")
+	}
+}
+
+func TestServeUnixDoesNotRemoveForeignSocketPathObject(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "helper.sock")
+	const marker = "foreign-state"
+	if err := os.WriteFile(socket, []byte(marker), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := ServeUnix(context.Background(), ServerOptions{
+		SocketPath: socket,
+		PeerUID:    1001,
+		Executor:   RejectingExecutor{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "non-socket") {
+		t.Fatalf("foreign socket path was accepted: %v", err)
+	}
+	content, readErr := os.ReadFile(socket)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(content) != marker {
+		t.Fatalf("foreign socket path was modified: %q", content)
+	}
+}
+
+func TestServeUnixDoesNotRemoveLiveSocket(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "helper.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	err = ServeUnix(context.Background(), ServerOptions{
+		SocketPath: socket,
+		PeerUID:    1001,
+		Executor:   RejectingExecutor{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "already active") {
+		t.Fatalf("live helper socket was not rejected: %v", err)
+	}
+	if _, err := net.Dial("unix", socket); err != nil {
+		t.Fatalf("live helper socket was removed or stopped: %v", err)
 	}
 }

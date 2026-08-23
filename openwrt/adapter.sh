@@ -1693,7 +1693,10 @@ rollback_tx() {
 
 reconcile_tx() {
   [ -f "$state/last-good/manifest.txt" ] || {
+    echo "protocol_version=1"
+    echo "operation=reconcile"
     echo "reconcile=skipped-no-last-good"
+    echo "transaction_state=skipped"
     return 0
   }
   load_recovery_args
@@ -1724,6 +1727,10 @@ reconcile_tx() {
     echo "reconcile=noop"
     echo "noop=true"
     echo "network_changed=false"
+    echo "protocol_version=1"
+    echo "operation=reconcile"
+    echo "generation=$revision"
+    echo "transaction_id=$txid"
     echo "active_transaction=$txid"
     echo "active_revision=$revision"
     echo "active_candidate_hash=$recovery_candidate_hash"
@@ -1740,6 +1747,10 @@ reconcile_tx() {
   restart_dnsmasq
   clear_boot_guard
   echo "reconcile=ok"
+  echo "protocol_version=1"
+  echo "operation=reconcile"
+  echo "generation=$revision"
+  echo "transaction_id=$txid"
   echo "active_transaction=$txid"
   echo "active_revision=$revision"
   echo "active_candidate_hash=$recovery_candidate_hash"

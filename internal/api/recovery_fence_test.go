@@ -48,7 +48,7 @@ func TestRecoveryMutationFenceAllowsOnlyProvenStatuses(t *testing.T) {
 		status recoveryStatus
 	}{
 		{name: "ok", status: recoveryStatus{Status: "ok"}},
-		{name: "confirmed_baseline", status: recoveryStatus{Status: "not_required", RevisionID: "rev_baseline", CandidateHash: "sha256:baseline"}},
+		{name: "confirmed_baseline", status: recoveryStatus{Status: "not_required", RevisionID: "rev_baseline", CandidateHash: "sha256:baseline", CommitPhase: "baseline_confirmed"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -69,6 +69,20 @@ func TestRecoveryMutationFenceAllowsOnlyProvenStatuses(t *testing.T) {
 				t.Fatal("proven safe recovery status did not permit adapter work")
 			}
 		})
+	}
+}
+
+func TestRecoveryMutationFenceRejectsUnprovenNotRequiredIdentity(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, ts, _, _, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer ts.Close()
+	defer srv.Close()
+
+	if err := srv.setRecoveryStatus(recoveryStatus{Status: "not_required", RevisionID: "rev_fake", CandidateHash: "sha256:fake"}); err != nil {
+		t.Fatalf("set recovery status: %v", err)
+	}
+	if failure := srv.mutationFailure(); failure == nil || failure.Status != http.StatusServiceUnavailable {
+		t.Fatalf("unproven not_required status opened mutation gate: %+v", failure)
 	}
 }
 

@@ -6,10 +6,11 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 ## Scope
 
 - Base review SHA: `d45a779dfa9dc024b426cef358d3df4d32478897`
-- Branch: `remediation/transaction-and-privilege-boundaries`
-- Code verification SHA: `924552adcb9e92d000627c76181b25fcebc17104` (current code head; this consolidated
-  commit includes installer/uninstaller ownership-path validation and the
-  defensive route-probe fan-out guard). The verified code includes recovery fence, route-verification semantics, bounded
+- Branch: `remediation/transaction-and-privilege-boundaries-consolidated`
+- Code verification SHA: `f96d651b419825df2384eaa3531461eea1c1a4d2` (current code head; this consolidated
+  commit includes typed recovery reconciliation through the helper boundary,
+  installer/uninstaller ownership-path validation and the defensive
+  route-probe fan-out guard). The verified code includes recovery fence, route-verification semantics, bounded
   Zapret modes, truthful UI/browser coverage, screen-specific request budget,
   independent API-slice retry, backend-gated onboarding, stateful Fast Start
   completion, robust Zapret process ownership, and non-terminal Decision Flow
@@ -30,13 +31,13 @@ Evidence is bound to an exact commit; a result from another commit is stale.
 This short table is the current source of truth; the longer phase table below
 is historical context and must not be read as current hardware acceptance.
 
-| Scope | Status at code SHA `924552adcb9e92d000627c76181b25fcebc17104` | Evidence |
+| Scope | Status at code SHA `f96d651b419825df2384eaa3531461eea1c1a4d2` | Evidence |
 |---|---|---|
 | Go/unit/integration, race, vet, formatting | PASS | local `tests/run-all.ps1`, `go test -race ./...`, `gofmt` |
 | Frontend unit/typecheck/build | PASS | 44 Vitest tests, `npm run typecheck`, `npm run build` |
-| Browser/responsive UI | PASS | 20 Playwright tests; [exact CI run 32606215608](https://github.com/Zaqvierm/FlintRoute/actions/runs/32606215608) |
-| Linux nft transition | PASS | [exact CI run 32606215580](https://github.com/Zaqvierm/FlintRoute/actions/runs/32606215580) |
-| Linux Zapret process-group + Quick contract | PASS | [exact CI run 32606215591](https://github.com/Zaqvierm/FlintRoute/actions/runs/32606215591) |
+| Browser/responsive UI | PASS | [exact CI run 32608938490](https://github.com/Zaqvierm/FlintRoute/actions/runs/32608938490) |
+| Linux nft transition | PASS | [exact CI run 32608938460](https://github.com/Zaqvierm/FlintRoute/actions/runs/32608938460) |
+| Linux Zapret process-group + Quick contract | PASS | [exact CI run 32608938469](https://github.com/Zaqvierm/FlintRoute/actions/runs/32608938469) |
 | Windows Linux-only harnesses | NOT RUN LOCALLY | filesystem mode, namespace/procfs Quick and Zapret steps |
 | Root-helper privilege split | PARTIAL | helper socket exists; production controller still root/direct-adapter by default |
 | Flint 2 hardware | NOT RUN / STALE | no SSH, install, apply, reboot, or runtime evidence for this head |
@@ -49,6 +50,7 @@ is historical context and must not be read as current hardware acceptance.
 | transaction fault boundaries | API fault-injection tests in `internal/api/transaction_test.go` | PASS | local |
 | recovery mutation allowlist | `go test ./internal/api -run 'TestRecovery|TestAutomaticDomainCommit|TestHealthScheduler'` | PASS | local |
 | recovery status persistence failure | `TestRecoveryStatusPersistenceFailureInstallsMemoryFence` | PASS | local |
+| unproven `not_required` recovery identity | `TestRecoveryMutationFenceRejectsUnprovenNotRequiredIdentity` | PASS | local; arbitrary revision/hash cannot open mutation gate |
 | concurrent recovery/apply fence | `TestRecoveryTransitionExcludesConcurrentMutation` | PASS | local |
 | frontend recovery mutation fence | `npm run test`, `npm run browser:test` (`recovery=starting`) | PASS (37 unit tests; 11 browser tests) | local Chromium |
 | immutable bootstrap | `tests/openwrt-adapter-integration.sh` | PASS | local/mock |
@@ -58,6 +60,8 @@ is historical context and must not be read as current hardware acceptance.
 | artifact directory fsync failure | `tests/content-aware-install.sh` | PASS — failed exact and fallback sync is surfaced as `fsync_failed` | local/mock |
 | boot guard | `tests/boot-guard-policy.sh`, `tests/boot-guard-service.sh` | PASS | local/mock |
 | privileged helper boundary | `tests/helper-service.sh`, `go test ./internal/helper` | PASS | local/mock |
+| helper socket ownership | `go test ./internal/helper -run TestServeUnixDoesNotRemoveForeignSocketPathObject` | PASS | local/mock; foreign regular files are preserved and init-stop does not unlink the fixed endpoint |
+| typed recovery reconcile boundary | `go test ./internal/adapter ./internal/helper` | PASS | local; configured helper path uses `transaction.reconcile` with target-bound semantic evidence; root controller remains PARTIAL |
 | nft transition | `tests/nft-transition-namespace.sh` | PASS — [run 32575449189](https://github.com/Zaqvierm/FlintRoute/actions/runs/32575449189), exact code SHA `3173e32c6e040794bdf73078e013908aabc18c38` | Linux namespace |
 | hotplug boundedness | `tests/hotplug-bounded.sh` | PASS | local/mock |
 | Zapret cleanup | `tests/zapret-calibration-runtime.sh` | PASS — [run 32575449237](https://github.com/Zaqvierm/FlintRoute/actions/runs/32575449237), exact code SHA `3173e32c6e040794bdf73078e013908aabc18c38` | Linux process/procfs |
@@ -76,7 +80,7 @@ is historical context and must not be read as current hardware acceptance.
 | race/vet | `go test -race ./...`, `go vet ./...` | PASS | local |
 
 The full local runner at consolidated code SHA
-`924552adcb9e92d000627c76181b25fcebc17104` completed in 375.4 seconds with
+`f96d651b419825df2384eaa3531461eea1c1a4d2` completed in 392.3 seconds with
 `all_tests_ok=true`. Its Linux-only namespace/process-group steps were
 honestly reported as `NOT RUN LOCALLY`; the independent GitHub runs above are
 the Linux evidence. The earlier `e04778e` nft run failed because the fixture's
@@ -112,7 +116,7 @@ silently activates a production profile; the result is a reviewed candidate/draf
 
 ### Current route-probe resource bound
 
-At code SHA `924552adcb9e92d000627c76181b25fcebc17104`, the probe engine rejects an unvalidated service whose
+At code SHA `f96d651b419825df2384eaa3531461eea1c1a4d2`, the probe engine rejects an unvalidated service whose
 `ProbeURLs` exceed `config.MaxProbeURLsPerService` before opening a network
 connection. This closes the defensive-path gap where a caller could bypass
 `Config.Validate` and turn one logical route decision into arbitrary fan-out.

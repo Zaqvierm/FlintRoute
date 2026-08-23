@@ -1,6 +1,14 @@
 package adapter
 
-import "testing"
+import (
+	"context"
+	"encoding/json"
+	"net"
+	"runtime"
+	"testing"
+
+	"router-policy/internal/helper"
+)
 
 func TestValidateRecoveryTarget(t *testing.T) {
 	valid := RecoveryTarget{
@@ -48,5 +56,55 @@ func TestOpenWrtStepNamesMatchTransactionContract(t *testing.T) {
 		if actual := stepName(command); actual != expected {
 			t.Errorf("stepName(%q) = %q, want %q", command, actual, expected)
 		}
+	}
+}
+
+func TestOpenWrtRecoveryUsesTypedHelperWhenConfigured(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Unix helper boundary is only exercised on Linux")
+	}
+	listener, err := net.Listen("unix", t.TempDir()+"/helper.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	target := RecoveryTarget{
+		TransactionID:        "tx_0011223344556677",
+		RevisionID:           "rev_10_001122334455",
+		CandidateHash:        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ArtifactManifestHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	}
+	requestSeen := make(chan helper.Request, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		var request helper.Request
+		if decodeErr := json.NewDecoder(connection).Decode(&request); decodeErr != nil {
+			return
+		}
+		requestSeen <- request
+		response := helper.ResponseFrom(request, true, "", "")
+		response.SemanticState = "committed"
+		response.Evidence = map[string]string{"operation": "reconcile", "reconcile": "noop", "transaction_state": "committed"}
+		_ = json.NewEncoder(connection).Encode(response)
+	}()
+	a := &OpenWrt{helperSocket: listener.Addr().String()}
+	result := a.Reconcile(context.Background(), target)
+	if !result.OK || result.Status != "OK" {
+		t.Fatalf("helper reconcile was not accepted: %+v", result)
+	}
+	select {
+	case request := <-requestSeen:
+		if request.Command != "transaction.reconcile" || request.Transaction == nil || request.Transaction.Operation != "reconcile" {
+			t.Fatalf("unexpected recovery helper request: %+v", request)
+		}
+		if request.RollbackTokenHash != "" {
+			t.Fatalf("recovery request unexpectedly carried rollback capability: %+v", request)
+		}
+	default:
+		t.Fatal("recovery did not reach the typed helper")
 	}
 }

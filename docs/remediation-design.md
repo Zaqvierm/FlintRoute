@@ -79,7 +79,16 @@ has no HTTP client, remote fetch, subscription parser, provider JSON parser, or
 arbitrary command/path input. The existing root controller enables the helper
 only when its socket is explicitly configured, so this branch does not claim
 that the whole controller is already non-root. The opt-in boundary is packaged
-and tested; the remaining controller migration is a separate follow-up.
+and tested. When the socket is configured, recovery reconciliation now uses
+the typed `transaction.reconcile` operation too; it no longer falls back to a
+direct shell mutation. Read-only `status` and `diagnose` remain outside this
+mutation boundary. The remaining controller migration is a separate follow-up.
+
+The fixed socket endpoint is also ownership-safe during lifecycle changes. A
+regular file, symlink, or live listener at `helper.sock` is treated as foreign
+state and is never unlinked by startup or init-stop. Only a stale Unix socket
+that cannot accept a connection may be removed before rebinding; the Go helper
+tests preserve a foreign marker file byte-for-byte.
 
 ## Background authority
 
@@ -113,6 +122,9 @@ The only statuses that permit a dataplane mutation are a semantically
 confirmed `ok` status and a `not_required` status that carries the confirmed
 baseline revision and candidate hash. `starting`, `error`,
 `recovery_required`, empty, and unknown values fail closed with HTTP 503.
+`not_required` is admitted only when the recovery path marks the status
+`baseline_confirmed`; an arbitrary revision/hash pair cannot manufacture a
+safe baseline.
 The gate is held for the complete mutation operation by a server-level
 read/write lease, so a recovery transition cannot race an apply at the
 entry/adapter boundary. Discovery, health, subscription refresh, reactive

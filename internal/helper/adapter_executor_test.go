@@ -2,7 +2,10 @@ package helper
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -27,6 +30,7 @@ func TestAdapterExecutorTransactionVerbsAreClosed(t *testing.T) {
 		"transaction.commit_prepared": "commit-prepared",
 		"transaction.finalize_commit": "finalize-commit",
 		"transaction.rollback":        "rollback",
+		"transaction.reconcile":       "reconcile",
 	} {
 		got, ok := transactionVerb(command)
 		if !ok || got != want {
@@ -35,6 +39,38 @@ func TestAdapterExecutorTransactionVerbsAreClosed(t *testing.T) {
 	}
 	if _, ok := transactionVerb("transaction.exec"); ok {
 		t.Fatal("unknown transaction verb was accepted")
+	}
+}
+
+func TestAdapterExecutorAcceptsOnlySemanticallyProvenReconcile(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("exec adapter fixture requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	adapterPath := filepath.Join(dir, "adapter.sh")
+	request := validRequest("transaction.reconcile")
+	request.RollbackTokenHash = ""
+	request.Generation = request.RevisionID
+	request.Transaction = &TransactionRequest{Operation: "reconcile"}
+	script := "#!/bin/sh\n" + strings.Join([]string{
+		"echo protocol_version=1",
+		"echo operation=reconcile",
+		"echo reconcile=ok",
+		"echo generation=" + request.Generation,
+		"echo transaction_id=" + request.TransactionID,
+		"echo active_transaction=" + request.TransactionID,
+		"echo active_revision=" + request.RevisionID,
+		"echo active_candidate_hash=" + request.CandidateHash,
+		"echo active_artifact_manifest_hash=" + request.ArtifactManifestHash,
+		"echo transaction_state=committed",
+	}, "\n") + "\n"
+	if err := os.WriteFile(adapterPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executor := AdapterExecutor{AdapterPath: adapterPath, ConfigPath: filepath.Join(dir, "default.json"), InitDir: dir}
+	response := executor.Execute(context.Background(), request)
+	if !response.Accepted || response.ErrorCode != "" {
+		t.Fatalf("semantic reconcile proof was rejected: %+v", response)
 	}
 }
 

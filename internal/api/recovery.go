@@ -65,7 +65,10 @@ func (s *Server) recoverCommittedDataplane(ctx context.Context) {
 		if err := validateBaselineRevision(revision, activeRevision, s.currentConfig()); err != nil {
 			result = failedRecovery(started, "active_baseline_invalid", err.Error(), adapter.RecoveryTarget{RevisionID: activeRevision, CandidateHash: revision.CandidateHash})
 		} else {
-			result = recoveryStatus{Status: "not_required", RevisionID: activeRevision, CandidateHash: revision.CandidateHash, StartedAt: started, FinishedAt: time.Now().UTC()}
+			result = recoveryStatus{
+				Status: "not_required", RevisionID: activeRevision, CandidateHash: revision.CandidateHash,
+				CommitPhase: "baseline_confirmed", StartedAt: started, FinishedAt: time.Now().UTC(),
+			}
 		}
 		s.setRecoveryStatus(result)
 		return
@@ -212,9 +215,10 @@ func recoveryStatusAllowsMutation(status recoveryStatus) bool {
 	case "ok":
 		return true
 	case "not_required":
-		// not_required is only an allowlisted baseline when the identity of
-		// that baseline is present. Empty/hand-built statuses fail closed.
-		return status.RevisionID != "" && status.CandidateHash != ""
+		// not_required is only an allowlisted baseline after the recovery path
+		// has validated the committed baseline revision. Merely supplying an
+		// arbitrary revision/hash pair must not open the mutation gate.
+		return status.CommitPhase == "baseline_confirmed" && status.RevisionID != "" && status.CandidateHash != ""
 	default:
 		return false
 	}

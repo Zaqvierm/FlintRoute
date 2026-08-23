@@ -81,6 +81,8 @@ func transactionVerb(command string) (string, bool) {
 		return "finalize-commit", true
 	case "transaction.rollback":
 		return "rollback", true
+	case "transaction.reconcile":
+		return "reconcile", true
 	default:
 		return "", false
 	}
@@ -133,6 +135,37 @@ func (e AdapterExecutor) executeTransaction(ctx context.Context, request Request
 		response.ErrorCode = "commit_finalize_not_semantically_confirmed"
 		response.Error = "adapter did not prove finalized commit"
 		return response
+	}
+	if request.Command == "transaction.reconcile" {
+		reconcileState := response.Evidence["reconcile"]
+		if reconcileState == "skipped-no-last-good" {
+			response.SemanticState = "skipped"
+		} else if reconcileState != "ok" && reconcileState != "noop" {
+			response.ErrorCode = "reconcile_not_semantically_confirmed"
+			response.Error = "adapter did not prove a bounded reconcile result"
+			return response
+		} else {
+			for key, expected := range map[string]string{
+				"operation":                     "reconcile",
+				"generation":                    request.Generation,
+				"transaction_id":                request.TransactionID,
+				"active_transaction":            request.TransactionID,
+				"active_revision":               request.RevisionID,
+				"active_candidate_hash":         request.CandidateHash,
+				"active_artifact_manifest_hash": request.ArtifactManifestHash,
+			} {
+				if response.Evidence[key] != expected {
+					response.ErrorCode = "reconcile_binding_mismatch"
+					response.Error = "adapter reconcile evidence did not match the requested target"
+					return response
+				}
+			}
+			if response.SemanticState != "committed" {
+				response.ErrorCode = "reconcile_state_not_committed"
+				response.Error = "adapter reconcile did not prove committed state"
+				return response
+			}
+		}
 	}
 	response.Accepted = true
 	response.State = "accepted"

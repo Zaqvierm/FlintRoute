@@ -45,5 +45,8 @@ start_service() {
 }
 
 stop_service() {
-  rm -f /var/run/router-policy/helper.sock
+  # Do not unlink an object we cannot prove is the helper's socket.  The
+  # process owns its listener; a stale socket is checked and removed safely
+  # by ServeUnix on the next start.
+  return 0
 }

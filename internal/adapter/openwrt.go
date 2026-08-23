@@ -55,6 +55,9 @@ func (a *OpenWrt) Reconcile(ctx context.Context, target RecoveryTarget) StepResu
 	if err := validateRecoveryTarget(target); err != nil {
 		return failedStep("reconcile", start, err)
 	}
+	if a.helperSocket != "" {
+		return a.executeHelperRecovery(ctx, start, target)
+	}
 	return a.execute(ctx, "reconcile", start, a.configPath, target.TransactionID, target.RevisionID, target.CandidateHash, target.ArtifactManifestHash)
 }
 func (a *OpenWrt) Status(ctx context.Context) StepResult { return a.runGlobal(ctx, "status") }
@@ -134,6 +137,29 @@ func (a *OpenWrt) executeHelperTransaction(ctx context.Context, command string, 
 		ArtifactManifestHash: tx.ArtifactManifestHash,
 		Transaction:          &helper.TransactionRequest{Operation: command},
 	}
+	return a.executeHelperRequest(ctx, command, start, request)
+}
+
+func (a *OpenWrt) executeHelperRecovery(ctx context.Context, start time.Time, target RecoveryTarget) StepResult {
+	requestID, err := secureRandomHex(8)
+	if err != nil {
+		return failedStep("reconcile", start, err)
+	}
+	request := helper.Request{
+		ProtocolVersion:      helper.ProtocolVersion,
+		RequestID:            "req_" + requestID,
+		Command:              "transaction.reconcile",
+		Generation:           target.RevisionID,
+		RevisionID:           target.RevisionID,
+		TransactionID:        target.TransactionID,
+		CandidateHash:        target.CandidateHash,
+		ArtifactManifestHash: target.ArtifactManifestHash,
+		Transaction:          &helper.TransactionRequest{Operation: "reconcile"},
+	}
+	return a.executeHelperRequest(ctx, "reconcile", start, request)
+}
+
+func (a *OpenWrt) executeHelperRequest(ctx context.Context, command string, start time.Time, request helper.Request) StepResult {
 	response, callErr := helper.Call(ctx, a.helperSocket, request)
 	result := StepResult{ProtocolVersion: AdapterProtocolVersion, RequestID: request.RequestID, Operation: command, Step: stepName(command), StartedAt: start, FinishedAt: time.Now().UTC(), Evidence: map[string]any{}}
 	for key, value := range response.Evidence {

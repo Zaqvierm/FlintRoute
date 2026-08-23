@@ -312,6 +312,8 @@ assert_order '^pidof router-policy$' '^wget '
 : > "$TMP/openwrt-calls.log"
 noop_reconcile=$(adapter reconcile "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" "$candidate_hash" "$artifact_manifest_hash")
 printf '%s\n' "$noop_reconcile" | grep -F 'reconcile=noop' >/dev/null
+printf '%s\n' "$noop_reconcile" | grep -F 'operation=reconcile' >/dev/null
+printf '%s\n' "$noop_reconcile" | grep -F "generation=$revision" >/dev/null
 printf '%s\n' "$noop_reconcile" | grep -F 'noop=true' >/dev/null
 for forbidden_call in 'fw4 reload' 'dnsmasq-init restart' 'xray-init restart' 'xray-init stop' 'zapret-init restart' 'zapret-init stop' 'route replace' 'rule del' 'rule add' "nft -f $RUNTIME_DIR/boot-guard.nft"; do
   ! grep -F "$forbidden_call" "$TMP/openwrt-calls.log" >/dev/null || {
@@ -345,6 +347,8 @@ printf '%s\n' "$wrong_reconcile" | grep -F 'reason=recovery_binding_mismatch' >/
 : > "$TMP/openwrt-calls.log"
 reconcile_result=$(adapter reconcile "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" "$candidate_hash" "$artifact_manifest_hash")
 printf '%s\n' "$reconcile_result" | grep -F 'reconcile=ok' >/dev/null
+printf '%s\n' "$reconcile_result" | grep -F 'operation=reconcile' >/dev/null
+printf '%s\n' "$reconcile_result" | grep -F "generation=$revision" >/dev/null
 cmp "$txdir/generated/router-policy.nft" "$ACTIVE_NFT"
 cmp "$txdir/generated/router-policy-dnsmasq.conf" "$ACTIVE_DNSMASQ"
 cmp "$txdir/generated/xray.json" "$ACTIVE_XRAY"

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -203,6 +204,83 @@ func TestLoadRuntimeConfigIgnoresUncommittedBootstrapCandidate(t *testing.T) {
 	}
 	if loaded.Routes[0].Priority != 91 {
 		t.Fatalf("runtime loaded bootstrap instead of committed active config: priority=%d", loaded.Routes[0].Priority)
+	}
+}
+
+func TestLoadRuntimeConfigRefusesMissingCommittedActiveConfig(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("..", "..", "config", "default.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	cfg.Platform.Target = "test"
+	cfg.Storage.StateDir = dir
+	cfg.Storage.RuntimeDir = filepath.Join(dir, "runtime")
+	cfg.Storage.Database = filepath.Join(dir, "state.bbolt")
+	bootstrapPath := filepath.Join(dir, "default.json")
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bootstrapPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveJSON("meta", "active_revision", "rev-committed"); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = loadRuntimeConfig(bootstrapPath)
+	var rescue *state.RescueError
+	if !errors.As(err, &rescue) {
+		t.Fatalf("missing committed active config was not fenced: %v", err)
+	}
+}
+
+func TestLoadRuntimeConfigRefusesCorruptCommittedActiveConfig(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("..", "..", "config", "default.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	cfg.Platform.Target = "test"
+	cfg.Storage.StateDir = dir
+	cfg.Storage.RuntimeDir = filepath.Join(dir, "runtime")
+	cfg.Storage.Database = filepath.Join(dir, "state.bbolt")
+	bootstrapPath := filepath.Join(dir, "default.json")
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bootstrapPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveBatch(
+		state.Entry{Bucket: "meta", Key: "active_revision", Value: "rev-committed"},
+		state.Entry{Bucket: "meta", Key: "active_config", Value: map[string]any{"not": "a config"}},
+	); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = loadRuntimeConfig(bootstrapPath)
+	var rescue *state.RescueError
+	if !errors.As(err, &rescue) {
+		t.Fatalf("corrupt committed active config was not fenced: %v", err)
 	}
 }
 

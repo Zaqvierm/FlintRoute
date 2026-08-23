@@ -1436,6 +1436,15 @@ func loadRuntimeConfig(path string) (*config.Config, error) {
 		return nil, err
 	}
 	cfg := bootstrap
+	databasePath := bootstrap.Storage.Database
+	if databasePath == "" {
+		databasePath = filepath.Join(bootstrap.Storage.StateDir, "router-policy.bbolt")
+	}
+	_, databaseExistedErr := os.Lstat(databasePath)
+	databaseExisted := databaseExistedErr == nil
+	if databaseExistedErr != nil && !errors.Is(databaseExistedErr, os.ErrNotExist) {
+		return nil, fmt.Errorf("inspect state database: %w", databaseExistedErr)
+	}
 	// The packaged file is immutable bootstrap data. Once a committed control
 	// plane revision exists, bbolt is the only source of the active config.
 	// Opening the store here is short-lived; NewServerWithOptions opens it again
@@ -1444,16 +1453,35 @@ func loadRuntimeConfig(path string) (*config.Config, error) {
 	if storeErr != nil {
 		return nil, fmt.Errorf("open state for active config: %w", storeErr)
 	}
+	rescue := func(cause error) (*config.Config, error) {
+		_ = store.Close()
+		return nil, &state.RescueError{Path: databasePath, Cause: cause}
+	}
+	var activeRevision string
+	revisionErr := store.LoadJSON("meta", "active_revision", &activeRevision)
+	if revisionErr != nil && !errors.Is(revisionErr, state.ErrNotFound) {
+		return rescue(fmt.Errorf("load active revision: %w", revisionErr))
+	}
 	var persisted config.Config
-	if err := store.LoadJSON("meta", "active_config", &persisted); err == nil {
+	activeConfigErr := store.LoadJSON("meta", "active_config", &persisted)
+	if activeConfigErr == nil {
 		if err := persisted.Validate(); err != nil {
-			_ = store.Close()
-			return nil, fmt.Errorf("persisted active config is invalid: %w", err)
+			return rescue(fmt.Errorf("persisted active config is invalid: %w", err))
+		}
+		if revisionErr != nil || strings.TrimSpace(activeRevision) == "" {
+			return rescue(errors.New("active config exists without a committed active revision"))
 		}
 		cfg = &persisted
-	} else if !errors.Is(err, state.ErrNotFound) {
-		_ = store.Close()
-		return nil, fmt.Errorf("load persisted active config: %w", err)
+	} else if errors.Is(activeConfigErr, state.ErrNotFound) {
+		// A missing state file is the one legitimate bootstrap case. Once the
+		// database already existed, missing active_config/active_revision is
+		// corruption or an interrupted initialization and must enter rescue;
+		// silently using default.json could activate an uncommitted candidate.
+		if databaseExisted || revisionErr == nil {
+			return rescue(errors.New("committed active config is missing"))
+		}
+	} else {
+		return rescue(fmt.Errorf("load persisted active config: %w", activeConfigErr))
 	}
 	if err := store.Close(); err != nil {
 		return nil, fmt.Errorf("close state after active config load: %w", err)
