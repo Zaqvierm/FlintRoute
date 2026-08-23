@@ -7,8 +7,9 @@
 
 - Базовый SHA аудита: `d45a779dfa9dc024b426cef358d3df4d32478897`.
 - Ветка: `remediation/transaction-and-privilege-boundaries-consolidated`.
-- SHA production-кода: `f96d651b419825df2384eaa3531461eea1c1a4d2`.
-- База перевода документации: `effa938cf67a7fb3c6013982995b287e22228831`.
+- SHA production-кода: `b43d56a45ba26fb93ee3609c5eb190ef60bac29a`.
+- Документация обновляется в отдельном содержательном commit после code push;
+  code evidence ниже привязано именно к SHA выше.
 - Предыдущий docs-head `501d27518dadc829175534a4d8eaf7a1d11699a8` сохранён как
   историческая точка. Этот документ обновляется вместе с текущим docs-аудитом;
   его итоговый commit фиксируется в release handoff, а code evidence не
@@ -27,9 +28,9 @@
 |---|---|---|
 | Go unit/integration, race, vet, форматирование | PASS | `tests/run-all.ps1`, `go test -race ./...`, `gofmt` |
 | Frontend unit/typecheck/build | PASS | 44 Vitest-теста, `npm run typecheck`, `npm run build` |
-| Browser/responsive UI | PASS | CI run [32609130865](https://github.com/Zaqvierm/FlintRoute/actions/runs/32609130865) |
-| Linux nft transition | PASS | CI run [32609130868](https://github.com/Zaqvierm/FlintRoute/actions/runs/32609130868) |
-| Linux Zapret process-group и Quick contract | PASS | CI run [32609130871](https://github.com/Zaqvierm/FlintRoute/actions/runs/32609130871) |
+| Browser/responsive UI | PASS | CI run [32615235578](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235578) |
+| Linux nft transition | PASS | CI run [32615235570](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235570) |
+| Linux Zapret process-group и Quick contract | PASS | CI run [32615235591](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235591) |
 | Linux-only harness на Windows | NOT RUN LOCALLY | namespace/procfs/mode требуют Linux |
 | Root-helper privilege split | PARTIAL | helper есть, но production controller ещё root |
 | Flint 2 hardware | NOT RUN / STALE | hardware не трогалось |
@@ -63,12 +64,23 @@
 | Latency/duration разделены | probe/API separation tests | PASS | local |
 | Неизвестная latency не считается нулём | `TestSelectBestDoesNotTreatUnknownLatencyAsZero` | PASS | local |
 | ShellCheck | `.tools/shellcheck-v0.11.0/shellcheck.exe -x <tracked shell>` | PASS | local |
-| Полный локальный runner | `tests/run-all.ps1` | PASS, `all_tests_ok=true`, 392.3 s | Windows; Linux части NOT RUN LOCALLY |
+| Полный локальный runner | `tests/run-all.ps1` | PASS, `all_tests_ok=true`, 303.3 s | Windows; Linux части NOT RUN LOCALLY |
 | `git diff --check` | `git diff --check` | PASS | local |
 
 ## Запуски CI на текущей ветке
 
-Для code head `f96d651b419825df2384eaa3531461eea1c1a4d2` прошли:
+Для code head `b43d56a45ba26fb93ee3609c5eb190ef60bac29a` после push прошли:
+
+- nft transition: [32615235570](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235570);
+- Zapret process-group и Quick contract: [32615235591](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235591);
+- UI browser/responsive: [32615235578](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235578).
+
+Эти три run ID являются единственным текущим CI evidence для code SHA выше.
+Все следующие docs-only workflow runs не меняют code SHA и не заменяют эту
+привязку.
+
+Исторические запуски для старых code/docs SHA сохранены ниже только для
+археологии и не считаются доказательством текущего кода:
 
 - nft transition: [32608938460](https://github.com/Zaqvierm/FlintRoute/actions/runs/32608938460);
 - Zapret process-group: [32608938469](https://github.com/Zaqvierm/FlintRoute/actions/runs/32608938469);
@@ -81,7 +93,7 @@
 - Zapret process-group: [32609130871](https://github.com/Zaqvierm/FlintRoute/actions/runs/32609130871);
 - UI browser/responsive: [32609130865](https://github.com/Zaqvierm/FlintRoute/actions/runs/32609130865).
 
-Для текущего SHA `effa938`:
+Для исторического SHA `effa938`:
 
 - nft transition: [32611131546](https://github.com/Zaqvierm/FlintRoute/actions/runs/32611131546);
 - Zapret process-group: [32611131536](https://github.com/Zaqvierm/FlintRoute/actions/runs/32611131536);
@@ -110,6 +122,17 @@
   ограничена 32, общий route-probe budget — четыре concurrent jobs.
 - `NO_SAFE_ROUTE` — только terminal exhaustion; `VERIFYING` не превращается в
   ложный отказ. `route_latency_ms` отделён от `verification_duration_ms`.
+- DNS watcher отслеживает inode/rotation и никогда не обнуляет live dnsmasq log;
+  provider snapshot отдаёт `freshness=stale` во время долгого refresh вместо
+  выдачи старых данных как live.
+- Login limiter имеет глобальное bounded-окно до дорогого Argon2, поэтому
+  вращение username/source не создаёт неограниченный hash DoS.
+- Route-bound remote fetch больше не падает обратно на непроверенный hostname:
+  отсутствие резолва и private/bogon resolved endpoint дают fail-closed error;
+  subscription/GeoIP/TSPU/component downloads закрывают idle connections.
+- Quick Zapret не может запрашивать restart managed production service; для
+  exhaustive режима UI теперь тоже явно отказывается от скрытого restart и
+  требует maintenance-safe условия.
 
 ## Quick Zapret и exhaustive blockcheck
 
