@@ -54,6 +54,17 @@ func TestSelectBestPrefersRoutePriorityOverSmallLatencyWin(t *testing.T) {
 	}
 }
 
+func TestSelectBestDoesNotTreatUnknownLatencyAsZero(t *testing.T) {
+	results := []probe.RouteResult{
+		{Route: "measured", RouteType: "vless", RoutePriority: 50, Status: "OK", PathVerified: true, ServiceOK: true, RouteLatencyMS: 120, RouteLatencyAvailable: true},
+		{Route: "unknown", RouteType: "direct", RoutePriority: 50, Status: "OK", PathVerified: true, ServiceOK: true},
+	}
+	selected := SelectBest(results)
+	if selected == nil || selected.Route != "measured" {
+		t.Fatalf("unknown latency must not rank as zero: %+v", selected)
+	}
+}
+
 func TestDirectOnlyCandidatesOnlyDirect(t *testing.T) {
 	cfg := &config.Config{
 		Version: 2,
@@ -152,7 +163,7 @@ func TestUnknownDomainFailureIsNotCached(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Status != "NO_SAFE_ROUTE" || first.Confidence != 0 || first.Selected != nil {
+	if first.Status != "NO_SAFE_ROUTE" || first.VerificationState != "terminal_no_safe_route" || first.Confidence != 0 || first.Selected != nil {
 		t.Fatalf("unexpected failed decision: %+v", first)
 	}
 	if got := cache.Snapshot(); len(got) != 0 {
@@ -164,6 +175,40 @@ func TestUnknownDomainFailureIsNotCached(t *testing.T) {
 	}
 	if len(prober.calls) <= firstCalls {
 		t.Fatalf("failed observation suppressed a fresh probe: before=%d after=%d", firstCalls, len(prober.calls))
+	}
+}
+
+func TestCancelledDomainCheckNeverBecomesTerminalNoSafeRoute(t *testing.T) {
+	cfg := discoveryConfig(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	prober := &scriptedProber{results: map[string]probe.RouteResult{}}
+	check, err := CheckDomain(ctx, cfg, "cancelled.example", "", Options{RouteProber: prober, ActiveRevision: "rev-active"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.Status != "VERIFYING" || check.VerificationState != "in_progress" || check.Reason != "verification_incomplete" {
+		t.Fatalf("cancelled verification was exposed as terminal: %+v", check)
+	}
+	if len(prober.calls) != 0 {
+		t.Fatalf("cancelled verification still probed candidates: %v", prober.calls)
+	}
+}
+
+func TestClassificationConfidenceIsIndependentFromRouteConfidence(t *testing.T) {
+	cfg := discoveryConfig(t)
+	prober := &scriptedProber{results: map[string]probe.RouteResult{
+		"zapret": successfulResult("zapret", "zapret", "rev-active"),
+	}}
+	check, err := CheckDomain(context.Background(), cfg, "listed.example", "", Options{
+		RouteProber: prober, ActiveRevision: "rev-active",
+		TSPUResult: tspu.Match{Status: "MATCH", Source: "fixture", Evidence: "curated_match", Confidence: 0.42},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.Confidence != 1 || check.ClassificationConfidence != 0.42 || check.ClassificationSource != "fixture" || check.ClassificationEvidence != "curated_match" {
+		t.Fatalf("classification and route confidence were mixed: %+v", check)
 	}
 }
 

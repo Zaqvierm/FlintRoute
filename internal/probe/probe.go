@@ -26,6 +26,8 @@ import (
 	localgeoip "router-policy/internal/geoip"
 )
 
+const maxRouteProbeTargets = 4
+
 type RouteResult struct {
 	Domain                 string                `json:"domain"`
 	Service                string                `json:"service"`
@@ -66,12 +68,19 @@ type RouteResult struct {
 	ExternalCountrySources []string              `json:"external_country_sources,omitempty"`
 	EgressConsensus        bool                  `json:"egress_consensus"`
 	EgressReason           string                `json:"egress_reason,omitempty"`
-	LatencyMS              int64                 `json:"latency_ms,omitempty"`
-	Checks                 []CheckResult         `json:"checks"`
-	FailureStage           string                `json:"failure_stage,omitempty"`
-	ReasonCode             string                `json:"reason_code,omitempty"`
-	Reason                 *string               `json:"reason"`
-	CheckedAt              string                `json:"checked_at"`
+	// LatencyMS is the measured route latency for compatibility with existing
+	// consumers. It must never contain queue/setup/proof duration. When the
+	// route cannot expose a meaningful network measurement it is zero and
+	// RouteLatencyAvailable is false.
+	LatencyMS              int64         `json:"latency_ms,omitempty"`
+	RouteLatencyMS         int64         `json:"route_latency_ms,omitempty"`
+	RouteLatencyAvailable  bool          `json:"route_latency_available"`
+	VerificationDurationMS int64         `json:"verification_duration_ms,omitempty"`
+	Checks                 []CheckResult `json:"checks"`
+	FailureStage           string        `json:"failure_stage,omitempty"`
+	ReasonCode             string        `json:"reason_code,omitempty"`
+	Reason                 *string       `json:"reason"`
+	CheckedAt              string        `json:"checked_at"`
 }
 
 type CheckResult struct {
@@ -100,8 +109,13 @@ type CheckResult struct {
 	Redirects           int      `json:"redirects"`
 	RegionalBlock       bool     `json:"regional_block"`
 	SuspectedTSPU       bool     `json:"suspected_tspu"`
-	LatencyMS           int64    `json:"latency_ms,omitempty"`
-	Reason              string   `json:"reason,omitempty"`
+	// LatencyMS is the network request measurement, not the full check
+	// duration. The latter is VerificationDurationMS.
+	LatencyMS              int64  `json:"latency_ms,omitempty"`
+	RouteLatencyMS         int64  `json:"route_latency_ms,omitempty"`
+	RouteLatencyAvailable  bool   `json:"route_latency_available"`
+	VerificationDurationMS int64  `json:"verification_duration_ms,omitempty"`
+	Reason                 string `json:"reason,omitempty"`
 }
 
 func ProbeRoute(ctx context.Context, cfg *config.Config, domain, serviceName string, svc config.Service, route config.Route) RouteResult {
@@ -137,7 +151,7 @@ func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, ser
 		result.ApplicationStatus = "NOT_RUN"
 		result.ReasonCode = reason
 		result.Reason = &reason
-		return result
+		return finalizeUnverifiedResult(result, startAll)
 	}
 	proofSession := e.beginPathProof(ctx, domain, route, startAll)
 
@@ -148,7 +162,6 @@ func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, ser
 			}
 		}
 		result.ApplicationStatus = "DROP"
-		result.LatencyMS = time.Since(startAll).Milliseconds()
 		return e.finishWithPathProof(ctx, cfg, route, result, startAll, proofSession)
 	}
 
@@ -157,7 +170,7 @@ func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, ser
 		result.ApplicationStatus = "NOT_RUN"
 		result.ReasonCode = reason
 		result.Reason = &reason
-		return result
+		return finalizeUnverifiedResult(result, startAll)
 	}
 	for _, check := range svc.ProbeURLs {
 		checkResult := probeOne(ctx, cfg, route, check, family)
@@ -169,9 +182,12 @@ func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, ser
 		result.ContentOK = result.ContentOK || checkResult.ContentOK
 		result.RegionalBlock = result.RegionalBlock || checkResult.RegionalBlock
 		result.SuspectedTSPU = result.SuspectedTSPU || checkResult.SuspectedTSPU
+		if checkResult.RouteLatencyAvailable && (!result.RouteLatencyAvailable || checkResult.RouteLatencyMS < result.RouteLatencyMS) {
+			result.RouteLatencyMS = checkResult.RouteLatencyMS
+			result.RouteLatencyAvailable = true
+		}
 	}
-
-	result.LatencyMS = time.Since(startAll).Milliseconds()
+	result.LatencyMS = result.RouteLatencyMS
 
 	probeEgress := route.ExternalIPProbe || route.Type == "vless"
 	if cfg.Platform.Target != "test" && (route.Type == "direct" || route.Type == "zapret" || route.Type == "external_socks") {
@@ -261,6 +277,16 @@ func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, ser
 	return e.finishWithPathProof(ctx, cfg, route, result, startAll, proofSession)
 }
 
+func finalizeUnverifiedResult(result RouteResult, startedAt time.Time) RouteResult {
+	result.VerificationDurationMS = time.Since(startedAt).Milliseconds()
+	if result.RouteLatencyAvailable {
+		result.LatencyMS = result.RouteLatencyMS
+	} else {
+		result.LatencyMS = 0
+	}
+	return result
+}
+
 func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check config.ProbeCheck, family string) CheckResult {
 	start := time.Now()
 	res := CheckResult{
@@ -310,13 +336,7 @@ func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check
 		return res
 	}
 
-	targets := make([]netip.Addr, 0, len(ips))
-	for _, ip := range ips {
-		if family == "ipv4" && !ip.Is4() || family == "ipv6" && !ip.Is6() {
-			continue
-		}
-		targets = append(targets, ip)
-	}
+	targets := routeProbeTargets(ips, family)
 	if len(targets) == 0 {
 		res.Reason = "dns_address_family_unavailable"
 		return res
@@ -356,19 +376,38 @@ func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check
 		res.Redirects = attempt.Redirects
 		res.RegionalBlock = attempt.RegionalBlock
 		res.SuspectedTSPU = attempt.SuspectedTSPU
+		if attempt.RouteLatencyAvailable && (!res.RouteLatencyAvailable || attempt.RouteLatencyMS < res.RouteLatencyMS) {
+			res.RouteLatencyMS = attempt.RouteLatencyMS
+			res.RouteLatencyAvailable = true
+			res.LatencyMS = attempt.RouteLatencyMS
+		}
 		lastReason = attempt.Reason
 		if attempt.Status == "OK" || attempt.Status == "REGION_BLOCK" || attempt.Status == "SUSPECTED_TSPU" {
 			res.Status = attempt.Status
 			res.Reason = attempt.Reason
-			res.LatencyMS = time.Since(start).Milliseconds()
+			res.VerificationDurationMS = time.Since(start).Milliseconds()
 			return res
 		}
 	}
-	res.LatencyMS = time.Since(start).Milliseconds()
+	res.VerificationDurationMS = time.Since(start).Milliseconds()
 	if lastReason != "" {
 		res.Reason = lastReason
 	}
 	return res
+}
+
+func routeProbeTargets(ips []netip.Addr, family string) []netip.Addr {
+	targets := make([]netip.Addr, 0, minInt(len(ips), maxRouteProbeTargets))
+	for _, ip := range ips {
+		if family == "ipv4" && !ip.Is4() || family == "ipv6" && !ip.Is6() {
+			continue
+		}
+		targets = append(targets, ip)
+		if len(targets) == maxRouteProbeTargets {
+			break
+		}
+	}
+	return targets
 }
 
 func resolveForRoute(ctx context.Context, cfg *config.Config, route config.Route, host string) ([]netip.Addr, string, string, error) {
@@ -696,25 +735,27 @@ func skipDNSName(msg []byte, off int) (int, error) {
 }
 
 type attemptResult struct {
-	Status              string
-	ConnectedIP         string
-	ConnectedPort       int
-	LocalIP             string
-	AddressFamily       string
-	Transport           string
-	SocketMark          string
-	HostPreserved       bool
-	SNIPreserved        bool
-	TransportOK         bool
-	TLSOK               bool
-	HTTPOK              bool
-	ContentOK           bool
-	ExpectedCodeMatched bool
-	HTTPCode            int
-	Redirects           int
-	RegionalBlock       bool
-	SuspectedTSPU       bool
-	Reason              string
+	Status                string
+	ConnectedIP           string
+	ConnectedPort         int
+	LocalIP               string
+	AddressFamily         string
+	Transport             string
+	SocketMark            string
+	HostPreserved         bool
+	SNIPreserved          bool
+	TransportOK           bool
+	TLSOK                 bool
+	HTTPOK                bool
+	ContentOK             bool
+	ExpectedCodeMatched   bool
+	HTTPCode              int
+	Redirects             int
+	RegionalBlock         bool
+	SuspectedTSPU         bool
+	Reason                string
+	RouteLatencyMS        int64
+	RouteLatencyAvailable bool
 }
 
 func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route, check config.ProbeCheck, parsed *url.URL, host, port string, ip netip.Addr) attemptResult {
@@ -795,9 +836,11 @@ func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route,
 	req.Host = parsed.Host
 	req.Header.Set("User-Agent", "router-policy-probe/0.2")
 
+	requestStarted := time.Now()
 	resp, err := client.Do(req)
+	routeLatencyMS := time.Since(requestStarted).Milliseconds()
 	if err != nil {
-		return attemptResult{Status: "FAIL", ConnectedIP: connectedIP, ConnectedPort: connectedPort, LocalIP: localIP, AddressFamily: addressFamily, Transport: dialTransport, SocketMark: formatSocketMark(observedSocketMark), Reason: classifyTransportError(err)}
+		return attemptResult{Status: "FAIL", ConnectedIP: connectedIP, ConnectedPort: connectedPort, LocalIP: localIP, AddressFamily: addressFamily, Transport: dialTransport, SocketMark: formatSocketMark(observedSocketMark), Reason: classifyTransportError(err), RouteLatencyMS: routeLatencyMS, RouteLatencyAvailable: routeLatencyMS > 0}
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
@@ -826,25 +869,27 @@ func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route,
 	}
 
 	return attemptResult{
-		Status:              status,
-		ConnectedIP:         connectedIP,
-		ConnectedPort:       connectedPort,
-		LocalIP:             localIP,
-		AddressFamily:       addressFamily,
-		Transport:           dialTransport,
-		SocketMark:          formatSocketMark(observedSocketMark),
-		HostPreserved:       req.Host == parsed.Host,
-		SNIPreserved:        parsed.Scheme != "https" || transport.TLSClientConfig.ServerName == host,
-		TransportOK:         true,
-		TLSOK:               parsed.Scheme == "https" && resp.TLS != nil,
-		HTTPOK:              expectedCode,
-		ContentOK:           contentOK,
-		ExpectedCodeMatched: expectedCode,
-		HTTPCode:            resp.StatusCode,
-		Redirects:           redirects,
-		RegionalBlock:       regional,
-		SuspectedTSPU:       tspu,
-		Reason:              reason,
+		Status:                status,
+		ConnectedIP:           connectedIP,
+		ConnectedPort:         connectedPort,
+		LocalIP:               localIP,
+		AddressFamily:         addressFamily,
+		Transport:             dialTransport,
+		SocketMark:            formatSocketMark(observedSocketMark),
+		HostPreserved:         req.Host == parsed.Host,
+		SNIPreserved:          parsed.Scheme != "https" || transport.TLSClientConfig.ServerName == host,
+		TransportOK:           true,
+		TLSOK:                 parsed.Scheme == "https" && resp.TLS != nil,
+		HTTPOK:                expectedCode,
+		ContentOK:             contentOK,
+		ExpectedCodeMatched:   expectedCode,
+		HTTPCode:              resp.StatusCode,
+		Redirects:             redirects,
+		RegionalBlock:         regional,
+		SuspectedTSPU:         tspu,
+		Reason:                reason,
+		RouteLatencyMS:        routeLatencyMS,
+		RouteLatencyAvailable: routeLatencyMS > 0,
 	}
 }
 

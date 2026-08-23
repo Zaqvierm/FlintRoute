@@ -47,6 +47,10 @@ func (s *Server) handleExternalSOCKSCheck(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleExternalSOCKSActivate(w http.ResponseWriter, r *http.Request) {
+	if failure := s.mutationFailureNow(); failure != nil {
+		writeError(w, r, failure.Status, failure.Code, failure.Message)
+		return
+	}
 	request, report, ok := s.checkExternalSOCKS(w, r)
 	if !ok {
 		return

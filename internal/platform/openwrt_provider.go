@@ -240,12 +240,14 @@ type OpenWrtProvider struct {
 }
 
 type openWrtRuntime struct {
-	mu       sync.Mutex
-	runner   OpenWrtRunner
-	now      func() time.Time
-	timeout  time.Duration
-	cacheTTL time.Duration
-	cached   *openWrtSnapshot
+	mu          sync.Mutex
+	runner      OpenWrtRunner
+	now         func() time.Time
+	timeout     time.Duration
+	cacheTTL    time.Duration
+	cached      *openWrtSnapshot
+	collecting  bool
+	collectDone chan struct{}
 }
 
 func defaultOpenWrtRuntime() *openWrtRuntime {
@@ -601,14 +603,42 @@ func (p OpenWrtProvider) runtimeOrDefault() *openWrtRuntime {
 
 func (p OpenWrtProvider) snapshot() *openWrtSnapshot {
 	runtime := p.runtimeOrDefault()
-	runtime.mu.Lock()
-	defer runtime.mu.Unlock()
-	now := runtime.now()
-	if runtime.cached != nil && runtime.cacheTTL > 0 && now.Sub(runtime.cached.CollectedAt) < runtime.cacheTTL {
-		return runtime.cached
+	for {
+		runtime.mu.Lock()
+		now := runtime.now()
+		if runtime.cached != nil && runtime.cacheTTL > 0 && now.Sub(runtime.cached.CollectedAt) < runtime.cacheTTL {
+			cached := runtime.cached
+			runtime.mu.Unlock()
+			return cached
+		}
+		if runtime.collecting {
+			// A stale snapshot is safer and cheaper than multiplying expensive
+			// ubus/ip/nft commands across simultaneous UI requests.  The
+			// collector will publish a fresh atomic snapshot for the next call.
+			if runtime.cached != nil {
+				cached := runtime.cached
+				runtime.mu.Unlock()
+				return cached
+			}
+			done := runtime.collectDone
+			runtime.mu.Unlock()
+			<-done
+			continue
+		}
+		runtime.collecting = true
+		runtime.collectDone = make(chan struct{})
+		done := runtime.collectDone
+		runtime.mu.Unlock()
+
+		fresh := collectOpenWrtSnapshot(runtime, now)
+		runtime.mu.Lock()
+		runtime.cached = fresh
+		runtime.collecting = false
+		runtime.collectDone = nil
+		close(done)
+		runtime.mu.Unlock()
+		return fresh
 	}
-	runtime.cached = collectOpenWrtSnapshot(runtime, now)
-	return runtime.cached
 }
 
 func collectOpenWrtSnapshot(runtime *openWrtRuntime, now time.Time) *openWrtSnapshot {

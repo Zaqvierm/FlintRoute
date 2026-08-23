@@ -1,5 +1,11 @@
 # Flint 2 Hardware Report (обезличенный)
 
+> **STATUS: STALE FOR CURRENT SHA.** This file records historical hardware runs
+> against older FlintRoute commits. It is retained for forensic context only;
+> none of its PASS/committed statements is evidence for
+> `remediation/transaction-and-privilege-boundaries` until the exact current
+> SHA is deployed and a new read-only/deployment record is attached.
+
 > Доказанные результаты на физическом GL.iNet Flint 2 / GL-MT6000.
 > IP, MAC, UUID, subscription URLs и credentials исключены. Для воспроизводимой
 > сверки оставлены только безопасные хеши транзакционных артефактов.

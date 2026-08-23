@@ -558,6 +558,141 @@ func TestCommitErrorTriggersRollback(t *testing.T) {
 	}
 }
 
+func TestLegacyCommitPersistenceFailureIsRecoveryRequired(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer srv.Close()
+	defer ts.Close()
+	cs := createValidatedChange(t, client, csrf, ts.URL, "GEO_LOCKED")
+	cs, status := postAction(t, client, csrf, ts.URL, cs.ID, "apply", `{}`)
+	if status != http.StatusOK || cs.State != "awaiting_confirmation" {
+		t.Fatalf("test precondition failed: status=%d change=%+v", status, cs)
+	}
+	var saveBatchCalls int
+	srv.store.SetFaultHook(func(op string) error {
+		if op == "save_batch" {
+			saveBatchCalls++
+			// The first batch is the durable progress record written after
+			// the external Commit call. Fail the next batch, which is the
+			// active-revision persistence boundary under test.
+			if saveBatchCalls >= 2 {
+				return fmt.Errorf("injected legacy active revision persistence failure")
+			}
+		}
+		return nil
+	})
+	confirmed, status := postAction(t, client, csrf, ts.URL, cs.ID, "confirm", `{}`)
+	if status != http.StatusServiceUnavailable || fake.callCount("rollback") != 0 {
+		t.Fatalf("legacy commit persistence failure was not fenced: status=%d change=%+v calls=%v", status, confirmed, fake.calls)
+	}
+	fake.mu.Lock()
+	adapterState := fake.transactionState
+	fake.mu.Unlock()
+	if adapterState != "committed" {
+		t.Fatalf("test did not observe an externally committed adapter: %s", adapterState)
+	}
+	if got := srv.currentRecoveryStatus().Status; got != "recovery_required" {
+		t.Fatalf("expected recovery_required, got %s", got)
+	}
+}
+
+func TestSplitCommitNeverPersistsRollbackAfterAdapterActivation(t *testing.T) {
+	fake := newSplitFakeAdapter()
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer srv.Close()
+	defer ts.Close()
+	cs := createValidatedChange(t, client, csrf, ts.URL, "GEO_LOCKED")
+	cs, status := postAction(t, client, csrf, ts.URL, cs.ID, "apply", `{}`)
+	if status != http.StatusOK || cs.State != "awaiting_confirmation" {
+		t.Fatalf("test precondition failed: status=%d change=%+v", status, cs)
+	}
+	saveBatches := 0
+	srv.store.SetFaultHook(func(op string) error {
+		if op == "save_batch" {
+			saveBatches++
+			if saveBatches == 3 {
+				return fmt.Errorf("injected control-plane commit failure")
+			}
+		}
+		return nil
+	})
+	_, status = postAction(t, client, csrf, ts.URL, cs.ID, "confirm", `{}`)
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("ambiguous commit was not fenced: status=%d recovery=%+v", status, srv.currentRecoveryStatus())
+	}
+	if fake.callCount("rollback") != 0 {
+		t.Fatal("ambiguous commit incorrectly attempted rollback")
+	}
+	fake.mu.Lock()
+	adapterState := fake.transactionState
+	fake.mu.Unlock()
+	if adapterState != "adapter_activated" {
+		t.Fatalf("adapter state unexpectedly changed: %s", adapterState)
+	}
+	var record transactionRecord
+	if err := srv.store.LoadJSON("transactions", cs.TransactionID, &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.State == "rolled_back" || record.CommitPhase == "" {
+		t.Fatalf("durable state lost commit phase: %+v", record)
+	}
+	if got := srv.currentRecoveryStatus().Status; got != "recovery_required" {
+		t.Fatalf("expected recovery_required, got %s", got)
+	}
+}
+
+func TestSplitCommitRejectsSemanticFalseSuccess(t *testing.T) {
+	fake := newSplitFakeAdapter()
+	fake.falsePrepared = true
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer srv.Close()
+	defer ts.Close()
+	cs := createValidatedChange(t, client, csrf, ts.URL, "GEO_LOCKED")
+	cs, status := postAction(t, client, csrf, ts.URL, cs.ID, "apply", `{}`)
+	if status != http.StatusOK || cs.State != "awaiting_confirmation" {
+		t.Fatalf("test precondition failed: status=%d change=%+v", status, cs)
+	}
+	confirmed, status := postAction(t, client, csrf, ts.URL, cs.ID, "confirm", `{}`)
+	if status != http.StatusServiceUnavailable || fake.callCount("rollback") != 0 {
+		t.Fatalf("semantic false-success was accepted or rolled back: status=%d change=%+v", status, confirmed)
+	}
+	if got := srv.currentRecoveryStatus().Status; got != "recovery_required" {
+		t.Fatalf("expected recovery_required, got %s", got)
+	}
+}
+
+func TestSplitCommitRecoveryFinalizesAfterRestart(t *testing.T) {
+	cfg := testAPIConfig(t)
+	fake := newSplitFakeAdapter()
+	fake.failFinalize = true
+	srv, ts, client, csrf, authStore := newTransactionHTTP(t, cfg, fake)
+	cs := createValidatedChange(t, client, csrf, ts.URL, "GEO_LOCKED")
+	cs, status := postAction(t, client, csrf, ts.URL, cs.ID, "apply", `{}`)
+	if status != http.StatusOK || cs.State != "awaiting_confirmation" {
+		t.Fatalf("test precondition failed: status=%d change=%+v", status, cs)
+	}
+	_, status = postAction(t, client, csrf, ts.URL, cs.ID, "confirm", `{}`)
+	if status != http.StatusServiceUnavailable || srv.currentRecoveryStatus().Status != "recovery_required" {
+		t.Fatalf("finalize failure was not fenced: status=%d recovery=%+v", status, srv.currentRecoveryStatus())
+	}
+	ts.Close()
+	if err := srv.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fake.failFinalize = false
+	srv2, err := NewServerWithOptions(cfg, Options{Auth: authStore, Provider: platform.DevelopmentMockProvider{}, ProductionAdapter: fake, Development: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv2.Close()
+	if got := srv2.changes[cs.ID].State; got != "committed" {
+		t.Fatalf("restart did not finalize durable control-plane commit: %s", got)
+	}
+	if fake.callCount("rollback") != 0 || fake.callCount("finalize_commit") < 2 {
+		t.Fatalf("recovery did not retry finalization safely: calls=%v", fake.calls)
+	}
+}
+
 func TestConfirmRejectsAdapterArtifactMismatch(t *testing.T) {
 	fake := newFakeAdapter()
 	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)

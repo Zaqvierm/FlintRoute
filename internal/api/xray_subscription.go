@@ -65,6 +65,12 @@ func (s *Server) handleXraySubscriptionSecret(w http.ResponseWriter, r *http.Req
 		}
 		writeData(w, r, subscriptionSecretStatus(present, count))
 	case http.MethodPut:
+		release, failure := s.acquireMutationLease()
+		if failure != nil {
+			writeError(w, r, failure.Status, failure.Code, failure.Message)
+			return
+		}
+		defer release()
 		var request xraySubscriptionSecretRequest
 		if err := readJSON(r, &request); err != nil {
 			writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())
@@ -210,6 +216,10 @@ func storeSubscriptionSecrets(path string, values []string) (bool, error) {
 func (s *Server) handleXraySubscriptionPrepare(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	if failure := s.mutationFailureNow(); failure != nil {
+		writeError(w, r, failure.Status, failure.Code, failure.Message)
 		return
 	}
 	if s.subscriptionPreparer == nil {
@@ -371,6 +381,11 @@ func routesForPreparedBundle(active *config.Config, prepared vpnsub.PreparedBund
 var errBaseVersionConflict = errors.New("base version conflict")
 
 func (s *Server) createDraftChange(title, description string, baseVersion int64, operations []ChangeOp, author string) (ChangeSet, error) {
+	release, failure := s.acquireMutationLease()
+	if failure != nil {
+		return ChangeSet{}, &mutationBlockedError{failure: failure}
+	}
+	defer release()
 	s.mu.Lock()
 	if baseVersion != s.configVersion {
 		s.mu.Unlock()

@@ -21,6 +21,19 @@ func TestNormalizeArrayOfConfigs(t *testing.T) {
 	}
 }
 
+func TestSafeServerAddressRejectsObviousLocalHostnames(t *testing.T) {
+	for _, host := range []string{"localhost", "router.local", "gateway.lan", "x.internal", "printer.home.arpa", "LOCALHOST."} {
+		if safeServerAddress(host) {
+			t.Fatalf("local hostname accepted: %q", host)
+		}
+	}
+	for _, host := range []string{"example.com", "edge.example.net", "198.51.100.10"} {
+		if !safeServerAddress(host) {
+			t.Fatalf("public fixture rejected: %q", host)
+		}
+	}
+}
+
 func TestDuplicateTagsAreRetaggedDeterministically(t *testing.T) {
 	data := []byte(`{"outbounds":[
 	  {"tag":"dup","protocol":"vless","settings":{"vnext":[{"address":"a","port":443,"users":[{"id":"11111111-1111-4111-8111-111111111111","flow":"xtls-rprx-vision"}]}]},"streamSettings":{"network":"tcp","security":"tls"}},
@@ -139,5 +152,21 @@ func TestPortExhaustionIsRejectedBeforeWrite(t *testing.T) {
 	}
 	if _, err := os.Stat(output); !os.IsNotExist(err) {
 		t.Fatal("output was written despite port exhaustion")
+	}
+}
+
+func TestProviderUnknownOutboundFieldsAreRejectedBeforeGeneration(t *testing.T) {
+	tmp := t.TempDir()
+	subscription := filepath.Join(tmp, "subscription.json")
+	output := filepath.Join(tmp, "xray.json")
+	data := []byte(`{"outbounds":[{"tag":"server","protocol":"vless","evilCommand":"must-not-run","settings":{"vnext":[{"address":"example.com","port":443,"users":[{"id":"11111111-1111-4111-8111-111111111111"}]}]},"streamSettings":{"network":"tcp","security":"tls"}}]}`)
+	if err := os.WriteFile(subscription, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := GenerateXrayConfigFile(subscription, output, 12000); err == nil {
+		t.Fatal("unknown provider field was accepted")
+	}
+	if _, err := os.Stat(output); !os.IsNotExist(err) {
+		t.Fatal("output was written after provider validation failure")
 	}
 }

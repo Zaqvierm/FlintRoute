@@ -9,6 +9,7 @@ trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 SYSTEM_ROOT="$TMP/root"
 BACKUP_BASE="$TMP/backups"
 SOURCE_BINARY="$TMP/router-policy-source"
+SOURCE_HELPER_BINARY="$TMP/router-policy-helper-source"
 FAKE_CALL_LOG="$TMP/router-policy-calls.log"
 SERVICE_CONTROL_LOG="$TMP/service-control.log"
 BACKUP_SOURCES="$SYSTEM_ROOT/etc/config/network $SYSTEM_ROOT/etc/router-policy"
@@ -40,17 +41,15 @@ SH
 }
 
 run_install() {
-  BACKUP_DIR="$1" \
-  BACKUP_ROOT="$BACKUP_BASE" \
-  ROUTER_POLICY_SYSTEM_ROOT="$SYSTEM_ROOT" \
-  SOURCE_BINARY="$SOURCE_BINARY" \
-  BACKUP_SOURCES="$BACKUP_SOURCES" \
-  FAKE_CALL_LOG="$FAKE_CALL_LOG" \
+  BACKUP_DIR="$1"
+  BACKUP_ROOT="$BACKUP_BASE"
+  ROUTER_POLICY_SYSTEM_ROOT="$SYSTEM_ROOT"
+  export BACKUP_DIR BACKUP_ROOT ROUTER_POLICY_SYSTEM_ROOT SOURCE_BINARY SOURCE_HELPER_BINARY BACKUP_SOURCES FAKE_CALL_LOG
   sh "$ROOT/install.sh" --install
 }
 
 install_service_sentinels() {
-  for service in router-policy-dns-observer router-policy-boot-guard router-policy router-policy-watchdog router-policy-xray router-policy-zapret; do
+  for service in router-policy-dns-observer router-policy-boot-guard router-policy-helper router-policy router-policy-watchdog router-policy-xray router-policy-zapret; do
     cat > "$SYSTEM_ROOT/etc/init.d/$service" <<'SH'
 #!/bin/sh
 printf '%s\n' "$0:$*" >> "$SERVICE_CONTROL_LOG"
@@ -63,12 +62,18 @@ SH
 export SERVICE_CONTROL_LOG
 
 write_fake_binary v1 0
+cp "$SOURCE_BINARY" "$SOURCE_HELPER_BINARY"
 run_install "$BACKUP_BASE/first" >/dev/null
 [ -x "$SYSTEM_ROOT/usr/bin/router-policy" ]
 [ -f "$SYSTEM_ROOT/usr/lib/router-policy/openwrt/adapter.sh" ]
 [ -f "$SYSTEM_ROOT/etc/init.d/router-policy" ]
 [ "$(cat "$SYSTEM_ROOT/etc/router-policy/config/listener.conf")" = "$(cat "$ROOT/config/listener.conf")" ]
 grep -F 'v1:auth setup-token --if-needed' "$FAKE_CALL_LOG" >/dev/null
+snapshot_archive="$BACKUP_BASE/first/install-rollback/files.tar"
+if tar -tf "$snapshot_archive" | grep -Eq '^(usr|usr/lib|etc|etc/init\.d|etc/hotplug\.d)/?$'; then
+  echo "installer archived synthetic system parent metadata" >&2
+  exit 1
+fi
 install_service_sentinels
 
 mkdir -p "$SYSTEM_ROOT/usr/lib/router-policy/components/zapret/v72.13"
@@ -108,6 +113,12 @@ fi
 cmp "$TMP/expected-v2" "$SYSTEM_ROOT/usr/bin/router-policy"
 [ "$(cat "$SYSTEM_ROOT/usr/lib/router-policy/local-marker")" = "stable-prefix" ]
 grep -F '"local":"preserved"' "$SYSTEM_ROOT/etc/router-policy/config/default.json" >/dev/null
+for critical_dir in "$SYSTEM_ROOT" "$SYSTEM_ROOT/etc" "$SYSTEM_ROOT/usr" "$SYSTEM_ROOT/usr/bin" "$SYSTEM_ROOT/usr/lib" "$SYSTEM_ROOT/etc/init.d" "$SYSTEM_ROOT/etc/hotplug.d"; do
+  [ "$(stat -c '%a' "$critical_dir")" = "755" ] || {
+    echo "installer rollback changed critical parent mode: $critical_dir" >&2
+    exit 1
+  }
+done
 install_service_sentinels
 
 BACKUP_DIR="$BACKUP_BASE/uninstall" \

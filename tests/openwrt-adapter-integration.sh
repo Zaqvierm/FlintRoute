@@ -50,6 +50,7 @@ ACTIVE_XRAY="$TMP_NATIVE/xray/active.json"
 ACTIVE_ZAPRET="$TMP_NATIVE/etc/nfqws.conf"
 ROUTER_POLICY_ADAPTER_SELF="$ROOT/openwrt/adapter.sh"
 MOCK_OPENWRT_LOG="$TMP_NATIVE/openwrt-calls.log"
+MOCK_NFT_BOOT_GUARD_STATE="$TMP_NATIVE/nft-boot-guard.state"
 
 (cd "$ROOT" && "$GO" build -o "$TMP_NATIVE/bin/mock-openwrt$EXE" ./tests/mock-openwrt-command) || {
   echo "failed to build mock-openwrt" >&2
@@ -96,7 +97,7 @@ MOCK_SERVICE_STATE="$TMP_NATIVE/service-state"
 MOCK_MANAGEMENT_INTERFACE=br-lan
 ROUTER_POLICY_BOOT_ID_PATH="$TMP_NATIVE/boot-id"
 export STATE_DIR RUNTIME_DIR ROUTER_POLICY_CONFIG_PATH ROUTER_POLICY_BIN ROUTER_POLICY_ADAPTER_SELF
-export ACTIVE_NFT ACTIVE_DNSMASQ ACTIVE_XRAY ACTIVE_ZAPRET MOCK_OPENWRT_LOG
+export ACTIVE_NFT ACTIVE_DNSMASQ ACTIVE_XRAY ACTIVE_ZAPRET MOCK_OPENWRT_LOG MOCK_NFT_BOOT_GUARD_STATE
 export NFT_BIN FW4_BIN DNSMASQ_BIN DNSMASQ_INIT XRAY_BIN XRAY_INIT NFQWS_BIN ZAPRET_INIT IP_BIN UCI_BIN WGET_BIN NSLOOKUP_BIN PIDOF_BIN
 export ROUTER_POLICY_ALLOW_SIMULATED_DIAGNOSTICS ROUTER_POLICY_AUTO_COLLECT_EVIDENCE MOCK_UCI_STATE MOCK_IP_STATE MOCK_SERVICE_STATE
 export MOCK_MANAGEMENT_INTERFACE ROUTER_POLICY_BOOT_ID_PATH
@@ -217,6 +218,15 @@ printf 'old-xray\n' > "$ACTIVE_XRAY"
 : > "$TMP/openwrt-calls.log"
 
 setup_transaction "tx_0011223344556677" "rev_2_001122334455" "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+set +e
+wrong_binding=$(adapter prepare "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" "$artifact_manifest_hash" 2>&1)
+wrong_binding_rc=$?
+set -e
+[ "$wrong_binding_rc" -ne 0 ] || { echo "transaction accepted a mismatched candidate binding" >&2; exit 1; }
+printf '%s\n' "$wrong_binding" | grep -F 'reason=candidate_hash_binding_mismatch' >/dev/null || {
+  echo "mismatched candidate binding did not return a semantic reason" >&2
+  exit 1
+}
 adapter prepare "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 assert_status prepared
 adapter validate-candidate "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
@@ -246,7 +256,12 @@ assert_status data_plane_verified
 adapter commit "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 assert_status committed
 
-cmp "$txdir/candidate.json" "$ROUTER_POLICY_CONFIG_PATH"
+# Bootstrap is immutable: committing a candidate must not overwrite it.
+[ "$(cat "$ROUTER_POLICY_CONFIG_PATH")" = "old-config" ] || {
+  echo "candidate overwrote immutable bootstrap config" >&2
+  exit 1
+}
+cmp "$txdir/candidate.json" "$STATE_DIR/last-good/router-policy-config.json"
 cmp "$txdir/generated/router-policy.nft" "$ACTIVE_NFT"
 cmp "$txdir/generated/router-policy-dnsmasq.conf" "$ACTIVE_DNSMASQ"
 cmp "$txdir/generated/xray.json" "$ACTIVE_XRAY"
@@ -258,18 +273,30 @@ grep -Fx 'firewall.@defaults[0].flow_offloading=0' "$TMP/uci-state.env" >/dev/nu
 grep -Fx 'firewall.@defaults[0].flow_offloading_hw=0' "$TMP/uci-state.env" >/dev/null
 [ ! -e "$txdir/rollback.cap" ] || { echo "committed capability was not retired" >&2; exit 1; }
 
-assert_order '^nft -c -f ' '^fw4 reload$'
-assert_order '^nft delete table inet router_policy$' '^fw4 reload$'
-assert_order '^fw4 reload$' "^nft -f $ACTIVE_NFT$"
+grep -Eq '^nft list table inet router_policy$' "$TMP/openwrt-calls.log" || {
+  echo "owned nft transition did not inspect the existing table" >&2
+  exit 1
+}
+grep -Eq '^nft -c -f .*nft-transition-' "$TMP/openwrt-calls.log" || {
+  echo "owned nft transition did not run a syntax check" >&2
+  exit 1
+}
+grep -Eq '^nft -f .*nft-transition-' "$TMP/openwrt-calls.log" || {
+  echo "owned nft transition did not apply one atomic batch" >&2
+  exit 1
+}
+assert_order '^nft -c -f .*nft-transition-' '^nft -f .*nft-transition-'
+if grep -q '^fw4 reload$' "$TMP/openwrt-calls.log"; then
+  echo "owned nft transition called global fw4 reload" >&2
+  exit 1
+fi
 assert_order '^uci set firewall.@defaults\[0\].flow_offloading=0$' '^ip -4 route replace '
-assert_order '^uci commit firewall$' '^fw4 reload$'
 assert_order '^dnsmasq-init restart$' '^nslookup localhost 127.0.0.1$'
 assert_order '^ip -4 route replace ' '^ip -4 rule del '
 if grep -Eq '^ip -6 (route|rule) ' "$TMP/openwrt-calls.log"; then
   echo "IPv6 mutation was emitted while platform.ipv6_enabled=false" >&2
   exit 1
 fi
-assert_order '^ip -4 rule del ' '^fw4 reload$'
 grep -Eq '^ip -4 rule del priority [0-9]+$' "$TMP/openwrt-calls.log" || {
   echo "apply did not replace the project-owned IPv4 priority" >&2
   exit 1
@@ -278,7 +305,6 @@ grep -q 'rule replace' "$TMP/openwrt-calls.log" && {
   echo "unsupported ip rule replace reached the OpenWrt command log" >&2
   exit 1
 }
-assert_order '^fw4 reload$' '^dnsmasq-init restart$'
 assert_order '^pidof router-policy$' '^wget '
 
 # Restart reconciliation is a true no-op while committed artifacts and runtime
@@ -325,12 +351,39 @@ cmp "$txdir/generated/xray.json" "$ACTIVE_XRAY"
 grep -Fx 'firewall.@defaults[0].flow_offloading=0' "$TMP/uci-state.env" >/dev/null
 grep -Fx 'firewall.@defaults[0].flow_offloading_hw=0' "$TMP/uci-state.env" >/dev/null
 [ -s "$MOCK_IP_STATE" ] || { echo "reconcile did not restore committed IP routes/rules" >&2; exit 1; }
-assert_order "^nft -f $RUNTIME_DIR/boot-guard.nft$" '^xray-init stop$'
-assert_order '^xray-init stop$' '^ip -4 route replace '
-assert_order '^ip -4 rule del ' '^fw4 reload$'
-assert_order '^fw4 reload$' '^dnsmasq-init restart$'
-[ "$(grep -c '^nft delete table inet router_policy_boot_guard$' "$TMP/openwrt-calls.log" || true)" -eq 2 ] || {
-  echo "boot guard was not replaced and cleared exactly once during successful recovery" >&2
+if grep -Eq '^xray-init stop$' "$TMP/openwrt-calls.log"; then
+  # A stopped service must not receive a redundant stop.  If a running
+  # instance is present, the transition guard still has to precede it.
+  assert_order '^nft -f .*nft-boot-guard-transition-' '^xray-init stop$'
+  assert_order '^xray-init stop$' '^ip -4 route replace '
+fi
+grep -Eq '^nft list table inet router_policy$' "$TMP/openwrt-calls.log" || {
+  echo "recovery did not inspect the existing owned table" >&2
+  exit 1
+}
+grep -Eq '^nft -c -f .*nft-transition-' "$TMP/openwrt-calls.log" || {
+  echo "recovery did not syntax-check the nft transition" >&2
+  exit 1
+}
+grep -Eq '^nft -f .*nft-transition-' "$TMP/openwrt-calls.log" || {
+  echo "recovery did not apply an atomic nft transition" >&2
+  exit 1
+}
+assert_order '^nft -c -f .*nft-transition-' '^nft -f .*nft-transition-'
+if grep -q '^fw4 reload$' "$TMP/openwrt-calls.log"; then
+  echo "recovery owned nft transition called global fw4 reload" >&2
+  exit 1
+fi
+[ "$(grep -c '^nft delete table inet router_policy_boot_guard$' "$TMP/openwrt-calls.log" || true)" -eq 1 ] || {
+  echo "boot guard was not cleared exactly once during successful recovery" >&2
+  exit 1
+}
+grep -Eq '^nft -c -f .*nft-boot-guard-transition-' "$TMP/openwrt-calls.log" || {
+  echo "boot guard replacement was not syntax-checked as an atomic transition" >&2
+  exit 1
+}
+grep -Eq '^nft -f .*nft-boot-guard-transition-' "$TMP/openwrt-calls.log" || {
+  echo "boot guard replacement was not applied as an atomic transition" >&2
   exit 1
 }
 [ "$(grep -c '^xray-init restart$' "$TMP/openwrt-calls.log" || true)" -eq "$xray_restarts_before" ] || {
@@ -407,7 +460,7 @@ assert_status rolled_back
 grep -Fx 'revision_id=rev_1_aaaaaaaaaaaa' "$RUNTIME_DIR/active-transaction.env" >/dev/null
 grep -Fx 'firewall.@defaults[0].flow_offloading=1' "$TMP/uci-state.env" >/dev/null
 grep -Fx 'firewall.@defaults[0].flow_offloading_hw=1' "$TMP/uci-state.env" >/dev/null
-reload_count=$(grep -c '^fw4 reload$' "$TMP/openwrt-calls.log")
+reload_count=$(grep -c '^fw4 reload$' "$TMP/openwrt-calls.log" || true)
 repeat_result=$(adapter rollback "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision")
 printf '%s\n' "$repeat_result" | grep -F 'already_rolled_back=true' >/dev/null
 [ "$(grep -c '^fw4 reload$' "$TMP/openwrt-calls.log")" -eq "$reload_count" ] || {

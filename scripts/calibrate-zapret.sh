@@ -113,6 +113,9 @@ result="$run_dir/import.json"
 maintenance_started=0
 zapret_was_running=0
 blockcheck_pid=""
+blockcheck_pgid=""
+calibration_pgid=""
+calibration_run_id="calibration-$$"
 
 proc_start_time() {
   pid="$1"
@@ -130,6 +133,29 @@ proc_commandline() {
   tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true
 }
 
+proc_pgid() {
+  pid="$1"
+  ps -o pgid= -p "$pid" 2>/dev/null | awk '{print $1}'
+}
+
+proc_ppid() {
+  pid="$1"
+  ps -o ppid= -p "$pid" 2>/dev/null | awk '{print $1}'
+}
+
+process_group_exists() {
+  pgid="$1"
+  case "$pgid" in
+    ""|*[!0-9]*) return 1 ;;
+  esac
+  for proc in /proc/[0-9]*; do
+    [ -d "$proc" ] || continue
+    pid=${proc#/proc/}
+    [ "$(proc_pgid "$pid")" = "$pgid" ] && return 0
+  done
+  return 1
+}
+
 list_nfqwss() {
   for proc in /proc/[0-9]*; do
     [ -d "$proc" ] || continue
@@ -139,7 +165,7 @@ list_nfqwss() {
     case "$exe:$commandline" in
       "$NFQWS_BIN":*|*/nfqws:*|*"$NFQWS_BIN"*|*"/nfqws "*)
         start=$(proc_start_time "$pid") || continue
-        printf '%s|%s|%s\n' "$pid" "$start" "$exe"
+        printf '%s|%s|%s|%s|%s|%s\n' "$pid" "$start" "$exe" "$(proc_pgid "$pid")" "$(proc_ppid "$pid")" "$commandline"
         ;;
     esac
   done
@@ -179,7 +205,14 @@ cleanup_owned_nfqwss() {
         break
       fi
     done < "$nfqws_baseline"
-    [ "$baseline" = "1" ] || terminate_owned_process "$pid" "$start" "$exe"
+	    if [ "$baseline" != "1" ]; then
+	      pgid=$(proc_pgid "$pid")
+	      if [ -z "$calibration_pgid" ] || [ "$pgid" != "$calibration_pgid" ]; then
+	        echo "new nfqws has no provable calibration ownership: $pid" >&2
+	        return 1
+	      fi
+	      terminate_owned_process "$pid" "$start" "$exe"
+	    fi
 	done < "$current"
 }
 
@@ -196,7 +229,8 @@ verify_no_owned_nfqwss() {
       fi
     done < "$nfqws_baseline"
     if [ "$baseline" != "1" ]; then
-      echo "calibration cleanup left an owned nfqws process: $pid" >&2
+      pgid=$(proc_pgid "$pid")
+      echo "calibration cleanup left an unowned/new nfqws process: $pid pgid=$pgid" >&2
       return 1
     fi
   done < "$remaining"
@@ -204,7 +238,7 @@ verify_no_owned_nfqwss() {
 
 verify_calibration_network_cleanup() {
   if command -v nft >/dev/null 2>&1; then
-    if nft list ruleset 2>/dev/null | grep -Eq "queue[[:space:]]+num[[:space:]]+$QUEUE_NUM|router_policy_calibration"; then
+    if nft list ruleset 2>/dev/null | grep -Fq "router-policy-calibration owner=$calibration_run_id"; then
       echo "calibration cleanup left an NFQUEUE/nft resource" >&2
       return 1
     fi
@@ -236,16 +270,27 @@ fi
 cleanup() {
   status=$?
   trap - EXIT HUP INT TERM
-  if [ -n "$blockcheck_pid" ]; then
-    kill -TERM "-$blockcheck_pid" 2>/dev/null || kill -TERM "$blockcheck_pid" 2>/dev/null || true
+  calibration_pgid="$blockcheck_pgid"
+  if [ -n "$blockcheck_pgid" ]; then
+    kill -TERM "-$blockcheck_pgid" 2>/dev/null || true
     i=0
-    while [ "$i" -lt 5 ] && [ -d "/proc/$blockcheck_pid" ]; do
+    while [ "$i" -lt 10 ] && process_group_exists "$blockcheck_pgid"; do
       sleep 1
       i=$((i + 1))
     done
-    if [ -d "/proc/$blockcheck_pid" ]; then
-      kill -KILL "-$blockcheck_pid" 2>/dev/null || kill -KILL "$blockcheck_pid" 2>/dev/null || true
+    if process_group_exists "$blockcheck_pgid"; then
+      kill -KILL "-$blockcheck_pgid" 2>/dev/null || true
+      i=0
+      while [ "$i" -lt 5 ] && process_group_exists "$blockcheck_pgid"; do
+        sleep 1
+        i=$((i + 1))
+      done
+      if process_group_exists "$blockcheck_pgid"; then
+        echo "calibration process group survived cleanup: $blockcheck_pgid" >&2
+        status=1
+      fi
     fi
+    blockcheck_pgid=""
     blockcheck_pid=""
   fi
   cleanup_owned_nfqwss || status=1
@@ -323,25 +368,31 @@ EOF
   skip_dnscheck=1
 fi
 
+command -v setsid >/dev/null 2>&1 || {
+  echo "setsid is required to isolate calibration process ownership" >&2
+  exit 1
+}
+export ROUTER_POLICY_CALIBRATION_RUN_ID="$calibration_run_id"
 set +e
-if command -v setsid >/dev/null 2>&1; then
-  # shellcheck disable=SC2016 # the child shell expands its positional arguments.
-  setsid sh -c '
-    cd "$1"
-    BATCH=1 IPVS=4 REPEATS=3 SCANLEVEL=standard SKIP_TPWS=1 SKIP_DNSCHECK="$2" DOMAINS="$3" \
-      "$4" "$5" sh "$6" >"$7" 2>&1
-  ' sh "$(dirname "$blockcheck_script")" "$skip_dnscheck" "$domain" "$TIMEOUT_BIN" "$BLOCKCHECK_TIMEOUT" "$blockcheck_script" "$report" &
-else
-  (
-    cd "$(dirname "$blockcheck_script")"
-    BATCH=1 IPVS=4 REPEATS=3 SCANLEVEL=standard SKIP_TPWS=1 SKIP_DNSCHECK="$skip_dnscheck" DOMAINS="$domain" \
-      "$TIMEOUT_BIN" "$BLOCKCHECK_TIMEOUT" sh "$blockcheck_script" >"$report" 2>&1
-  ) &
-fi
+# shellcheck disable=SC2016 # the child shell expands its positional arguments.
+setsid sh -c '
+  cd "$1"
+  BATCH=1 IPVS=4 REPEATS=3 SCANLEVEL=standard SKIP_TPWS=1 SKIP_DNSCHECK="$2" DOMAINS="$3" \
+    "$4" "$5" sh "$6" >"$7" 2>&1
+' sh "$(dirname "$blockcheck_script")" "$skip_dnscheck" "$domain" "$TIMEOUT_BIN" "$BLOCKCHECK_TIMEOUT" "$blockcheck_script" "$report" &
 blockcheck_pid=$!
+blockcheck_pgid=$(proc_pgid "$blockcheck_pid" 2>/dev/null || true)
+case "$blockcheck_pgid" in
+  ""|*[!0-9]*)
+    echo "unable to determine calibration process group" >&2
+    kill -TERM "$blockcheck_pid" 2>/dev/null || true
+    wait "$blockcheck_pid" 2>/dev/null || true
+    exit 1
+    ;;
+esac
 blockcheck_start=$(proc_start_time "$blockcheck_pid" 2>/dev/null || true)
 blockcheck_exe=$(proc_executable "$blockcheck_pid")
-printf '%s|%s|%s\n' "$blockcheck_pid" "$blockcheck_start" "$blockcheck_exe" > "$process_manifest"
+printf '%s|%s|%s|%s|%s\n' "$blockcheck_pid" "$blockcheck_start" "$blockcheck_exe" "$blockcheck_pgid" "$calibration_run_id" > "$process_manifest"
 wait "$blockcheck_pid"
 blockcheck_status=$?
 blockcheck_pid=""

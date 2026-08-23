@@ -172,6 +172,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState('');
+  const refreshInFlight = useRef<Promise<void> | null>(null);
   const [privacyHidden, setPrivacyHidden] = useState(() => {
     try { return window.localStorage.getItem('flintroute-address-privacy') === 'hidden'; } catch { return false; }
   });
@@ -186,6 +187,11 @@ function App() {
   }
 
   async function refresh(hideAddresses = privacyHidden) {
+    // One dashboard refresh is enough.  A slow router must not accumulate
+    // overlapping command batches when the timer, SSE reconnect, or a user
+    // click happens at the same time.
+    if (refreshInFlight.current) return refreshInFlight.current;
+    const operation = (async () => {
     setRefreshing(true);
     try {
       const [nextOverview, nextTopology, nextDevices, nextServices, nextRoutes, nextTraffic, nextEvents, nextSystem, nextRevisions, nextDiscovery] = await Promise.all([
@@ -244,6 +250,13 @@ function App() {
     } finally {
       setRefreshing(false);
       setLoading(false);
+    }
+    })();
+    refreshInFlight.current = operation;
+    try {
+      await operation;
+    } finally {
+      if (refreshInFlight.current === operation) refreshInFlight.current = null;
     }
   }
 
@@ -2091,7 +2104,9 @@ function DecisionDetails({ decision }: { decision: ReturnType<typeof toDecisionC
     ['PathVerified', decision.verified ? 'Да' : 'Нет'], ['Итог', decision.status], ['Решение заняло', decision.durationMS !== undefined ? `${decision.durationMS} мс` : null],
     ['DNS', d.dns_status], ['Destination IP', d.destination_ip], ['Задержка маршрута', decision.probeLatencyMS !== undefined ? `${decision.probeLatencyMS} мс` : null],
     ['HTTP/TLS', d.http_status ?? d.tls_status], ['nft mark', d.nft_mark], ['Routing table', d.routing_table], ['Выходной интерфейс', d.egress_interface],
-    ['Xray outbound', d.xray_outbound], ['SOCKS endpoint', d.socks_endpoint], ['Policy ID', d.policy_id], ['Revision', d.revision_id], ['Transaction ID', d.transaction_id]
+    ['Xray outbound', d.xray_outbound], ['SOCKS endpoint', d.socks_endpoint], ['Policy ID', d.policy_id], ['Revision', d.revision_id], ['Transaction ID', d.transaction_id],
+    ['Route latency evidence', decision.routeLatencyAvailable && decision.routeLatencyMS !== undefined ? `${decision.routeLatencyMS} ms` : 'unavailable'],
+    ['Path verification duration', decision.verificationDurationMS !== undefined ? `${decision.verificationDurationMS} ms` : 'unavailable']
   ]} />
   <h3>Кандидаты</h3><EvidenceList values={decision.candidates} empty="Backend не передал список кандидатов." />
   <h3>Временная шкала</h3><EvidenceList values={decision.timeline} empty="Подробная временная шкала отсутствует." />

@@ -59,8 +59,12 @@ func TestLoadRuntimeConfigUsesFactoryTSPUSourcesForUpgradedConfig(t *testing.T) 
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
+	cfg.Platform.Target = "test"
 	active := *cfg
 	active.TSPUSources = nil
+	active.Storage.StateDir = dir
+	active.Storage.RuntimeDir = filepath.Join(dir, "runtime")
+	active.Storage.Database = filepath.Join(dir, "state.bbolt")
 	activeRaw, err := json.Marshal(active)
 	if err != nil {
 		t.Fatal(err)
@@ -154,6 +158,51 @@ func TestLoadCLIActiveConfigUsesCommittedBboltState(t *testing.T) {
 	}
 	if revision != "rev-committed" || loaded.Routes[0].Priority != 77 {
 		t.Fatalf("CLI ignored committed state: revision=%q config=%+v", revision, loaded.Routes[0])
+	}
+}
+
+func TestLoadRuntimeConfigIgnoresUncommittedBootstrapCandidate(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("..", "..", "config", "default.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	cfg.Platform.Target = "test"
+	cfg.Storage.StateDir = dir
+	cfg.Storage.Database = filepath.Join(dir, "state.bbolt")
+	cfg.Storage.RuntimeDir = filepath.Join(dir, "runtime")
+	bootstrapPath := filepath.Join(dir, "default.json")
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bootstrapPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := cfg
+	active.Routes = append([]config.Route(nil), cfg.Routes...)
+	active.Routes[0].Priority = 91
+	if err := store.SaveBatch(
+		state.Entry{Bucket: "meta", Key: "active_config", Value: &active},
+		state.Entry{Bucket: "meta", Key: "active_revision", Value: "rev-active"},
+	); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := loadRuntimeConfig(bootstrapPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Routes[0].Priority != 91 {
+		t.Fatalf("runtime loaded bootstrap instead of committed active config: priority=%d", loaded.Routes[0].Priority)
 	}
 }
 

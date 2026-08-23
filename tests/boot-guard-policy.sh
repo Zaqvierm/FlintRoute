@@ -20,6 +20,13 @@ EOF
 cat > "$TMP/nft" <<'SH'
 #!/bin/sh
 set -eu
+case "${1:-}" in
+  list)
+    [ "${2:-}" = "tables" ] && exit 0
+    exit 1
+    ;;
+  delete) exit 0 ;;
+esac
 if [ "${1:-}" = "-f" ]; then
   cp "$2" "$BOOT_GUARD_CAPTURE"
 fi
@@ -27,13 +34,22 @@ exit 0
 SH
 chmod +x "$TMP/nft"
 
+cat > "$TMP/router-policy" <<'SH'
+#!/bin/sh
+set -eu
+[ "${1:-}" = "internal-print-managed-marks" ] || exit 2
+printf '%s\n' managed_mark=0x41 managed_mark=0x42 managed_mark=0x43 managed_mark=0x7f
+SH
+chmod +x "$TMP/router-policy"
+
 ROUTER_POLICY_ADAPTER_LIB_ONLY=1
 STATE_DIR="$TMP/state"
 RUNTIME_DIR="$TMP/runtime"
 ROUTER_POLICY_CONFIG_PATH="$TMP/config.json"
 NFT_BIN="$TMP/nft"
+ROUTER_POLICY_BIN="$TMP/router-policy"
 BOOT_GUARD_CAPTURE="$TMP/captured.nft"
-export ROUTER_POLICY_ADAPTER_LIB_ONLY STATE_DIR RUNTIME_DIR ROUTER_POLICY_CONFIG_PATH NFT_BIN BOOT_GUARD_CAPTURE
+export ROUTER_POLICY_ADAPTER_LIB_ONLY STATE_DIR RUNTIME_DIR ROUTER_POLICY_CONFIG_PATH NFT_BIN ROUTER_POLICY_BIN BOOT_GUARD_CAPTURE
 # shellcheck source=openwrt/adapter.sh
 . "$ROOT/openwrt/adapter.sh"
 

@@ -31,6 +31,12 @@ func (s *Server) handleTGWSConfigure(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
 		return
 	}
+	release, failure := s.acquireMutationLease()
+	if failure != nil {
+		writeError(w, r, failure.Status, failure.Code, failure.Message)
+		return
+	}
+	defer release()
 	manager, ok := s.componentManager.(TGWSComponentManager)
 	if !ok {
 		writeError(w, r, http.StatusServiceUnavailable, "tgws_unavailable", "Managed TG WS Proxy is unavailable on this runtime")

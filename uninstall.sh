@@ -21,8 +21,36 @@ UCI_BIN="${UCI_BIN:-uci}"
 PIDOF_BIN="${PIDOF_BIN:-pidof}"
 NSLOOKUP_BIN="${NSLOOKUP_BIN:-nslookup}"
 SLEEP_BIN="${SLEEP_BIN:-sleep}"
-SERVICES="router-policy-dns-observer router-policy-boot-guard router-policy-watchdog router-policy router-policy-xray router-policy-zapret"
+NFT_BIN="${NFT_BIN:-nft}"
+SERVICES="router-policy-dns-observer router-policy-boot-guard router-policy-helper router-policy-watchdog router-policy router-policy-xray router-policy-zapret"
 mode="${1:---dry-run}"
+
+delete_owned_nft_table() {
+  table="$1"
+  tables="$($NFT_BIN list tables 2>/dev/null)" || {
+    echo "uninstall blocked: nft table inventory failed" >&2
+    return 1
+  }
+  if ! printf '%s\n' "$tables" | grep -Eq "^table[[:space:]]+inet[[:space:]]+${table}[[:space:]]*$"; then
+    return 0
+  fi
+  current="$($NFT_BIN list table inet "$table" 2>/dev/null)" || {
+    echo "uninstall blocked: owned nft table could not be inspected: $table" >&2
+    return 1
+  }
+  printf '%s\n' "$current" | grep -F 'comment "router-policy owner=flintroute"' >/dev/null || {
+    echo "uninstall blocked: nft table ownership is not proven: $table" >&2
+    return 1
+  }
+  "$NFT_BIN" delete table inet "$table" || {
+    echo "uninstall failed: owned nft table could not be removed: $table" >&2
+    return 1
+  }
+  if "$NFT_BIN" list table inet "$table" >/dev/null 2>&1; then
+    echo "uninstall failed: owned nft table still exists: $table" >&2
+    return 1
+  fi
+}
 
 validate_no_symlink_path() {
   candidate="$1"
@@ -139,11 +167,25 @@ restore_flow_offloading_baseline() {
     *) echo "uninstall blocked: flow-offloading baseline value is invalid" >&2; return 1 ;;
   esac
   case "$software" in
-    absent) "$UCI_BIN" -q delete 'firewall.@defaults[0].flow_offloading' >/dev/null 2>&1 || true ;;
+    absent)
+      if "$UCI_BIN" -q get 'firewall.@defaults[0].flow_offloading' >/dev/null 2>&1; then
+        "$UCI_BIN" delete 'firewall.@defaults[0].flow_offloading' || {
+          echo "uninstall blocked: failed to remove software flow-offloading option" >&2
+          return 1
+        }
+      fi
+      ;;
     0|1) "$UCI_BIN" set "firewall.@defaults[0].flow_offloading=$software" ;;
   esac
   case "$hardware" in
-    absent) "$UCI_BIN" -q delete 'firewall.@defaults[0].flow_offloading_hw' >/dev/null 2>&1 || true ;;
+    absent)
+      if "$UCI_BIN" -q get 'firewall.@defaults[0].flow_offloading_hw' >/dev/null 2>&1; then
+        "$UCI_BIN" delete 'firewall.@defaults[0].flow_offloading_hw' || {
+          echo "uninstall blocked: failed to remove hardware flow-offloading option" >&2
+          return 1
+        }
+      fi
+      ;;
     0|1) "$UCI_BIN" set "firewall.@defaults[0].flow_offloading_hw=$hardware" ;;
   esac
   "$UCI_BIN" commit firewall
@@ -169,7 +211,7 @@ if [ "${ROUTER_POLICY_UNINSTALL_LIB_ONLY:-0}" = "1" ]; then
 fi
 
 if [ "$mode" = "--dry-run" ]; then
-  echo "would_stop_services=router-policy-dns-observer router-policy-boot-guard router-policy-watchdog router-policy router-policy-xray router-policy-zapret"
+  echo "would_stop_services=router-policy-dns-observer router-policy-boot-guard router-policy-helper router-policy-watchdog router-policy router-policy-xray router-policy-zapret"
   echo "would_remove_prefix=$PREFIX"
   echo "would_keep_backup=$BACKUP_DIR"
   exit 0
@@ -230,6 +272,10 @@ echo "verified_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$manifest"
 
 if [ -z "$SYSTEM_ROOT" ]; then
   deactivate_committed_dataplane >"$BACKUP_DIR/dataplane-deactivation.txt"
+  if command -v "$NFT_BIN" >/dev/null 2>&1; then
+    delete_owned_nft_table router_policy
+    delete_owned_nft_table router_policy_boot_guard
+  fi
 fi
 
 if [ -x "$BIN_DIR/router-policy" ]; then
@@ -240,22 +286,27 @@ fi
 if [ -z "$SYSTEM_ROOT" ]; then
   for service in $SERVICES; do
     init="$INIT_DIR/$service"
-    [ -x "$init" ] && "$init" stop 2>/dev/null || true
-    [ -x "$init" ] && "$init" disable 2>/dev/null || true
+    if [ -x "$init" ]; then
+      "$init" stop || {
+        echo "uninstall failed: could not stop $service" >&2
+        exit 1
+      }
+      "$init" disable || {
+        echo "uninstall failed: could not disable $service" >&2
+        exit 1
+      }
+    fi
   done
 fi
 
-rm -f "$INIT_DIR/router-policy" "$INIT_DIR/router-policy-dns-observer" "$INIT_DIR/router-policy-boot-guard" "$INIT_DIR/router-policy-watchdog" "$INIT_DIR/router-policy-xray" "$INIT_DIR/router-policy-zapret"
+rm -f "$INIT_DIR/router-policy-helper" "$INIT_DIR/router-policy" "$INIT_DIR/router-policy-dns-observer" "$INIT_DIR/router-policy-boot-guard" "$INIT_DIR/router-policy-watchdog" "$INIT_DIR/router-policy-xray" "$INIT_DIR/router-policy-zapret"
+rm -f "$BIN_DIR/router-policy-helper"
 rm -f "$HOTPLUG_IFACE_DIR/95-router-policy" "$HOTPLUG_FIREWALL_DIR/95-router-policy"
 rm -f "$ETC_DIR/firewall/router-policy.nft" "$NFTABLES_DIR/router-policy.nft" "$DNSMASQ_DIR/router-policy.conf"
 rm -f "$BIN_DIR/router-policy"
 rm -rf "$PREFIX"
 rm -rf "$RUNTIME_DIR"
 
-if [ -z "$SYSTEM_ROOT" ] && command -v nft >/dev/null 2>&1; then
-  nft delete table inet router_policy >/dev/null 2>&1 || true
-  nft delete table inet router_policy_boot_guard >/dev/null 2>&1 || true
-fi
 if [ -z "$SYSTEM_ROOT" ] && [ -x "$INIT_DIR/dnsmasq" ]; then
   "$INIT_DIR/dnsmasq" restart
   wait_dnsmasq_ready || {

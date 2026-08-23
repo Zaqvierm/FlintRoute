@@ -37,27 +37,29 @@ func pathStatusError(status, code string, err error) error {
 }
 
 type PathObservation struct {
-	Domain          string
-	RouteTag        string
-	RouteType       string
-	DNSResolver     string
-	DNSProtocol     string
-	ResolvedIPs     []string
-	ConnectedIP     string
-	ConnectedPort   int
-	LocalIP         string
-	AddressFamily   string
-	Transport       string
-	SocketMark      string
-	HostPreserved   bool
-	SNIPreserved    bool
-	TLSResult       string
-	HTTPResult      string
-	ContentResult   string
-	ExternalIPHash  string
-	ExternalCountry string
-	StartedAt       time.Time
-	CompletedAt     time.Time
+	Domain                string
+	RouteTag              string
+	RouteType             string
+	DNSResolver           string
+	DNSProtocol           string
+	ResolvedIPs           []string
+	ConnectedIP           string
+	ConnectedPort         int
+	LocalIP               string
+	AddressFamily         string
+	Transport             string
+	SocketMark            string
+	HostPreserved         bool
+	SNIPreserved          bool
+	TLSResult             string
+	HTTPResult            string
+	ContentResult         string
+	ExternalIPHash        string
+	ExternalCountry       string
+	RouteLatencyMS        int64
+	RouteLatencyAvailable bool
+	StartedAt             time.Time
+	CompletedAt           time.Time
 }
 
 type PathProofRequest struct {
@@ -250,6 +252,15 @@ func (e *Engine) beginPathProof(ctx context.Context, domain string, route config
 
 func (e *Engine) finishWithPathProof(ctx context.Context, _ *config.Config, route config.Route, result RouteResult, startedAt time.Time, session PathProofSession) RouteResult {
 	observation := observationFromResult(route, result, startedAt)
+	result.VerificationDurationMS = time.Since(startedAt).Milliseconds()
+	if observation.RouteLatencyAvailable {
+		result.RouteLatencyMS = observation.RouteLatencyMS
+		result.LatencyMS = observation.RouteLatencyMS
+		result.RouteLatencyAvailable = true
+	} else {
+		result.LatencyMS = 0
+		result.RouteLatencyAvailable = false
+	}
 	result.DNSResolver = observation.DNSResolver
 	result.ResolvedIP = firstString(observation.ResolvedIPs)
 	result.ConnectedIP = observation.ConnectedIP
@@ -301,6 +312,14 @@ func (e *Engine) finishWithPathProof(ctx context.Context, _ *config.Config, rout
 	result.EvidenceSource = proof.EvidenceSource
 	result.PathEvidence = &proof
 	result.Simulation = proof.Simulation
+	if proof.RouteLatencyAvailable {
+		result.RouteLatencyMS = proof.RouteLatencyMS
+		result.LatencyMS = proof.RouteLatencyMS
+		result.RouteLatencyAvailable = true
+	}
+	if proof.VerificationDurationMS > 0 {
+		result.VerificationDurationMS = proof.VerificationDurationMS
+	}
 	result.ReasonCode = proof.ReasonCode
 	if result.ApplicationStatus == "DROP" {
 		result.Status = "OK"
@@ -315,6 +334,7 @@ func observationFromResult(route config.Route, result RouteResult, startedAt tim
 	observed := PathObservation{
 		Domain: result.Domain, RouteTag: route.Tag, RouteType: route.Type,
 		ExternalIPHash: result.ExternalIPHash, ExternalCountry: result.ExternalCountry,
+		RouteLatencyMS: result.RouteLatencyMS, RouteLatencyAvailable: result.RouteLatencyAvailable,
 		StartedAt: startedAt, CompletedAt: time.Now().UTC(),
 	}
 	for _, check := range result.Checks {

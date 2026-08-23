@@ -23,6 +23,10 @@ var firewallMarkPattern = regexp.MustCompile(`^0x[0-9a-fA-F]{1,8}$`)
 var routeTagPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$`)
 var nftTablePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,31}$`)
 
+// MaxProbeURLsPerService is deliberately small: one logical route check must
+// not turn a single DNS observation into an unbounded HTTP/SOCKS fan-out.
+const MaxProbeURLsPerService = 4
+
 type Config struct {
 	Version       int                `json:"version"`
 	Platform      Platform           `json:"platform"`
@@ -586,8 +590,8 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("service %s probe %s invalid body_mode: %s", name, p.Name, p.BodyMode)
 			}
 		}
-		if len(svc.ProbeURLs) > 16 {
-			return fmt.Errorf("service %s has too many probe urls (maximum 16)", name)
+		if len(svc.ProbeURLs) > MaxProbeURLsPerService {
+			return fmt.Errorf("service %s has too many probe urls (maximum %d)", name, MaxProbeURLsPerService)
 		}
 		c.Services[name] = svc
 	}

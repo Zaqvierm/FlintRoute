@@ -32,6 +32,12 @@ func (s *Server) handleZapretCalibration(w http.ResponseWriter, r *http.Request)
 	case http.MethodGet:
 		writeData(w, r, s.zapretCalibration.Status())
 	case http.MethodPost:
+		release, failure := s.acquireMutationLease()
+		if failure != nil {
+			writeError(w, r, failure.Status, failure.Code, failure.Message)
+			return
+		}
+		defer release()
 		var request zapretCalibrationRequest
 		if err := readJSON(r, &request); err != nil {
 			writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())
@@ -60,6 +66,12 @@ func (s *Server) handleZapretCalibration(w http.ResponseWriter, r *http.Request)
 		s.publishEvent(Event{Type: "zapret.calibration_started", Severity: "info", ReasonCode: "provider_calibration_started", Details: map[string]any{"domain": status.Domain, "concurrency": status.Concurrency}})
 		writeData(w, r, status)
 	case http.MethodDelete:
+		release, failure := s.acquireMutationLease()
+		if failure != nil {
+			writeError(w, r, failure.Status, failure.Code, failure.Message)
+			return
+		}
+		defer release()
 		status := s.zapretCalibration.Cancel()
 		s.publishEvent(Event{Type: "zapret.calibration_cancelled", Severity: "warning", ReasonCode: "operator_cancelled", Details: map[string]any{"run_id": status.ID}})
 		writeData(w, r, status)

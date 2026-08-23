@@ -1,5 +1,11 @@
 # Матрица состояния
 
+> **CURRENT-SHA SAFETY NOTE:** this matrix contains historical phase labels and
+> percentages. Hardware claims and PASS results from older revisions are
+> `STALE FOR CURRENT SHA`; the remediation branch has no hardware evidence.
+> Use `docs/remediation-evidence.md` for the exact local gate and current
+> evidence status.
+
 > Здесь отдельно указаны реализация, локальная проверка и подтверждение на
 > реальном роутере.
 

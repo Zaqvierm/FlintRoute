@@ -41,6 +41,22 @@ func TestPreferIPv4KeepsEveryAddressAndMovesIPv4First(t *testing.T) {
 	}
 }
 
+func TestRouteProbeTargetsAreFamilyFilteredAndBounded(t *testing.T) {
+	input := make([]netip.Addr, 0, 12)
+	for i := 1; i <= 8; i++ {
+		input = append(input, netip.MustParseAddr(fmt.Sprintf("198.51.100.%d", i)))
+	}
+	for i := 1; i <= 4; i++ {
+		input = append(input, netip.MustParseAddr(fmt.Sprintf("2001:db8::%x", i)))
+	}
+	if got := routeProbeTargets(input, "ipv4"); len(got) != maxRouteProbeTargets {
+		t.Fatalf("ipv4 route probe fan-out=%d want=%d", len(got), maxRouteProbeTargets)
+	}
+	if got := routeProbeTargets(input, "ipv6"); len(got) != maxRouteProbeTargets {
+		t.Fatalf("ipv6 route probe fan-out=%d want=%d", len(got), maxRouteProbeTargets)
+	}
+}
+
 func TestProbeHTTP200WithMarker(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
@@ -51,6 +67,41 @@ func TestProbeHTTP200WithMarker(t *testing.T) {
 	result := ProbeRoute(context.Background(), testConfig(), "example.test", "svc", serviceWithProbe(srv.URL, []int{200}, "required", []string{"GitHub"}), config.Route{Type: "direct", Tag: "direct"})
 	if result.Status != "UNVERIFIED" || result.ApplicationStatus != "OK" || !result.ServiceOK || result.PathVerified {
 		t.Fatalf("application success without route proof must be UNVERIFIED, got %+v", result)
+	}
+	if !result.RouteLatencyAvailable || result.RouteLatencyMS <= 0 || result.LatencyMS != result.RouteLatencyMS {
+		t.Fatalf("route latency was not measured separately: %+v", result)
+	}
+	if result.VerificationDurationMS < result.RouteLatencyMS {
+		t.Fatalf("verification duration %dms is shorter than route latency %dms: %+v", result.VerificationDurationMS, result.RouteLatencyMS, result)
+	}
+}
+
+type fixedProofVerifier struct {
+	proof evidence.RouteResult
+}
+
+func (v fixedProofVerifier) Verify(context.Context, PathProofRequest) (evidence.RouteResult, error) {
+	return v.proof, nil
+}
+
+func TestPathVerificationDurationIsNotRouteLatency(t *testing.T) {
+	engine := NewEngine(fixedProofVerifier{proof: evidence.RouteResult{
+		RouteLatencyMS: 74, RouteLatencyAvailable: true, LatencyMS: 74,
+		ReasonCode: "verified", Status: "OK", Simulation: true,
+	}})
+	started := time.Now().Add(-250 * time.Millisecond)
+	result := engine.finishWithPathProof(context.Background(), testConfig(), config.Route{Type: "direct", Tag: "direct"}, RouteResult{
+		Domain: "example.test", Route: "direct", RouteType: "direct", Status: "OK", ApplicationStatus: "OK",
+		ServiceOK: true, RouteLatencyMS: 74, RouteLatencyAvailable: true,
+	}, started, PathProofSession{StartedAt: started})
+	if result.LatencyMS != 74 || result.RouteLatencyMS != 74 || !result.RouteLatencyAvailable {
+		t.Fatalf("route latency was overwritten by verification duration: %+v", result)
+	}
+	if result.VerificationDurationMS < 200 {
+		t.Fatalf("verification duration did not cover orchestration time: %+v", result)
+	}
+	if result.VerificationDurationMS == result.LatencyMS {
+		t.Fatalf("latency and verification duration remain indistinguishable: %+v", result)
 	}
 }
 

@@ -16,7 +16,9 @@ HOTPLUG_IFACE_DIR="${HOTPLUG_IFACE_DIR:-$SYSTEM_ROOT/etc/hotplug.d/iface}"
 HOTPLUG_FIREWALL_DIR="${HOTPLUG_FIREWALL_DIR:-$SYSTEM_ROOT/etc/hotplug.d/firewall}"
 DNSMASQ_DIR="${DNSMASQ_DIR:-$SYSTEM_ROOT/tmp/dnsmasq.d}"
 ROUTER_POLICY_BIN="${ROUTER_POLICY_BIN:-$BIN_DIR/router-policy}"
+ROUTER_POLICY_HELPER_BIN="${ROUTER_POLICY_HELPER_BIN:-$BIN_DIR/router-policy-helper}"
 SOURCE_BINARY="${SOURCE_BINARY:-$ROOT/dist/router-policy-linux-arm64}"
+SOURCE_HELPER_BINARY="${SOURCE_HELPER_BINARY:-$ROOT/dist/router-policy-helper-linux-arm64}"
 BACKUP_ROOT="${BACKUP_ROOT:-$SYSTEM_ROOT/root/router-policy-backups}"
 BACKUP_DIR="${BACKUP_DIR:-$BACKUP_ROOT/install-$(date -u +%Y%m%dT%H%M%SZ)}"
 ROUTER_POLICY_VERSION="${ROUTER_POLICY_VERSION:-unknown}"
@@ -24,9 +26,9 @@ BACKUP_SOURCES="${BACKUP_SOURCES:-$SYSTEM_ROOT/etc/config/network $SYSTEM_ROOT/e
 TAR_BIN="${TAR_BIN:-tar}"
 UBUS_BIN="${UBUS_BIN:-ubus}"
 TIMEOUT_BIN="${TIMEOUT_BIN:-timeout}"
-SERVICES="router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
+SERVICES="router-policy-helper router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
 ENABLE_SERVICES="router-policy-dns-observer router-policy-boot-guard $SERVICES"
-INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $INIT_DIR/router-policy $INIT_DIR/router-policy-dns-observer $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/config/listener.conf $ETC_DIR/secrets/vpn-subscription-url $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
+INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $ROUTER_POLICY_HELPER_BIN $INIT_DIR/router-policy-helper $INIT_DIR/router-policy $INIT_DIR/router-policy-dns-observer $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/config/listener.conf $ETC_DIR/secrets/vpn-subscription-url $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
 
 # These directories belong to OpenWrt, not to FlintRoute.  They must never be
 # represented by a rollback archive entry: restoring synthetic staging
@@ -65,6 +67,7 @@ need_root_for_apply() {
 
 preflight_install() {
   [ -f "$SOURCE_BINARY" ] || { echo "missing $SOURCE_BINARY; run scripts/build-go.sh before install" >&2; return 1; }
+  [ -f "$SOURCE_HELPER_BINARY" ] || { echo "missing $SOURCE_HELPER_BINARY; run scripts/build-go.sh before install" >&2; return 1; }
   for p in "$ROOT/scripts" "$ROOT/openwrt" "$ROOT/config/default.json" "$ROOT/config/schema.json"; do
     [ -e "$p" ] || { echo "missing install source: $p" >&2; return 1; }
   done
@@ -449,14 +452,18 @@ snapshot_installation() {
     fi
     echo "$service|$enabled|$running" >> "$services"
   done
-  # Never archive the staging root.  The root and all synthetic parent
-  # directories inherit umask 077 and must not be replayed onto OpenWrt.
-  # Restore extracts into private staging and copies only allowlisted targets.
+  # Archive only the exact allowlisted targets recorded in the manifest.  Do
+  # not feed find(1) the staging tree: synthetic parents such as usr/ and
+  # usr/lib/ inherit umask 077 and must never become archive members, even if
+  # restore later extracts into a private directory.
   file_list="$snapshot/files.list"
-  (cd "$staging" && find . -mindepth 1 -print | sed 's#^\./##' > "$file_list") || {
-    rm -f "$file_list"
-    return 1
-  }
+  : > "$file_list"
+  while IFS='|' read -r presence p target_mode uid gid; do
+    [ "$presence" = "present" ] || continue
+    relative="${p#/}"
+    [ -n "$relative" ] || { rm -f "$file_list"; return 1; }
+    printf '%s\n' "$relative" >> "$file_list"
+  done < "$manifest"
   (cd "$staging" && "$TAR_BIN" -cf "$archive.tmp" -T "$file_list") || {
     rm -f "$file_list" "$archive.tmp"
     return 1
@@ -777,16 +784,27 @@ begin_maintenance() {
 end_maintenance() {
   [ -z "$SYSTEM_ROOT" ] || return 0
   [ -x "$ROUTER_POLICY_BIN" ] || return 0
-  run_bounded env ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$ROUTER_POLICY_BIN" maintenance end >/dev/null 2>&1 || true
+  run_bounded env ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$ROUTER_POLICY_BIN" maintenance end >/dev/null 2>&1
 }
 
 install_exit() {
   status="$1"
   trap - EXIT
+  rollback_status=0
   if [ "$status" -ne 0 ] && [ "${INSTALL_ROLLBACK_ARMED:-0}" = "1" ]; then
-    restore_installation || echo "automatic install rollback failed; backup=$BACKUP_DIR" >&2
+    restore_installation || {
+      rollback_status=1
+      echo "automatic install rollback failed; backup=$BACKUP_DIR" >&2
+    }
   fi
-  end_maintenance
+  maintenance_status=0
+  end_maintenance || {
+    maintenance_status=1
+    echo "install warning: maintenance lease could not be closed" >&2
+  }
+  if [ "$status" -eq 0 ] && { [ "$rollback_status" -ne 0 ] || [ "$maintenance_status" -ne 0 ]; }; then
+    status=1
+  fi
   exit "$status"
 }
 
@@ -828,6 +846,7 @@ install_files() {
   chmod +x "$staged_prefix/scripts/"*.sh
   chmod +x "$staged_prefix/openwrt/adapter.sh"
   chmod +x "$staged_prefix/openwrt/ensure-dns-observer.sh"
+  chmod +x "$staged_prefix/openwrt/hotplug-event"
   if [ -e "$PREFIX/components" ]; then
     if [ ! -d "$PREFIX/components" ] || [ -L "$PREFIX/components" ]; then
       echo "refusing unsafe managed component runtime: $PREFIX/components" >&2
@@ -846,6 +865,7 @@ install_files() {
   mv "$staged_prefix" "$PREFIX"
   rm -rf "$old_prefix"
   atomic_copy "$SOURCE_BINARY" "$ROUTER_POLICY_BIN" 755
+  atomic_copy "$SOURCE_HELPER_BINARY" "$ROUTER_POLICY_HELPER_BIN" 755
   if [ ! -f "$ETC_DIR/config/default.json" ]; then
     atomic_copy "$ROOT/config/default.json" "$ETC_DIR/config/default.json" 600
   else
@@ -866,6 +886,7 @@ install_files() {
   for secret in "$ETC_DIR/secrets/"*; do
     [ -e "$secret" ] && chmod 600 "$secret"
   done
+  atomic_copy "$ROOT/openwrt/init.d/router-policy-helper" "$INIT_DIR/router-policy-helper" 755
   atomic_copy "$ROOT/openwrt/init.d/router-policy" "$INIT_DIR/router-policy" 755
   atomic_copy "$ROOT/openwrt/init.d/router-policy-dns-observer" "$INIT_DIR/router-policy-dns-observer" 755
   atomic_copy "$ROOT/openwrt/init.d/router-policy-boot-guard" "$INIT_DIR/router-policy-boot-guard" 755
@@ -891,7 +912,7 @@ dry_run() {
   echo "would_backup=$BACKUP_DIR"
   echo "would_install_prefix=$PREFIX"
   echo "would_install_config=$ETC_DIR/config/default.json"
-  echo "would_install_services=router-policy-dns-observer router-policy-boot-guard router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
+  echo "would_install_services=router-policy-dns-observer router-policy-boot-guard router-policy-helper router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
   echo "would_not_enable_services_without=--enable-services"
   echo "would_not_activate_without=--activate --yes"
   echo "would_install_zapret_calibration_runner=$PREFIX/scripts/calibrate-zapret.sh"

@@ -1,6 +1,7 @@
 package state
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -533,6 +534,34 @@ func TestVerifyDatabaseFileRejectsCorruptAndSymlinkedBackups(t *testing.T) {
 		if err := VerifyDatabaseFile(link); err == nil {
 			t.Fatal("symlinked database was accepted")
 		}
+	}
+}
+
+func TestOpenPreservesUnreadableDatabaseForRescue(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "state.bbolt")
+	original := []byte("not a bbolt database")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Open(&config.Config{Storage: config.Storage{StateDir: tmp, Database: path}})
+	if err == nil {
+		t.Fatal("corrupt database unexpectedly opened")
+	}
+	var rescue *RescueError
+	if !errors.As(err, &rescue) {
+		t.Fatalf("corrupt database did not enter rescue mode: %v", err)
+	}
+	current, readErr := os.ReadFile(path)
+	if readErr != nil || string(current) != string(original) {
+		t.Fatalf("rescue altered the original database: err=%v bytes=%q", readErr, current)
+	}
+	artifacts, globErr := filepath.Glob(filepath.Join(tmp, "forensics", "router-policy-corrupt-*.bbolt"))
+	if globErr != nil || len(artifacts) != 1 {
+		t.Fatalf("expected one bounded forensic artifact, got %v err=%v", artifacts, globErr)
+	}
+	if artifact, readErr := os.ReadFile(artifacts[0]); readErr != nil || string(artifact) != string(original) {
+		t.Fatalf("forensic artifact mismatch: err=%v bytes=%q", readErr, artifact)
 	}
 }
 

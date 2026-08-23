@@ -18,9 +18,11 @@ sh tests/installer-lifecycle.sh
 sh tests/content-aware-install.sh
 sh tests/boot-guard-service.sh
 sh tests/adapter-rollback.sh
+sh tests/helper-service.sh
+sh tests/hotplug-bounded.sh
 sh tests/openwrt-adapter-integration.sh
 if command -v shellcheck >/dev/null 2>&1; then
-  find . -type f \( -name '*.sh' -o -name 'router-policy' -o -name 'router-policy-watchdog' -o -name '95-router-policy' \) \
+  find . -type f \( -name '*.sh' -o -name 'router-policy' -o -name 'router-policy-helper' -o -name 'router-policy-watchdog' -o -name '95-router-policy' \) \
     ! -path './.tools/*' ! -path './.git/*' ! -path './.local/*' ! -path './dist/*' ! -path './node_modules/*' -print0 | xargs -0 shellcheck -x
 else
   echo "shellcheck_missing=true"
@@ -31,6 +33,7 @@ sh scripts/calibrate-zapret.sh --dry-run --domain observed.example --bundle-id a
   --network-fingerprint "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
   --blockcheck /opt/zapret/blockcheck.sh >/tmp/router-policy-zapret-calibration.json
 sh tests/zapret-calibration-runtime.sh
+sh tests/nft-transition-namespace.sh
 ./dist/router-policy subscription-normalize tests/sample-subscription-array.json >/tmp/router-policy-subscription-summary.json
 ./dist/router-policy subscription-routes tests/sample-subscription-array.json >/tmp/router-policy-subscription-routes.json
 ./dist/router-policy subscription-xray --out /tmp/router-policy-xray-test.json tests/sample-subscription-array.json >/tmp/router-policy-xray-summary.json

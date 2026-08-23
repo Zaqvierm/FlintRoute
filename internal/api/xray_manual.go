@@ -28,6 +28,12 @@ func (s *Server) handleXrayManualServers(w http.ResponseWriter, r *http.Request)
 		}
 		writeData(w, r, map[string]any{"servers": servers, "count": len(servers), "capacity": 20})
 	case http.MethodPost:
+		release, failure := s.acquireMutationLease()
+		if failure != nil {
+			writeError(w, r, failure.Status, failure.Code, failure.Message)
+			return
+		}
+		defer release()
 		var request manualVLESSRequest
 		if err := readJSON(r, &request); err != nil {
 			writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())
@@ -44,6 +50,12 @@ func (s *Server) handleXrayManualServers(w http.ResponseWriter, r *http.Request)
 		})
 		writeData(w, r, map[string]any{"servers": servers, "count": len(servers), "capacity": 20, "changed": changed})
 	case http.MethodDelete:
+		release, failure := s.acquireMutationLease()
+		if failure != nil {
+			writeError(w, r, failure.Status, failure.Code, failure.Message)
+			return
+		}
+		defer release()
 		var request manualVLESSRequest
 		if err := readJSON(r, &request); err != nil {
 			writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())

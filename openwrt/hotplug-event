@@ -1,0 +1,38 @@
+#!/bin/sh
+set -eu
+umask 077
+
+runtime="${ROUTER_POLICY_RUNTIME_DIR:-/tmp/router-policy}"
+event_file="$runtime/hotplug-events.log"
+lock_dir="$runtime/hotplug-events.lock"
+event_kind="${1:-}"
+event_action="${2:-}"
+event_value="${3:-}"
+
+case "$event_kind" in
+  firewall|interface) ;;
+  *) exit 0 ;;
+esac
+case "$event_action" in
+  reload|restart|ifup|ifupdate) ;;
+  *) exit 0 ;;
+esac
+if [ "$event_kind" = interface ]; then
+  [ -n "$event_value" ] || exit 0
+  [ "${#event_value}" -le 64 ] || exit 0
+  case "$event_value" in *[!A-Za-z0-9_.:-]*) exit 0 ;; esac
+fi
+
+mkdir -p "$runtime"
+if ! mkdir "$lock_dir" 2>/dev/null; then
+  exit 0
+fi
+trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT HUP INT TERM
+
+printf '%s\t%s\t%s\t%s\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$event_kind" "$event_action" "$event_value" >> "$event_file"
+lines="$(wc -l < "$event_file" | tr -d ' ')"
+if [ "$lines" -gt 64 ]; then
+  tail -n 64 "$event_file" > "$event_file.tmp"
+  mv "$event_file.tmp" "$event_file"
+fi

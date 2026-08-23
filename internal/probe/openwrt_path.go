@@ -101,8 +101,10 @@ func (v systemDefaultPathVerifier) Verify(ctx context.Context, request PathProof
 		HostPreserved: observation.HostPreserved, SNIPreserved: observation.SNIPreserved,
 		TLSResult: observation.TLSResult, HTTPResult: observation.HTTPResult, ContentResult: observation.ContentResult,
 		ExternalIPHash: observation.ExternalIPHash, ExternalCountry: observation.ExternalCountry,
-		LatencyMS:  observation.CompletedAt.Sub(observation.StartedAt).Milliseconds(),
-		ReasonCode: "system_default_path_verified", Status: "OK", EvidenceSource: "kernel-route-get",
+		LatencyMS: observation.RouteLatencyMS, RouteLatencyMS: observation.RouteLatencyMS,
+		RouteLatencyAvailable:  observation.RouteLatencyAvailable,
+		VerificationDurationMS: observation.CompletedAt.Sub(observation.StartedAt).Milliseconds(),
+		ReasonCode:             "system_default_path_verified", Status: "OK", EvidenceSource: "kernel-route-get",
 		CheckedAt: time.Now().UTC(),
 	}, nil
 }
@@ -201,8 +203,10 @@ func (v *OpenWrtPathVerifier) Verify(ctx context.Context, request PathProofReque
 		SNIPreserved: request.Observation.SNIPreserved, TLSResult: request.Observation.TLSResult,
 		HTTPResult: request.Observation.HTTPResult, ContentResult: request.Observation.ContentResult,
 		ExternalIPHash: request.Observation.ExternalIPHash, ExternalCountry: request.Observation.ExternalCountry,
-		LatencyMS:  request.Observation.CompletedAt.Sub(request.Observation.StartedAt).Milliseconds(),
-		ReasonCode: "route_path_verified", Status: "OK", EvidenceSource: "openwrt-fixed-commands",
+		LatencyMS: request.Observation.RouteLatencyMS, RouteLatencyMS: request.Observation.RouteLatencyMS,
+		RouteLatencyAvailable:  request.Observation.RouteLatencyAvailable,
+		VerificationDurationMS: request.Observation.CompletedAt.Sub(request.Observation.StartedAt).Milliseconds(),
+		ReasonCode:             "route_path_verified", Status: "OK", EvidenceSource: "openwrt-fixed-commands",
 		Simulation: v.simulation, CheckedAt: time.Now().UTC(),
 	}
 

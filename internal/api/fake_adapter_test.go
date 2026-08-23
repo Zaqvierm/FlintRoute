@@ -25,6 +25,72 @@ type fakeAdapter struct {
 	reconcileBusyCount         int
 }
 
+type splitFakeAdapter struct {
+	*fakeAdapter
+	failPrepared  bool
+	failFinalize  bool
+	falsePrepared bool
+	falseFinalize bool
+}
+
+func newSplitFakeAdapter() *splitFakeAdapter {
+	return &splitFakeAdapter{fakeAdapter: newFakeAdapter()}
+}
+
+func (f *splitFakeAdapter) CommitPrepared(_ context.Context, tx adapter.Transaction) adapter.StepResult {
+	now := time.Now().UTC()
+	f.mu.Lock()
+	f.calls = append(f.calls, "commit_prepared")
+	f.mu.Unlock()
+	if f.failPrepared {
+		return adapter.StepResult{ProtocolVersion: adapter.AdapterProtocolVersion, Operation: "commit-prepared", Step: "commit_prepared", Status: "ERROR", Reason: "prepared activation failed", Evidence: splitBinding(tx, false, false, "adapter_activated"), StartedAt: now, FinishedAt: time.Now().UTC()}
+	}
+	res := adapter.StepResult{ProtocolVersion: adapter.AdapterProtocolVersion, Operation: "commit-prepared", Step: "commit_prepared", Status: "OK", OK: true, RollbackCapable: true, SemanticState: "adapter_activated", Evidence: splitBinding(tx, true, false, "adapter_activated"), StartedAt: now, FinishedAt: time.Now().UTC()}
+	if f.falsePrepared {
+		res.RollbackCapable = false
+		res.Evidence["rollback_capable"] = false
+		res.Committed = true
+		res.Evidence["committed"] = true
+		res.SemanticState = "committed"
+	}
+	f.mu.Lock()
+	f.activeRevision = tx.RevisionID
+	f.activeTransaction = tx.ID
+	f.activeCandidateHash = tx.CandidateHash
+	f.activeArtifactManifestHash = tx.ArtifactManifestHash
+	f.transactionState = res.SemanticState
+	f.mu.Unlock()
+	return res
+}
+
+func (f *splitFakeAdapter) FinalizeCommit(_ context.Context, tx adapter.Transaction) adapter.StepResult {
+	now := time.Now().UTC()
+	f.mu.Lock()
+	f.calls = append(f.calls, "finalize_commit")
+	f.mu.Unlock()
+	if f.failFinalize {
+		return adapter.StepResult{ProtocolVersion: adapter.AdapterProtocolVersion, Operation: "finalize-commit", Step: "finalize_commit", Status: "ERROR", Reason: "finalize failed", Evidence: splitBinding(tx, true, false, "adapter_activated"), StartedAt: now, FinishedAt: time.Now().UTC()}
+	}
+	res := adapter.StepResult{ProtocolVersion: adapter.AdapterProtocolVersion, Operation: "finalize-commit", Step: "finalize_commit", Status: "OK", OK: true, Committed: true, SemanticState: "committed", Evidence: splitBinding(tx, false, true, "committed"), StartedAt: now, FinishedAt: time.Now().UTC()}
+	if f.falseFinalize {
+		res.Committed = false
+		res.Evidence["committed"] = false
+		res.SemanticState = "adapter_activated"
+	}
+	f.mu.Lock()
+	f.transactionState = res.SemanticState
+	f.mu.Unlock()
+	return res
+}
+
+func splitBinding(tx adapter.Transaction, rollbackCapable, committed bool, state string) map[string]any {
+	return map[string]any{
+		"transaction_id": tx.ID, "revision_id": tx.RevisionID,
+		"candidate_hash": tx.CandidateHash, "artifact_manifest_hash": tx.ArtifactManifestHash,
+		"rollback_capable": rollbackCapable, "committed": committed, "transaction_state": state,
+	}
+}
+
 func newFakeAdapter() *fakeAdapter {
 	return &fakeAdapter{fail: map[string]bool{}, status: map[string]string{}}
 }

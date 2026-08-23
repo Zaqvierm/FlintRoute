@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"router-policy/internal/config"
+	"router-policy/internal/helper"
 )
 
 var (
@@ -22,9 +24,10 @@ var (
 )
 
 type OpenWrt struct {
-	helperPath string
-	configPath string
-	stateDir   string
+	helperPath   string
+	configPath   string
+	stateDir     string
+	helperSocket string
 }
 
 func NewOpenWrt(cfg *config.Config, configPath string) (*OpenWrt, error) {
@@ -43,7 +46,7 @@ func NewOpenWrt(cfg *config.Config, configPath string) (*OpenWrt, error) {
 	if stateDir == "." || !filepath.IsAbs(stateDir) {
 		return nil, fmt.Errorf("production state_dir must be absolute")
 	}
-	return &OpenWrt{helperPath: helper, configPath: cleanConfig, stateDir: stateDir}, nil
+	return &OpenWrt{helperPath: helper, configPath: cleanConfig, stateDir: stateDir, helperSocket: os.Getenv("ROUTER_POLICY_HELPER_SOCKET")}, nil
 }
 
 func (a *OpenWrt) Diagnose(ctx context.Context) StepResult { return a.runGlobal(ctx, "diagnose") }
@@ -77,6 +80,12 @@ func (a *OpenWrt) VerifyDataPlane(ctx context.Context, tx Transaction) StepResul
 func (a *OpenWrt) Commit(ctx context.Context, tx Transaction) StepResult {
 	return a.runTransaction(ctx, "commit", tx)
 }
+func (a *OpenWrt) CommitPrepared(ctx context.Context, tx Transaction) StepResult {
+	return a.runTransaction(ctx, "commit-prepared", tx)
+}
+func (a *OpenWrt) FinalizeCommit(ctx context.Context, tx Transaction) StepResult {
+	return a.runTransaction(ctx, "finalize-commit", tx)
+}
 func (a *OpenWrt) Rollback(ctx context.Context, tx Transaction) StepResult {
 	return a.runTransaction(ctx, "rollback", tx)
 }
@@ -97,12 +106,57 @@ func (a *OpenWrt) runTransaction(ctx context.Context, command string, tx Transac
 	if err := a.validateTransaction(tx); err != nil {
 		return failedStep(command, start, err)
 	}
-	if command != "prepare" {
+	if command != "prepare" && command != "finalize-commit" {
 		if _, err := ReadCapability(tx); err != nil {
 			return failedStep(command, start, err)
 		}
 	}
-	return a.execute(ctx, command, start, a.configPath, tx.ID, tx.RevisionID)
+	if a.helperSocket != "" {
+		return a.executeHelperTransaction(ctx, command, start, tx)
+	}
+	return a.execute(ctx, command, start, a.configPath, tx.ID, tx.RevisionID, tx.CandidateHash, tx.ArtifactManifestHash)
+}
+
+func (a *OpenWrt) executeHelperTransaction(ctx context.Context, command string, start time.Time, tx Transaction) StepResult {
+	requestID, err := secureRandomHex(8)
+	if err != nil {
+		return failedStep(command, start, err)
+	}
+	request := helper.Request{
+		ProtocolVersion:      helper.ProtocolVersion,
+		RequestID:            "req_" + requestID,
+		Command:              "transaction." + strings.ReplaceAll(command, "-", "_"),
+		Generation:           tx.RevisionID,
+		RevisionID:           tx.RevisionID,
+		TransactionID:        tx.ID,
+		RollbackTokenHash:    tx.RollbackTokenHash,
+		CandidateHash:        tx.CandidateHash,
+		ArtifactManifestHash: tx.ArtifactManifestHash,
+		Transaction:          &helper.TransactionRequest{Operation: command},
+	}
+	response, callErr := helper.Call(ctx, a.helperSocket, request)
+	result := StepResult{ProtocolVersion: AdapterProtocolVersion, RequestID: request.RequestID, Operation: command, Step: stepName(command), StartedAt: start, FinishedAt: time.Now().UTC(), Evidence: map[string]any{}}
+	for key, value := range response.Evidence {
+		result.Evidence[key] = value
+	}
+	result.Evidence["committed"] = response.Committed
+	result.Evidence["rollback_capable"] = response.RollbackCapable
+	result.SemanticState = response.SemanticState
+	result.Committed = response.Committed
+	result.RollbackCapable = response.RollbackCapable
+	result.ManagementVerified = response.ManagementVerified
+	result.DataPlaneVerified = response.DataPlaneVerified
+	result.OK = callErr == nil && response.Accepted
+	if callErr != nil {
+		result.Status = "ERROR"
+		result.Reason = callErr.Error()
+		if response.Reason != "" {
+			result.Reason = response.Reason
+		}
+		return result
+	}
+	result.Status = "OK"
+	return result
 }
 
 func (a *OpenWrt) validateTransaction(tx Transaction) error {
@@ -144,7 +198,14 @@ func (a *OpenWrt) execute(ctx context.Context, command string, start time.Time, 
 	}
 	evidence := parseEvidence(raw)
 	res := okStatus(stepName(command), start, err)
+	res.Operation = command
+	res.ProtocolVersion = AdapterProtocolVersion
 	res.Evidence = evidence
+	res.Committed, _ = evidence["committed"].(bool)
+	res.RollbackCapable, _ = evidence["rollback_capable"].(bool)
+	if state, ok := evidence["transaction_state"].(string); ok {
+		res.SemanticState = state
+	}
 	if err != nil {
 		if reason, ok := evidence["reason"].(string); ok && reason != "" {
 			res.Reason = reason
@@ -212,7 +273,7 @@ func allowedGlobalCommand(command string) bool {
 
 func allowedTransactionCommand(command string) bool {
 	switch command {
-	case "prepare", "validate-candidate", "snapshot-current", "apply-candidate", "verify-management", "verify-data-plane", "commit", "rollback":
+	case "prepare", "validate-candidate", "snapshot-current", "apply-candidate", "verify-management", "verify-data-plane", "commit", "commit-prepared", "finalize-commit", "rollback":
 		return true
 	default:
 		return false

@@ -56,6 +56,10 @@ $env:CGO_ENABLED = "0"
 if ($LASTEXITCODE -ne 0) {
   throw "Linux ARM64 build failed with exit code $LASTEXITCODE"
 }
+& $go build -trimpath -ldflags="-s -w" -o (Join-Path $dist "router-policy-helper-linux-arm64") ./cmd/router-policy-helper
+if ($LASTEXITCODE -ne 0) {
+  throw "Linux ARM64 helper build failed with exit code $LASTEXITCODE"
+}
 
 $bashPath = $null
 $gitBash = "C:\Program Files\Git\bin\bash.exe"

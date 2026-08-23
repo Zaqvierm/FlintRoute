@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -574,6 +573,35 @@ func run(args []string) error {
 		actualHash := "sha256:" + hex.EncodeToString(sum[:])
 		if actualHash != *expectedHash {
 			return fmt.Errorf("candidate canonical hash mismatch")
+		}
+		return nil
+	case "internal-print-managed-marks":
+		if len(args) != 1 {
+			return errors.New("usage: router-policy internal-print-managed-marks")
+		}
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			return err
+		}
+		seen := map[string]bool{}
+		marks := []struct {
+			name  string
+			value string
+		}{
+			{"direct", cfg.OpenWrt.DirectMark},
+			{"zapret", cfg.OpenWrt.ZapretMark},
+			{"xray", cfg.OpenWrt.XrayMark},
+			{"xray_tproxy", cfg.OpenWrt.XrayTProxyMark},
+			{"xray_bypass", cfg.OpenWrt.XrayBypassMark},
+			{"drop", cfg.OpenWrt.DropMark},
+		}
+		for _, mark := range marks {
+			if mark.value == "" || seen[mark.value] {
+				continue
+			}
+			seen[mark.value] = true
+			fmt.Printf("managed_mark=%s\n", mark.value)
+			fmt.Printf("managed_mark_name=%s\n", mark.name)
 		}
 		return nil
 	case "internal-verify-zapret-provider":
@@ -1249,12 +1277,9 @@ func runWatchdog(healthURL string, interval, startupGrace time.Duration, failure
 		}
 		decision := controller.Observe(now, healthy, inhibited)
 		if decision.Action == "restart" {
-			commandCtx, commandCancel := context.WithTimeout(ctx, 30*time.Second)
-			restartErr := exec.CommandContext(commandCtx, serviceScript, "restart").Run()
-			commandCancel()
-			if restartErr != nil {
-				fmt.Fprintln(os.Stderr, "watchdog restart failed:", restartErr)
-			}
+			// procd is the sole lifecycle owner.  This process only records a
+			// bounded observation; it must never issue a second restart command.
+			fmt.Fprintf(os.Stderr, "watchdog action=restart_suppressed service=%s\n", serviceScript)
 		}
 		select {
 		case <-ctx.Done():
@@ -1318,6 +1343,14 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 	}
 	app, err := api.NewServerWithOptions(cfg, api.Options{Provider: provider, ProductionAdapter: productionAdapter, SubscriptionPreparer: subscriptionPreparer, ZapretSetupChecker: zapretSetupChecker, ComponentManager: componentManager, ZapretCalibration: zapretCalibration, VLESSThroughputTester: vlessThroughputTester, Development: development, DeferRecovery: !development})
 	if err != nil {
+		if api.IsRescueRequired(err) {
+			databasePath := cfg.Storage.Database
+			if databasePath == "" {
+				databasePath = filepath.Join(cfg.Storage.StateDir, "router-policy.bbolt")
+			}
+			fmt.Fprintln(os.Stderr, "router-policy rescue mode: persistent state is unreadable")
+			return runRescueHTTPProcess(listen, api.NewRescueHandler(err, databasePath))
+		}
 		return err
 	}
 	defer app.Close()
@@ -1331,8 +1364,10 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 		Handler:           app.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      0,
-		IdleTimeout:       60 * time.Second,
+		// SSE clients reconnect after this bounded window; keeping the global
+		// deadline finite prevents a stalled writer from pinning a goroutine.
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 	mode := "production"
 	if development {
@@ -1361,10 +1396,66 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 	}
 }
 
+func runRescueHTTPProcess(requestedListen string, handler http.Handler) error {
+	_, port, err := net.SplitHostPort(requestedListen)
+	if err != nil || port == "" {
+		port = "8787"
+	}
+	server := &http.Server{
+		Addr:              net.JoinHostPort("127.0.0.1", port),
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      5 * time.Second,
+		IdleTimeout:       30 * time.Second,
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.ListenAndServe() }()
+	select {
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			return err
+		}
+		return <-errCh
+	}
+}
+
 func loadRuntimeConfig(path string) (*config.Config, error) {
-	cfg, err := config.Load(path)
+	bootstrap, err := config.Load(path)
 	if err != nil {
 		return nil, err
+	}
+	cfg := bootstrap
+	// The packaged file is immutable bootstrap data. Once a committed control
+	// plane revision exists, bbolt is the only source of the active config.
+	// Opening the store here is short-lived; NewServerWithOptions opens it again
+	// after this function returns and owns the long-lived handle.
+	store, storeErr := state.Open(bootstrap)
+	if storeErr != nil {
+		return nil, fmt.Errorf("open state for active config: %w", storeErr)
+	}
+	var persisted config.Config
+	if err := store.LoadJSON("meta", "active_config", &persisted); err == nil {
+		if err := persisted.Validate(); err != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("persisted active config is invalid: %w", err)
+		}
+		cfg = &persisted
+	} else if !errors.Is(err, state.ErrNotFound) {
+		_ = store.Close()
+		return nil, fmt.Errorf("load persisted active config: %w", err)
+	}
+	if err := store.Close(); err != nil {
+		return nil, fmt.Errorf("close state after active config load: %w", err)
 	}
 	if len(cfg.TSPUSources) > 0 {
 		return cfg, nil

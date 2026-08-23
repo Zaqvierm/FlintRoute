@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"router-policy/internal/remotefetch"
+
 	"github.com/maxmind/mmdbwriter"
 	"github.com/maxmind/mmdbwriter/mmdbtype"
 )
@@ -39,7 +41,7 @@ func TestUpdateLookupPreviousAndNotModified(t *testing.T) {
 	defer Invalidate(PreviousPath(database))
 	now := time.Date(2026, 7, 12, 1, 0, 0, 0, time.UTC)
 
-	result, err := Update(context.Background(), server.Client(), server.URL, database, 1<<20, now)
+	result, err := Update(remotefetch.WithLoopbackForTests(context.Background()), server.Client(), server.URL, database, 1<<20, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +55,7 @@ func TestUpdateLookupPreviousAndNotModified(t *testing.T) {
 
 	currentBody = second
 	etag = `"v2"`
-	result, err = Update(context.Background(), server.Client(), server.URL, database, 1<<20, now.Add(time.Hour))
+	result, err = Update(remotefetch.WithLoopbackForTests(context.Background()), server.Client(), server.URL, database, 1<<20, now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +71,7 @@ func TestUpdateLookupPreviousAndNotModified(t *testing.T) {
 		t.Fatalf("previous lookup failed: country=%s err=%v", previousCountry, err)
 	}
 
-	result, err = Update(context.Background(), server.Client(), server.URL, database, 1<<20, now.Add(2*time.Hour))
+	result, err = Update(remotefetch.WithLoopbackForTests(context.Background()), server.Client(), server.URL, database, 1<<20, now.Add(2*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +87,7 @@ func TestLookupFailsClosedOnCorruptionAndStaleness(t *testing.T) {
 	database := filepath.Join(t.TempDir(), "geoip.mmdb")
 	defer Invalidate(database)
 	now := time.Now().UTC()
-	if _, err := Update(context.Background(), server.Client(), server.URL, database, 1<<20, now); err != nil {
+	if _, err := Update(remotefetch.WithLoopbackForTests(context.Background()), server.Client(), server.URL, database, 1<<20, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := Lookup(database, netip.MustParseAddr("8.8.8.8"), time.Hour, now.Add(2*time.Hour)); err == nil {
@@ -104,7 +106,7 @@ func TestUpdateRejectsInvalidOrOversizedDatabase(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(bytes.Repeat([]byte("x"), 2048)) }))
 	defer server.Close()
 	database := filepath.Join(t.TempDir(), "geoip.mmdb")
-	if _, err := Update(context.Background(), server.Client(), server.URL, database, 1024, time.Now().UTC()); err == nil {
+	if _, err := Update(remotefetch.WithLoopbackForTests(context.Background()), server.Client(), server.URL, database, 1024, time.Now().UTC()); err == nil {
 		t.Fatal("oversized invalid GeoIP database was accepted")
 	}
 	if _, err := os.Stat(database); !os.IsNotExist(err) {

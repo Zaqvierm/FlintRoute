@@ -122,11 +122,10 @@ func (w Watcher) readFrom(ctx context.Context, offset, maxBytes int64) (int64, b
 	if closeErr != nil {
 		return offset, false, closeErr
 	}
-	if info.Size() > maxBytes {
-		if err := os.Truncate(w.Path, 0); err != nil {
-			return position, false, err
-		}
-		return 0, true, nil
-	}
+	// The reader is not allowed to truncate a file owned by dnsmasq.  Rotation
+	// or truncation is detected on the next pass by size/boundary checks; an
+	// external writer remains the sole owner of its inode.  Keep the cursor at
+	// the bytes actually consumed so an oversized log is drained in bounded
+	// chunks without replaying or destroying the writer's data.
 	return position, false, nil
 }

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"router-policy/internal/remotefetch"
 )
 
 func TestFetchSubscriptionHTTPSAndMode0600(t *testing.T) {
@@ -16,7 +18,7 @@ func TestFetchSubscriptionHTTPSAndMode0600(t *testing.T) {
 	}))
 	defer server.Close()
 	output := filepath.Join(t.TempDir(), "subscription.json")
-	summary, err := FetchSubscription(context.Background(), server.Client(), server.URL+"/secret-token", output, FetchOptions{MaxBytes: 1024})
+	summary, err := FetchSubscription(remotefetch.WithLoopbackForTests(context.Background()), server.Client(), server.URL+"/secret-token", output, FetchOptions{MaxBytes: 1024})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +40,7 @@ func TestFetchSubscriptionRejectsHTTPSDowngradeWithoutLeakingURL(t *testing.T) {
 		w.WriteHeader(http.StatusFound)
 	}))
 	defer server.Close()
-	_, err := FetchSubscription(context.Background(), server.Client(), server.URL+"/private-token", filepath.Join(t.TempDir(), "subscription.json"), FetchOptions{})
+	_, err := FetchSubscription(remotefetch.WithLoopbackForTests(context.Background()), server.Client(), server.URL+"/private-token", filepath.Join(t.TempDir(), "subscription.json"), FetchOptions{})
 	if err == nil {
 		t.Fatal("HTTPS to HTTP redirect was accepted")
 	}
@@ -53,7 +55,7 @@ func TestFetchSubscriptionRejectsOversizeBeforeWrite(t *testing.T) {
 	}))
 	defer server.Close()
 	output := filepath.Join(t.TempDir(), "subscription.json")
-	if _, err := FetchSubscription(context.Background(), server.Client(), server.URL, output, FetchOptions{MaxBytes: 1024}); err == nil {
+	if _, err := FetchSubscription(remotefetch.WithLoopbackForTests(context.Background()), server.Client(), server.URL, output, FetchOptions{MaxBytes: 1024}); err == nil {
 		t.Fatal("oversized subscription was accepted")
 	}
 	if _, err := os.Stat(output); !os.IsNotExist(err) {

@@ -1,6 +1,14 @@
 #!/bin/sh
 set -eu
 
+case "$(uname -s 2>/dev/null || true)" in
+  Linux*) ;;
+  *)
+    echo "NOT RUN LOCALLY — requires Linux process groups/procfs for Zapret cleanup"
+    exit 0
+    ;;
+esac
+
 ROOT=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd)
 TMP="${TMPDIR:-/tmp}/router-policy-zapret-calibration-$$"
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM

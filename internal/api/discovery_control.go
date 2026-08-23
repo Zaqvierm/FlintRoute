@@ -73,13 +73,20 @@ func discoveryDedupeKey(domain string) string {
 func discoveryCandidateDetails(results []probe.RouteResult) []map[string]any {
 	items := make([]map[string]any, 0, len(results))
 	for _, result := range results {
-		items = append(items, map[string]any{
+		item := map[string]any{
 			"route": result.Route, "route_type": result.RouteType, "status": result.Status,
 			"path_verified": result.PathVerified, "service_ok": result.ServiceOK,
-			"reason": result.ReasonCode, "latency_ms": result.LatencyMS,
-			"dns_resolver": result.DNSResolver, "resolved_ip": result.ResolvedIP,
+			"reason":                   result.ReasonCode,
+			"route_latency_available":  result.RouteLatencyAvailable,
+			"verification_duration_ms": result.VerificationDurationMS,
+			"dns_resolver":             result.DNSResolver, "resolved_ip": result.ResolvedIP,
 			"connected_ip": result.ConnectedIP, "interface": result.Interface,
-		})
+		}
+		if result.RouteLatencyAvailable {
+			item["latency_ms"] = result.RouteLatencyMS
+			item["route_latency_ms"] = result.RouteLatencyMS
+		}
+		items = append(items, item)
 	}
 	return items
 }
@@ -113,6 +120,16 @@ func discoveryHTTPStatus(result probe.RouteResult) string {
 	return ""
 }
 
+func checkVerificationDuration(check planner.DomainCheck, startedAt time.Time) int64 {
+	if check.VerificationDurationMS > 0 {
+		return check.VerificationDurationMS
+	}
+	if startedAt.IsZero() {
+		return 0
+	}
+	return time.Since(startedAt).Milliseconds()
+}
+
 type discoveryControlState struct {
 	Configured           bool        `json:"configured,omitempty"`
 	Mode                 string      `json:"mode,omitempty"`
@@ -138,6 +155,38 @@ type discoverySuggestion struct {
 	ClassificationState string    `json:"classification_state"`
 	ProbeState          string    `json:"probe_state"`
 	PolicyState         string    `json:"policy_state"`
+}
+
+func plannerProbeState(check planner.DomainCheck) string {
+	if check.VerificationState != "" {
+		switch check.VerificationState {
+		case "in_progress":
+			return "verifying"
+		case "verified":
+			if check.Selected != nil && check.Selected.PathVerified {
+				return "verified_candidate"
+			}
+			return "verifying"
+		case "terminal_no_safe_route":
+			return "no_safe_route"
+		}
+	}
+	switch check.Status {
+	case "SELECTED", "DROP":
+		if check.Selected != nil && check.Selected.PathVerified {
+			return "verified_candidate"
+		}
+		return "verifying"
+	case "NO_SAFE_ROUTE":
+		return "no_safe_route"
+	case "VERIFYING":
+		return "verifying"
+	default:
+		if check.Selected != nil {
+			return "verifying"
+		}
+		return "unknown"
+	}
 }
 
 type discoveryConfigureRequest struct {
@@ -198,6 +247,12 @@ func (s *Server) handleDiscoveryConfigure(w http.ResponseWriter, r *http.Request
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
 		return
 	}
+	release, failure := s.acquireMutationLease()
+	if failure != nil {
+		writeError(w, r, failure.Status, failure.Code, failure.Message)
+		return
+	}
+	defer release()
 	var request discoveryConfigureRequest
 	if err := readJSON(r, &request); err != nil {
 		writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())
@@ -254,27 +309,12 @@ func validateDiscoveryOperations(operations []ChangeOp) error {
 }
 
 func (s *Server) discoveryAutoAllowed(cfg *config.Config, check planner.DomainCheck) error {
-	if check.Selected == nil || !check.Selected.PathVerified {
-		return errors.New("selected route has no PathVerified evidence")
-	}
-	if check.Selected.RouteType == "direct" || check.Selected.RouteType == "drop" {
-		return errors.New("Direct and Drop observations are not automatically persisted")
-	}
-	if cfg.OpenWrt.RollbackTimeoutSeconds <= 0 {
-		return errors.New("automatic apply requires a rollback timer")
-	}
-	if active := s.activeTransaction(""); active != "" {
-		return fmt.Errorf("transaction %s is already active", active)
-	}
-	_, hourlyLimit, limit, state := s.effectiveDiscoverySettings(cfg)
-	if state.ConsecutiveRollbacks >= limit {
-		return fmt.Errorf("automatic apply paused after %d consecutive rollbacks", state.ConsecutiveRollbacks)
-	}
-	recent := pruneDiscoveryTimes(state.AppliedAt, s.discoveryNow().Add(-time.Hour))
-	if len(recent) >= hourlyLimit {
-		return errors.New("hourly automatic rule limit reached")
-	}
-	return nil
+	// DNS observations may not invoke the full ChangeSet/dataplane path. Until
+	// route-only assignment exists, auto_apply_verified remains non-mutating and
+	// leaves the verified result as a suggestion.
+	_ = cfg
+	_ = check
+	return errors.New("automatic_route_assignment_unavailable")
 }
 
 func (s *Server) recordDiscoveryAutoResult(result automaticCommitResult) {
@@ -341,10 +381,14 @@ func pruneDiscoveryTimes(values []time.Time, cutoff time.Time) []time.Time {
 }
 
 func (s *Server) saveDiscoverySuggestion(observation discovery.Observation, check planner.DomainCheck) {
+	probeState := plannerProbeState(check)
 	suggestion := discoverySuggestion{
 		Domain: check.Domain, Category: check.Category, Confidence: check.Confidence,
-		QueryType: observation.QueryType, ObservedAt: s.discoveryNow(), Reason: "no verified route selected",
-		ClassificationState: "unresolved", ProbeState: "no_safe_route", PolicyState: "suggested",
+		QueryType: observation.QueryType, ObservedAt: s.discoveryNow(), Reason: "verification is still in progress",
+		ClassificationState: "unresolved", ProbeState: probeState, PolicyState: "suggested",
+	}
+	if probeState == "no_safe_route" {
+		suggestion.Reason = "no verified route selected"
 	}
 	if check.Confidence > 0 {
 		suggestion.ClassificationState = "classified"

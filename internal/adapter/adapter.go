@@ -33,6 +33,15 @@ type Interface interface {
 	Status(context.Context) StepResult
 }
 
+// PreparedCommitter is implemented by adapters that can activate a
+// candidate while retaining rollback capability.  It is intentionally an
+// optional interface so development/fake adapters can keep the older contract
+// while the production OpenWrt adapter uses the split protocol.
+type PreparedCommitter interface {
+	CommitPrepared(context.Context, Transaction) StepResult
+	FinalizeCommit(context.Context, Transaction) StepResult
+}
+
 type RecoveryTarget struct {
 	TransactionID        string `json:"transaction_id"`
 	RevisionID           string `json:"revision_id"`
@@ -65,6 +74,9 @@ type Transaction struct {
 }
 
 type StepResult struct {
+	ProtocolVersion    int            `json:"protocol_version,omitempty"`
+	RequestID          string         `json:"request_id,omitempty"`
+	Operation          string         `json:"operation,omitempty"`
 	Step               string         `json:"step"`
 	Status             string         `json:"status"`
 	OK                 bool           `json:"ok"`
@@ -72,8 +84,94 @@ type StepResult struct {
 	DataPlaneVerified  bool           `json:"data_plane_verified"`
 	Reason             string         `json:"reason,omitempty"`
 	Evidence           map[string]any `json:"evidence,omitempty"`
+	SemanticState      string         `json:"semantic_state,omitempty"`
+	Committed          bool           `json:"committed,omitempty"`
+	RollbackCapable    bool           `json:"rollback_capable,omitempty"`
+	Generation         string         `json:"generation,omitempty"`
 	StartedAt          time.Time      `json:"started_at"`
 	FinishedAt         time.Time      `json:"finished_at"`
+}
+
+const AdapterProtocolVersion = 1
+
+// ValidateBinding checks the semantic identity returned by an adapter.  An
+// exit code/OK bit alone is not enough: a helper may return a process success
+// while reporting that the requested transaction was already committed or
+// that rollback capability is gone.
+func ValidateBinding(result StepResult, operation string, tx Transaction) error {
+	if !result.OK || result.Status != "OK" {
+		return fmt.Errorf("adapter %s failed: %s", operation, result.Reason)
+	}
+	if result.Operation != "" && result.Operation != operation {
+		return fmt.Errorf("adapter operation mismatch: got %q want %q", result.Operation, operation)
+	}
+	if result.ProtocolVersion != 0 && result.ProtocolVersion != AdapterProtocolVersion {
+		return fmt.Errorf("unsupported adapter protocol version %d", result.ProtocolVersion)
+	}
+	strict := result.ProtocolVersion != 0 || result.Operation != ""
+	for key, expected := range map[string]string{
+		"transaction_id":         tx.ID,
+		"revision_id":            tx.RevisionID,
+		"candidate_hash":         tx.CandidateHash,
+		"artifact_manifest_hash": tx.ArtifactManifestHash,
+	} {
+		if value, present := result.Evidence[key]; present {
+			actual, ok := value.(string)
+			if !ok || actual != expected {
+				return fmt.Errorf("adapter %s binding mismatch for %s", operation, key)
+			}
+		} else if strict {
+			return fmt.Errorf("adapter %s omitted binding field %s", operation, key)
+		}
+	}
+	return nil
+}
+
+func ValidatePreparedCommit(result StepResult, tx Transaction) error {
+	if err := ValidateBinding(result, "commit-prepared", tx); err != nil {
+		return err
+	}
+	if result.Committed || result.SemanticState == "committed" || result.SemanticState != "adapter_activated" {
+		return fmt.Errorf("adapter committed before control-plane finalization")
+	}
+	if value, present := result.Evidence["rollback_capable"]; present {
+		capable, ok := value.(bool)
+		if !ok || !capable {
+			return fmt.Errorf("adapter did not prove rollback capability after prepared commit")
+		}
+	} else if !result.RollbackCapable {
+		return fmt.Errorf("adapter did not prove rollback capability after prepared commit")
+	}
+	return nil
+}
+
+func ValidateFinalizedCommit(result StepResult, tx Transaction) error {
+	if err := ValidateBinding(result, "finalize-commit", tx); err != nil {
+		return err
+	}
+	if !result.Committed || result.SemanticState != "committed" {
+		return fmt.Errorf("adapter did not prove committed state")
+	}
+	return nil
+}
+
+func ValidateRollback(result StepResult, tx Transaction) error {
+	if err := ValidateBinding(result, "rollback", tx); err != nil {
+		return err
+	}
+	if value, present := result.Evidence["rollback"]; present {
+		rolled, ok := value.(bool)
+		if !ok || !rolled {
+			return fmt.Errorf("adapter reported rollback=false")
+		}
+	}
+	if result.SemanticState == "committed" || result.Committed {
+		return fmt.Errorf("adapter is committed; rollback result is ambiguous")
+	}
+	if result.ProtocolVersion != 0 && result.SemanticState != "rolled_back" {
+		return fmt.Errorf("adapter rollback state is not rolled_back")
+	}
+	return nil
 }
 
 type FileSnapshot struct {
@@ -338,14 +436,42 @@ func (a *Filesystem) VerifyDataPlane(_ context.Context, tx Transaction) StepResu
 	return res
 }
 
-func (a *Filesystem) Commit(_ context.Context, tx Transaction) StepResult {
+func (a *Filesystem) Commit(ctx context.Context, tx Transaction) StepResult {
+	prepared := a.CommitPrepared(ctx, tx)
+	if !prepared.OK {
+		return prepared
+	}
+	return a.FinalizeCommit(ctx, tx)
+}
+
+func (a *Filesystem) CommitPrepared(_ context.Context, tx Transaction) StepResult {
+	start := time.Now().UTC()
+	err := a.requirePrepared(tx)
+	if err == nil {
+		err = a.writeStatus(tx, "adapter_activated")
+	}
+	res := okStatus("commit_prepared", start, err)
+	res.Operation = "commit-prepared"
+	res.ProtocolVersion = AdapterProtocolVersion
+	res.RollbackCapable = err == nil
+	res.SemanticState = "adapter_activated"
+	res.Evidence = map[string]any{"transaction_id": tx.ID, "revision_id": tx.RevisionID, "candidate_hash": tx.CandidateHash, "artifact_manifest_hash": tx.ArtifactManifestHash, "rollback_capable": err == nil}
+	return res
+}
+
+func (a *Filesystem) FinalizeCommit(_ context.Context, tx Transaction) StepResult {
 	start := time.Now().UTC()
 	err := a.requirePrepared(tx)
 	if err == nil {
 		err = a.writeStatus(tx, "committed")
 	}
-	res := okStatus("commit", start, err)
-	res.Evidence = map[string]any{"transaction": tx.ID, "revision": tx.RevisionID}
+	res := okStatus("finalize_commit", start, err)
+	res.Operation = "finalize-commit"
+	res.ProtocolVersion = AdapterProtocolVersion
+	res.Committed = err == nil
+	res.SemanticState = "committed"
+	res.RollbackCapable = false
+	res.Evidence = map[string]any{"transaction_id": tx.ID, "revision_id": tx.RevisionID, "candidate_hash": tx.CandidateHash, "artifact_manifest_hash": tx.ArtifactManifestHash, "committed": err == nil, "rollback_capable": false}
 	return res
 }
 
@@ -356,7 +482,11 @@ func (a *Filesystem) Rollback(_ context.Context, tx Transaction) StepResult {
 		err = a.writeStatus(tx, "rolled_back")
 	}
 	res := okStatus("rollback", start, err)
-	res.Evidence = map[string]any{"transaction": tx.ID, "revision": tx.RevisionID}
+	res.Operation = "rollback"
+	res.ProtocolVersion = AdapterProtocolVersion
+	res.SemanticState = "rolled_back"
+	res.RollbackCapable = false
+	res.Evidence = map[string]any{"transaction_id": tx.ID, "revision_id": tx.RevisionID, "candidate_hash": tx.CandidateHash, "artifact_manifest_hash": tx.ArtifactManifestHash, "rollback": err == nil, "rollback_capable": false}
 	return res
 }
 
