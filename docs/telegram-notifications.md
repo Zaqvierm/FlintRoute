@@ -1,67 +1,58 @@
-# Telegram notifications, TG WS Proxy and external SOCKS
+# Telegram-уведомления, TG WS Proxy и внешний SOCKS
 
-Telegram delivery is an optional control-plane subsystem. Routing bootstrap,
-health checks and rollback do not depend on it.
+> **Статус на `effa938`:** software-контракт и локальные проверки актуальны.
+> Реальная доставка/клиентский TGWS path на железе текущего SHA не доказаны.
 
-## Notifications
+Доставка в Telegram — необязательная подсистема control plane. Начальная
+маршрутизация, health checks и rollback от неё не зависят.
 
-`PUT /api/v1/telegram/configure` accepts a bot token, chat ID, enabled flag and
-event allowlist. When delivery is enabled, FlintRoute verifies both `getMe` and
-`getChat` before storing the configuration. `POST /api/v1/telegram/test` sends a
-real test message.
+## Уведомления
 
-The secret file is a regular non-symlink file with mode `0600`; its directory is
-created with mode `0700`. The token and chat ID are never returned through API,
-events or status. Empty token/chat fields preserve existing values, so delivery
-can be disabled without deleting its settings.
+`PUT /api/v1/telegram/configure` принимает bot token, chat ID, enabled flag и
+event allowlist. При включении FlintRoute проверяет `getMe` и `getChat` до
+сохранения. `POST /api/v1/telegram/test` отправляет настоящее тестовое сообщение.
 
-Runtime states are `not_configured`, `configured`, `verified`, `degraded` and
-`failed`. Delivery uses a bounded queue, duplicate suppression, request
-timeouts, minimum send interval and bounded exponential retry. Supported event
-types are:
+Secret file — обычный non-symlink файл mode `0600` в directory mode `0700`.
+Token и chat ID никогда не возвращаются через API, events или status. Пустые
+поля сохраняют прежние значения, поэтому delivery можно отключить без удаления
+настроек.
 
-- `apply_succeeded`;
-- `rollback`;
-- `route_loss`;
-- `recovery`;
-- `auto_apply_blocked`;
-- `storage_critical`.
+Состояния runtime: `not_configured`, `configured`, `verified`, `degraded`,
+`failed`. Доставка использует bounded queue, дедупликацию, timeout, минимальный
+интервал отправки и bounded exponential retry. Разрешённые события:
+`apply_succeeded`, `rollback`, `route_loss`, `recovery`, `auto_apply_blocked`,
+`storage_critical`.
 
 ## Managed TG WS Proxy
 
-Component Manager installs the pinned OpenWrt package from
-`spatiumstas/tg-ws-proxy-go`. Installation alone leaves the service disabled.
-`POST /api/v1/tgws/configure` validates the port and optional Fake TLS domain,
-generates the secret on the router, writes only regular `0600` config files,
-enables the package's procd service, and checks both the local listener and the
-configured Telegram DC.
+Component Manager устанавливает pinned OpenWrt package из
+`spatiumstas/tg-ws-proxy-go`. Сама установка service не включает.
+`POST /api/v1/tgws/configure` проверяет port и optional Fake TLS domain, генерирует
+secret на роутере, пишет только regular config files `0600`, включает package
+procd service и проверяет local listener и заданный Telegram DC.
 
-The secret is absent from status, events and diagnostics. A `tg://proxy` link is
-returned once by the configure response. The router-side checks produce
-`ready_for_client`, not an end-to-end PASS. The user must open the link in a
-Telegram client before `client_path_verified` can become authoritative.
+Secret отсутствует в status, events и diagnostics. Ответ configure один раз
+возвращает ссылку `tg://proxy`. Router-side checks дают `ready_for_client`, но не
+end-to-end PASS: пользователь должен открыть ссылку в Telegram, только после
+этого `client_path_verified` становится authoritative.
 
-TG WS Proxy is a client-facing MTProto/WebSocket proxy server. It is not a
-SOCKS5 outbound and does not transparently intercept arbitrary Telegram traffic
-from LAN clients.
+TG WS Proxy — client-facing MTProto/WebSocket proxy server. Это не outbound SOCKS5
+и не transparent interception произвольного Telegram traffic от LAN clients.
 
-## External SOCKS
+## Внешний SOCKS
 
-FlintRoute does not ship or supervise a Telegram WebSocket transport. The route
-type is therefore named `external_socks`: an operator supplies an existing
-loopback SOCKS5 endpoint. FlintRoute owns only the Xray route that forwards to
-that endpoint.
+FlintRoute не поставляет и не supervises Telegram WebSocket transport. Тип route
+называется `external_socks`: оператор указывает уже существующий loopback SOCKS5.
+FlintRoute владеет только Xray route, направляющим трафик к этому endpoint.
 
-The setup API checks loopback addressing, TCP reachability, an unauthenticated
-SOCKS5 handshake, remote-domain CONNECT, TLS and HTTP. A successful check does
-not change routing. Activation is explicit and creates one normal ChangeSet for
-the Xray mode, route and test-domain binding. The standard validate, apply,
-PathVerified, confirm/rollback sequence remains authoritative.
+Setup API проверяет loopback addressing, TCP reachability, unauthenticated SOCKS5
+handshake, remote-domain CONNECT, TLS и HTTP. Успешная проверка не меняет routing.
+Явная activation создаёт обычный ChangeSet для Xray mode, route и test-domain
+binding; authoritative остаётся цепочка validate → apply → PathVerified →
+confirm/rollback.
 
-Old persisted `tg_ws_proxy` route types and `tg-ws-proxy` tags are normalized to
-`external_socks` and `external-socks` during config validation. No process is
-killed, installed or restarted by this compatibility migration.
-
-Hardware notification delivery, TGWS client activation and external transport
-availability still require a router test with the corresponding client or
-operator-provided credentials and endpoint.
+Старые persisted route type `tg_ws_proxy` и tag `tg-ws-proxy` при validation
+нормализуются в `external_socks` и `external-socks`. Процессы не убиваются, не
+устанавливаются и не перезапускаются. Hardware notification delivery, TGWS client
+activation и внешний transport требуют отдельного теста с реальным client или
+credentials/operator endpoint.

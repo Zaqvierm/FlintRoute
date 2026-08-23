@@ -1,200 +1,197 @@
-# Remediation design: transaction and privilege boundaries
+# Дизайн remediation: границы транзакций и привилегий
 
-Base review SHA: `d45a779dfa9dc024b426cef358d3df4d32478897`
+Базовый SHA аудита: `d45a779dfa9dc024b426cef358d3df4d32478897`.
 
-This document defines the local remediation contract. It is deliberately
-independent of Flint 2 hardware evidence; no hardware action is part of this
-branch.
+Документ фиксирует локальный контракт remediation. Он намеренно не зависит от
+доказательств на Flint 2: в этой ветке роутер не трогается.
 
-## Safety invariants
+## Инварианты безопасности
 
-1. A protected mark is never allowed to use Direct while the active revision,
-   adapter generation, or recovery journal is ambiguous.
-2. The durable control-plane revision, adapter metadata, and observed dataplane
-   generation must agree before a transaction is finalized.
-3. A candidate is not an active configuration. It is content-addressed state
-   owned by one transaction and may be discarded after recovery proves it is
-   not active.
-4. An ambiguous operation is `RECOVERY_REQUIRED`, not `rolled_back` and not a
-   successful exit code.
-5. Resources without a verified FlintRoute owner are foreign and are never
-   stopped, deleted, or overwritten automatically.
-6. Observation, health, watchdog, and adaptive calibration have no implicit
-   authority to rebuild the production dataplane.
-7. Installer and rollback paths use canonical, dot-component-free allowlist
-   identities. Paths containing `..`, `.`, duplicate separators, or trailing
-   separators are rejected before any recursive delete/copy/restore; lexical
-   spelling is never allowed to bypass ownership checks.
+1. Защищённый mark никогда не получает Direct, пока активная revision,
+   generation адаптера или журнал recovery неоднозначны.
+2. Перед финализацией транзакции durable revision control plane, метаданные
+   адаптера и наблюдаемая generation dataplane должны совпадать.
+3. Candidate не является активной конфигурацией. Это content-addressed-состояние
+   одной транзакции; его можно удалить только после доказательства, что оно не
+   используется как active.
+4. Неоднозначная операция получает `RECOVERY_REQUIRED`, а не `rolled_back` и не
+   считается успешной по одному коду выхода процесса.
+5. Ресурс без подтверждённого владельца FlintRoute считается чужим. Его нельзя
+   автоматически останавливать, удалять или перезаписывать.
+6. Observation, health, watchdog и adaptive calibration не имеют скрытого права
+   перестраивать production dataplane.
+7. Installer и rollback используют канонические allowlist-идентификаторы без
+   компонентов `.` и `..`. Пути с `..`, двойными разделителями и завершающим
+   разделителем отклоняются до любого рекурсивного удаления/копирования/restore.
 
-## Transaction state machine
+## Машина состояний транзакции
 
-The durable journal and adapter use the following ordered states:
+Durable journal и adapter проходят состояния в таком порядке:
 
 ```text
 intent_persisted
   -> candidate_prepared
-  -> adapter_prepared (rollback retained)
-  -> adapter_activated (rollback retained)
+  -> adapter_prepared (rollback сохранён)
+  -> adapter_activated (rollback сохранён)
   -> control_plane_committed
   -> adapter_finalized
   -> committed
 ```
 
-Failure before adapter activation may become `rolled_back` after an idempotent
-owned cleanup. Failure after activation is first classified from a semantic
-adapter status. If adapter and bbolt cannot be reconciled, the transaction is
-`RECOVERY_REQUIRED`; new mutation is fenced and protected marks remain in the
-fail-closed guard. `rollback=false` with process exit code zero is not a
-successful rollback.
+Сбой до активации адаптера может перейти в `rolled_back` после идемпотентного
+удаления только принадлежащих FlintRoute ресурсов. Сбой после активации сначала
+сверяется с семантическим статусом адаптера. Если adapter и bbolt нельзя
+согласовать, транзакция получает `RECOVERY_REQUIRED`, новые mutation блокируются,
+а защищённые marks остаются под fail-closed guard. `rollback=false` при exit code
+`0` не является успешным rollback.
 
-The status binding includes operation, transaction ID, rollback token hash,
-revision, candidate hash, artifact manifest hash, generation, and observed
-adapter state. Finalization deletes rollback capability only after the durable
-active revision and adapter state have been compared.
+В binding статуса входят operation, transaction ID, hash rollback token, revision,
+hash candidate, hash manifest артефактов, generation и фактическое состояние
+adapter. Rollback capability удаляется только после сравнения durable active
+revision с состоянием adapter.
 
-## Configuration layout
+## Размещение конфигурации
 
-`bootstrap.json` is immutable launch metadata. It does not contain a pending
-candidate and is never replaced by apply. Candidate artifacts live under a
-transaction/revision content-addressed directory. The durable journal selects
-the committed artifact on restart. Missing or inconsistent journal state
-enters rescue/fence mode; startup does not guess from `default.json`.
+`bootstrap.json` — неизменяемые параметры запуска. В нём нет pending candidate,
+и apply никогда его не заменяет. Candidate-артефакты лежат в
+content-addressed-каталоге транзакции/revision. При рестарте durable journal
+выбирает только committed artifact. Отсутствующий или противоречивый journal
+включает rescue/fence; запуск не угадывает active-конфигурацию из `default.json`.
 
-## Privilege boundary
+## Граница привилегий
 
-The target boundary is an unprivileged controller and a small root helper on a
-0600 Unix socket. The controller owns API, state, parsing and unprivileged
-probes. The helper owns only fixed, typed, owner-bound adapter operations. It
-does not fetch URLs, parse subscriptions, expose HTTP, or execute arbitrary
-shell fragments. The current branch introduces the boundary incrementally so
-that every operation remains testable and no second untracked supervisor is
-created.
+Целевая схема — непривилегированный controller и небольшой root helper на Unix
+socket `0600`. Controller обслуживает API, state, parsing и непривилегированные
+probes. Helper выполняет только фиксированные typed-операции, привязанные к
+владельцу. Он не скачивает URL, не разбирает подписки, не публикует HTTP и не
+исполняет произвольные shell-фрагменты. Граница вводится постепенно, чтобы все
+операции оставались тестируемыми и не появился второй неучтённый supervisor.
 
-The packaged `router-policy-helper` is fail-closed: it requires an explicit
-non-root peer UID in `helper.env`, binds a fixed Unix socket with mode `0600`,
-and accepts only protocol-versioned, request-ID and generation/revision/
-token-bound operations. Its allowlist covers transaction verbs, the owned nft
-table, managed IP plan, managed procd services, and fixed artifact kinds. It
-has no HTTP client, remote fetch, subscription parser, provider JSON parser, or
-arbitrary command/path input. The existing root controller enables the helper
-only when its socket is explicitly configured, so this branch does not claim
-that the whole controller is already non-root. The opt-in boundary is packaged
-and tested. When the socket is configured, recovery reconciliation now uses
-the typed `transaction.reconcile` operation too; it no longer falls back to a
-direct shell mutation. Read-only `status` and `diagnose` remain outside this
-mutation boundary. The remaining controller migration is a separate follow-up.
+Упакованный `router-policy-helper` работает fail-closed: требует явный non-root
+peer UID в `helper.env`, слушает фиксированный Unix socket с mode `0600` и
+принимает только операции с версией протокола, request ID и binding по
+generation/revision/token. Allowlist покрывает transaction verbs, принадлежащую
+таблицу nft, управляемый IP-план, managed procd services и фиксированные виды
+артефактов. У helper нет HTTP-клиента, remote fetch, parser подписок/provider
+JSON или произвольного command/path input.
 
-The fixed socket endpoint is also ownership-safe during lifecycle changes. A
-regular file, symlink, or live listener at `helper.sock` is treated as foreign
-state and is never unlinked by startup or init-stop. Only a stale Unix socket
-that cannot accept a connection may be removed before rebinding; the Go helper
-tests preserve a foreign marker file byte-for-byte.
+Текущий root-controller включает helper только при явно заданном socket. Поэтому
+эта ветка не заявляет, что весь controller уже non-root. При настроенном socket
+recovery reconciliation теперь тоже идёт через typed `transaction.reconcile`, а
+не через прямую shell mutation. Read-only `status` и `diagnose` остаются вне этой
+mutation boundary. Перенос самого controller — отдельный follow-up.
 
-## Background authority
+Lifecycle socket также проверяет ownership: regular file, symlink или живой
+listener в `helper.sock` считается чужим и не удаляется. Перед bind можно убрать
+только stale Unix socket, который не принимает соединения. Тест helper сохраняет
+чужой marker-файл побайтно.
 
-`observe_only` performs observation/classification only. Route-only automatic
-assignment may be enabled only for an already-created, verified route and a
-bounded domain mapping update. Any artifact, service, nft topology, mark, IP
-rule, listener, or DNS topology change remains an explicit ChangeSet.
-Adaptive Zapret calibration is suggestion/isolated-test work until a separate
-NFQUEUE and network namespace proves resource isolation.
+## Полномочия фоновых задач
 
-The ordinary discovery path returns after recording an observation: it does not
-call the domain checker, acquire a probe slot, invoke the adapter, or create a
-change. Automatic assignment is fenced until a route-only existing-route
-mapping operation with TTL, rate limit, rollback, and evidence is available.
+`observe_only` выполняет только observation/classification. Route-only automatic
+assignment допустим лишь для уже созданного verified route и ограниченного
+обновления domain mapping. Любое изменение артефактов, services, nft topology,
+marks, IP rules, listener или DNS topology остаётся явным ChangeSet.
 
-Subscription, GeoIP, and TSPU fetches share HTTPS-only SSRF protection,
-resolved-address pinning, redirect revalidation, private/metadata/link-local
-address rejection, response and decompressed-size limits, and bounded
-timeouts. Provider Xray input is converted through a strict typed model; raw
-provider JSON is never copied into an active configuration.
+Adaptive Zapret calibration остаётся suggestion/изолированным тестом, пока
+отдельные NFQUEUE и network namespace не докажут изоляцию ресурсов.
 
-## Evidence policy
+Обычный discovery после записи observation сразу возвращает результат: он не
+вызывает domain checker, не занимает probe slot, не вызывает adapter и не создаёт
+change. Automatic assignment отключён до появления безопасной операции mapping
+для существующего route с TTL, rate limit, rollback и evidence.
 
-Local tests are not hardware proof. Every evidence record names the exact
-commit, environment, command, raw-log path, digest, scope and PASS/FAIL/SKIP
-state. Evidence from an older commit is `STALE FOR CURRENT SHA`.
+Fetch подписок, GeoIP и TSPU используют единую SSRF-защиту: только HTTPS,
+закрепление проверенного адреса, повторную проверку redirect, запрет private,
+metadata и link-local адресов, ограничения размера ответа/распакованных данных и
+bounded timeout. Ввод провайдера Xray проходит strict typed model; raw provider
+JSON никогда не копируется в active config.
 
-## Recovery mutation fence (post-remediation follow-up)
+## Правила доказательств
 
-The only statuses that permit a dataplane mutation are a semantically
-confirmed `ok` status and a `not_required` status that carries the confirmed
-baseline revision and candidate hash. `starting`, `error`,
-`recovery_required`, empty, and unknown values fail closed with HTTP 503.
-`not_required` is admitted only when the recovery path marks the status
-`baseline_confirmed`; an arbitrary revision/hash pair cannot manufacture a
-safe baseline.
-The gate is held for the complete mutation operation by a server-level
-read/write lease, so a recovery transition cannot race an apply at the
-entry/adapter boundary. Discovery, health, subscription refresh, reactive
-recovery, and adaptive scheduler work check the same fence before doing
-active work; their read-only health/status endpoints remain available.
+Локальный тест не является hardware proof. В каждой записи evidence указываются
+точные commit, окружение, команда, путь к raw log, digest, scope и состояние
+PASS/FAIL/SKIP. Evidence старого commit помечается `STALE FOR CURRENT SHA`.
 
-Persisting a recovery status is not best-effort: if the durable write fails,
-the in-memory status is immediately replaced with `recovery_required` and the
-failure is published as `recovery_status_persist_failed`. This is a visible
-safe fence, not a false durable success.
+## Fence mutation при recovery
 
-This is a bounded guarantee, not a claim that split-brain is mathematically
-impossible. Confirmed ambiguous states are fenced as `RECOVERY_REQUIRED` and
-silent rollback/committed divergence is rejected by semantic-response and
-fault-injection tests. Full reboot/fault matrix and hardware evidence are
-still required before claiming complete absence of split-brain.
+Dataplane mutation разрешена только при семантически подтверждённом статусе `ok`
+или `not_required`, который содержит подтверждённые baseline revision и hash
+candidate. `starting`, `error`, `recovery_required`, пустое и неизвестное значения
+всегда fail-closed и возвращают HTTP 503.
 
-## Privilege boundary status
+`not_required` принимается только если recovery-path установил
+`baseline_confirmed`; произвольная пара revision/hash не может сама создать
+безопасный baseline. На всю mutation-операцию удерживается server-level
+read/write lease, поэтому переход recovery не может состязаться с apply у входа
+и у adapter boundary.
 
-`router-policy-helper` is a packaged, fixed-path, typed Unix-socket helper and
-its contract is tested. The production `router-policy` controller still runs
-as root on this branch, so the privilege split is **PARTIAL**, not complete.
-The helper path is the preferred/allowlisted integration path; direct shell
-adapter execution remains a legacy/development path. LAN exposure is refused
-by default while the controller is root. A later change must run the
-controller non-root and remove its direct privileged execution path before the
-boundary can be marked closed.
+Discovery, health, refresh подписок, reactive recovery и adaptive scheduler перед
+активной работой проверяют тот же fence. Read-only health/status остаются доступны.
 
-## Remediation order
+Сохранение recovery status не является best effort: при ошибке durable write
+памятный статус немедленно меняется на `recovery_required`, а событие публикуется
+как `recovery_status_persist_failed`. Это видимый безопасный fence, а не ложный
+durable success.
 
-Transaction protocol, bootstrap separation, boot guard, nft transition and
-hotplug fencing are the first gate. Rescue, watchdog, privilege, SSRF, typed
-Xray generation and ownership follow. Auto-routing, adaptive calibration,
-DNS watcher, polling/auth/storage budgets then receive their own regression
-tests. Hardware validation is explicitly out of scope for this branch.
+Это ограниченная гарантия, а не заявление о математической невозможности
+split-brain. Подтверждённые ambiguous states fenced как `RECOVERY_REQUIRED`, а
+silent rollback/committed divergence отклоняются semantic-response и
+fault-injection тестами. Полная reboot/fault matrix и hardware evidence нужны
+до заявления об абсолютном отсутствии split-brain.
 
-The local resource budget is intentionally small: the global probe semaphore is
-four workers, the discovery queue capacity is 32, route probe targets are
-capped at four per candidate, and probe/observation rings are bounded. These
-are logical limits covered by local tests, not claims about router CPU, socket,
-or NAND behavior.
+## Текущий статус privilege boundary
 
-## Decision verification semantics
+`router-policy-helper` — упакованный typed helper с фиксированным путём и Unix
+socket; его контракт протестирован. Production-controller `router-policy` в этой
+ветке всё ещё запускается от root, поэтому разделение привилегий **PARTIAL**, а
+не завершено. Helper path — предпочтительный allowlisted путь; прямой shell
+adapter оставлен только как legacy/development путь. Пока controller root, LAN
+exposure по умолчанию запрещён. Для закрытия finding нужно запустить controller
+non-root и удалить его прямой privileged execution path.
 
-`NO_SAFE_ROUTE` is a terminal exhaustion result. The planner now starts a
-check in `verification_state=in_progress`/`status=VERIFYING`; it may become
-`terminal_no_safe_route` only after every policy-allowed candidate has returned
-a bounded result (or a verified policy skip) and none has complete path proof.
-An outer cancellation or timeout before that point remains `VERIFYING` and is
-not persisted as a failed route decision. The API emits a `VERIFYING` event
-before active discovery and maps terminal exhaustion separately from an
-in-progress check.
+## Порядок remediation
 
-Classification confidence is independent from route confidence. The API
-exposes `classification_confidence`, `classification_source`, and
-`classification_evidence`; `confidence` remains the binary confidence of a
-fully verified selected route. A TSPU match with weak source confidence can
-therefore be classified while verification is still running.
+Сначала закрываются transaction protocol, разделение bootstrap, boot guard, nft
+transition и hotplug fence. Затем rescue, watchdog, privilege, SSRF, typed Xray
+generation и ownership. После этого отдельными regression-тестами проверяются
+auto-routing, adaptive calibration, DNS watcher, polling/auth/storage budgets.
+Hardware validation из этой ветки исключена.
 
-`latency_ms` is the measured request/path latency for compatibility with older
-clients. It is populated only when `route_latency_available=true` and is never
-the orchestration duration. `route_latency_ms` is the explicit equivalent
-field. `verification_duration_ms` includes DNS, preparation, retries, proof
-verification, and cleanup. When a route type cannot expose a meaningful path
-measurement, latency is unavailable rather than a disguised job duration.
+Resource budget намеренно мал: глобальный probe semaphore — 4 worker, discovery
+queue — 32 элемента, targets route probe — не более 4 на candidate, rings
+probe/observation ограничены. Это логические лимиты локальных тестов, а не
+утверждение о CPU, socket или NAND роутера.
 
-Decision-cache entries persist the full planner verification duration separately
-from each candidate's `VerificationDurationMS`. A cache hit is marked with
-`verification_cached=true`; it reuses that stored evidence (or a legacy
-candidate duration) and never substitutes the cache lookup/orchestration wall
-clock. A RouteProber response with an empty or in-progress status is also
-non-terminal, so it cannot be converted into `NO_SAFE_ROUTE` without a bounded
-terminal result.
+## Семантика проверки решения
+
+`NO_SAFE_ROUTE` — terminal result полного исчерпания. Planner начинает проверку с
+`verification_state=in_progress` и `status=VERIFYING`; перейти в
+`terminal_no_safe_route` можно только после bounded result каждого разрешённого
+policy candidate (либо доказанного policy skip), если ни один не дал полного
+path proof.
+
+Внешняя отмена или timeout до этого момента оставляет `VERIFYING` и не сохраняется
+как failed route decision. API отправляет событие `VERIFYING` до активного
+discovery, а terminal exhaustion выдаёт отдельно.
+
+Classification confidence не смешивается с route confidence. API раскрывает
+`classification_confidence`, `classification_source` и `classification_evidence`;
+`confidence` остаётся бинарной уверенностью полностью verified выбранного route.
+Поэтому TSPU match со слабой уверенностью источника может быть классифицирован,
+пока verification ещё идёт.
+
+`latency_ms` — измеренная latency запроса/path для совместимости со старыми
+клиентами. Поле заполняется только при `route_latency_available=true` и никогда
+не содержит orchestration duration. Явное эквивалентное поле —
+`route_latency_ms`. `verification_duration_ms` включает DNS, подготовку,
+retries, проверку доказательств и cleanup. Если тип route не умеет честно
+измерить path, latency показывается как unavailable, а не как замаскированная
+длительность job.
+
+Decision cache отдельно сохраняет полную verification duration planner и
+`VerificationDurationMS` каждого candidate. Cache hit помечается
+`verification_cached=true`, использует сохранённое evidence (или legacy duration)
+и не подставляет wall-clock поиска в кэше. Ответ RouteProber с пустым или
+in-progress status также non-terminal и не может стать `NO_SAFE_ROUTE` без
+bounded terminal result.

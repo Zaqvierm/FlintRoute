@@ -1,5 +1,9 @@
 # Контракт транзакции адаптера
 
+> **Статус аппаратных утверждений:** разделы о Flint 2 ниже — историческое
+> evidence старых ревизий. Они не являются hardware PASS для текущей ветки;
+> текущая software/CI привязка находится в `docs/remediation-evidence.md`.
+
 > Основные реализации: `internal/adapter/adapter.go`,
 > `internal/api/recovery.go`, `internal/adapter/openwrt.go`.
 
@@ -26,7 +30,7 @@ Status(context.Context) StepResult
 `Reason`, `Evidence`, `StartedAt`, `FinishedAt`. `Reconcile` — единственный
 метод с `RecoveryTarget` вместо `Transaction` (post-reboot recovery).
 
-## Dependency injection
+## Внедрение зависимостей
 
 `api.Options.ProductionAdapter` обязателен. API никогда не создаёт
 filesystem-адаптер сам. `cmd/router-policy` инжектирует `adapter.OpenWrt` для
@@ -44,7 +48,7 @@ filesystem-адаптер сам. `cmd/router-policy` инжектирует `ad
 детерминирован и не принимается из helper-ввода. Для `command != "prepare"`
 требуется валидный `ReadCapability(tx)` (mode-0600 rollback capability).
 
-`Filesystem` — local-only: `ApplyCandidate` → `SKIPPED` (requires_device),
+`Filesystem` — только локально: → `ApplyCandidate` `SKIPPED` (требует_устройства),
 `VerifyManagementPath`/`VerifyDataPlane` → `UNVERIFIED`. Никогда не достигает
 `awaiting_confirmation`.
 
@@ -59,7 +63,7 @@ filesystem-адаптер сам. `cmd/router-policy` инжектирует `ad
 `RecoveryTarget` (P6): `TransactionID`, `RevisionID`, `CandidateHash`,
 `ArtifactManifestHash`. `validateRecoveryTarget` проверяет полноту.
 
-## State machine
+## Конечный автомат
 
 ```text
 draft -> validated -> prepared -> applying -> verifying
@@ -76,7 +80,7 @@ failed | expired | requires_device
 candidate hash и adapter revision/transaction. Вызывает `Adapter.Commit` до
 атомарного продвижения candidate config, version и revision в bbolt.
 
-## Management proof
+## Доказательство со стороны руководства
 
 Production `VerifyManagementPath` больше не доверяет статическим boolean-флагам.
 Перед apply control plane создаёт короткоживущий HMAC-SHA256 proof, связанный с:
@@ -121,22 +125,22 @@ loopback API. Автоматические controller-транзакции ис�
 
 1. **DNS resolution**: verification plan требует resolver, resolved IP, DNS
    protocol. Smart DNS проверяет safe/unsafe ответ (`DNSResponseSafe`,
-   `HostPreserved`, `SNIPreserved`).
+`HostPreserved`, `SNIPreserved`).
 2. **Классификация**: HTTP status, content markers, regional block, TSPU
    detection — внутри `probe`, не внутри adapter. `HTTPResult`/`ContentResult`.
 3. **Фактический egress**: `ExternalIPHash` + `ExternalCountry` + consensus.
    Для `GEO_LOCKED` — non-RU обязательно. `RequiresEgress` в `RouteProof`.
 4. **Доказательство маршрута**: `NFTMark`/`ConntrackMark`/`IPRulePriority`/
    `RouteTable`/`Interface`/`SocketMark`/`XrayOutboundTag`. Per-type proof в
-   `evidence.ValidateRouteProof`: direct (bypass Xray/Zapret + cleared mark),
-   zapret (installed + flow + TCP443 + QUIC policy), smart_dns (response safe +
-   Host/SNI), vless (SOCKS5 loopback + bound outbound tag), external_socks (proxy
+`evidence.ValidateRouteProof`: прямой (байпас Xray/Zapret + очищенная метка),
+zapret (установлен + поток + TCP443 + политика QUIC), smart_dns (ответ безопасный +
+Host/SNI), vless (SOCKS5 loopback + связанный исходящий тег), external_socks (proxy
    flow), drop (IPv4/IPv6/DNS enforcement). Биндинг к `RevisionID`/`CandidateHash`/
-   `ArtifactManifestHash`.
+`ArtifactManifestHash`.
 
-## Durable state
+## Долговечное состояние
 
-Buckets: `changes`, `candidates`, `revisions`, `transactions`, `route_health`,
+Ковши: `changes`, `candidates`, `revisions`, `transactions`, `route_health`,
 `events`, `domain_decisions`, adaptive state и `meta`. Подробные probe results
 находятся в bounded RAM ring и не создают bbolt transaction на каждом health
 cycle. Schema version и migration state — в `meta`. Retention ограничивает
@@ -146,27 +150,27 @@ interval, active compaction только если размер > `max_database_b
 Compaction валидирует новый bbolt файл до atomic swap, хранит `.precompact` до
 reopen. Startup восстанавливает `.precompact` при прерванном swap.
 
-## Rollback capability
+## Возможность отката
 
 Raw rollback token — только в mode-0600 файле `rollback.cap` под transaction
 directory. bbolt и `binding.env` хранят только SHA-256 hash.
-`VerifyRollbackToken` — constant-time (`subtle.ConstantTimeCompare`).
+`VerifyRollbackToken` — постоянное время (`subtle.ConstantTimeCompare`).
 `ReadCapability` требует regular + mode 0600 (не windows) + hash match.
 `RetireCapability` удаляет после commit. API responses никогда не раскрывают
-token.
+токен
 
-## Shell transaction safety
+## Безопасность транзакций Shell
 
 Helper имеет один `transaction.lock`. Метаданные: PID, process start time,
 transaction ID, revision ID, creation time. Stale lock удаляется только после
 того, как `/proc` докажет, что точный PID/start-time владелец больше не существует.
 
 Snapshots покрывают: active router-policy config, nft include, dnsmasq include,
-Xray active config, Zapret active config, active transaction metadata, UCI
+Xray активная конфигурация, Zapret активная конфигурация, активные метаданные транзакций, UCI
 flow-offloading state. Manifest SHA-256 + каждый file hash/size проверяются до
 изменения любого target. Restore атомарен. Absent markers удаляют только
-hardcoded project-owned targets. `last-good` = full snapshot + committed
-transaction metadata.
+жестко запрограммированные цели, принадлежащие проекту. `last-good` = полный снимок + фиксированный
+метаданные транзакции.
 
 Отдельно от transaction snapshot первая transaction фиксирует исходный
 installation-owned flow-offloading baseline. Он создаётся один раз в
@@ -196,7 +200,7 @@ journal для boot recovery. Предыдущий transaction root удаляе
 Test-run ресурсы не смешиваются с production transaction. Их owner manifest и
 cleanup contract описаны в [`storage-lifecycle.md`](storage-lifecycle.md).
 
-## Post-reboot recovery (P6)
+## Восстановление после перезагрузки (P6)
 
 `api.recoverCommittedDataplane` при старте сервера:
 
@@ -206,23 +210,23 @@ cleanup contract описаны в [`storage-lifecycle.md`](storage-lifecycle.md
    вызывает OpenWrt adapter. Любое существующее или частичное control-plane
    состояние запрещает этот bootstrap.
 2. Загружает active revision из bbolt. Если `configVersion>1` без active
-   revision → `active_revision_missing`.
+ревизия → `active_revision_missing`.
 3. Для baseline повторно проверяет committed state, canonical hash и отсутствие
    deployment binding; recovery завершается как `not_required` без `Reconcile`
    и `Status`.
 4. Для deployment revision проверяет `revision.State=committed` + полноту
-   binding.
+Переплет.
 5. Загружает transaction record, проверяет `State=committed` + hash match
    (`constantEqual` для `CandidateHash`/`ArtifactManifestHash`).
 6. Проверяет ChangeSet `committed` + binding match.
 7. `loadVerifiedCandidate` + canonical hash совпадение с active config.
 8. `adapter.Reconcile(ctx, RecoveryTarget)`. Временный `adapter_busy` от
    параллельного boot guard повторяется с bounded timeout; остальные ошибки →
-   `adapter_reconcile_failed`.
+`adapter_reconcile_failed`.
 9. `adapter.Status(ctx)` — evidence должен совпадать: `active_revision`,
-   `active_transaction`, `active_candidate_hash`,
+`active_transaction`, `active_candidate_hash`,
    `active_artifact_manifest_hash`, `transaction_state=committed`. Иначе
-   `adapter_recovery_binding_mismatch`.
+`adapter_recovery_binding_mismatch`.
 
 Любое расхождение → `failedRecovery` с явным `reason_code`, persisted в bbolt
 `meta/recovery_status`. Ни одна частичная ревизия не активируется. Boot guard:

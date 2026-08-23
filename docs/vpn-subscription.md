@@ -22,12 +22,12 @@ FlintRoute **не владеет** серверами и не продаёт д�
 Ключ/подписка — секрет. UUID, адреса серверов, REALITY-ключи, URL подписки
 никогда не попадают в bbolt/API/UI/SSE/логи.
 
-## Pipeline
+## Конвейер обработки
 
 Подписка → extract → deduplicate → classify → retag → SOCKS inbound per
 outbound → routing rule → content-addressed bundle.
 
-## Accept-форма (`extractOutboundsWithShape`)
+## Форма входных данных (`extractOutboundsWithShape`)
 
 Подписка принимается в трёх top-level формах:
 
@@ -38,7 +38,7 @@ outbound → routing rule → content-addressed bundle.
 `Summary.TopLevelType` = `object`/`array`, `ConfigCount` — число top-level
 конфигов. `extractRawOutbounds` сохраняет raw JSON каждого outbound.
 
-## Classify (`validateVLESSOutbound`)
+## Классификация (`validateVLESSOutbound`)
 
 VLESS outbound получает `SUPPORTED` только если:
 
@@ -54,7 +54,7 @@ VLESS outbound получает `SUPPORTED` только если:
 `unsupported_flow`/`unsupported_stream_security`/`unsupported_stream_network`).
 `maxVLESSServers` глобально ограничивает число серверов → `server_limit_exceeded`.
 
-## Deduplicate + retag (`prepareRawOutbounds`)
+## Дедупликация и переназначение тегов (`prepareRawOutbounds`)
 
 - **Logical identity** = SHA-256 от endpoint, port, flow и transport/security
   identity. `tag`, UUID и другие credentials в fingerprint не входят. Поэтому
@@ -64,7 +64,7 @@ VLESS outbound получает `SUPPORTED` только если:
   новый tag = `prefix + "-" + identity[:8..32]`. `SourceTag` сохраняет исходный.
 - `Summary.DuplicateTags`, `DeduplicatedVLESSCount` — метрики нормализации.
 
-## Generate (`GenerateXrayConfigFile`)
+## Генерация (`GenerateXrayConfigFile`)
 
 На каждый supported outbound:
 
@@ -84,7 +84,7 @@ VLESS outbound получает `SUPPORTED` только если:
 .\dist\router-policy.exe subscription-xray --out .\xray.generated.json tests\sample-subscription-array.json
 ```
 
-## Routes (`GenerateRoutesFile`)
+## Маршруты (`GenerateRoutesFile`)
 
 Генерирует `[]GeneratedRoute` для вставки в `config.routes`:
 
@@ -112,23 +112,23 @@ URL остаются вне bbolt/API/UI/SSE. `config.Validate` требует
 routes. Artifact generator мержит bundle в транзакционный `xray.json`; mismatch
 bundle hash/tag/SOCKS → validate fail.
 
-## Managed activation
+## Управляемая активация
 
-Subscription preparation and production activation are deliberately separate.
-The first request downloads, normalizes and checks the servers, then returns a
-redacted activation offer without changing configuration. Only an explicit
-managed activation repeats the checks and creates a single ChangeSet containing:
+Подготовка подписки и активация в production намеренно разделены. Первый запрос
+скачивает, нормализует и проверяет серверы, затем возвращает обезличенное
+предложение активации без изменения конфигурации. Только явная управляемая
+активация повторяет проверки и создаёт один ChangeSet, содержащий:
 
 - `xray.activation_mode=managed`;
 - the verified outbound bundle hash;
 - selected, standby and quarantined VLESS routes.
 
-Validation must produce a TPROXY plan with the configured bypass mark. Every
-outbound receives `SO_MARK`, the bypass rule precedes policy classification,
-and unmatched transparent traffic ends at the reserved blackhole outbound.
-Apply then uses the normal management/data-plane proof and confirm timer. An
-unavailable Xray, stale revision, bad bundle, missing path proof or failed
-management check cannot be confirmed and is rolled back.
+Проверка должна создать TPROXY-план с настроенной bypass-mark. Каждый outbound
+получает `SO_MARK`, bypass-правило стоит перед классификацией policy, а
+необработанный transparent-трафик заканчивается в зарезервированном blackhole
+outbound. Apply использует обычный management/data-plane proof и confirm timer.
+Недоступный Xray, устаревшая revision, неверный bundle, отсутствие path proof
+или провал management-проверки не могут быть подтверждены и откатываются.
 
 ## Проверка совместимости
 

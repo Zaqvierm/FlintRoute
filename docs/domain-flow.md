@@ -1,5 +1,14 @@
 # Поток домена и трафика
 
+> **Статус:** это целевой и software-проверенный поток. Без отдельного
+> hardware-run он не доказывает, что каждый LAN-клиент на текущем SHA проходит
+> весь путь DNS interception → route apply.
+>
+> В текущем production-коде фоновая проверка неизвестного домена и автоматическое
+> обновление route mapping отключены: результат публикуется как observation или
+> suggestion. Пункты ниже описывают целевой route-only flow и не являются обещанием
+> уже работающего auto-apply.
+
 > Основные реализации: `internal/probe`, `internal/domaincache`,
 > `internal/artifact`, `internal/policy`.
 
@@ -12,7 +21,7 @@
 5. Определить registrable domain через `publicsuffix.EffectiveTLDPlusOne`
    (не «последние две метки» — это ломается на `co.uk`).
 6. Проверить ручные политики/overrides (precedence: exact_domain → device_domain
-   → device_service → service → category).
+→ категория сервиса   → device_→service).
 7. Проверить известные сервисы (`config.Services`).
 8. Проверить TSPU evidence (`tspu.Find`).
 9. Проверить domain decision cache (bounded LRU, revision-bound, TTL).
@@ -23,8 +32,9 @@
 
 - если домен не похож на защищённую категорию, первый запрос можно пустить
   напрямую (`policy.unknown_domain_first_path`);
-- параллельно — фоновая проверка direct/zapret/smart_dns/VLESS;
-- при подтверждённой блокировке — обновить маршрут для следующих соединений;
+- в целевом route-only режиме — bounded фоновая проверка direct/zapret/smart_dns/VLESS;
+- в целевом route-only режиме при подтверждённой блокировке — обновить маршрут для
+  следующих соединений; текущий код сохраняет suggestion до явного ChangeSet;
 - существующее TCP-соединение не переносится между маршрутами (новое решение
   применяется к новым соединениям; conntrack purge — только для критических
   переключений).
@@ -62,9 +72,9 @@
 
 Через транзакцию адаптера, не ad-hoc:
 
-1. `validate` candidate → `config.Validate()` → canonical SHA-256.
-2. `artifact.Generate` — nft/dnsmasq/Xray/nfqws/IP plan, manifest v6.
-3. `SnapshotCurrent` → `ApplyCandidate` (routes → rules → fw4, start services).
+1. `validate` кандидат → `config.Validate()` → канонический SHA-256.
+2. `artifact.Generate` — план nft/dnsmasq/Xray/nfqws/IP, манифест v6.
+3. `SnapshotCurrent` → `ApplyCandidate` (→правила маршрутов → fw4, запуск служб).
 4. `VerifyManagementPath` + `VerifyDataPlane` (4 уровня).
 5. OK → `Commit` (promote bbolt); не OK → `Rollback` (restore snapshot).
 6. Post-reboot — `Reconcile` восстанавливает committed dataplane.
@@ -80,7 +90,7 @@ bundle и только по разрешённым протоколам.
 - TTL не растягивается бесконечно;
 - A и AAAA ведутся независимо;
 - shared IP для bundles с несовместимыми маршрутами → collision guard fail-closed
-  (`DOMAIN_IP_POLICY_COLLISION` drop);
+(падение `DOMAIN_IP_POLICY_COLLISION`);
 - DoH/DoT/QUIC, обходящие контролируемый DNS, блокируются политикой или
   обрабатываются доказанным путём;
 - существующий conntrack flow не переносится между маршрутами посреди сессии.
@@ -96,6 +106,6 @@ policy routing для IPv6, `GEO_LOCKED` не утекает через AAAA. П
 
 - `GEO_LOCKED`: UDP/443 только через TProxy/VLESS или DROP;
 - `TSPU_RESTRICTED`: можно блокировать UDP/443 → клиент откатится на TCP
-  (Zapret preset: UDP 443 → DROP);
+(предустановка Zapret: UDP 443 → DROP);
 - `DIRECT_ONLY`: не трогать без причины;
 - игры: не применять грубую блокировку глобально.

@@ -13,24 +13,24 @@
 - Параллельные запуски — per-ChangeSet action locks + global transaction lock.
 - `path_verified=false` → маршрут не production, даже при HTTP 200.
 
-## Health cycle (`health.Service.RunCycle`)
+## Цикл здоровья (`health.Service.RunCycle`)
 
-- bounded parallelism (`policy.parallel_server_checks`, ≤16);
+- ограниченный параллелизм (`policy.parallel_server_checks`, ≤16);
 - control quorum: ≥2 control-сервисов, majority OK;
 - consensus по `adapter_revision`/`candidate_hash`/`manifest_hash`/`country`/`ip_hash`
   — расхождение → `health_evidence_consensus_mismatch`;
-- `probe.HealthTracker`: EWMA latency, failure/recovery hysteresis, quarantine;
+- `probe.HealthTracker`: задержка EWMA, гистерезис отказа/восстановления, карантин;
 - `AssignVLESSRoles`: `selected`/`standby`/`quarantine`;
-- bbolt persistence + API `/api/v1/route-health`.
+- bbolt стойкость + API `/api/v1/route-health`.
 
-`safeHealthResult`: route tag/type match, `OK` + `path_verified` + `service_ok` +
-`egress_consensus` + non-empty bindings + country ≠ RU/UNKNOWN.
+`safeHealthResult`: соответствие тега/типа маршрута, `OK` + `path_verified` + `service_ok` +
+`egress_consensus` + непустые привязки + страна ≠ RU/НЕИЗВЕСТНО.
 
 ## Если путь умер
 
 | Категория | Цепочка | Запрещено |
 |---|---|---|
-| `GEO_LOCKED` | smart_dns → VLESS (non-RU) → DROP | direct, Zapret, RU egress |
+| `GEO_LOCKED` | smart_dns → VLESS (non-RU) → DROP | прямой, Zapret, RU выход |
 | `TELEGRAM` | external_socks → VLESS → DROP | внешний SOCKS должен пройти preflight и PathVerified |
 | `TSPU_RESTRICTED` | zapret → VLESS → DROP | небезопасный direct, Smart DNS как DPI bypass |
 | `DIRECT_ONLY` | только direct; при отказе — ошибка, не VLESS | зарубежный proxy |
@@ -41,7 +41,7 @@
 
 Отказ определяется per-уровнем, не одной суммой:
 
-1. **DNS** — resolver timeout, poisoned answer, empty → `dns_failed`.
+1. **DNS** — тайм-аут резолвера, отравленный ответ, пустой → `dns_failed`.
 2. **Классификация** — regional block, TSPU marker → `REGION_BLOCK`/`SUSPECTED_TSPU`.
 3. **Фактический egress** — RU exit для `GEO_LOCKED` → `RU_EXIT`; unknown country → `FAIL`.
 4. **Доказательство маршрута** — missing mark/rule/table/outbound → `UNVERIFIED`.
@@ -63,7 +63,7 @@ JSON, нет `.outbounds`, нет VLESS, нет обязательных пол�
 HTML/капчу/non-200. `retainPrevious` сохраняет прошлый кеш. Ручные правила выше
 внешних списков. См. `tspu-cache.md`.
 
-## Recovery (P6)
+## Восстановление (P6)
 
 При старте `recoverCommittedDataplane` восстанавливает committed dataplane через
 `adapter.Reconcile`. In-flight ChangeSet — через `recoverTransactions`. Любое

@@ -1,4 +1,4 @@
-# Web UI
+# Веб-интерфейс
 
 > Реализация: `ui/src/main.tsx`, `ui/src/view-models.ts`, `internal/web`.
 
@@ -207,12 +207,12 @@ procd/listener/DC health и одноразовая ссылка подключе
 
 ## Подтверждённое состояние
 
-Typecheck, Vitest, production build и API tests выполняются локально. Текущий
-пакет установлен на свежий factory OpenWrt: control plane, baseline revision,
-source-restricted Web listener и реальные Overview/Topology/Routes страницы
-работают без simulation provider. После factory recovery управляемые Xray,
-Zapret, TG WS Proxy, Smart DNS и subscription pool ещё не настроены, поэтому их
-старый hardware PASS не переносится на текущую установку автоматически.
+Typecheck, Vitest, production build и API tests выполняются локально. Любые
+старые записи об установке пакета на factory OpenWrt относятся к историческому
+запуску и не являются evidence для `effa938`. В этом цикле роутер не подключался,
+поэтому control plane, baseline revision, Web listener и Overview/Topology/Routes
+на текущем SHA имеют только local/CI evidence. Старый hardware PASS для Xray,
+Zapret, TG WS Proxy, Smart DNS и subscription pool автоматически не переносится.
 
 Остаются read-only или disabled:
 
@@ -220,18 +220,18 @@ Zapret, TG WS Proxy, Smart DNS и subscription pool ещё не настроен
 - автоматическое подтверждение TGWS client path без открытия ссылки в Telegram;
 - TLS termination самой панели.
 
-### Zapret: quick vs exhaustive
+### Zapret: быстрый и полный тест
 
-UI exposes two explicit calibration modes. `quick` runs the four built-in
-curated profiles through the pinned nfqws binary with a five-minute bounded
-budget and requires per-attempt NFQUEUE/path and cleanup evidence.
-`exhaustive` uses the pinned upstream `SCANLEVEL=force`, requires a separate
-confirmation, and may run for up to six hours. The current upstream does not
-provide a reliable fixed "21-strategy" catalog, so the UI does not invent that
-number. Both modes run one worker because nft/NFQUEUE/process resources are
-shared; candidates remain draft evidence until a separate ChangeSet activates
-them. Curl success alone is not enough: Quick requires an owned queue counter
-and process-group proof for the selected target.
+UI показывает два явных режима калибровки. `quick` последовательно запускает
+четыре встроенных curated-профиля через pinned `nfqws` с bounded-бюджетом пять
+минут и требует NFQUEUE/path и cleanup evidence для каждой попытки.
+`exhaustive` использует pinned upstream `SCANLEVEL=force`, требует отдельного
+подтверждения и может занимать до шести часов. Текущий upstream не даёт
+надёжного фиксированного каталога «21 стратегия», поэтому UI не выдумывает это
+число. Оба режима используют одного worker, потому что nft/NFQUEUE/process
+ресурсы общие; кандидаты остаются draft evidence до отдельного ChangeSet.
+Успешный curl сам по себе недостаточен: Quick требует счётчик собственной
+очереди и process-group proof для выбранной цели.
 > **Calibration evidence note (2026-08-23):** quick calibration is allowed to
 > report PASS only from a curated runner that proves the tested nfqws/NFQUEUE
 > path and cleanup. If that runner is absent, the API returns

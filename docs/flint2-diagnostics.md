@@ -1,17 +1,17 @@
-# Flint 2 Phase 0: Read-Only Diagnostics
+# Кремень 2 Фаза 0: Диагностика только для чтения
 
-This phase is intentionally read-only. Do not install, start, enable, activate,
-reload, restart, copy files into `/etc`, or touch nftables/fw4/dnsmasq/UCI.
+Эта фаза преднамеренно доступна только для чтения. Не устанавливать, не запускать, не включать, не активировать,
+перезагрузите, перезапустите, скопируйте файлы в `/etc` или нажмите nftables/fw4/dnsmasq/UCI.
 
-## Allowed
+## Разрешено
 
-- SSH into the router.
-- Copy only the diagnostic script to `/tmp`.
-- Run the diagnostic script.
-- Read the generated report.
-- Delete the temporary script/report.
+- SSH в маршрутизатор.
+- Скопируйте только сценарий диагностики в `/tmp`.
+- Запустите диагностический скрипт.
+- Ознакомьтесь с созданным отчетом.
+- Удалите временный сценарий/отчет.
 
-## Forbidden In Phase 0
+## Запрещено в фазе 0
 
 - `install.sh --install`
 - `install.sh --activate`
@@ -23,11 +23,11 @@ reload, restart, copy files into `/etc`, or touch nftables/fw4/dnsmasq/UCI.
 - `uci set`, `uci commit`
 - `nft -f`
 - `ip rule add`, `ip route add`
-- Xray config activation
+- Активация конфигурации Xray
 
-## Safe Command Sequence
+## Последовательность безопасных команд
 
-From your PC, after manually deciding the router host:
+На компьютере после ручного выбора хоста маршрутизатора:
 
 ```powershell
 scp .\scripts\diagnose-openwrt.sh root@ROUTER_IP:/tmp/router-policy-diagnose.sh
@@ -36,46 +36,46 @@ scp root@ROUTER_IP:/tmp/router-policy-diagnostics.txt .\flint2-diagnostics.txt
 ssh root@ROUTER_IP 'rm -f /tmp/router-policy-diagnose.sh /tmp/router-policy-diagnostics.txt'
 ```
 
-Replace `ROUTER_IP` yourself. Do not paste secrets into the terminal.
+Замените `ROUTER_IP` самостоятельно. Не вставляйте секреты в терминал.
 
-## What The Script Does
+## Что делает сценарий
 
-The script prints:
+Скрипт печатает:
 
-- OpenWrt/GL.iNet board info;
-- kernel and date;
-- storage and memory summary;
-- selected binary availability;
-- selected version strings;
-- route and interface shape;
-- nft table names, not the full ruleset;
-- router-policy path existence;
-- selected installed package names.
+- Информация о плате OpenWrt/GL.iNet;
+- ядро и дата;
+- сводка по хранению и памяти;
+- выбранная двоичная доступность;
+- выбранные строки версий;
+- форма маршрута и интерфейса;
+- имена таблиц nft, а не полный набор правил;
+- наличие пути router-policy;
+- выбранные имена установленных пакетов.
 
-The script does not print:
+Скрипт не печатает:
 
-- full `uci show`;
-- full `logread`;
-- full `fw4 print`;
-- full `nft list ruleset`;
-- secret files;
-- VPN subscription URL;
-- Telegram tokens;
-- full VLESS/Xray configs.
+- полный `uci show`;
+- полный `logread`;
+- полный `fw4 print`;
+- полный `nft list ruleset`;
+- Секретные файлы
+- VPN-подписка URL;
+- Токены Telegram;
+- полные конфигурации VLESS/Xray.
 
-Output is redacted for IP-like, MAC-like, token-like, and key-like strings, but
-you should still inspect the report before sharing it.
+Выходные данные редактируются для IP-подобных, MAC-подобных, токеноподобных и ключеподобных строк, но
+вы все равно должны ознакомиться с отчетом, прежде чем поделиться им.
 
-## Required Result Before Phase 1
+## Требуемый результат перед Этапом 1
 
-Phase 1 can start only after the report confirms:
+Этап 1 может начаться только после того, как отчет подтвердит:
 
-- exact firmware and architecture;
-- firewall4/fw4 availability;
-- nftables availability;
-- dnsmasq version and nftset feasibility;
-- `ip`/policy routing capability;
-- available RAM and overlay space;
-- whether Xray exists or must be installed;
-- whether GL.iNet GUI may overwrite custom firewall includes;
-- IPv6 state and likely leak surface.
+- точная прошивка и архитектура;
+- доступность firewall4/fw4;
+- Доступность nftables;
+- версия dnsmasq и осуществимость nftset;
+- Возможность маршрутизации `ip`/политики;
+- доступная оперативная память и оверлейное пространство;
+- существует ли Xray или должен быть установлен;
+- может ли GL.iNet GUI перезаписывать пользовательский брандмауэр;
+- Состояние IPv6 и вероятная поверхность утечки.

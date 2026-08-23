@@ -1,114 +1,115 @@
-# Storage and lifecycle
+# Хранение и жизненный цикл
 
-This document describes the storage contract implemented by FlintRoute. It is
-not hardware evidence: this remediation branch has not been installed on a
-router.
+В этом документе описывается контракт на хранение, реализованный FlintRoute. Это
+не аппаратные доказательства: эта ветвь восстановления не была установлена на
+маршрутизатор
 
-## Ownership and supervisors
+## Собственность и руководители
 
-`procd` is the production process supervisor. FlintRoute does not use a second
-unbounded supervisor. A resource may be stopped, removed, or replaced only if
-the lifecycle manifest proves its owner, generation, and identity. A PID or a
-process name alone is never sufficient; process start time, executable, run or
-transaction ID, and expected configuration are checked as well.
+`procd` является руководителем производственного процесса. FlintRoute не использует второй
+неограниченный супервизор. Ресурс может быть остановлен, удален или заменен, только если
+манифест жизненного цикла доказывает его владельца, генерацию и идентичность. ПИД или
+имя процесса само по себе никогда не бывает достаточным; время запуска процесса, исполняемый файл, запуск или
+идентификатор транзакции и ожидаемая конфигурация также проверяются.
 
-Production and test resources are separate. Test resources use an explicit
-`test-run:<id>` owner and project namespace. Cleanup is dry-run by default and
-does not touch production resources or ambiguous/foreign objects.
+Производственные и тестовые ресурсы разделены. Тестовые ресурсы используют явный
+Пространство имен владельца и проекта `test-run:<id>`. Очистка по умолчанию выполняется в сухом режиме, и
+не прикасается к производственным ресурсам или неоднозначным/посторонним предметам.
 
-## Storage classes
+## Классы хранилища
 
-### Immutable installed data
+### Неизменяемые установленные данные
 
-Installed binaries, init scripts, schemas, and factory defaults are immutable
-inputs. The installer uses content-aware replacement and never archives
-synthetic staging parents as restore targets.
+Установленные двоичные файлы, скрипты инициализации, схемы и заводские настройки
+неизменяемы. Установщик использует замену с учётом содержимого и никогда не
+архивирует искусственные родительские каталоги staging как цели восстановления.
 
-### Durable committed and recovery state
+### Долговечное активное и восстановительное состояние
 
-- committed control state in bbolt;
-- the active revision and content-addressed active artifact manifest;
-- one verified `last-good` recovery copy;
-- one active transaction journal when a transaction is in progress;
-- authentication material and secret references.
+- фиксированное состояние управления в bbolt;
+- активная ревизия и контент-адресованный манифест активного артефакта;
+- одна проверенная копия восстановления `last-good`;
+- один активный журнал транзакций, когда транзакция находится в процессе выполнения;
+- аутентификационный материал и секретные ссылки.
 
-`bootstrap.json` contains only immutable launch metadata and paths. It is never
-replaced by a candidate. On restart, the journal selects the committed
-artifact. Missing, corrupt, or mismatched state enters rescue/fenced mode; the
-controller does not guess from a candidate or a legacy `default.json`.
+`bootstrap.json` содержит только неизменные метаданные запуска и пути. Это никогда
+заменен кандидатом. При перезапуске журнал выбирает зафиксированные
+артефакт. Отсутствующее, поврежденное или несоответствующее состояние переходит в режим спасения/ограждения;
+контроллер не угадывает от кандидата или унаследованного `default.json`.
 
-### Bounded operational history
+### Ограниченная история эксплуатации
 
-Terminal changes, durable security/configuration audit events, recovery records,
-and occasional adaptive checkpoints have bounded retention. Identical encoded
-values are compared before a bbolt write. Heartbeats, `checked_at`, and
-`last_seen` do not create persistent writes by themselves.
+Изменения терминала, длительные события аудита безопасности/конфигурации, записи о восстановлении,
+и случайные адаптивные контрольные точки имеют ограниченное удержание. Идентичные закодированные
+сравниваются перед записью bbolt. Сердцебиение, `checked_at` и
+`last_seen` не создают постоянные записи сами по себе.
 
-### Runtime state
+### Состояние времени выполнения
 
-Locks, rollback timers, current probe results, discovery observations, bounded
-SSE buffers, scheduler deadlines, temporary generated files, and test-run
-working state live under `/tmp/router-policy` (tmpfs where available). Probe
-details and operational events use bounded in-memory rings unless the user
-explicitly exports a diagnostic bundle.
+Блокировки, таймеры отката, текущие результаты зонда, наблюдения обнаружения, ограниченные
+буферы SSE, scheduler deadlines, временные сгенерированные файлы и рабочее
+состояние test-run хранятся в реальном времени под `/tmp/router-policy` (tmpfs,
+если доступно). Датчик
+подробности и операционные события используют ограниченные кольца в памяти, если пользователь
+явно экспортирует диагностический пакет.
 
-### Exported diagnostics
+### Экспортированная диагностика
 
-Support bundles and hardware reports are explicit exports. They must be
-redacted and bound to the exact source commit and environment before being
-shared.
+Пакеты поддержки и отчеты об оборудовании являются явным экспортом. Они должны быть
+отредактированы и привязаны к точному исходному коммиту и среде, прежде чем
+опубликовали
 
-## Write-path budget
+## Бюджет пути записи
 
-The budget measures logical operations, not physical NAND writes:
+Бюджет измеряет логические операции, а не физические NAND пишет:
 
-| Path | Persistent policy |
+| Путь | Постоянная политика |
 |---|---|
-| `meta`, `revisions`, `transactions` | write only on config/security/recovery transitions or bounded maintenance |
-| `changes` | one entry per real change, bounded terminal retention |
-| route health | state transition or infrequent checkpoint; no heartbeat writes |
-| probe results and discovery | bounded RAM/tmpfs ring by default |
-| events | durable security/config audit only; operational events are transient |
+| `meta`, `revisions`, `transactions` | запись только при переходах конфигурации/безопасности/восстановления или ограниченном обслуживании |
+| `changes` | одна запись на реальное изменение, ограниченное удержание терминала |
+| состояние маршрута | переход состояния или нечастая контрольная точка; нет записи сердцебиения |
+| результаты зондирования и обнаружение | ограниченное кольцо RAM/tmpfs по умолчанию |
+| события | только надежный аудит безопасности/конфигурации; операционные события являются временными |
 | generated artifacts | compare bytes/hash first; identical content is a no-op |
-| snapshots and backups | one verified last-good plus bounded upgrade/installer fallback |
+| снимки и резервные копии | один проверенный последний хороший плюс ограниченное обновление/резервный вариант установщика |
 
-The storage diagnostics endpoint exposes logical write transactions, bytes,
-file create/replace/delete counts, fsync counts, snapshot/backup counts, and
-the last write reason. It does not claim to measure physical flash wear.
+Конечная точка диагностики хранилища предоставляет логические транзакции записи, байты,
+счетчики создания/замены/удаления файлов, счетчики fsync, счетчики моментальных снимков/резервных копий и
+последняя причина записи. Он не претендует на измерение физического износа вспышки.
 
-Artifact replacement treats the parent-directory sync as part of the write
-contract. OpenWrt targets use an exact directory `sync -f` when available and
-record a clearly labelled global-sync fallback otherwise; if both fail,
-`atomic_install` returns an error and records `fsync_failed` instead of
-reporting a durable install.
+Замена артефакта рассматривает синхронизацию родительского каталога как часть
+контракта записи. Цели OpenWrt используют точный каталог `sync -f`, если команда
+доступна, и явно помечают fallback на глобальный `sync`, если её нет. Если оба
+варианта не сработали, `atomic_install` возвращает ошибку и записывает
+`fsync_failed`, а не создаёт ложное сообщение об устойчивой записи.
 
-## Recovery artifact policy
+## Политика восстановления артефактов
 
-If bbolt cannot be opened or an interrupted compaction cannot be recovered, the
-controller enters rescue mode. It preserves the damaged database as a bounded,
-mode-0600 forensic artifact (at most three artifacts, each capped at 64 MiB),
-without replacing or deleting the original. Rescue mode is loopback-only,
-read-only, and disables discovery, calibration, and mutation until an
-administrator explicitly validates and restores a compatible backup.
+Если bbolt не может быть открыт или прерванное уплотнение не может быть восстановлено,
+контроллер переходит в режим спасения. Он сохраняет поврежденную базу данных как ограниченную,
+режим-0600 криминалистический артефакт (не более трех артефактов, каждый из которых ограничен 64 МиБ),
+без замены или удаления оригинала. Режим спасения - только кольцевой,
+только для чтения и отключает обнаружение, калибровку и мутацию до тех пор, пока
+администратор явно проверяет и восстанавливает совместимую резервную копию.
 
-## Installer and uninstall safety
+## Безопасность установки и удаления
 
-Installer snapshots contain only manifest-listed existing files. Parent
-directories such as `/`, `/etc`, `/usr`, and `/usr/bin` are never snapshot
-members and therefore cannot inherit staging `umask` metadata during rollback.
-Rollback restores the recorded uid/gid/mode of owned files only. Critical
-system-directory mode invariants are checked before an operation and after a
-simulated failure.
+Снимки установщика содержат только существующие файлы со списком манифестов. Родительский
+такие каталоги, как `/`, `/etc`, `/usr` и `/usr/bin`, никогда не являются снимками
+и, следовательно, не может наследовать промежуточные метаданные `umask` во время отката.
+Откат восстанавливает записанный uid/gid/режим только принадлежащих файлов. Критический
+инварианты режима system-directory проверяются перед операцией и после
+моделируемый отказ.
 
-Uninstall removes only the FlintRoute-owned nft tables, exact init services,
-and allowlisted files. It does not run a global `fw4 reload`, wildcard-delete
-system paths, or delete a foreign nft table.
+Удаление удаляет только таблицы nft, принадлежащие FlintRoute, точные службы инициализации,
+и разрешенных файлов. Он не запускает глобальный `fw4 reload`, wildcard-delete
+системных путей или удалите внешнюю таблицу nft.
 
-## Hardware status
+## Состояние оборудования
 
-No hardware validation is claimed for this branch. Any evidence from an older
-commit is `STALE FOR CURRENT SHA`. Before a future deployment, capture a
-read-only baseline and verify `/`, `/etc`, `/usr`, `/usr/bin`, `/usr/lib`,
-`/etc/init.d`, and `/etc/hotplug.d` modes before and after installation, before
-any reboot. See `docs/remediation-evidence.md` and
-`docs/flint2-hardware-validation.md` for the separate hardware gate.
+Для этой ветки hardware validation не заявляется. Любое evidence от старого
+commit имеет статус `STALE FOR CURRENT SHA`. Перед будущим развёртыванием захватите
+базовый уровень только для чтения и проверки `/`, `/etc`, `/usr`, `/usr/bin`, `/usr/lib`,
+Режимы `/etc/init.d` и `/etc/hotplug.d` до и после установки, до
+любой перезагрузке. См. `docs/remediation-evidence.md` и
+`docs/flint2-hardware-validation.md` для отдельного аппаратного затвора.

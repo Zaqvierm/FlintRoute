@@ -1,73 +1,69 @@
-# Headless Dataplane
+# Headless-плоскость данных
 
-P3.1 owns the transparent Xray and Zapret processes instead of treating an
-installed binary as proof that a route works. Both processes use project procd
-services and participate in the same snapshot/apply/verify/rollback transaction
-as nftables, dnsmasq and policy routing.
+> **Статус на `effa938`:** contract и mock/CI проверки актуальны; реальный
+> OpenWrt dataplane текущего SHA не устанавливался и не проверялся.
+
+P3.1 владеет прозрачными процессами Xray и Zapret; сам факт наличия binary не
+доказывает рабочий route. Оба процесса запускаются project procd services и
+участвуют в одной snapshot/apply/verify/rollback-транзакции с nftables, dnsmasq и
+policy routing.
 
 ## Xray
 
-The managed mode is explicit:
+Managed mode включается явно:
 
 - binary: `/usr/bin/xray`;
 - service: `/etc/init.d/router-policy-xray`;
 - active config: `/etc/router-policy/xray/active.json`;
 - command: `xray run -config /etc/router-policy/xray/active.json`.
 
-`candidate_only` still generates and validates the config but blocks transparent
-activation. `managed` permits deployment only when the IP plan also contains the
-TPROXY route/rule operations derived from live, non-simulated diagnostics.
+`candidate_only` генерирует и проверяет конфигурацию, но запрещает transparent
+activation. `managed` разрешает deploy только если IP plan содержит TPROXY
+route/rule, построенные по live non-simulated diagnostics.
 
 ## Zapret
 
-The repository does not vendor nfqws. Installation must provide a compatible
-Linux arm64 binary at `/usr/bin/nfqws`. The first hardware syntax gate used the
-official Zapret v72.12 arm64 build; its release archive and binary are not part
-of the project or a transaction bundle.
+Репозиторий не содержит nfqws. Установка должна предоставить совместимый Linux
+arm64 binary `/usr/bin/nfqws`. Первый hardware syntax gate использовал официальный
+Zapret v72.12 arm64 build; release archive и binary не входят в проект или
+transaction bundle.
 
-The generated candidate contains only a fixed reviewed preset:
+Candidate содержит только проверенный preset:
 
 - service: `/etc/init.d/router-policy-zapret`;
 - active config: `/etc/router-policy/zapret/nfqws.conf`;
-- NFQUEUE number: `200`;
-- strategy identifier: `tls-fake-ttl3-v1`;
+- NFQUEUE: `200`;
+- strategy ID: `tls-fake-ttl3-v1`;
 - TCP 80: `fake,fakedsplit`;
-- TCP 443: `fake` with `ttl=3` and first-original-packet TTL rewrite (`orig-ttl=1`, `s1..d1`);
-- UDP 443: DROP, forcing a later TCP attempt through nfqws.
+- TCP 443: `fake`, `ttl=3`, rewrite TTL первого original packet (`orig-ttl=1`, `s1..d1`);
+- UDP 443: DROP, чтобы следующий запрос пошёл через nfqws по TCP.
 
-Arbitrary nfqws arguments are deliberately not accepted through user config.
-The adapter copies the candidate config into the transaction directory, appends
-`--dry-run`, and runs the exact configured binary before any active file or rule
-is changed. The nft queue rule has no `bypass`: if nfqws dies, matching traffic
-fails closed instead of silently escaping direct.
+Произвольные nfqws arguments из user config запрещены. Adapter копирует candidate
+в transaction directory, добавляет `--dry-run` и запускает тот же binary до
+изменения active file/rule. В nft queue rule нет `bypass`: при падении nfqws
+matching traffic fail-closed, а не уходит Direct.
 
-## Transaction order
+## Порядок транзакции
 
-For an enabled managed route the adapter performs:
+Для enabled managed route adapter:
 
-1. validate generated artifacts and binary dry-runs;
-2. snapshot active configs and exact project-service running state;
-3. atomically install active configs;
-4. start or restart the required project services;
-5. apply IP routes/rules, then nftables and dnsmasq;
-6. run transaction-bound verification;
-7. commit, or restore the old firewall/config first, then prior service state
-   and snapshotted routes/rules.
+1. проверяет generated artifacts и binary dry-run;
+2. снимает snapshot active config и exact project-service state;
+3. атомарно устанавливает active configs;
+4. запускает/перезапускает нужные project services;
+5. применяет IP routes/rules, затем nftables и dnsmasq;
+6. выполняет transaction-bound verification;
+7. commit либо сначала возвращает старый firewall/config, затем service state и routes/rules.
 
-Starting the processes before the queue/TPROXY rules avoids activating a rule
-whose consumer is absent. Restoration reverses the data plane before returning
-the services to their snapshotted state.
+Процессы стартуют до queue/TPROXY rules, чтобы правило не ссылалось на отсутствующий
+consumer. Restore идёт в обратном порядке. Installer устанавливает init scripts,
+но пока не включает их на boot без validated transaction; durable enablement и
+recovery после reboot относятся к отдельному hardware gate.
 
-The installer places both init scripts but does not boot-enable them yet. A
-validated transaction can start them for the active revision; durable enablement
-and recovery after reboot belong to P6 and must not be faked by blindly starting
-an inactive route at boot.
+## Доказанная граница
 
-## Proven boundary
-
-Locally, unit, race and mocked OpenWrt integration tests cover generation,
-ordering, failure and rollback. On the real Flint 2, the generated nfqws config
-passed the official arm64 binary's `--dry-run`, and the generated table passed
-`nft -c`. That check used temporary files only. Persistent install, procd
-lifecycle, traffic counters, route proof, management survival and rollback on
-the router remain mandatory P13 hardware gates.
+Local unit/race/mock OpenWrt tests покрывают generation, порядок, failure и
+rollback. Ранее на Flint 2 nfqws config прошёл `--dry-run`, а table — `nft -c`;
+это были только temporary files. Persistent install, procd lifecycle, counters,
+route proof, management survival и rollback на роутере остаются обязательными
+hardware gates.

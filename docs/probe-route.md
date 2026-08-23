@@ -1,5 +1,8 @@
 # Единый probe_route
 
+> **Статус на `effa938`:** software-контракт и локальные проверки актуальны.
+> Hardware path proof для этого SHA отсутствует.
+
 `probe.ProbeRoute(ctx, cfg, domain, serviceName, svc, route)` — единственная
 функция, проверяющая любой маршрут. Источник: `internal/probe/probe.go`.
 

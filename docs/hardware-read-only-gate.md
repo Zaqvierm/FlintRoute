@@ -1,19 +1,18 @@
-# Flint 2 read-only validation gate
+# Read-only gate Flint 2 (только чтение)
 
-This is a checklist, not an installation script. The first hardware pass must
-not install, restart, reboot, or change firewall/routing state.
+Это чек-лист, а не installer. Первый проход на железе не должен устанавливать,
+перезапускать, перезагружать роутер или менять firewall/routing.
 
-## Preconditions
+## Перед подключением
 
-- Record the exact FlintRoute commit SHA and build hash.
-- Confirm an independent recovery path before connecting to the router.
-- Keep the current management session open while collecting evidence.
-- Store output outside the router; redact credentials, tokens, UUIDs, and
-  private endpoints.
+- записать точный FlintRoute commit SHA и hash сборки;
+- подтвердить независимый recovery path;
+- не закрывать текущую management-сессию во время сбора evidence;
+- хранить вывод вне роутера и удалить credentials, tokens, UUID и private endpoints.
 
-## Read-only baseline
+## Базовая проверка только для чтения
 
-Run the following over the already-approved SSH path and save the raw output.
+Запустить по заранее разрешённому SSH path и сохранить raw output:
 
 ```sh
 ubus call system board
@@ -26,8 +25,8 @@ free
 ps w
 ```
 
-Record process ownership for FlintRoute, Xray, Zapret/nfqws, dnsmasq,
-netifd, procd, ubusd, rpcd, uhttpd/nginx, and dropbear. For each relevant PID:
+Зафиксировать ownership процессов FlintRoute, Xray, Zapret/nfqws, dnsmasq,
+netifd, procd, ubusd, rpcd, uhttpd/nginx и dropbear. Для каждого PID:
 
 ```sh
 pid=<pid>
@@ -37,14 +36,14 @@ tr '\0' ' ' < /proc/$pid/cmdline; echo
 ls /proc/$pid/fd | wc -l
 ```
 
-Record listeners and sockets without terminating anything:
+Слушатели и sockets только читаются:
 
 ```sh
 ss -lntup 2>/dev/null || netstat -lntup
 ss -tan 2>/dev/null || netstat -tan
 ```
 
-Record the current data plane:
+Текущий dataplane:
 
 ```sh
 ip -o addr
@@ -56,10 +55,10 @@ ubus call dhcp ipv4leases
 ubus call network.wireless status
 ```
 
-## Permission invariant
+## Инвариант прав
 
-Before any deployment, record the numeric mode, owner, and group of every
-critical parent. Compare with `/rom` when that tree exists:
+До deploy записать numeric mode, owner и group критических parents; если есть
+`/rom`, сравнить с ним:
 
 ```sh
 for p in / /etc /usr /usr/bin /usr/lib /etc/init.d /etc/hotplug.d; do
@@ -70,12 +69,12 @@ for p in / /etc /usr /usr/bin /usr/lib /etc/init.d /etc/hotplug.d; do
 done
 ```
 
-Any missing or suspicious parent blocks deployment. Do not repair it
-automatically and do not reboot to “see what happens”.
+Отсутствующий или подозрительный parent блокирует deploy. Автоматически его не
+чинить и не перезагружать роутер «для проверки».
 
 ## Resource baseline
 
-Collect two one-minute samples without generating traffic:
+Два одноминутных sample без генерации трафика:
 
 ```sh
 top -bn1 2>/dev/null || top -n 1
@@ -83,13 +82,13 @@ cat /proc/loadavg
 cat /proc/stat | head -n 1
 ```
 
-Save the FlintRoute process CPU, thread count, open-FD count, established
-loopback sockets, and any active probe count. The post-deployment read-only
-comparison must show no unexplained growth while idle.
+Сохранить CPU FlintRoute, число threads, открытые FD, established loopback
+sockets и число активных probes. После deploy не должно быть необъяснимого роста
+в idle.
 
-## Deployment boundary
+## Граница deploy
 
-Only after this baseline is reviewed may deployment be planned. After an
-installation, repeat the permission loop above manually and verify the same
-critical modes before any reboot. Reboot is a separate gate and is forbidden
-until those checks and management/data-plane proofs are recorded.
+Только после проверки baseline можно планировать deploy. После установки вручную
+повторить permission loop и подтвердить те же modes до любого reboot. Reboot —
+отдельный gate и запрещён, пока не записаны permission checks и доказательства
+management/data-plane.

@@ -1,5 +1,9 @@
 # Архитектура
 
+> **Статус на `effa938`:** software-описание актуально. Раздел «Проверенные
+> аппаратные факты» ниже — исторический и имеет `STALE FOR CURRENT SHA`: в этом
+> цикле Flint 2 не подключался.
+
 > Основные реализации находятся в `internal/*`, `cmd/router-policy` и
 > `openwrt/*`.
 
@@ -20,11 +24,11 @@ proof требует фактический socket path и reachable neighbor. �
 package и всё текущее аппаратное evidence относятся к GL-MT6000. Совместимость
 с другим OpenWrt-железом не заявляется без отдельной диагностики и проверки.
 
-## Проверенные аппаратные факты
+## Исторические аппаратные факты (`STALE FOR CURRENT SHA`)
 
-- GL-MT6000 / Flint 2: Filogic 830, 4×Cortex-A53 2.0 GHz, 1 GB RAM, 8 GB eMMC.
+- GL-MT6000 / Flint 2: Filogic 830, 4×Cortex-A53 2,0 ГГц, 1 ГБ ОЗУ, 8 ГБ eMMC.
 - OpenWrt 24.10.4, firewall4/nftables (queue + tproxy support подтверждены),
-  kernel 6.6.110.
+ядро 6.6.110.
 - `dnsmasq-full` с nftset — путь для доменных политик.
 - Xray: `xray run -test -c file.json` для проверки конфига; VLESS + REALITY/Vision.
 - Zapret/nfqws — внешний Anti-DPI (pinned provider, не вендорится).
@@ -49,55 +53,55 @@ LAN client
 
 ## Плоскости системы
 
-### Presentation plane
+### Плоскость презентации
 
 Встроенный Web UI: Preact/Vite static bundle, отдаётся из
 `router-policy serve`, не содержит секретов, не вызывает shell/OpenWrt напрямую.
 Все изменения — через `/api/v1/changes`.
 
-### Control plane
+### Концентратор плоскости управления
 
 Go-ядро (`internal/*`):
 - `probe.ProbeRoute` — единая проверка маршрута (4 уровня);
-- `health.Service.RunCycle` — VLESS quorum, EWMA, hysteresis, roles;
-- planner / candidate builder / route selector;
-- auth/session/CSRF, SSE events;
-- ChangeSet validation/apply/confirm/rollback state machine;
-- `artifact.Generate` — nft/dnsmasq/Xray/nfqws/IP plan/verification plan;
+- `health.Service.RunCycle` — VLESS кворум, EWMA, гистерезис, роли;
+- планировщик /конструктор кандидатов/селектор маршрутов;
+- события auth/session/CSRF, SSE;
+- Машина состояния проверки/применения/подтверждения/отката ChangeSet;
+- `artifact.Generate` — nft/dnsmasq/Xray/nfqws/IP план/план верификации;
 - `api.recoverCommittedDataplane` — post-reboot recovery через `adapter.Reconcile`;
-- security audit.
+- аудит безопасности
 
 Control plane принимает решения, но не молча ломает data plane. Опасный apply
 идёт через backup, staged apply, confirm window, rollback.
 
-### Data plane
+### Плоскость данных
 
 OpenWrt-слой (`adapter.OpenWrt` + `openwrt/adapter.sh`):
-- dnsmasq-full, nftables/firewall4, policy routing;
-- Xray (TPROXY + SOCKS per outbound), Zapret/nfqws (NFQUEUE fail-closed);
-- procd watchdog, boot guard.
+- dnsmasq-full, nftables/firewall4, маршрутизация политик;
+- Xray (TPROXY + SOCKS на исходящий), Zapret/nfqws (NFQUEUE закрыт при отказе);
+- Сторожевой таймер procd, ограждение багажника.
 
 Data plane недоверен к автоматическому включению, пока не снята диагностика
 целевого OpenWrt-устройства. `--activate` gated через confirmed diagnostics.
 
 ## Компоненты
 
-### DNS gateway
+### Шлюз DNS
 
 - DHCP/DNS для LAN; перехват 53/tcp и 53/udp;
 - нормализация доменов (IDN, eTLD+1), отделение локальных зон;
 - пополнение nft sets; DoT блокировка (853), DoH — по спискам;
 - не задерживает запросы длинными проверками (решение выбирается заранее).
 
-### Policy / availability database
+### База данных политики / доступности
 
 bbolt: `changes`, `candidates`, `revisions`, `transactions`, `probes`, `events`,
 `meta`. Матрица `domain/service × route × state × latency × reason × checked_at`.
 Состояния: `OK`, `DEGRADED`, `FAIL`, `FORBIDDEN`, `UNKNOWN`, `STALE`,
-`UNVERIFIED`, `NOT_CONFIGURED`. Domain decision cache: bounded LRU, revision-bound,
+`UNVERIFIED`, `NOT_CONFIGURED`. Кэш решений домена: ограниченный LRU, ограниченный ревизией,
 TTL. Retention по bounded probe count и time-based политикам.
 
-### Route selector
+### Выбор маршрута
 
 Выбирает путь заранее, не во время DNS-запроса. `path_verified` обязателен.
 Hysteresis: failure/recovery streaks, route hold, cooldown, quarantine. Для
@@ -120,11 +124,13 @@ Smart DNS — conditional DNS, не туннель и не VPN. Его resolver 
 
 Discovery отделяет наблюдение от изменения конфигурации: `observe_only` только
 пишет решение в bounded runtime/event stream, `suggest` сохраняет предложение,
-`auto_apply_verified` может создать ChangeSet, `locked` не запускает probe.
+`auto_apply_verified` описывает будущий gated route-only контракт, но в текущем
+production-коде остаётся fenced и не создаёт ChangeSet из DNS-события, `locked`
+не запускает probe.
 Предложения ограничены 256 доменами и не пишутся в persistent DB. Заводской
 режим — `observe_only`.
 
-### Unified probe engine
+### Унифицированный датчик двигателя
 
 `probe.ProbeRoute(domain, service, route)` — один интерфейс для всех route types.
 Рабочие маршруты `direct`, `zapret`, `smart_dns`, `vless`, `drop` отличаются
@@ -147,22 +153,22 @@ API/UI/SSE; безопасная инвентаризация может пок�
 ### Zapret/nfqws
 
 Anti-DPI, не VPN. Managed lifecycle: fixed reviewed strategy
-(`tls-fake-ttl3-v1`), NFQUEUE fail-closed (no `bypass`), `--dry-run` before
+(`tls-fake-ttl3-v1`), NFQUEUE закрыт при отказе (без `bypass`), `--dry-run` ДО
 apply. Произвольные nfqws-аргументы запрещены. Бинарник не вендорится.
 
 ## Четыре уровня (архитектурный контракт)
 
-1. **DNS resolution** — `resolveForRoute`: system / smart_dns / socks_remote.
+1. **Разрешение DNS** — `resolveForRoute`: system / smart_dns / socks_remote.
 2. **Классификация** — `probeOne`→`runHTTPAttempt`: HTTP/content/regional/TSPU.
 3. **Фактический egress** — `probeExternalIP`: hash + country consensus.
 4. **Доказательство маршрута** — `evidence.ValidateRouteProof`: per-type bound
-   proof (mark/rule/table/outbound/SOCKS/Drop enforcement).
+доказательство (mark/rule/table/outbound/SOCKS/Drop enforcement).
 
 Уровни независимы. `path_verified=false` → маршрут не production-ready.
 
 ## Слои (по графу кода)
 
-`api` (entry) → `probe`/`auth`/`platform`/`adapter` (core) → `state` (core,
-high fan-in). Boundaries: api→state, probe→domaincache, api→probe, api→auth,
-api→platform, api→adapter, domaincache→state, subscription→state, subscription→probe,
+`api` (вход) → `probe`/`auth`/`platform`/`adapter` (сердечник) → `state` (сердечник,
+high fan-in). Границы: api→state, probe→domaincache, api→probe, api→auth,
+api→платформа, api→адаптер,→ состояние кэша домена,→ состояние подписки,→ зонд подписки,
 domaincache→tspu.

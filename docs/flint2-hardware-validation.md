@@ -1,4 +1,8 @@
-# P13: Full Flint 2 Hardware Validation
+# P13: полная аппаратная проверка Flint 2
+
+> **STALE FOR CURRENT SHA.** Это план и историческая матрица аппаратной
+> приёмки. Для `effa938` роутер не подключался, поэтому ни один PASS ниже не
+> является текущим hardware evidence.
 
 ## Цель
 
@@ -72,7 +76,7 @@ cases × две address families. Наличие строки означает �
 PASS появляется лишь после проверки именно этой клетки; один HTTPS probe не
 засчитывает DNS, TCP/80 или QUIC.
 
-### Service isolation
+### Изоляция сервисов
 
 Минимальный набор одновременно активных bundles:
 
@@ -86,7 +90,7 @@ PASS появляется лишь после проверки именно эт
 изменились. Отдельно тестируются связанные CDN-домены, shared IP collision,
 TTL expiry, A/AAAA divergence и добавление нового IP через DNS cache.
 
-## P12 adaptive scenarios
+## Адаптивные сценарии P12
 
 P13 обязан доказать адаптивную часть, а не только статический happy path:
 
@@ -124,7 +128,7 @@ P13 обязан доказать адаптивную часть, а не то�
 process states, dnsmasq, Xray, nfqws, active revision и service traffic должны
 соответствовать одной целой ревизии. Полусобранный data-plane — FAIL.
 
-## Reboot/crash matrix
+## Матрица reboot/crash
 
 | Состояние перед reboot/crash | Ожидаемое восстановление |
 |---|---|
@@ -138,7 +142,7 @@ process states, dnsmasq, Xray, nfqws, active revision и service traffic дол�
 Каждая строка выполняется минимум дважды: controlled reboot и hard process
 termination. Power loss допускается только при наличии внешнего recovery path.
 
-## Multi-client
+## Несколько клиентов
 
 Минимум три клиента одновременно:
 
@@ -188,7 +192,7 @@ PASS требует ноль unsafe Direct leaks, ноль неизвестны�
 Операционный порядок, preflight и структура evidence вынесены в
 [`soak-test.md`](soak-test.md).
 
-## Install, upgrade, downgrade
+## Установка, обновление и откат версии
 
 На чистом Flint 2 проверяются:
 
@@ -204,7 +208,7 @@ PASS требует ноль unsafe Direct leaks, ноль неизвестны�
 Installer не имеет права перетирать чужой Xray/Zapret/firewall config. Все
 изменения принадлежат project namespace и входят в backup/manifest.
 
-## Evidence bundle
+## Пакет evidence
 
 Каждый hardware run сохраняет:
 

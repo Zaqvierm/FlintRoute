@@ -1,4 +1,4 @@
-# Zapret calibration contract
+# Контракт калибровки Zapret
 
 ## Что делает текущий код
 
@@ -60,42 +60,41 @@ timeout, process-group cleanup и ownership proof; неизвестный про
 6. Linux namespace/process-group tests являются отдельным evidence level;
    Windows mock PASS не заменяет их.
 
-## Evidence result semantics
+## Семантика результата evidence
 
-The quick runner returns the complete bounded curated attempt table. Every
-attempt has one unique profile ID, the normalized target and protocol, and a
-cleanup proof. `PASS`, `FAIL`, and `TIMEOUT` require proof that the request
-traversed the tested path; `INFRA_ERROR` is reserved for runner failures and
-must carry an error code or diagnostic. A run with only failures is a valid
-terminal result with zero recommended candidates; it is not a false success
-and it must not be converted into `NO_SAFE_ROUTE` for a domain decision.
+Quick-runner возвращает полную bounded-таблицу проверенных curated-попыток.
+У каждой попытки есть уникальный ID профиля, нормализованные target/protocol и
+доказательство cleanup. `PASS`, `FAIL` и `TIMEOUT` требуют доказательства, что
+запрос прошёл через тестируемый путь; `INFRA_ERROR` предназначен только для
+ошибок инфраструктуры и обязан содержать код или диагностику. Запуск, в котором
+все кандидаты упали, является корректным terminal result с нулём рекомендаций;
+это не ложный успех и не должно превращаться в `NO_SAFE_ROUTE` доменного решения.
 
-Production now wires `ExecCalibrationRunner.QuickScript` to
-`scripts/quick-zapret-check.sh`. The runner executes four built-in reviewed
-profiles sequentially, allocates a bounded private NFQUEUE, installs only its
-own temporary output table for a dedicated probe UID, and starts one owned
-`nfqws` process group per attempt. It records the counter delta, target IP,
-HTTP result, latency and cleanup proof. A request that returns HTTP 200 while
-the owned NFQUEUE counter remains unchanged is `INFRA_ERROR`, never `PASS`.
+Production связывает `ExecCalibrationRunner.QuickScript` со
+`scripts/quick-zapret-check.sh`. Runner последовательно выполняет четыре
+встроенных проверенных профиля, выделяет bounded private NFQUEUE, создаёт только
+свою временную output-table для отдельного probe UID и запускает одну
+принадлежащую ему process group `nfqws` на попытку. В отчёт попадают delta
+счётчика, target IP, HTTP-результат, latency и cleanup proof. Ответ HTTP 200 при
+неизменившемся счётчике собственной NFQUEUE — `INFRA_ERROR`, а не `PASS`.
 
-Both quick and exhaustive runs acquire the same runtime lock
-`/tmp/router-policy/zapret-calibration.lock` (or the configured runtime
-directory). This is deliberate: a curated attempt must not race an upstream
-scan for NFQUEUE numbers, nft transitions, or the managed Zapret service. A
-stale lock fails closed and is not silently removed by the script.
-The catalog emitted after a successful run is rebound to the configured
-production NFQUEUE; the temporary test queue is never persisted into the
-active configuration.
-The API obtains up to four safe public IPv4 targets from a verified Smart DNS
-resolver when one is configured, otherwise from the router's system resolver;
-an empty or private answer blocks the run before any nfqws process starts.
-If the runner, required tools, process-group proof or cleanup proof is missing,
-the API still fails closed with `zapret_quick_evidence_unavailable` or an
-explicit infrastructure result; it never aliases upstream `SCANLEVEL=quick`.
+Quick и exhaustive используют один runtime lock
+`/tmp/router-policy/zapret-calibration.lock` (или настроенный runtime-каталог).
+Это не позволяет curated-проверке конфликтовать с upstream scan, NFQUEUE/nft
+transition или управляемым сервисом Zapret. Устаревший lock блокирует запуск и
+не удаляется молча. После успешного запуска каталог профилей привязывается к
+production NFQUEUE; временная queue не сохраняется в active config.
 
-The built-in set is intentionally small and versioned by code, not presented
-as a fabricated "21 strategies" claim. The exhaustive upstream blockcheck
-remains a separate maintenance action.
+API получает до четырёх безопасных публичных IPv4-целей из проверенного Smart
+DNS resolver, если он настроен, иначе использует системный resolver роутера.
+Пустой или private-ответ блокирует запуск до старта `nfqws`. Если runner,
+инструменты, process-group proof или cleanup proof недоступны, API остаётся
+fail-closed и возвращает `zapret_quick_evidence_unavailable` либо явный
+инфраструктурный результат; upstream `SCANLEVEL=quick` не подменяется.
+
+Встроенный набор намеренно небольшой и версионируется кодом; выдуманное число
+«21 стратегий» не заявляется. Полный upstream blockcheck — отдельная
+maintenance-операция.
 
 ## Route-check fan-out budget
 

@@ -1,82 +1,79 @@
-# UI v2 truthfulness and responsive shell
+# UI v2: правдивые состояния и адаптивная оболочка
 
-This note describes the current UI work on the remediation branch. It is
-intentionally bound to a commit when the change is committed; local edits are
-not hardware evidence.
+Документ описывает UI на remediation-ветке. При коммите он привязывается к
+точному SHA; локальные изменения не являются hardware evidence.
 
-## Truthfulness rules
+## Правила правдивости
 
-- First-run completion is stored in the backend `onboarding` bbolt bucket.
-  Browser `localStorage` may remember the last screen and UI preferences, but
-  it cannot claim that a route, source, or ChangeSet was applied.
-- Hidden privacy mode is the default. Topology and device requests use the
-  hidden API variant, old entity state is cleared during a reveal-to-hidden
-  transition, and an explicit reveal automatically expires after ten minutes.
-- A failed slice does not cancel the other dashboard slices. The alert center
-  identifies the unavailable slice and permits a retry; object fallbacks are
-  marked stale rather than presented as a fresh health proof.
-- The Fast Start screen owns its first provider read and starts it on mount;
-  opening the wizard never leaves the component/source cards in a fabricated
-  permanent loading state. Logout aborts the current refresh generation and
-  invalidates late responses before clearing entity state.
-- Fast Start writes are handled as user-visible operations: a failed step
-  shows the backend error code plus a readable explanation and does not leave
-  an unhandled promise or a falsely advanced step.
-- Service categories are exhaustive. `TELEGRAM`, `DIRECT_PREFERRED`, and
-  future/unknown values do not silently become Direct; unknown values stay in
-  `Не определено`.
-- A service edit creates a draft ChangeSet and opens the operation/developer
-  review screen. It does not validate/apply/confirm dataplane changes from a
-  single card click.
+- Завершение первичной настройки хранится в backend bucket `onboarding` bbolt.
+  `localStorage` может запоминать экран и локальные предпочтения, но не может
+  утверждать, что применены route, source или ChangeSet.
+- Режим скрытия privacy включён по умолчанию. Запросы topology и devices идут
+  через скрытый API-вариант; старое состояние entity очищается при переходе
+  visible→hidden; явное раскрытие автоматически истекает через 10 минут.
+- Ошибка одного среза не отменяет остальные dashboard-срезы. Alert center
+  показывает недоступный срез и отдельную кнопку повтора; fallback-объект
+  помечается stale и не выдаётся за свежий health proof.
+- Экран Fast Start сам владеет первым чтением provider и запускает его при
+  монтировании. Открытие мастера не оставляет карточки компонентов в ложном
+  бесконечном loading. Logout отменяет текущую refresh generation и игнорирует
+  поздние ответы до очистки entity state.
+- Записи Fast Start — видимые пользователю operations: ошибка шага показывает
+  backend error code и нормальное объяснение, не оставляя unhandled promise и
+  ложно продвинутый шаг.
+- Категории сервисов перечислены явно. `TELEGRAM`, `DIRECT_PREFERRED` и будущие
+  значения не превращаются молча в Direct; неизвестные остаются «Не определено».
+- Редактирование сервиса создаёт draft ChangeSet и открывает review в
+  Operation/Developer Center. Один клик карточки не запускает validate/apply/
+  confirm dataplane.
 
-## Navigation and responsive modes
+## Навигация и режимы ширины
 
-The shell has five desktop sections: Overview, Network, Rules, Activity, and
-System. Screen selection is reflected in a shareable `?screen=` URL and browser
-Back/Forward updates the active screen. An unknown URL renders a local “page not
-found” state instead of silently opening Overview.
+В desktop-оболочке пять разделов: Обзор, Сеть, Правила, Активность и Система.
+Выбор экрана отражается в URL `?screen=`; Back/Forward браузера восстанавливают
+активный экран. Неизвестный URL показывает локальное «страница не найдена», а не
+молча открывает Обзор.
 
-On phones the shell uses four primary bottom-navigation actions plus an “Ещё”
-sheet. The bar is attached to the viewport (not the zero-height side rail), so
-it remains reachable at 360–430 px. On compact/tablet widths the side rail is
-narrow and the topology is a vertical grouped view; the desktop canvas is not
-forced into a horizontally scrolling mobile viewport. Desktop keeps the
-detailed canvas and caps its readable width on ultrawide screens. Decorative
-packet and wire animations were removed: a line is not evidence of traffic.
+На телефоне четыре основных действия находятся в нижней навигации, пятый пункт
+открывает sheet «Ещё». Панель прикреплена к viewport, а не к rail нулевой высоты,
+поэтому доступна на 360–430 px. На compact/tablet rail узкий, topology становится
+вертикальным списком групп; desktop-canvas не заставляет мобильный экран
+горизонтально прокручиваться. Desktop сохраняет подробную карту, но ограничивает
+читаемую ширину на ultrawide. Декоративные анимации пакетов и линий удалены:
+линия сама по себе не доказывает трафик.
 
-The Activity section has a separate Operation Center. Component, VLESS,
-Zapret, Smart DNS, External SOCKS and service edits create a draft and link to
-that center; they do not validate/apply/confirm a dataplane change from a card
-click. `Advanced` keeps the developer JSON editor behind its own disclosure.
+В разделе Активность есть отдельный Operation Center. Изменения компонентов,
+VLESS, Zapret, Smart DNS, External SOCKS и сервисных правил создают draft и
+ссылку в этот центр; они не делают validate/apply/confirm dataplane из обработчика
+карточки. `Advanced` оставляет JSON-редактор только за явным Developer Mode.
 
-Browser coverage lives in `tests/browser`: deterministic API fixtures cover
-privacy purge, partial API failure, navigation/back-forward and a ten-viewport
-matrix (360×800 through 3840×2160). The fixture is test-only and is never
-enabled by the production build.
+Браузерное покрытие находится в `tests/browser`: deterministic API fixtures
+проверяют очистку privacy, частичный API failure, навигацию/back-forward и
+матрицу десяти viewport от 360×800 до 3840×2160. Fixture существует только в
+тестах и никогда не включается production-сборкой.
 
-The browser suite also proves that a slow screen-specific request is aborted
-when navigation changes; an old response cannot overwrite the new screen.
+Набор также доказывает, что медленный screen-specific запрос отменяется при
+смене экрана, а старый ответ не может перезаписать новый экран.
 
-## Request budget and cancellation
+## Лимит запросов и отмена
 
-Overview refresh always reads only the compact overview, system and health
-snapshots, plus data needed by the active screen. Expensive collections are not
-polled globally: topology/devices, services, routes, traffic, events,
-discovery, diagnostics, backups and operations are loaded only for screens that
-display them. The Services screen is covered by a request-budget test and
-loads no topology, devices, routes, traffic, events, discovery, diagnostics or
-backup collection.
+Обновление Обзора читает только компактные snapshot overview/system/health и
+данные активного экрана. Дорогие коллекции не опрашиваются глобально:
+topology/devices, services, routes, traffic, events, discovery, diagnostics,
+backups и operations загружаются только там, где отображаются. Экран Services
+покрыт request-budget тестом и не загружает topology, devices, routes, traffic,
+events, discovery, diagnostics или backup collection.
 
-Every refresh generation owns an `AbortController`. A screen or privacy change
-aborts the previous generation, and aborted responses are ignored. The
-30-second timer and SSE reconnect share the same in-flight guard, so they do
-not multiply router commands. Hidden tabs stop the timer; active operations
-are the only case where faster polling is allowed.
+Каждая refresh generation владеет своим `AbortController`. Смена экрана или
+privacy отменяет предыдущую generation, а отменённые ответы игнорируются.
+30-секундный timer и SSE reconnect используют один in-flight guard и не
+умножают команды роутеру. В скрытой вкладке timer остановлен; ускоренный polling
+разрешён только для активной operation.
 
-## Scope and limits
+## Объём и ограничения
 
-This is a progressive-disclosure foundation, not a production-readiness claim.
-The full feature-local frontend split and Linux or hardware evidence remain
-separate gates. Playwright Chromium passes locally when the browser binary is
-installed; its CI job remains the authoritative repeatable gate. Hardware is
-deliberately not touched by the UI work.
+Это фундамент progressive disclosure, а не заявление о production readiness.
+Полное feature-local разделение frontend и Linux/hardware evidence остаются
+отдельными gate. Playwright Chromium проходит локально, если установлен browser
+binary; authoritative повторяемая проверка выполняется в CI. UI-работа намеренно
+не трогает hardware.

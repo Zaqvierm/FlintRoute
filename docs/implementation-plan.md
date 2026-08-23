@@ -1,5 +1,10 @@
 # Реализация и оставшаяся работа
 
+> **Статус на `effa938`:** это backlog и критерии следующих этапов, а не
+> заявление о готовности. Выполненные пункты должны подтверждаться
+> `docs/remediation-evidence.md`; hardware-пункты без нового прогона остаются
+> `STALE`.
+
 > Фактическое поведение определяют реализация и тесты. Этот документ описывает
 > оставшиеся этапы и критерии их завершения.
 
@@ -57,7 +62,7 @@ FlintRoute — Go control plane + Preact/Vite UI + транзакционный 
   nfqws `--dry-run` before apply, NFQUEUE fail-closed (no `bypass`), flow
   offloading preserve/disable.
 
-### Post-reboot recovery
+### Post-reboot recovery (software contract; hardware claims stale)
 
 - `api.recoverCommittedDataplane` при старте сервера: загружает active revision
   → transaction → ChangeSet → candidate, проверяет canonical hash совпадение,
@@ -67,11 +72,11 @@ FlintRoute — Go control plane + Preact/Vite UI + транзакционный 
 - `openwrt/init.d/router-policy-boot-guard` — boot guard.
 - Любое расхождение → `failedRecovery` с явным `reason_code`, persisted в bbolt
   `meta/recovery_status`. Ни одна частичная ревизия не активируется.
-- На Flint 2 persistent state и committed dataplane восстановлены после
+- В историческом hardware evidence Flint 2 persistent state и committed dataplane восстанавливались после
   физического reboot; post-reboot Direct/Zapret/Drop/VLESS evidence прошёл
   strict verification.
 
-### Проверено на Flint 2 / GL-MT6000
+### Историческое evidence Flint 2 / GL-MT6000 (STALE FOR CURRENT SHA)
 
 - Direct + fail-closed Drop доказаны на
   физическом роутере. nft counter movement, mark/rule/table, conntrack, DNS/IPv6

@@ -29,7 +29,7 @@ probe.ProbeRoute(ctx, cfg, domain, service, route)
 `external_socks` означает внешний loopback SOCKS5 endpoint. FlintRoute проверяет
 его до создания ChangeSet, но не устанавливает и не управляет transport process.
 
-## Discovery mode
+## Режим обнаружения
 
 DNS observation и изменение committed config — разные действия:
 
@@ -37,32 +37,33 @@ DNS observation и изменение committed config — разные дейс
   bounded observation/reason в runtime/event stream; активные DNS/TLS/HTTP/SOCKS
   probes и новые правила не запускаются;
 - `suggest` дополнительно сохраняет предложение для UI;
-- `auto_apply_verified` допускает только `PathVerified` решение, одну активную
-  транзакцию, bounded hourly rate и rollback timer; management/firewall paths
-  запрещены, повторные rollback открывают circuit breaker;
+- `auto_apply_verified` в текущем production-коде не выполняет автоматическую
+  запись: после проверки `PathVerified` результат остаётся suggestion, потому
+  что безопасный route-only assignment ещё не реализован. Полный ChangeSet из
+  фонового DNS-события запрещён; режим оставлен как явно fenced capability.
 - `locked` останавливает discovery до probe.
 
 Direct и Drop не фиксируются автоматически: перехват обычного прямого трафика и
 блокировка требуют явного правила. Baseline оставляет unclassified traffic на
-system default route OpenWrt.
+системный маршрут по умолчанию OpenWrt.
 
 Запрещённый анти-паттерн: `check_direct()`, `check_zapret()`, `check_vless()` —
 они размножат сетевую логику.
 
 ## Четыре независимых уровня (контракт `probe.RouteResult`)
 
-1. **DNS resolution** — `resolveForRoute`: `system` / `smart_dns` (UDP+TCP
-   fallback) / `socks_remote` (DNS over SOCKS5). `validateDNSResponse`: ID, rcode,
+1. **Разрешение DNS** — `resolveForRoute`: `system` / `smart_dns` (UDP+TCP
+резерв) /`socks_remote` (DNS по сравнению с SOCKS5). `validateDNSResponse`: ID, rcode,
    question, CNAME loop/limit, size, answer limit, unsafe-ответ guard.
 2. **Классификация** — `probeOne`→`runHTTPAttempt`: transport, TLS/SNI, HTTP
-   status, redirects, content markers, `RegionalBlock`, `SuspectedTSPU`.
+статус, редиректы, маркеры контента, `RegionalBlock`, `SuspectedTSPU`.
 3. **Фактический egress** — `probeExternalIP`: `ExternalIPHash`, `ExternalCountry`,
-   `ExternalCountrySources`, `EgressConsensus`. `RequireNonRUEgress` →
-   `RU_EXIT`/`FAIL`.
+`ExternalCountrySources`, `EgressConsensus`. `RequireNonRUEgress` →
+`RU_EXIT`/`FAIL`.
 4. **Доказательство маршрута** — `beginPathProof`/`finishWithPathProof`:
-   `PathVerified`, `NFTMark`, `ConntrackMark`, `IPRulePriority`, `RouteTable`,
+`PathVerified`, `NFTMark`, `ConntrackMark`, `IPRulePriority`, `RouteTable`,
    `Interface`, `SocketMark`, `XrayOutboundTag`, `PathEvidence`. Binding проверяет
-   `evidence.ValidateRouteProof`.
+`evidence.ValidateRouteProof`.
 
 Уровни независимы: `http_ok=true` без `path_verified=true` → `UNVERIFIED`,
 маршрут не выбирается.
@@ -102,14 +103,17 @@ system default route OpenWrt.
 ## Единые механизмы
 
 1. `build_candidates(domain, service, policy)` — очередь маршрутов по
-   `allowed_paths`/category/TSPU evidence.
+`allowed_paths`/category/TSPU доказательство.
 2. `probe.ProbeRoute(...)` — одинаково проверяет любой route.
-3. `select_best_route(results, policy)` — надёжность > задержка, `path_verified`
-   обязателен.
-4. `apply_route_plan(plan)` — атомарная транзакция adapter: snapshot → apply →
-   verify → commit/rollback (см. `adapter-transaction.md`).
+3. Концептуальный `select_best_route(results, policy)` — надёжность > задержка,
+   `path_verified` обязателен. В коде эта логика пока находится внутри
+   `planner.CheckDomain`, отдельной функции с таким именем нет.
+4. Концептуальный `apply_route_plan(plan)` — атомарная транзакция adapter:
+   snapshot → apply → verify → commit/rollback. Фактические entry points —
+   `api.applyChangeSet` и `api.applyConfigOperation` (см.
+   `adapter-transaction.md`).
 
-## Flowchart
+## Блок-схема
 
 ```mermaid
 flowchart TD
@@ -229,3 +233,58 @@ helper (`adapter.Interface`), а не ad-hoc shell. `VERIFY` требует вс
 уровня, включая bound path proof (`evidence.ValidateRouteProof`). Reboot
 recovery (`adapter.Reconcile` через `api.recoverCommittedDataplane`) восстанавливает
 committed dataplane после рестарта — отдельный путь, не показан в hot-path flow.
+
+## Фактическая сверка с кодом на `effa938`
+
+Эта секция отделяет реализованный control flow от целевого flowchart. Проверка
+выполнена по `internal/planner/planner.go`, `internal/api/server.go`,
+`internal/api/discovery_control.go`, `internal/tspu/*` и тестам.
+
+### Реализовано
+
+- `planner.CheckDomain` создаёт состояние `VERIFYING/in_progress`, строит
+  очередь разрешённых кандидатов и вызывает единственный `ProbeRoute` для
+  каждого кандидата.
+- Для неизвестного домена сначала используется реальный системный default
+  route, если он присутствует в конфигурации. Если TSPU-кеш даёт `MATCH`,
+  порядок начинается с Zapret согласно `tspu_stale_policy`.
+- `NO_SAFE_ROUTE` выставляется только после terminal-результата всех реально
+  запущенных кандидатов. Пустой или незавершённый результат остаётся
+  `VERIFYING`; это закреплено тестами planner/API.
+- Классификационная уверенность TSPU и уверенность выбора маршрута — разные
+  поля. Сам маршрут выбирается только при `Status=OK`, `ServiceOK=true` и
+  `PathVerified=true`.
+- `observe_only` записывает наблюдение и уже имеющееся TSPU-сопоставление, но
+  не вызывает `domainChecker`, активные probes или adapter. `suggest` сохраняет
+  suggestion без применения.
+- Транзакционный apply, management/data-plane proof, commit/rollback и
+  post-restart reconcile проходят через adapter contract.
+
+### Частично реализовано или намеренно отключено
+
+- Узел `TSPU evidence match` реализован только для загруженного локального
+  кеша. При недоступном/повреждённом кеше результат — `UNAVAILABLE`, а не
+  выдуманная классификация.
+- Автоматическое назначение уже существующего route ID пока отсутствует:
+  `discoveryAutoAllowed` и `commitAutomaticDomain` возвращают
+  `automatic_route_assignment_unavailable`. Поэтому ветка `TX` на схеме не
+  выполняется из фонового discovery.
+- В flowchart показаны гипотетические `GEO_LOCKED`/`TSPU_RESTRICTED`
+  fallback-ветви. В production они формируются только после результата
+  `CheckDomain`; discovery не редактирует topology, Xray, nft или firewall.
+- Визуальная схема показывает «вернуть DNS быстро», но текущий backend
+  discovery является фоновой очередью после записи dnsmasq-наблюдения. Она не
+  является доказательством полного LAN DNS interception на каждом устройстве.
+
+### Не реализовано на этом SHA
+
+- Безопасный route-only writer с TTL, атомарным mapping rollback и отдельным
+  ownership proof.
+- Автоматическое подтверждение/применение предложения из `auto_apply_verified`.
+- Hardware acceptance этого flow на текущем SHA. Старые записи Flint 2
+  являются историческим evidence и не наследуются `effa938`.
+
+Итог: flowchart корректен как целевая модель probe/selection/transaction, но не
+как обещание полного автоматического применения. Для пользователя текущий
+гарантированный результат discovery — наблюдение или suggestion; изменение
+production policy требует явного ChangeSet.

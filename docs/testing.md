@@ -1,26 +1,29 @@
-# Testing
+# Тестирование
 
 > Список отражает проверки, включённые в локальный test suite.
+>
+> Любые упоминания прогона на Flint 2 ниже — исторические и не являются PASS
+> для текущей ветки без нового exact-SHA hardware evidence.
 
-## Full local suite
+## Полный локальный набор
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tests\run-all.ps1
 ```
 
-Current local baseline: `all_tests_ok=true`. Этот результат не включает SSH,
-router apply или повторную аппаратную проверку.
+Текущий локальный baseline: `all_tests_ok=true`. Этот результат не включает SSH,
+применение на роутере или повторную аппаратную проверку.
 
-Suite: Go tests/vet, frontend typecheck/build, Windows и Linux arm64 builds,
-ShellCheck (при доступном бинарнике), installer failure behavior, rollback snapshot integrity, mocked
-OpenWrt transaction integration, CLI fixtures, secret scan, duplicate
-route-check scan.
+Набор включает Go tests/vet, frontend typecheck/build, Windows и Linux arm64
+builds, ShellCheck (если бинарник доступен), отказоустойчивость installer,
+целостность rollback snapshot, mock-интеграцию OpenWrt transaction, CLI fixtures,
+проверку секретов и поиск дубликатов route-check.
 
 `go test -race ./...` запускается отдельной командой ниже. Hardware runners из
 `tests/hardware` также не входят в `run-all.ps1` и требуют явного запуска на
 целевом устройстве.
 
-## Race detector
+## Детектор гонок
 
 ```powershell
 $mingw = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\mingw64\bin"
@@ -29,9 +32,9 @@ $env:CGO_ENABLED = "1"
 .\.tools\go1.26.5\go\bin\go.exe test -race ./...
 ```
 
-Verified: every Go package passed.
+Проверено: все Go-пакеты прошли.
 
-## P0 proof tests
+## Доказательные тесты P0
 
 - `TestChangeSetCommitPersistsAcrossRestart`
 - `TestVerificationFailureRollsBackAndPersistsAcrossRestart`
@@ -51,7 +54,7 @@ Verified: every Go package passed.
 - `TestStaleChangeSetVersionReturns409`
 - `TestSchemaRetentionAndCompactBackup`
 
-## P0.5 proof tests
+## Доказательные тесты P0.5
 
 - `TestGenerateVerifyAndRejectTamper`
 - `TestMissingDiagnosticsProducesBlockedIPPlan`
@@ -70,7 +73,7 @@ Verified: every Go package passed.
 - `TestOpenRecoversInterruptedActiveCompaction`
 - `TestValidateRefreshesProviderDiagnosticsAndBindsGeneratedArtifacts`
 
-## Base routes, Smart DNS and discovery
+## Базовые маршруты, Smart DNS и discovery
 
 - `TestBaselineLeavesUnclassifiedTrafficOnSystemDefault` — baseline не создаёт
   route jump/mark для обычного трафика;
@@ -101,7 +104,7 @@ Verified: every Go package passed.
   подставить loopback или управляющие символы в TGWS link.
 - `TestOpenWrtStepNamesMatchTransactionContract`
 
-## Flow-offloading tests (P3)
+## Тесты flow offloading (P3)
 
 - `TestEnabledFlowOffloadingBlocksPolicyCandidateWithoutExplicitDisable`
 - `TestExplicitFlowOffloadingDisableProducesBoundApplyPlanAndWarning`
@@ -110,7 +113,7 @@ Verified: every Go package passed.
 - `TestFlowOffloadingDisableChangeSetIsExplicitlyWarned`
 - `TestOverrideChangeSetPersistsFullCanonicalCandidate`
 
-## Recovery tests (P6)
+## Тесты recovery (P6)
 
 - `TestRestartReconcilesCommittedDataplane`
 - `TestRestartRecoversAwaitingConfirmation`
@@ -119,7 +122,7 @@ Verified: every Go package passed.
 - `TestRestartKeepsManagementAvailableWhenCommittedReconcileFails`
 - `TestValidateRecoveryTarget`
 
-## API / probe / health / VPN-подписка tests
+## Тесты API / probe / health / VPN-подписки
 
 - `TestAuthAndOverview`, `TestLoginRequiresConfiguredAdmin`, `TestChangeSetRequiresCSRF`
 - `TestUnknownAPIIsJSON404`, `TestSSEStream`, `TestEventsEndpointMergesPersistedHistoryAcrossRestart`
@@ -153,7 +156,7 @@ Verified: every Go package passed.
   freshness checkpoint hash-bound, retained source не получает новый TTL,
   startup scheduler откладывает refresh до persisted expiry.
 
-## Shell behavior tests
+## Тесты поведения shell
 
 - `tests/adapter-rollback.sh` — corrupted snapshot refusal, pre-restore hash
   verification, project-owned absent markers, Xray restore, wrong token.
@@ -206,6 +209,9 @@ Verified: every Go package passed.
 
 ## Четыре уровня covered
 
+> Сведения о 23 клетках Flint 2 в этом разделе относятся к историческому
+> прогону. Для текущего SHA это не hardware evidence.
+
 Тесты покрывают все четыре уровня route проверки: DNS resolution
 (`smart_dns_unsafe_answer`, CNAME/size/limit), классификация (regional/TSPU
 markers), egress (`RU_EXIT`, consensus mismatch в health quorum), path proof
@@ -221,6 +227,9 @@ protocol-specific packet proof и bound route evidence; один HTTPS PASS не
 перехватываются раньше route classification.
 
 ## Оставшиеся аппаратные проверки
+
+> Этот список применяется к текущей ветке; старые PASS из последующих абзацев
+> сохранены только как историческая запись и не наследуются автоматически.
 
 - multi-client и 72h soak (P13).
 - Linux namespace/container behavior (нет локального Linux runtime; shell

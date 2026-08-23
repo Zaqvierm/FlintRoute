@@ -1,4 +1,4 @@
-# TSPU Cache And Evidence
+# TSPU-кеш и доказательства
 
 > Основная реализация: `internal/tspu/tspu.go`.
 
@@ -145,7 +145,8 @@ domain -> service lookup -> TSPU evidence -> candidate queue -> probe_route
 
 ## Проверенное состояние
 
-Updater покрыт тестами с `httptest`, включая no-replace для одинакового entry
-set и запрет продления TTL retained source. На Flint 2 unchanged refresh для
-86 781 entry сохранил SHA и inode двух cache-файлов общим объёмом около 64 MiB;
-freshness checkpoint занял 1840 байт и пережил restart/reboot без перезаписи.
+Updater покрыт локальными тестами с `httptest`, включая отказ от замены
+неизменившегося entry set и запрет продления TTL для retained source. Эти
+тесты относятся к текущему software-коду. Историческая запись о refresh для
+86 781 записей на Flint 2 сохранена в старом hardware report, но не является
+PASS для текущего SHA и не заменяет новый hardware gate.

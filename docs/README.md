@@ -32,6 +32,7 @@ FlintRoute не привязан к конкретному поставщику 
 | `status-matrix.md` | подтверждённое состояние подсистем |
 | `implementation-plan.md` | оставшиеся этапы реализации и критерии завершения |
 | `web-ui.md` | web console и её API/security contract |
+| `documentation-status.md` | сверка каждого документа с кодом, SHA и уровнем evidence |
 
 ## Приоритет чтения
 
@@ -39,9 +40,11 @@ FlintRoute не привязан к конкретному поставщику 
 2. `algorithm-flow.md` + `probe-route.md` — алгоритм и четыре уровня proof.
 3. `adapter-transaction.md` — транзакция, rollback и recovery.
 4. `storage-lifecycle.md` — владение ресурсами и ресурс записи.
-5. `flint2-hardware-report.md` — подтверждённое состояние на железе.
-6. `api.md` — контрольная плоскость.
-7. `vpn-subscription.md` — VPN-провайдер и Xray.
+5. `documentation-status.md` — сначала проверить актуальность и уровень evidence.
+6. `flint2-hardware-report.md` — только историческое аппаратное состояние; для
+   текущего SHA читать с пометкой `STALE`.
+7. `api.md` — контрольная плоскость.
+8. `vpn-subscription.md` — VPN-провайдер и Xray.
 
 ## Правило правды
 

@@ -1,72 +1,66 @@
-# 72-hour soak test
+# 72-часовой soak-test
 
-The soak starts only after the route matrix, crash/reboot recovery, physical
-power-loss recovery and multi-client preflight are green. It is an evidence run,
-not three days of leaving the router on and hoping for the best.
+> **Статус на `effa938`:** это план будущего evidence-run. 72-часовой прогон
+> на Flint 2 для текущего SHA не выполнялся.
 
-## Preflight
+Soak начинается только после зелёных route matrix, crash/reboot recovery,
+physical power-loss recovery и multi-client preflight. Это evidence-run, а не
+три дня «оставить роутер и надеяться».
 
-Record a redacted baseline before the timer starts:
+## Предварительная проверка
 
-- Git SHA, package SHA-256, firmware version and boot ID;
-- active revision and recovery status;
-- managed procd instances with PID/start time/executable/config identity;
-- nftables objects, policy rules/tables and listeners owned by FlintRoute;
-- persistent/runtime storage sizes, backup/snapshot counts and write counters;
-- route-health state and one bound proof for each active route type;
-- CPU, RSS, conntrack, NFQUEUE counters, temperature and WAN fingerprint;
-- external SSH, router UI and FlintRoute Web availability.
+До таймера записать redacted baseline:
 
-Verify an off-router backup and a management path independent of routed client
-traffic. The router must have no unfinished transaction, stale test-run,
-ambiguous owned resource or expired watchdog inhibit. A missing rollback timer,
-unknown baseline or unavailable monitor blocks the start.
+- Git SHA, package SHA-256, firmware и boot ID;
+- active revision и recovery status;
+- managed procd instances с PID/start time/executable/config identity;
+- принадлежащие FlintRoute nft objects, policy rules/tables и listeners;
+- размеры persistent/runtime storage, backup/snapshot counts и write counters;
+- route-health и один bound proof для каждого активного route type;
+- CPU, RSS, conntrack, NFQUEUE counters, temperature и WAN fingerprint;
+- доступность внешнего SSH, router UI и FlintRoute Web.
 
-## Workload
+Проверить off-router backup и независимый management path. Не должно быть
+unfinished transaction, stale test-run, ambiguous owned resource или истёкшего
+watchdog inhibit. Неизвестный baseline или недоступный monitor блокирует старт.
 
-Run for at least 72 continuous hours with normal mixed traffic and at least three
-clients when available. Add bounded DNS, Direct, Zapret, VLESS and Drop checks
-with jitter; do not synchronize every probe on the same minute.
+## Нагрузка
 
-During the run include:
+Работать не менее 72 часов с обычным mixed traffic и минимум тремя clients,
+если они доступны. Добавить bounded DNS, Direct, Zapret, VLESS и Drop checks с
+jitter; не синхронизировать probes в одну минуту.
 
-1. one controlled managed-service restart;
-2. one controlled reboot;
-3. one bounded degradation of Zapret and VLESS with recovery;
-4. a WAN fingerprint change when it can be done without touching unrelated
-   router services;
-5. periodic UI GET/SSE activity to prove that observation remains write-free.
+В run включить:
 
-Do not perform another physical power cut inside the soak unless it is planned
-as a separate fault case with an independent recovery path.
+1. один контролируемый restart managed service;
+2. один контролируемый reboot;
+3. bounded degradation Zapret и VLESS с recovery;
+4. WAN fingerprint change, если это не затрагивает чужие services;
+5. периодическую UI GET/SSE активность для доказательства write-free observation.
 
-## Evidence cadence
+Physical power cut внутри soak не выполнять, если это не отдельный fault-case с
+независимым recovery path.
 
-Capture health and resource counters every minute in tmpfs. Persist a redacted
-checkpoint no more often than every 15 minutes and on state transitions. Export
-the bundle off-router at least daily so a device failure cannot erase the whole
-run.
+## Периодичность evidence
 
-Each checkpoint contains timestamps, boot ID, active revision, route state,
-provider identity, nft/NFQUEUE counters, CPU/RSS/temperature, storage sizes and
-logical write counters. It must not contain subscription URLs, UUIDs, keys,
-tokens, cookies or private endpoints.
+Health/resource counters писать каждую минуту в tmpfs. Redacted checkpoint — не
+чаще 15 минут и при state transition. Bundle ежедневно выгружать за роутер.
+Checkpoint содержит timestamp, boot ID, active revision, route state, provider
+identity, nft/NFQUEUE counters, CPU/RSS/temperature, storage и logical write
+counters. Subscription URL, UUID, keys, tokens, cookies и private endpoints
+туда не попадают.
 
-## Stop conditions
+## Условия остановки
 
-Stop and mark the run failed on:
+Остановить run и отметить FAIL при unsafe Direct fallback, неправильной revision,
+unknown/contradictory transaction или recovery state, потере management,
+процессе не от ожидаемого procd, NFQUEUE drops, OOM, thermal throttling,
+persistent restart loop, неограниченном росте RAM/cache/snapshot/backup/write или
+необъяснимой oscillation adaptive profile.
 
-- unsafe Direct fallback or route evidence bound to the wrong revision;
-- unknown/contradictory transaction or recovery state;
-- loss of management beyond the documented boot window;
-- production process not owned by its expected procd instance;
-- NFQUEUE drops, OOM, thermal throttling or persistent restart loop;
-- unbounded RAM, cache, snapshot, backup or persistent-write growth;
-- unexplained adaptive profile oscillation.
+## Условия PASS
 
-## PASS
-
-PASS requires 72 completed hours, no stop condition, no leaked/stale resources,
-bounded storage/write counters and the same internally consistent committed
-state after the final audit. Any pause in monitoring is documented; a gap that
-prevents proving route or resource state invalidates the affected interval.
+PASS требует 72 завершённых часов, отсутствия stop condition и leaked/stale
+resources, bounded storage/write counters и того же internally consistent
+committed state после финального аудита. Любой пробел мониторинга документируется;
+если он мешает доказать route/resource state, соответствующий интервал invalid.

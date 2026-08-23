@@ -1,10 +1,10 @@
-# Flint 2 Hardware Report (обезличенный)
+# Аппаратный отчёт Flint 2 (обезличенный)
 
-> **STATUS: STALE FOR CURRENT SHA.** This file records historical hardware runs
-> against older FlintRoute commits. It is retained for forensic context only;
-> none of its PASS/committed statements is evidence for
-> `remediation/transaction-and-privilege-boundaries` until the exact current
-> SHA is deployed and a new read-only/deployment record is attached.
+> **STATUS: STALE FOR CURRENT SHA.** Этот файл записывает исторические аппаратные запуски
+> по сравнению со старыми коммитами FlintRoute. Сохранено только для криминалистического контекста;
+> ни одно из его утверждений о ПРОХОЖДЕНИИ/совершении не является доказательством
+> `remediation/transaction-and-privilege-boundaries` до точного тока
+> SHA развертывается, и прилагается новая запись только для чтения/развертывания.
 
 > Доказанные результаты на физическом GL.iNet Flint 2 / GL-MT6000.
 > IP, MAC, UUID, subscription URLs и credentials исключены. Для воспроизводимой
@@ -15,10 +15,10 @@
 | Параметр | Значение |
 |---|---|
 | Устройство | GL.iNet Flint 2 / GL-MT6000 |
-| SoC | MediaTek Filogic 830, 4×ARM Cortex-A53 2.0 GHz, aarch64 |
-| RAM / eMMC | 1 GB / 8 GB |
-| OS | OpenWrt 24.10.4 |
-| Kernel | 6.6.110 |
+| SoC | MediaTek Filogic 830, 4×ARM Cortex-A53 2,0 ГГц, aarch64 |
+| ОЗУ / eMMC | 1 ГБ / 8 ГБ |
+| ОС | OpenWrt 24.10.4 |
+| Ядро | 6.6.110 |
 | Firewall | firewall4 / nftables (queue + tproxy support подтверждены) |
 | Flow offloading | software+hardware (1/1 baseline; намеренно 0/0 при policy) |
 | IPv6 | не настроен |
@@ -30,7 +30,7 @@
 На factory OpenWrt установлен commit
 `af8d81893d94434135d3cc942b27518c06a241d0`. SHA-256 пакета:
 `e4ebe78b51b8c7fc05ba50056a60230a88f28f3c96625123eca32298408dbb18`,
-SHA-256 ARM64 binary:
+SHA-256 ARM64 двоичный:
 `799d9a79f02214dfc6c05c2755188c3ae3d5eca484a7d9153778b77dd83e5caf`.
 
 Clean install создал одну committed baseline revision
@@ -51,26 +51,26 @@ reboot. Он не доказывает in-place upgrade старой revision с
 matrix на текущем commit. Старые результаты ниже остаются историческим
 hardware evidence для соответствующих revision.
 
-## P1 — Direct + fail-closed Drop (committed)
+## P1 — Direct + закрытое при отказе падение (зафиксировано)
 
 - Scope: только `github.com`, маршруты Direct + fail-closed Drop.
 - Доказано на железе:
   - Direct proof = OK: nft mark/rule/table, conntrack mark, WAN egress, content.
   - Drop proof = OK: реальный nft counter movement, IPv4/IPv6/DNS enforcement.
-  - DNS leak check = true, IPv6 leak check = true.
-  - Built-in data-plane verifier = OK.
+  - DNS проверка утечки = true, IPv6 проверка утечки = true.
+  - Встроенный верификатор плоскости данных = OK.
   - Flow offload по плану 1/1 → 0/0; live Xray process/config hash-preserved.
 - Намеренный rollback прогнан отдельно: таблицы/rules/временные файлы удалены,
   flow 1/1, Xray/API/GitHub живы. Внешний backup скачан, SHA-256 совпал.
 - Финальная транзакция committed: rollback token/timer retired, table active.
 - Баги пойманы и починены на железе: `ip rule replace` не поддерживается
-  (iproute2 6.3.0) → project-owned priority + fail-closed snapshot; standalone
+(iproute2 6.3.0) приоритет, принадлежащий → проекту + моментальный снимок, закрытый при отказе; автономный
   nft/fw4 load; DNS redirect в NAT-chain; dnsmasq readiness; реальный Drop probe;
   `probe-route --no-persist` при занятой bbolt.
 
-## P3.1 — Managed Zapret dataplane (committed)
+## P3.1 — Управляемая плоскость данных Zapret (зафиксировано)
 
-### Syntax gate (read-only / temp files)
+### Синтаксический шлюз (только для чтения / временные файлы)
 
 - OpenWrt 24.10.4 имеет nft queue/tproxy support.
 - `/usr/bin/nfqws` не установлен в base firmware.
@@ -79,7 +79,7 @@ hardware evidence для соответствующих revision.
 - Никакой бинарник/service/queue/traffic rule не устанавливался persistently в
   этой read-only проверке.
 
-### Zapret hardware gate — `discord.com` (committed)
+### Аппаратный затвор Zapret — `discord.com` (зафиксировано)
 
 - Перед apply пройден обязательный confirmation gate.
 - Перед активацией создан fresh sysupgrade backup; SHA-256 локальной и
@@ -88,7 +88,7 @@ hardware evidence для соответствующих revision.
 - `blockcheck.sh` (IPv4 TLS 1.2, `discord.com`, внешний watchdog) нашёл рабочую
   стратегию: `--dpi-desync=fake --dpi-desync-ttl=3 --orig-ttl=1
   --orig-mod-start=s1 --orig-mod-cutoff=d1`. Blockcheck temp-файлы удалены.
-- Fixed project strategy: `tls-fake-ttl3-v1` (TCP 443), `fake,fakedsplit`
+- Фиксированная стратегия проекта: `tls-fake-ttl3-v1` (TCP 443), `fake,fakedsplit`
   (TCP 80). UDP 443 → DROP (force TCP fallback). NFQUEUE 200, no `bypass`
   (fail-closed).
 - **Committed transaction**:

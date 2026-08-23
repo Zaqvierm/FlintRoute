@@ -1,4 +1,8 @@
-# P12: Adaptive Zapret Strategy Orchestration
+# P12: Адаптивная оркестрация стратегии Zapret
+
+> **Статус на `effa938`:** контракт и локальные safety-тесты актуальны. Все
+> старые записи «проверено на Flint 2» ниже — исторические; новый hardware PASS
+> для этого SHA отсутствует.
 
 ## Решение
 
@@ -92,7 +96,7 @@ upstream делит nft/NFQUEUE и process state. Режим, scan level, timeou
 exhaustive не должны выдавать curl PASS за универсальную гарантию сервиса;
 последующее service/application verification — отдельная проверка.
 
-## Managed setup
+## Управляемая настройка
 
 Обычная настройка Zapret не требует ручного JSON ChangeSet. Сначала API/UI
 выполняет read-only preflight: проверяет наличие `nfqws`, точную версию и
@@ -127,7 +131,7 @@ workers не доказана, поэтому production concurrency равна 
 варианты одновременно без независимых queue, chains и process state было бы
 гонкой, а не оптимизацией.
 
-## Service bundle
+## <g id="1">СЕРВИС</g><g id="2"> bundle</g>
 
 Один сервис — это не один apex-domain. Bundle описывает весь минимально
 необходимый набор:
@@ -180,7 +184,7 @@ provenance и service bundle, затем атомарно обновляет nft
 использует более точное L7/SNI сопоставление там, где оно доказано, либо
 переводит сервис в VLESS/DROP. Угадывание запрещено.
 
-## Route profile
+## профиль трассы МН;
 
 Единица выбора — не строка аргументов, а неизменяемый профиль:
 
@@ -357,7 +361,7 @@ Crash recovery использует persisted transaction state. Если пос
 доказать committed revision, активируется последняя доказанная ревизия или
 безопасный DROP, но не новая догадка.
 
-## Fallback policy
+## Резервная политика
 
 | Категория | Zapret не найден/сломался | Запрещено |
 |---|---|---|
@@ -368,7 +372,7 @@ Crash recovery использует persisted transaction state. Если пос
 
 Smart DNS может решать географию ответа, но сам по себе не доказывает egress.
 Если сервис требует non-RU egress, обязательны external IP/country и path
-evidence.
+Шаг 4.
 
 ## Upstream integration и лицензия
 
@@ -412,10 +416,10 @@ rollback. Где доказательства нет — статус `unknown`,
 | Этап | Результат | Gate |
 |---|---|---|
 | P12.0 | этот контракт и upstream compatibility decision | review документа |
-| P12.1 | `ZapretProvider`, version/digest checks, bounded catalog | unit + real config-embedded `--dry-run` |
+| P12.1 | `ZapretProvider`, проверка версии/дайджеста, ограниченный каталог | единица измерения + встроенная реальная конфигурация `--dry-run` |
 | P12.2 | service bundles, DNS provenance, конфликт shared IP | unit + negative routing tests |
-| P12.3 | probes, rolling windows, Wilson/latency ranking | deterministic simulation tests |
-| P12.4 | scheduler, hysteresis, cooldown, pin, quarantine | race/crash/rollback tests |
+| P12.3 | зонды, катящиеся окна, ранжирование по Уилсону/латентности | детерминированные имитационные испытания |
+| P12.4 | планировщик, гистерезис, перезарядка, PIN-код, карантин | гоночные/краш/откатные тесты |
 | P12.5 | narrow Flint 2 proof для двух bundles и двух profiles | path/leak/negative-control evidence |
 
 P12.1 проверен на Flint 2 с `nfqws` v72.12. Provider отклоняет неизвестные
@@ -477,9 +481,9 @@ P12 заканчивается не красивым JSON, а доказател
 После этого P13 закрывает полную аппаратную матрицу: все route types,
 TCP/UDP, IPv4/IPv6, reboot/crash, несколько клиентов, длительная стабильность,
 ресурсные пределы и upgrade/downgrade.
-> **Current contract (2026-08-23):** the default quick action uses the
-> production `QuickScript` runner and never aliases upstream `SCANLEVEL=quick`.
-> It fails closed when the runner or its path/cleanup evidence is unavailable.
-> Upstream `blockcheck.sh` is reserved for the explicit exhaustive maintenance
+> **Текущий контракт (2026-08-23):** быстрое действие по умолчанию использует
+> производственный бегун `QuickScript`, а не псевдонимы выше `SCANLEVEL=quick`.
+> Он не закрывается, когда бегун или его путь/доказательства очистки недоступны.
+> Восходящий `blockcheck.sh` зарезервирован для явного исчерпывающего технического обслуживания
 > action.
-> See `docs/zapret-calibration-design.md` for the normative contract.
+> См. `docs/zapret-calibration-design.md` для нормативного контракта.

@@ -1,5 +1,9 @@
 # Внешние сетевые компоненты
 
+> **Статус на `effa938`:** lifecycle и локальные API-контракты актуальны.
+> Реальная установка/обновление компонентов на Flint 2 в этом цикле не
+> выполнялись; старые hardware PASS не наследуются.
+
 FlintRoute управляет установкой Xray, Zapret/nfqws и TG WS Proxy через единый
 Component Manager. Пользовательский путь не требует искать asset, подбирать
 архитектуру или вручную вычислять SHA-256.
@@ -21,8 +25,8 @@ Download разрешён только с allowlisted GitHub release URL, при
 
 | Компонент | Закреплённая версия | Upstream | Пакет |
 |---|---|---|---|
-| Xray | `v26.3.27` | `XTLS/Xray-core` | Linux arm64 zip |
-| Zapret | `v72.13` | `bol-van/zapret` | embedded OpenWrt tar.gz |
+| Xray | `v26.3.27` | `XTLS/Xray-core` | Linux ARM64 Zip |
+| Zapret | `v72.13` | `bol-van/zapret` | встроенный OpenWrt tar.gz |
 | TG WS Proxy | `0.9.3-rev2` | `spatiumstas/tg-ws-proxy-go` | OpenWrt ipk по `opkg` architecture |
 
 Update сохраняет предыдущий бинарник/config. Если новый процесс не проходит
