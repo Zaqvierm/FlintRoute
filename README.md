@@ -52,11 +52,32 @@ FlintRoute пока находится в Alpha. Текущая сборка п�
 железе взяты из сохранённого evidence для GL-MT6000 и в этом цикле не
 перепроверялись на роутере.
 
-### Работает и проверено
+### Текущий software/CI evidence
+
+Текущий remediation-код: `b43d56a45ba26fb93ee3609c5eb190ef60bac29a`.
+Ниже перечислены только локальные и CI-проверки этого кода. Flint 2 в этом
+цикле не подключался: аппаратного PASS для текущего SHA нет.
 
 - локальная сборка, тесты, race-проверка, ShellCheck, UI build и выпуск
   ARM64-бинарника;
 - транзакции конфигурации с commit/rollback и fail-closed поведением;
+- typed recovery fence, immutable bootstrap/active state, atomic owned nft
+  transition, read-only hotplug и bounded discovery/health probes;
+- truthful UI: onboarding state из backend, privacy purge, stale/error slice
+  isolation, responsive browser checks и keyboard/mobile alternatives;
+- Quick Zapret и exhaustive blockcheck разделены: quick использует только
+  curated profiles и требует path/queue/process-group/cleanup evidence;
+- SSRF guard, typed Xray model, ownership cleanup, DNS rotation awareness и
+  bounded login pressure проверены тестами;
+- Linux-only nft/process-group harnesses прошли в CI, но не исполнялись на
+  Windows локально.
+
+### Историческое hardware evidence — STALE FOR CURRENT SHA
+
+Следующие утверждения относятся к сохранённым прогонам старых ревизий на
+GL-MT6000/Flint 2. Они не являются доказательством текущей ветки и требуют
+нового read-only gate, deployment и отдельной hardware validation:
+
 - Direct, Zapret, Drop и VLESS/Xray на GL-MT6000 с bound route evidence;
 - два production Smart DNS resolver ранее прошли UDP/53, TCP/53 и bound path
   evidence; заводской конфиг намеренно оставляет resolver slots пустыми;
