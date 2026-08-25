@@ -127,6 +127,20 @@ for critical_dir in "$SYSTEM_ROOT" "$SYSTEM_ROOT/etc" "$SYSTEM_ROOT/usr" "$SYSTE
 done
 install_service_sentinels
 
+# Device-scoped Zapret artifacts are removed only from the manifest-bound
+# config/init paths. A foreign file in the same directory must survive.
+mkdir -p "$SYSTEM_ROOT/etc/router-policy/zapret/profiles"
+printf 'tv-q208|%s|%s|208\n' \
+  "$SYSTEM_ROOT/etc/router-policy/zapret/profiles/tv-q208.conf" \
+  "$SYSTEM_ROOT/etc/init.d/router-policy-zapret-tv-q208" \
+  > "$SYSTEM_ROOT/etc/router-policy/zapret/profiles.manifest"
+printf 'managed-profile\n' > "$SYSTEM_ROOT/etc/router-policy/zapret/profiles/tv-q208.conf"
+printf '#!/bin/sh\nexit 0\n' > "$SYSTEM_ROOT/etc/init.d/router-policy-zapret-tv-q208"
+chmod 600 "$SYSTEM_ROOT/etc/router-policy/zapret/profiles.manifest" \
+  "$SYSTEM_ROOT/etc/router-policy/zapret/profiles/tv-q208.conf"
+chmod 755 "$SYSTEM_ROOT/etc/init.d/router-policy-zapret-tv-q208"
+printf 'foreign-profile-file\n' > "$SYSTEM_ROOT/etc/router-policy/zapret/profiles/foreign.conf"
+
 BACKUP_DIR="$BACKUP_BASE/uninstall" \
 ROUTER_POLICY_SYSTEM_ROOT="$SYSTEM_ROOT" \
 FAKE_CALL_LOG="$FAKE_CALL_LOG" \
@@ -134,6 +148,10 @@ sh "$ROOT/uninstall.sh" --uninstall >/dev/null
 [ ! -e "$SYSTEM_ROOT/usr/bin/router-policy" ]
 [ ! -e "$SYSTEM_ROOT/usr/lib/router-policy" ]
 [ ! -e "$SYSTEM_ROOT/etc/init.d/router-policy" ]
+[ ! -e "$SYSTEM_ROOT/etc/router-policy/zapret/profiles.manifest" ]
+[ ! -e "$SYSTEM_ROOT/etc/router-policy/zapret/profiles/tv-q208.conf" ]
+[ ! -e "$SYSTEM_ROOT/etc/init.d/router-policy-zapret-tv-q208" ]
+[ -f "$SYSTEM_ROOT/etc/router-policy/zapret/profiles/foreign.conf" ]
 [ -f "$SYSTEM_ROOT/etc/router-policy/config/default.json" ]
 [ -s "$BACKUP_BASE/uninstall/router-policy-etc.tar" ]
 grep -E '^sha256=[0-9a-f]{64}$' "$BACKUP_BASE/uninstall/manifest.txt" >/dev/null

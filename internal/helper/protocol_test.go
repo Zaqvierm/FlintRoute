@@ -36,6 +36,15 @@ func TestValidateRequestRejectsUnknownCommandsAndObjects(t *testing.T) {
 	if err := ValidateRequest(request); err == nil {
 		t.Fatal("foreign service was accepted")
 	}
+	request = validRequest("service.start")
+	request.Service = &ServiceRequest{Name: "router-policy-zapret-tv-q208", Operation: "start"}
+	if err := ValidateRequest(request); err != nil {
+		t.Fatalf("owned device-scoped Zapret service was rejected: %v", err)
+	}
+	request.Service.Name = "router-policy-zapret-tv/q208"
+	if err := ValidateRequest(request); err == nil {
+		t.Fatal("profile service path traversal was accepted")
+	}
 }
 
 func TestValidateRequestBindsGenerationAndHashes(t *testing.T) {
@@ -102,6 +111,11 @@ func TestOwnedVerbMappingIsClosed(t *testing.T) {
 		if !ok || got != want {
 			t.Fatalf("%s mapped to %q/%v, want %q/true", command, got, ok, want)
 		}
+	}
+	request := validRequest("artifact.install")
+	request.Artifact = &ArtifactRequest{Kind: "zapret_profile_manifest", Hash: request.ArtifactManifestHash, Operation: "install"}
+	if err := ValidateRequest(request); err != nil {
+		t.Fatalf("device-scoped Zapret manifest artifact was rejected: %v", err)
 	}
 	if _, _, ok := ownedVerb(validRequest("nft.exec")); ok {
 		t.Fatal("unknown owned command was accepted")

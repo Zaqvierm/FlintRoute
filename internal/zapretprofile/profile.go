@@ -182,12 +182,27 @@ func RenderNft(family, table, generation string, profiles []Profile) (string, er
 	if family != "inet" || !tokenPattern.MatchString(table) || !tokenPattern.MatchString(generation) {
 		return "", errors.New("nft identity is invalid")
 	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "table %s %s {\n", family, table)
+	fmt.Fprintf(&b, "  comment \"router-policy owner=flintroute generation=%s\"\n", generation)
+	rules, err := RenderRules(profiles)
+	if err != nil {
+		return "", err
+	}
+	b.WriteString(rules)
+	b.WriteString("}\n")
+	return b.String(), nil
+}
+
+// RenderRules returns the owned postrouting chain for device-scoped profiles.
+// The caller embeds this chain in the single FlintRoute nft table; it must not
+// be installed as a second table because table replacement is the transaction
+// boundary and foreign tables are never owned by FlintRoute.
+func RenderRules(profiles []Profile) (string, error) {
 	if err := ValidateProfiles(profiles); err != nil {
 		return "", err
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "table %s %s {\n", family, table)
-	fmt.Fprintf(&b, "  comment \"router-policy owner=flintroute generation=%s\"\n", generation)
 	b.WriteString("  chain rp_zapret_device {\n")
 	b.WriteString("    type filter hook postrouting priority mangle; policy accept;\n")
 	for _, profile := range profiles {
@@ -205,7 +220,7 @@ func RenderNft(family, table, generation string, profiles []Profile) (string, er
 			fmt.Fprintf(&b, "    %s %s dport %s%s counter queue flags bypass to %d comment \"router-policy profile=%s action=queue\"\n", selector, rule.Protocol, ports, ct, profile.QueueNum, profile.ID)
 		}
 	}
-	b.WriteString("  }\n}\n")
+	b.WriteString("  }\n")
 	return b.String(), nil
 }
 
@@ -231,6 +246,52 @@ func RenderNFQWS(profile Profile) ([]string, error) {
 		)
 	}
 	return args, nil
+}
+
+// RenderConfig produces the exact line-oriented @config consumed by nfqws.
+// It is intentionally generated from the validated typed profile and never
+// accepts a shell fragment or arbitrary executable argument.
+func RenderConfig(profile Profile) ([]byte, error) {
+	args, err := RenderNFQWS(profile)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(strings.Join(args, "\n") + "\n"), nil
+}
+
+// RenderInitScript produces a fixed procd owner for one device-scoped queue.
+// The profile ID is validated before interpolation and all paths remain in the
+// allowlisted FlintRoute roots.
+func RenderInitScript(profile Profile) ([]byte, error) {
+	if err := profile.Validate(); err != nil {
+		return nil, err
+	}
+	return []byte(fmt.Sprintf(`#!/bin/sh /etc/rc.common
+
+USE_PROCD=1
+START=95
+STOP=11
+
+PROG="/usr/bin/nfqws"
+CONFIG="/etc/router-policy/zapret/profiles/%s.conf"
+
+start_service() {
+	[ -x "$PROG" ] || return 1
+	[ -s "$CONFIG" ] || return 1
+	procd_open_instance router-policy-zapret-%s
+	procd_set_param command "$PROG" "@$CONFIG"
+	procd_set_param file "$CONFIG"
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param respawn 3600 5 5
+	procd_close_instance
+}
+
+reload_service() {
+	stop
+	start
+}
+`, profile.ID, profile.ID)), nil
 }
 
 func (p Profile) queuePorts() []PortRange {

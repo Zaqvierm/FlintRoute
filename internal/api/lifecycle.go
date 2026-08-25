@@ -28,10 +28,20 @@ func (s *Server) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	services := lifecycle.DiagnoseServices(ctx, lifecycle.ExecRunner{}, lifecycle.LinuxProcessInspector{}, []lifecycle.ServiceSpec{
+	serviceSpecs := []lifecycle.ServiceSpec{
 		{Component: "xray", Service: "router-policy-xray", Instance: "router-policy-xray", Executable: s.cfg.Xray.Binary, ConfigPath: s.cfg.Xray.ActiveConfig, SystemServices: []string{"xray"}},
 		{Component: "zapret", Service: "router-policy-zapret", Instance: "router-policy-zapret", Executable: s.cfg.Zapret.Binary, ConfigPath: s.cfg.Zapret.ActiveConfig, SystemServices: []string{"zapret", "nfqws"}},
-	})
+	}
+	for _, profile := range s.cfg.Zapret.DeviceProfiles {
+		serviceSpecs = append(serviceSpecs, lifecycle.ServiceSpec{
+			Component:  "zapret-device:" + profile.ID,
+			Service:    "router-policy-zapret-" + profile.ID,
+			Instance:   "router-policy-zapret-" + profile.ID,
+			Executable: profile.Binary,
+			ConfigPath: profile.ActiveConfig,
+		})
+	}
+	services := lifecycle.DiagnoseServices(ctx, lifecycle.ExecRunner{}, lifecycle.LinuxProcessInspector{}, serviceSpecs)
 	writeData(w, r, map[string]any{"schema_version": lifecycle.ManifestSchemaVersion, "services": services, "test_runs": manifests, "manifest_issues": manifestIssues})
 }
 

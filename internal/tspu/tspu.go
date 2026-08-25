@@ -30,8 +30,13 @@ import (
 const (
 	CacheVersion          = 2
 	FreshnessVersion      = 1
-	maxCacheBytes         = 32 << 20
+	maxCacheBytes         = 8 << 20
 	maxFreshnessFileBytes = 64 << 10
+	// MaxSourceEntries is a second bound beside the byte limit. A compact
+	// domain list can still expand into a very large map of strings and cache
+	// entries. On a router that expansion is a real memory/DoS risk, so reject
+	// the source before building an unbounded in-memory cache.
+	MaxSourceEntries = 16_384
 )
 
 type Cache struct {
@@ -173,6 +178,13 @@ func PreviousPath(path string) string  { return previousPath(path) }
 func FreshnessPath(path string) string { return freshnessPath(path) }
 
 func ParseDomains(r io.Reader) ([]string, error) {
+	return parseDomains(r, MaxSourceEntries)
+}
+
+func parseDomains(r io.Reader, maxEntries int) ([]string, error) {
+	if maxEntries <= 0 {
+		maxEntries = MaxSourceEntries
+	}
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	seen := map[string]bool{}
@@ -206,6 +218,9 @@ func ParseDomains(r io.Reader) ([]string, error) {
 		if !seen[pattern] {
 			seen[pattern] = true
 			out = append(out, pattern)
+			if len(out) > maxEntries {
+				return nil, errors.New("domain_entry_limit_exceeded")
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -573,6 +588,9 @@ func decodeCache(raw []byte) (Cache, error) {
 	}
 	if cache.Entries == nil || cache.GeneratedAt.IsZero() || cache.ExpiresAt.IsZero() {
 		return Cache{}, errors.New("incomplete TSPU cache")
+	}
+	if len(cache.Entries) > MaxSourceEntries {
+		return Cache{}, errors.New("domain_entry_limit_exceeded")
 	}
 	if cache.Version < CacheVersion {
 		for pattern, entry := range cache.Entries {

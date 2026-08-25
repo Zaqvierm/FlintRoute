@@ -243,6 +243,13 @@ func (e AdapterExecutor) executeService(ctx context.Context, request Request) Re
 		response.Error = "service path is not owned"
 		return response
 	}
+	if strings.HasPrefix(request.Service.Name, "router-policy-zapret-") && filepath.Clean(initDir) == "/etc/init.d" {
+		if !ownedDeviceZapretService(request.Service.Name) {
+			response.ErrorCode = "service_not_owned"
+			response.Error = "device-scoped Zapret service is not bound to the active profile manifest"
+			return response
+		}
+	}
 	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		response.ErrorCode = "service_not_owned"
 		response.Error = "allowlisted service script is unavailable"
@@ -258,6 +265,20 @@ func (e AdapterExecutor) executeService(ctx context.Context, request Request) Re
 	response.State = "accepted"
 	response.Operation = request.Service.Operation
 	return response
+}
+
+func ownedDeviceZapretService(name string) bool {
+	raw, err := os.ReadFile("/etc/router-policy/zapret/profiles.manifest")
+	if err != nil || len(raw) > 64<<10 {
+		return false
+	}
+	want := "|/etc/init.d/" + name + "|"
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.Contains(line, want) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseEvidence(raw []byte) map[string]string {

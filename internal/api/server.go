@@ -588,13 +588,25 @@ func (s *Server) startDNSDiscovery(ctx context.Context) {
 				}
 			}()
 		}
+		var dropped uint64
+		var lastDropNotice time.Time
 		watcher := discovery.Watcher{
-			Path: s.dnsObservationPath,
+			Path:       s.dnsObservationPath,
+			StartAtEnd: true,
 			Emit: func(observationContext context.Context, observation discovery.Observation) {
 				select {
 				case s.discoveryQueue <- observation:
 				default:
-					s.publishEvent(Event{Type: "domain.discovery", Severity: "warning", ReasonCode: "discovery_queue_full", Details: map[string]any{"domain": observation.Domain}})
+					// A busy DNS log must never turn queue backpressure into one
+					// durable/event-broker write per dropped line.  Keep the queue
+					// bounded and emit at most one coalesced notice per minute.
+					dropped++
+					now := time.Now().UTC()
+					if lastDropNotice.IsZero() || now.Sub(lastDropNotice) >= time.Minute {
+						s.publishEvent(Event{Type: "domain.discovery", Severity: "warning", ReasonCode: "discovery_queue_full", Details: map[string]any{"dropped": dropped}})
+						dropped = 0
+						lastDropNotice = now
+					}
 				}
 			},
 		}
@@ -1005,10 +1017,14 @@ func tspuBaseDelay(interval time.Duration, failures int, initial bool) time.Dura
 		return 5 * time.Minute
 	}
 	if initial {
-		if interval < 30*time.Second {
+		// Do not turn a cold boot into an immediate remote-list fetch. The
+		// first refresh is deliberately delayed, while still respecting short
+		// test intervals. Normal refreshes continue to use the provider/TTL
+		// interval below.
+		if interval < 5*time.Minute {
 			return interval
 		}
-		return 30 * time.Second
+		return 5 * time.Minute
 	}
 	if failures <= 0 {
 		return interval

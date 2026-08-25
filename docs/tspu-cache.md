@@ -37,8 +37,14 @@ domain -> service lookup -> TSPU evidence -> candidate queue -> probe_route
   mismatch`.
 - `previous_sha256` связывает с предыдущим удачным кешем.
 - `fresh_sources` — число источников, отдавших свежие accepted данные.
-- Бинарит: `maxCacheBytes = 32 MiB`. Файл должен быть regular, размер >0 и ≤
+- Бинарит: `maxCacheBytes = 8 MiB`. Файл должен быть regular, размер >0 и ≤
   лимита, иначе `invalid TSPU cache file`.
+- Парсер дополнительно ограничивает источник `MaxSourceEntries = 16 384` уникальными
+  шаблонами. Превышение лимита отклоняется до `BuildCache`, чтобы компактный remote list
+  не развернулся в неограниченный Go map на роутере.
+- После холодного старта scheduler не делает тяжёлый remote refresh немедленно: при
+  настроенном интервале ≥ 5 минут первый fetch откладывается на 5 минут. Это только
+  защита cold boot от пика памяти; expiry-политика остаётся источником расписания.
 
 ### `Entry`
 
@@ -129,7 +135,7 @@ domain -> service lookup -> TSPU evidence -> candidate queue -> probe_route
   (no trailing data, hash verify, pattern integrity), затем применяет только
   валидный freshness checkpoint с совпадающим cache SHA.
 - При старте scheduler использует persisted expiry и не выполняет тяжёлый
-  refresh через 30 секунд, пока cache ещё свежий.
+  refresh в первые 5 минут (для интервала ≥ 5 минут), пока cache ещё свежий.
 - `PreviousPath` и `FreshnessPath` экспортируются для rollback/inspect.
 
 ## CLI

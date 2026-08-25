@@ -17,19 +17,21 @@ The manual importer reports q208 as a redacted `device_scope` with an opaque
 per-report scope ID, TCP queue ports and UDP drop ports. It deliberately keeps
 the resource in `collision` and never emits an apply operation.
 
-The offline typed renderer in `internal/zapretprofile` now validates this
-shape and can render deterministic nft/nfqws candidates for tests. It accepts
-only fixed strategy presets, project-owned paths, non-system queues and typed
-selectors/rules. It is intentionally not wired to the production adapter yet;
-the absence of that wiring is a safety gate, not an implicit fallback to the
-single-profile renderer.
+The typed renderer in `internal/zapretprofile` validates this shape and emits
+deterministic nft rules, nfqws configs and fixed procd service scripts. The
+artifact generator binds those files and a line-oriented ownership manifest to
+the transaction. The OpenWrt adapter snapshots, installs, starts, verifies,
+rolls back and reconciles each profile independently while replacing only the
+single owned FlintRoute nft table. The helper accepts only the fixed
+`router-policy-zapret-<id>` service family and, on production paths, checks the
+active profile manifest before allowing a service operation.
 
-The config schema now carries `zapret.device_profiles` as a typed field so an
+The config schema carries `zapret.device_profiles` as a typed field so an
 imported profile cannot be silently discarded by JSON decoding. `Config.Validate`
-validates the profiles and then rejects activation with an explicit
-`not activatable` error until the multi-profile adapter/helper lifecycle,
-manifest and rollback support exist. The normal artifact renderer therefore
-cannot accidentally absorb q208 as if it were the existing q205 profile.
+requires an enabled managed Zapret route, rejects queue collisions with the
+base profile, and validates every selector/path/strategy before activation.
+The normal renderer keeps q205 and q208 as separate queues and service owners;
+it never collapses q208 into the generic q205 profile.
 
 ## Required managed model
 
@@ -50,17 +52,15 @@ be resolved unambiguously is a hard preflight failure.
 
 ## Runtime boundary
 
-The current renderer and helper support one project-owned Zapret service,
-one `nfqws.conf` and one queue. They must not be made to silently absorb q208.
-The multi-profile implementation must instead provide:
+The managed model provides:
 
-- one owned artifact and lifecycle record per profile;
-- a helper allowlist for the exact profile service names and paths;
+- one owned config, service script and lifecycle record per profile;
+- a helper allowlist for the exact profile service name family and paths;
 - a single owned nft table (or versioned generation switch) containing both
   q205 and q208 rules;
-- transition guard before stopping the manual owner;
+- transition guard before stopping any existing managed owner;
 - service readiness proof before the nft generation switch;
-- cleanup that can stop only the recorded PID/PGID and never a foreign q205,
+- cleanup that can stop only manifest-bound services and never a foreign q205,
   q208 or system queue consumer.
 
 ## Handoff sequence
@@ -81,9 +81,11 @@ The multi-profile implementation must instead provide:
    probes plus persistence checks pass. Any ambiguous result fences and rolls
    back; it never claims success from a process start or listening queue.
 
-Until the controller has a safe recovery state and this model exists in the
-production adapter/helper, q208 remains foreign/manual and the complete
-manual dataplane migration is not ready for hardware.
+The production lifecycle is now implemented in the candidate generator,
+adapter and helper, but q208 remains foreign/manual on the current Flint 2
+until a reviewed hardware ChangeSet proves the selector, process ownership,
+post-apply traffic and rollback. Local artifact/adapter tests are not hardware
+evidence.
 
 ## Acceptance tests
 

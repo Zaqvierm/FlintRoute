@@ -73,6 +73,49 @@ func TestWatcherReadsAppendedQueriesAndHandlesTruncate(t *testing.T) {
 	}
 }
 
+func TestWatcherStartAtEndSkipsHistoricalLogAndReadsNewQueries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dns.log")
+	if err := os.WriteFile(path, []byte("dnsmasq: query[A] historical.example from 192.0.2.10\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	observed := make(chan string, 4)
+	watcher := Watcher{Path: path, PollInterval: 5 * time.Millisecond, MaxBytes: 4096, StartAtEnd: true, Emit: func(_ context.Context, item Observation) {
+		observed <- item.Domain
+	}}
+	done := make(chan error, 1)
+	go func() { done <- watcher.Run(ctx) }()
+	select {
+	case got := <-observed:
+		t.Fatalf("historical observation replayed on startup: %q", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("dnsmasq: query[HTTPS] fresh.example from 192.0.2.11\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-observed:
+		if got != "fresh.example" {
+			t.Fatalf("new domain=%q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("new observation timed out")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWatcherNeverTruncatesWriterOwnedOversizedLog(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dns.log")
 	content := make([]byte, 0, 128)

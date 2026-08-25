@@ -272,8 +272,10 @@ func TestValidateRejectsMutableOrPartialZapretPins(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsDeviceScopedZapretProfilesUntilManagedLifecycleExists(t *testing.T) {
+func TestValidateAcceptsDeviceScopedZapretProfilesForManagedLifecycle(t *testing.T) {
 	cfg := validConfig()
+	cfg.Routes = append(cfg.Routes, Route{Type: "zapret", Tag: "zapret", Mark: "0x42", Status: "CONFIGURED"})
+	cfg.Zapret = Zapret{Binary: "/usr/bin/nfqws", InitScript: "/etc/init.d/router-policy-zapret", ActiveConfig: "/etc/router-policy/zapret/nfqws.conf", ActivationMode: "managed", Strategy: "tls-fake-ttl3-v1", QueueNum: 200}
 	cfg.Zapret.DeviceProfiles = []zapretprofile.Profile{{
 		ID: "tv-q208", Scope: zapretprofile.Scope{IPv4: "192.168.0.162"}, QueueNum: 208,
 		Strategy: zapretprofile.StrategyTVFakeMultidisorder, Binary: "/usr/bin/nfqws",
@@ -284,13 +286,33 @@ func TestValidateRejectsDeviceScopedZapretProfilesUntilManagedLifecycleExists(t 
 			{Protocol: "udp", Ports: []zapretprofile.PortRange{{Start: 443, End: 443}}, Verdict: "drop"},
 		},
 	}}
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "not activatable") {
-		t.Fatalf("device-scoped profile was not held behind the production lifecycle gate: %v", err)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("device-scoped profile was rejected after lifecycle support: %v", err)
+	}
+}
+
+func TestValidateRejectsDeviceScopedZapretProfilesWithoutManagedLifecycle(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes = append(cfg.Routes, Route{Type: "zapret", Tag: "zapret", Mark: "0x42", Status: "CONFIGURED"})
+	cfg.Zapret = Zapret{Binary: "/usr/bin/nfqws", InitScript: "/etc/init.d/router-policy-zapret", ActiveConfig: "/etc/router-policy/zapret/nfqws.conf", ActivationMode: "candidate_only", Strategy: "tls-fake-ttl3-v1", QueueNum: 205}
+	cfg.Zapret.DeviceProfiles = []zapretprofile.Profile{{
+		ID: "tv-q208", Scope: zapretprofile.Scope{IPv4: "192.168.0.162"}, QueueNum: 208,
+		Strategy: zapretprofile.StrategyTVFakeMultidisorder, Binary: "/usr/bin/nfqws",
+		ActiveConfig: "/etc/router-policy/zapret/profiles/tv-q208.conf",
+		InitScript:   "/etc/init.d/router-policy-zapret-tv-q208",
+		Rules: []zapretprofile.Rule{{
+			Protocol: "tcp", Ports: []zapretprofile.PortRange{{Start: 443, End: 443}}, Verdict: "queue",
+		}},
+	}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "enabled zapret route requires managed zapret activation") {
+		t.Fatalf("device-scoped profile escaped the managed lifecycle gate: %v", err)
 	}
 }
 
 func TestValidateRejectsInvalidDeviceScopedZapretProfilesBeforeActivationGate(t *testing.T) {
 	cfg := validConfig()
+	cfg.Routes = append(cfg.Routes, Route{Type: "zapret", Tag: "zapret", Mark: "0x42", Status: "CONFIGURED"})
+	cfg.Zapret = Zapret{Binary: "/usr/bin/nfqws", InitScript: "/etc/init.d/router-policy-zapret", ActiveConfig: "/etc/router-policy/zapret/nfqws.conf", ActivationMode: "managed", Strategy: "tls-fake-ttl3-v1", QueueNum: 200}
 	cfg.Zapret.DeviceProfiles = []zapretprofile.Profile{{
 		ID: "tv-q208", Scope: zapretprofile.Scope{IPv4: "192.168.0.162"}, QueueNum: 1,
 		Strategy: zapretprofile.StrategyTVFakeMultidisorder, Binary: "/usr/bin/nfqws",

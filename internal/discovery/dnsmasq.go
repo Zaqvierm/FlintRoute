@@ -26,7 +26,11 @@ type Watcher struct {
 	Path         string
 	PollInterval time.Duration
 	MaxBytes     int64
-	Emit         func(context.Context, Observation)
+	// StartAtEnd prevents a controller restart from replaying the entire
+	// historical dnsmasq log.  Callers that intentionally need a fixture or
+	// bounded replay can leave it false.
+	StartAtEnd bool
+	Emit       func(context.Context, Observation)
 }
 
 func ParseDNSMasqLine(line string) (Observation, bool) {
@@ -62,6 +66,18 @@ func (w Watcher) Run(ctx context.Context) error {
 	}
 	var offset int64
 	var identity string
+	if w.StartAtEnd {
+		info, err := os.Lstat(w.Path)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+				return errors.New("DNS observation log is not a regular file")
+			}
+			offset = info.Size()
+			identity = observationFileIdentity(info)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {

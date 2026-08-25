@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -100,6 +101,17 @@ func TestUpdateRejectsOversizedSourceInsteadOfTruncating(t *testing.T) {
 	cache, err := Update(remotefetch.WithLoopbackForTests(context.Background()), server.Client(), []config.TSPUSource{{Name: "fixture", Type: "domains", URL: server.URL, MinEntries: 1}}, 64, time.Hour, time.Now().UTC())
 	if err == nil || len(cache.Sources) != 1 || cache.Sources[0].Reason != "source_size_limit_exceeded" || len(cache.Entries) != 0 {
 		t.Fatalf("oversized source was not rejected: cache=%+v err=%v", cache, err)
+	}
+}
+
+func TestParseDomainsRejectsEntryExplosionBeforeBuildingUnboundedCache(t *testing.T) {
+	var raw strings.Builder
+	for i := 0; i < MaxSourceEntries+1; i++ {
+		fmt.Fprintf(&raw, "node-%05d.example\n", i)
+	}
+	domains, err := ParseDomains(strings.NewReader(raw.String()))
+	if err == nil || err.Error() != "domain_entry_limit_exceeded" {
+		t.Fatalf("entry explosion was accepted: entries=%d err=%v", len(domains), err)
 	}
 }
 

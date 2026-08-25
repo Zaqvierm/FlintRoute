@@ -162,7 +162,7 @@ func TestTSPUSchedulerRunsInjectedRefresh(t *testing.T) {
 
 func TestTSPUDelayUsesStartupJitterAndBoundedFailureBackoff(t *testing.T) {
 	interval := 6 * time.Hour
-	if got := tspuBaseDelay(interval, 0, true); got != 30*time.Second {
+	if got := tspuBaseDelay(interval, 0, true); got != 5*time.Minute {
 		t.Fatalf("startup delay=%s", got)
 	}
 	if got := tspuBaseDelay(interval, 0, false); got != interval {

@@ -15,6 +15,7 @@ import (
 
 	"router-policy/internal/config"
 	"router-policy/internal/xraybundle"
+	"router-policy/internal/zapretprofile"
 )
 
 func TestGenerateVerifyAndRejectTamper(t *testing.T) {
@@ -25,8 +26,11 @@ func TestGenerateVerifyAndRejectTamper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(manifest.Artifacts) != 6 || manifestHash == "" {
+	if len(manifest.Artifacts) != 7 || manifestHash == "" {
 		t.Fatalf("incomplete artifact set: %+v", manifest)
+	}
+	if _, err := os.Stat(filepath.Join(root, ZapretProfilesManifestFile)); err != nil {
+		t.Fatalf("profile manifest was not generated: %v", err)
 	}
 	if manifest.DeploymentReady || manifest.BlockReason != "transparent_activation_unverified" {
 		t.Fatalf("candidate-only transparent artifacts were marked deployable: %+v", manifest)
@@ -941,6 +945,54 @@ func TestDeviceOverrideBlocksApplyUntilDeviceMatchingIsProven(t *testing.T) {
 	}
 	if plan.DeploymentReady || len(plan.Routes) != 0 || plan.BlockReason != "device_policy_data_plane_unverified" {
 		t.Fatalf("device policy produced executable unverified plan: %+v", plan)
+	}
+}
+
+func TestGenerateRendersOwnedDeviceScopedZapretArtifacts(t *testing.T) {
+	root := t.TempDir()
+	cfg := testConfig(t, root)
+	cfg.Zapret = config.Zapret{Binary: "/usr/bin/nfqws", InitScript: "/etc/init.d/router-policy-zapret", ActiveConfig: "/etc/router-policy/zapret/nfqws.conf", ActivationMode: "managed", Strategy: "tls-fake-ttl3-v1", QueueNum: 205}
+	cfg.Routes = append(cfg.Routes, config.Route{Type: "zapret", Tag: "zapret", Priority: 30, Mark: "0x42", Status: "CONFIGURED"})
+	cfg.Zapret.DeviceProfiles = []zapretprofile.Profile{{
+		ID: "tv-q208", Scope: zapretprofile.Scope{IPv4: "192.168.0.162"}, QueueNum: 208,
+		Strategy: zapretprofile.StrategyTVFakeMultidisorder, Binary: "/usr/bin/nfqws",
+		ActiveConfig: "/etc/router-policy/zapret/profiles/tv-q208.conf",
+		InitScript:   "/etc/init.d/router-policy-zapret-tv-q208",
+		Rules: []zapretprofile.Rule{
+			{Protocol: "udp", Ports: []zapretprofile.PortRange{{Start: 443, End: 443}}, Verdict: "drop"},
+			{Protocol: "tcp", Ports: []zapretprofile.PortRange{{Start: 443, End: 443}}, Verdict: "queue", ConntrackFirstPack: 32},
+		},
+	}}
+	binding := Binding{TransactionID: "tx_0011223344556677", RevisionID: "rev_2_001122334455", CandidateHash: "sha256:candidate"}
+	_, manifestHash, err := Generate(cfg, filepath.Join(root, "generated"), binding, time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify(filepath.Join(root, "generated"), binding, manifestHash); err != nil {
+		t.Fatal(err)
+	}
+	profileManifest, err := os.ReadFile(filepath.Join(root, "generated", ZapretProfilesManifestFile))
+	if err != nil || !strings.Contains(string(profileManifest), "tv-q208|/etc/router-policy/zapret/profiles/tv-q208.conf|/etc/init.d/router-policy-zapret-tv-q208|208") {
+		t.Fatalf("profile manifest is missing typed ownership row: %q (%v)", profileManifest, err)
+	}
+	profileConfig, err := os.ReadFile(filepath.Join(root, "generated", "zapret-profile-tv-q208.conf"))
+	if err != nil || !strings.Contains(string(profileConfig), "--qnum=208") {
+		t.Fatalf("profile config is missing q208: %q (%v)", profileConfig, err)
+	}
+	profileService, err := os.ReadFile(filepath.Join(root, "generated", "zapret-service-tv-q208"))
+	if err != nil || !strings.Contains(string(profileService), "router-policy-zapret-tv-q208") || strings.Contains(string(profileService), "127.0.0.1:1180") {
+		t.Fatalf("profile service is not fixed/owned: %q (%v)", profileService, err)
+	}
+	nft, err := os.ReadFile(filepath.Join(root, "generated", NFTFile))
+	if err != nil || !strings.Contains(string(nft), "chain rp_zapret_device") || !strings.Contains(string(nft), "queue flags bypass to 208") {
+		t.Fatalf("owned nft table is missing q208 chain: %q (%v)", nft, err)
+	}
+	plan, err := LoadIPPlan(filepath.Join(root, "generated", IPPlanFile), binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Zapret.DeviceProfiles) != 1 || plan.Zapret.DeviceProfiles[0].ID != "tv-q208" {
+		t.Fatalf("IP plan lost device-scoped profile metadata: %+v", plan.Zapret.DeviceProfiles)
 	}
 }
 

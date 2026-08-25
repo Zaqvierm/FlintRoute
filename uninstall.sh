@@ -13,6 +13,8 @@ HOTPLUG_IFACE_DIR="${HOTPLUG_IFACE_DIR:-$SYSTEM_ROOT/etc/hotplug.d/iface}"
 HOTPLUG_FIREWALL_DIR="${HOTPLUG_FIREWALL_DIR:-$SYSTEM_ROOT/etc/hotplug.d/firewall}"
 DNSMASQ_DIR="${DNSMASQ_DIR:-$SYSTEM_ROOT/tmp/dnsmasq.d}"
 NFTABLES_DIR="${NFTABLES_DIR:-$SYSTEM_ROOT/etc/nftables.d}"
+ZAPRET_PROFILE_DIR="${ZAPRET_PROFILE_DIR:-$ETC_DIR/zapret/profiles}"
+ZAPRET_PROFILE_MANIFEST="${ZAPRET_PROFILE_MANIFEST:-$ETC_DIR/zapret/profiles.manifest}"
 BACKUP_ROOT="${BACKUP_ROOT:-$SYSTEM_ROOT/root/router-policy-backups}"
 BACKUP_DIR="${BACKUP_DIR:-$BACKUP_ROOT/uninstall-$(date -u +%Y%m%dT%H%M%SZ)}"
 ROUTER_POLICY_VERSION="${ROUTER_POLICY_VERSION:-unknown}"
@@ -248,6 +250,61 @@ wait_dnsmasq_ready() {
   return 1
 }
 
+profile_id_valid() {
+  printf '%s\n' "$1" | grep -Eq '^[a-z0-9][a-z0-9-]{0,31}$'
+}
+
+profile_manifest_validate() {
+  manifest="$1"
+  [ -f "$manifest" ] && [ ! -L "$manifest" ] || return 1
+  while IFS='|' read -r profile_id profile_config profile_init profile_queue extra; do
+    [ -z "${profile_id:-}" ] && continue
+    [ -z "${extra:-}" ] || return 1
+    profile_id_valid "$profile_id" || return 1
+    [ "$profile_config" = "$ZAPRET_PROFILE_DIR/$profile_id.conf" ] || return 1
+    [ "$profile_init" = "$INIT_DIR/router-policy-zapret-$profile_id" ] || return 1
+    case "$profile_queue" in ''|*[!0-9]*) return 1;; esac
+    [ "$profile_queue" -ge 2 ] || return 1
+  done < "$manifest"
+}
+
+remove_owned_profile_resources() {
+  [ "$ZAPRET_PROFILE_DIR" = "$ETC_DIR/zapret/profiles" ] || {
+    echo "uninstall blocked: non-standard Zapret profile directory" >&2
+    return 1
+  }
+  [ "$ZAPRET_PROFILE_MANIFEST" = "$ETC_DIR/zapret/profiles.manifest" ] || {
+    echo "uninstall blocked: non-standard Zapret profile manifest" >&2
+    return 1
+  }
+  [ -e "$ZAPRET_PROFILE_MANIFEST" ] || return 0
+  validate_no_symlink_path "$ZAPRET_PROFILE_MANIFEST" || {
+    echo "uninstall blocked: unsafe Zapret profile manifest path" >&2
+    return 1
+  }
+  profile_manifest_validate "$ZAPRET_PROFILE_MANIFEST" || {
+    echo "uninstall blocked: invalid Zapret profile ownership manifest" >&2
+    return 1
+  }
+  while IFS='|' read -r profile_id profile_config profile_init profile_queue extra; do
+    [ -z "${profile_id:-}" ] && continue
+    validate_no_symlink_path "$profile_config" || return 1
+    validate_no_symlink_path "$profile_init" || return 1
+    if [ -z "$SYSTEM_ROOT" ] && [ -x "$profile_init" ]; then
+      "$profile_init" stop || {
+        echo "uninstall failed: could not stop router-policy-zapret-$profile_id" >&2
+        return 1
+      }
+      "$profile_init" disable || {
+        echo "uninstall failed: could not disable router-policy-zapret-$profile_id" >&2
+        return 1
+      }
+    fi
+    rm -f "$profile_config" "$profile_init"
+  done < "$ZAPRET_PROFILE_MANIFEST"
+  rm -f "$ZAPRET_PROFILE_MANIFEST"
+}
+
 if [ "${ROUTER_POLICY_UNINSTALL_LIB_ONLY:-0}" = "1" ]; then
   return 0
 fi
@@ -256,6 +313,7 @@ if [ "$mode" = "--dry-run" ]; then
   echo "would_stop_services=router-policy-dns-observer router-policy-boot-guard router-policy-helper router-policy-watchdog router-policy router-policy-xray router-policy-zapret"
   echo "would_remove_prefix=$PREFIX"
   echo "would_keep_backup=$BACKUP_DIR"
+  echo "would_remove_owned_zapret_profiles=$ZAPRET_PROFILE_MANIFEST"
   exit 0
 fi
 
@@ -279,7 +337,8 @@ for owned_path in "$PREFIX" "$BIN_DIR/router-policy" "$INIT_DIR/router-policy" \
   "$INIT_DIR/router-policy-dns-observer" "$INIT_DIR/router-policy-boot-guard" \
   "$INIT_DIR/router-policy-watchdog" "$INIT_DIR/router-policy-xray" \
   "$INIT_DIR/router-policy-zapret" "$HOTPLUG_IFACE_DIR/95-router-policy" \
-  "$HOTPLUG_FIREWALL_DIR/95-router-policy" "$ETC_DIR" "$RUNTIME_DIR"; do
+  "$HOTPLUG_FIREWALL_DIR/95-router-policy" "$ETC_DIR" "$RUNTIME_DIR" \
+  "$ZAPRET_PROFILE_MANIFEST" "$ZAPRET_PROFILE_DIR"; do
   validate_no_symlink_path "$owned_path" || {
     echo "uninstall blocked: symlink in owned path: $owned_path" >&2
     exit 1
@@ -320,6 +379,8 @@ if [ -z "$SYSTEM_ROOT" ]; then
     delete_owned_nft_table router_policy_boot_guard
   fi
 fi
+
+remove_owned_profile_resources
 
 if [ -x "$BIN_DIR/router-policy" ]; then
   "$BIN_DIR/router-policy" backup register --root "$BACKUP_DIR" --operation "$(basename "$BACKUP_DIR")" --version "$ROUTER_POLICY_VERSION" --reason uninstall --retention-class uninstall-fallback >/dev/null

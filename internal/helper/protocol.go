@@ -234,14 +234,25 @@ func allowlistedService(name string) bool {
 	switch name {
 	case "router-policy", "router-policy-xray", "router-policy-zapret", "router-policy-boot-guard":
 		return true
-	default:
-		return false
 	}
+	if strings.HasPrefix(name, "router-policy-zapret-") {
+		suffix := strings.TrimPrefix(name, "router-policy-zapret-")
+		if len(suffix) == 0 || len(suffix) > 32 {
+			return false
+		}
+		for _, r := range suffix {
+			if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func allowlistedArtifact(kind string) bool {
 	switch kind {
-	case "xray_config", "zapret_config", "nft_table", "dnsmasq_config", "ip_plan":
+	case "xray_config", "zapret_config", "zapret_profile_manifest", "nft_table", "dnsmasq_config", "ip_plan":
 		return true
 	default:
 		return false

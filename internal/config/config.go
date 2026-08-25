@@ -129,9 +129,9 @@ type Zapret struct {
 	AdaptiveCatalogFile string                    `json:"adaptive_catalog_file,omitempty"`
 	AdaptiveAssignments []ZapretProfileAssignment `json:"adaptive_assignments,omitempty"`
 	// DeviceProfiles is deliberately typed in the config schema so an imported
-	// host-scoped profile cannot disappear during JSON decoding. Production
-	// activation remains blocked until the multi-profile adapter/helper
-	// lifecycle is implemented and ownership-gated.
+	// host-scoped profile cannot disappear during JSON decoding. Activation is
+	// allowed only after the adapter/helper lifecycle and ownership manifest bind
+	// every profile to a fixed queue, config and service path.
 	DeviceProfiles []zapretprofile.Profile `json:"device_profiles,omitempty"`
 }
 
@@ -456,10 +456,20 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("adaptive Zapret requires an enabled zapret route")
 	}
 	if len(c.Zapret.DeviceProfiles) > 0 {
+		if !hasZapret {
+			return fmt.Errorf("device-scoped Zapret profiles require an enabled zapret route")
+		}
+		if c.Zapret.ActivationMode != "managed" {
+			return fmt.Errorf("device-scoped Zapret profiles require managed zapret activation")
+		}
 		if err := zapretprofile.ValidateProfiles(c.Zapret.DeviceProfiles); err != nil {
 			return fmt.Errorf("device-scoped Zapret profiles are invalid: %w", err)
 		}
-		return fmt.Errorf("device-scoped Zapret profiles are not activatable: multi-profile production adapter/helper lifecycle is not implemented")
+		for _, profile := range c.Zapret.DeviceProfiles {
+			if profile.QueueNum == c.Zapret.QueueNum {
+				return fmt.Errorf("device-scoped Zapret profile %s collides with base queue %d", profile.ID, c.Zapret.QueueNum)
+			}
+		}
 	}
 	if !hasVLESS && c.Xray.OutboundBundleSHA256 != "" {
 		return fmt.Errorf("Xray outbound bundle is set without enabled vless routes")

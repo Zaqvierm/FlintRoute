@@ -39,6 +39,9 @@ active_nft="${ACTIVE_NFT:-/etc/router-policy/firewall/router-policy.nft}"
 active_dnsmasq="${ACTIVE_DNSMASQ:-/tmp/dnsmasq.d/router-policy.conf}"
 active_xray="${ACTIVE_XRAY:-/etc/router-policy/xray/active.json}"
 active_zapret="${ACTIVE_ZAPRET:-/etc/router-policy/zapret/nfqws.conf}"
+active_zapret_profiles="${ACTIVE_ZAPRET_PROFILES:-${active_zapret%/*}/profiles.manifest}"
+zapret_profile_dir="${ZAPRET_PROFILE_DIR:-/etc/router-policy/zapret/profiles}"
+zapret_profile_init_prefix="${ZAPRET_PROFILE_INIT_PREFIX:-/etc/init.d/router-policy-zapret-}"
 if [ "$runtime" = "/tmp/router-policy" ]; then
   dns_observation_log="${DNS_OBSERVATION_LOG:-/var/run/dnsmasq/router-policy-observations.log}"
 else
@@ -413,6 +416,123 @@ prepare_tx() {
   echo "revision_id=$revision"
 }
 
+profile_id_valid() {
+  printf '%s\n' "$1" | grep -Eq '^[a-z][a-z0-9-]{0,31}$'
+}
+
+profile_entry_validate() {
+  profile_id="$1"
+  profile_config="$2"
+  profile_init="$3"
+  profile_queue="$4"
+  profile_id_valid "$profile_id" || return 1
+  [ "$profile_config" = "$zapret_profile_dir/$profile_id.conf" ] || return 1
+  [ "$profile_init" = "$zapret_profile_init_prefix$profile_id" ] || return 1
+  printf '%s\n' "$profile_queue" | grep -Eq '^[0-9]+$' || return 1
+  [ "$profile_queue" -ge 2 ] && [ "$profile_queue" -le 65535 ]
+}
+
+profile_manifest_validate() {
+  profile_manifest="$1"
+  [ -e "$profile_manifest" ] || return 0
+  [ -f "$profile_manifest" ] && [ ! -L "$profile_manifest" ] || return 1
+  profile_seen=" "
+  while IFS='|' read -r profile_id profile_config profile_init profile_queue profile_extra; do
+    [ -z "${profile_id:-}" ] && continue
+    [ -z "${profile_extra:-}" ] || return 1
+    profile_entry_validate "$profile_id" "$profile_config" "$profile_init" "$profile_queue" || return 1
+    case "$profile_seen" in
+      *" $profile_id "*) return 1 ;;
+    esac
+    profile_seen="$profile_seen$profile_id "
+  done < "$profile_manifest"
+}
+
+profile_source_config() {
+  printf '%s\n' "$generated/zapret-profile-$1.conf"
+}
+
+profile_artifact_config() {
+  printf '%s\n' "$1/zapret-profile-$2.conf"
+}
+
+profile_source_service() {
+  printf '%s\n' "$generated/zapret-service-$1"
+}
+
+profile_artifact_service() {
+  printf '%s\n' "$1/zapret-service-$2"
+}
+
+stop_profile_services() {
+  profile_manifest="$1"
+  [ -f "$profile_manifest" ] || return 0
+  profile_manifest_validate "$profile_manifest" || {
+    echo "reason=profile_manifest_invalid" >&2
+    return 1
+  }
+  while IFS='|' read -r profile_id profile_config profile_init profile_queue profile_extra; do
+    [ -z "${profile_id:-}" ] && continue
+    stop_managed_service "$profile_init"
+  done < "$profile_manifest"
+}
+
+remove_profile_resources() {
+  profile_manifest="$1"
+  [ -f "$profile_manifest" ] || return 0
+  profile_manifest_validate "$profile_manifest" || {
+    echo "reason=profile_manifest_invalid" >&2
+    return 1
+  }
+  while IFS='|' read -r profile_id profile_config profile_init profile_queue profile_extra; do
+    [ -z "${profile_id:-}" ] && continue
+    rm -f "$profile_config" "$profile_init"
+  done < "$profile_manifest"
+}
+
+install_profile_artifacts() {
+  install_manifest="$1"
+  [ -f "$install_manifest" ] || {
+    echo "reason=profile_manifest_missing" >&2
+    return 1
+  }
+  profile_manifest_validate "$install_manifest" || {
+    echo "reason=profile_manifest_invalid" >&2
+    return 1
+  }
+  stop_profile_services "$active_zapret_profiles"
+  remove_profile_resources "$active_zapret_profiles"
+  if [ -s "$install_manifest" ]; then
+    mkdir -p "$zapret_profile_dir"
+  fi
+  while IFS='|' read -r install_profile_id install_profile_config install_profile_init _ _; do
+    [ -z "${install_profile_id:-}" ] && continue
+    profile_source_config_path="$(profile_source_config "$install_profile_id")"
+    profile_source_service_path="$(profile_source_service "$install_profile_id")"
+    [ -s "$profile_source_config_path" ] && [ -f "$profile_source_service_path" ] || {
+      echo "reason=profile_artifact_missing" >&2
+      return 1
+    }
+    atomic_install "$profile_source_config_path" "$install_profile_config"
+    atomic_install "$profile_source_service_path" "$install_profile_init"
+    chmod 755 "$install_profile_init"
+  done < "$install_manifest"
+  atomic_install "$install_manifest" "$active_zapret_profiles"
+}
+
+start_profile_services() {
+  profile_manifest="$1"
+  [ -f "$profile_manifest" ] || return 0
+  profile_manifest_validate "$profile_manifest" || {
+    echo "reason=profile_manifest_invalid" >&2
+    return 1
+  }
+  while IFS='|' read -r profile_id profile_config profile_init profile_queue profile_extra; do
+    [ -z "${profile_id:-}" ] && continue
+    start_managed_service "$profile_init" "router-policy-zapret-$profile_id"
+  done < "$profile_manifest"
+}
+
 snapshot_one() {
   snapshot_target="$1"
   snapshot_name="$2"
@@ -483,6 +603,21 @@ snapshot_service_one() {
   snapshot_hash="$(sha_file "$snapshot_output/$snapshot_name")"
   snapshot_bytes="$(wc -c < "$snapshot_output/$snapshot_name" | tr -d ' ')"
   echo "$snapshot_target|present|$snapshot_name|$snapshot_bytes|sha256:$snapshot_hash|project-service" >> "$snapshot_output/manifest.txt"
+}
+
+snapshot_profile_resources() {
+  profile_manifest="$1"
+  snapshot_output="$2"
+  [ -f "$profile_manifest" ] || return 0
+  profile_manifest_validate "$profile_manifest" || {
+    echo "reason=profile_manifest_invalid" >&2
+    return 1
+  }
+  while IFS='|' read -r profile_id profile_config profile_init profile_queue profile_extra; do
+    [ -z "${profile_id:-}" ] && continue
+    snapshot_one "$profile_config" "profile-$profile_id.conf" "$snapshot_output"
+    snapshot_service_one "$profile_init" "profile-$profile_id.service.state" "$snapshot_output"
+  done < "$profile_manifest"
 }
 
 ensure_flow_offload_baseline() {
@@ -556,6 +691,8 @@ create_snapshot() {
   snapshot_one "$active_dnsmasq" "router-policy-dnsmasq.conf" "$create_root.tmp"
   snapshot_one "$active_xray" "xray-active.json" "$create_root.tmp"
   snapshot_one "$active_zapret" "nfqws.conf" "$create_root.tmp"
+  snapshot_one "$active_zapret_profiles" "zapret-profiles.manifest" "$create_root.tmp"
+  snapshot_profile_resources "$active_zapret_profiles" "$create_root.tmp"
   snapshot_service_one "$xray_init" "xray-service.state" "$create_root.tmp"
   snapshot_service_one "$zapret_init" "zapret-service.state" "$create_root.tmp"
   snapshot_uci_one "$flow_offload_uci_key" "flow-offloading.uci" "$create_root.tmp"
@@ -686,6 +823,28 @@ EOF
       exit 3
     fi
     rm -f "$zapret_check"
+  fi
+  if [ -f "$generated/zapret-profiles.manifest" ]; then
+    profile_manifest_validate "$generated/zapret-profiles.manifest" || {
+      echo "reason=profile_manifest_invalid" >&2
+      exit 3
+    }
+    while IFS='|' read -r profile_id profile_config profile_init profile_queue profile_extra; do
+      [ -z "${profile_id:-}" ] && continue
+      profile_check="$(profile_source_config "$profile_id").check"
+      cp "$(profile_source_config "$profile_id")" "$profile_check"
+      printf '%s\n' '--dry-run' >> "$profile_check"
+      if ! "$nfqws_bin" "@$profile_check" >/dev/null; then
+        rm -f "$profile_check"
+        echo "reason=device_profile_candidate_invalid" >&2
+        exit 3
+      fi
+      rm -f "$profile_check"
+      [ -s "$(profile_source_service "$profile_id")" ] || {
+        echo "reason=device_profile_service_missing" >&2
+        exit 3
+      }
+    done < "$generated/zapret-profiles.manifest"
   fi
   if [ "$plan_xray_managed" = "true" ] && [ ! -x "$xray_init" ]; then
     echo "reason=xray_init_missing" >&2
@@ -949,6 +1108,7 @@ artifact_paths() {
   case "$helper_artifact_kind" in
     xray_config) artifact_source="$generated/xray.json"; artifact_target="$active_xray" ;;
     zapret_config) artifact_source="$generated/nfqws.conf"; artifact_target="$active_zapret" ;;
+    zapret_profile_manifest) artifact_source="$generated/zapret-profiles.manifest"; artifact_target="$active_zapret_profiles" ;;
     dnsmasq_config) artifact_source="$generated/router-policy-dnsmasq.conf"; artifact_target="$active_dnsmasq" ;;
     nft_table) artifact_source="$generated/router-policy.nft"; artifact_target="$active_nft" ;;
     ip_plan) artifact_source="$generated/ip-plan.json"; artifact_target="$txdir/active-ip-plan.json" ;;
@@ -1127,6 +1287,7 @@ apply_candidate() {
   else
     rm -f "$active_zapret"
   fi
+  install_profile_artifacts "$generated/zapret-profiles.manifest"
   if [ "$plan_xray_enabled" = "true" ]; then
     start_managed_service "$xray_init" "xray"
   else
@@ -1137,6 +1298,7 @@ apply_candidate() {
   else
     stop_managed_service "$zapret_init"
   fi
+  start_profile_services "$active_zapret_profiles"
   ROUTER_POLICY_IP_BIN="$ip_bin" ROUTER_POLICY_UCI_BIN="$uci_bin" "$router_policy_bin" internal-apply-ip-plan --plan "$generated/ip-plan.json" --transaction "$txid" --revision "$revision" --candidate-hash "$candidate_hash"
   reload_project_firewall
   restart_dnsmasq
@@ -1430,9 +1592,36 @@ known_restore_target() {
   restore_target="$1"
   restore_owner="$2"
   case "$restore_owner:$restore_target" in
-    "project:$config"|"project:$active_nft"|"project:$active_dnsmasq"|"project:$active_xray"|"project:$active_zapret"|"project:$active_file") return 0 ;;
+    "project:$config"|"project:$active_nft"|"project:$active_dnsmasq"|"project:$active_xray"|"project:$active_zapret"|"project:$active_zapret_profiles"|"project:$active_file") return 0 ;;
     "project-service:service:$xray_init"|"project-service:service:$zapret_init") return 0 ;;
     "openwrt-uci:uci:$flow_offload_uci_key"|"openwrt-uci:uci:$flow_offload_hw_uci_key") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+profile_restore_target_allowed() {
+  restore_target="$1"
+  restore_owner="$2"
+  case "$restore_owner" in
+    project)
+      case "$restore_target" in
+        "$zapret_profile_dir/"*.conf)
+          profile_id="${restore_target#"$zapret_profile_dir/"}"
+          profile_id="${profile_id%.conf}"
+          profile_id_valid "$profile_id"
+          ;;
+        *) return 1 ;;
+      esac
+      ;;
+    project-service)
+      case "$restore_target" in
+        service:"$zapret_profile_init_prefix"*)
+          profile_id="${restore_target#"service:$zapret_profile_init_prefix"}"
+          profile_id_valid "$profile_id"
+          ;;
+        *) return 1 ;;
+      esac
+      ;;
     *) return 1 ;;
   esac
 }
@@ -1444,7 +1633,7 @@ verify_snapshot() {
   actual_manifest="$(sha_file "$snapshot_dir/manifest.txt")"
   [ "$expected_manifest" = "$actual_manifest" ] || return 1
   while IFS='|' read -r restore_target restore_state restore_name restore_bytes restore_hash restore_owner; do
-    known_restore_target "$restore_target" "$restore_owner" || return 1
+    known_restore_target "$restore_target" "$restore_owner" || profile_restore_target_allowed "$restore_target" "$restore_owner" || return 1
     case "$restore_state" in
       present)
         [ -f "$snapshot_dir/$restore_name" ] || return 1
@@ -1464,13 +1653,14 @@ verify_snapshot() {
 restore_snapshot() {
   snapshot_dir="$1"
   restore_bootstrap="${2:-true}"
+  stop_profile_services "$active_zapret_profiles" || return 1
   verify_snapshot "$snapshot_dir" || {
     echo "reason=snapshot_integrity_failed" >&2
     return 1
   }
   uci_restore_needed=false
   while IFS='|' read -r restore_target restore_state restore_name _restore_bytes _restore_hash restore_owner; do
-    known_restore_target "$restore_target" "$restore_owner" || return 1
+    known_restore_target "$restore_target" "$restore_owner" || profile_restore_target_allowed "$restore_target" "$restore_owner" || return 1
     if [ "$restore_owner" = "project-service" ]; then
       [ "$restore_state" = "present" ] || return 1
       restore_value="$(cat "$snapshot_dir/$restore_name")"
@@ -1529,6 +1719,21 @@ restore_service_state() {
   fi
 }
 
+restore_profile_service_states() {
+  snapshot_dir="$1"
+  [ -f "$snapshot_dir/manifest.txt" ] || return 1
+  while IFS='|' read -r restore_target restore_state restore_name restore_bytes restore_hash restore_owner; do
+    [ "$restore_owner" = "project-service" ] || continue
+    case "$restore_target" in
+      service:"$zapret_profile_init_prefix"*)
+        profile_init="${restore_target#service:}"
+        profile_name="${profile_init##*/}"
+        restore_service_state "$snapshot_dir" "$restore_name" "$profile_init" "$profile_name"
+        ;;
+    esac
+  done < "$snapshot_dir/manifest.txt"
+}
+
 service_state_matches() {
   state_name="$1"
   service_init="$2"
@@ -1561,6 +1766,23 @@ recovery_active_matches() {
     [ "$(sed -n 's/^transaction_state=//p' "$active_file" | head -n 1)" = "committed" ]
 }
 
+profile_deployment_matches() {
+  recovery_generated="$1"
+  if [ ! -f "$recovery_generated/zapret-profiles.manifest" ]; then
+    [ ! -e "$active_zapret_profiles" ] || return 1
+    return 0
+  fi
+  [ -f "$active_zapret_profiles" ] || return 1
+  cmp -s "$recovery_generated/zapret-profiles.manifest" "$active_zapret_profiles" || return 1
+  profile_manifest_validate "$recovery_generated/zapret-profiles.manifest" || return 1
+  while IFS='|' read -r profile_id profile_config profile_init profile_queue profile_extra; do
+    [ -z "${profile_id:-}" ] && continue
+    cmp -s "$(profile_artifact_config "$recovery_generated" "$profile_id")" "$profile_config" || return 1
+    cmp -s "$(profile_artifact_service "$recovery_generated" "$profile_id")" "$profile_init" || return 1
+    service_state_matches "profile-$profile_id.service.state" "$profile_init" || return 1
+  done < "$recovery_generated/zapret-profiles.manifest"
+}
+
 committed_deployment_matches() {
   recovery_generated="$1"
   recovery_active_matches || return 1
@@ -1576,6 +1798,7 @@ committed_deployment_matches() {
   else
     [ ! -e "$active_zapret" ] || return 1
   fi
+  profile_deployment_matches "$recovery_generated" || return 1
   service_state_matches "xray-service.state" "$xray_init" || return 1
   service_state_matches "zapret-service.state" "$zapret_init" || return 1
   "$dnsmasq_init" running >/dev/null 2>&1 || return 1
@@ -1591,6 +1814,7 @@ reload_restored_state() {
   restart_dnsmasq
   restore_service_state "$snapshot_dir" "xray-service.state" "$xray_init" "xray"
   restore_service_state "$snapshot_dir" "zapret-service.state" "$zapret_init" "zapret"
+  restore_profile_service_states "$snapshot_dir"
 }
 
 rollback_tx() {
@@ -1724,6 +1948,7 @@ reconcile_tx() {
   restore_snapshot "$state/last-good" false
   restore_service_state "$state/last-good" "xray-service.state" "$xray_init" "xray"
   restore_service_state "$state/last-good" "zapret-service.state" "$zapret_init" "zapret"
+  restore_profile_service_states "$state/last-good"
   ROUTER_POLICY_IP_BIN="$ip_bin" ROUTER_POLICY_UCI_BIN="$uci_bin" "$router_policy_bin" internal-apply-ip-plan --plan "$recovery_generated/ip-plan.json" --transaction "$txid" --revision "$revision" --candidate-hash "$recovery_candidate_hash" >/dev/null
   reload_project_firewall
   restart_dnsmasq
