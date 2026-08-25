@@ -109,6 +109,64 @@ func TestInspectRejectsPrivateVLESSEndpoint(t *testing.T) {
 	}
 }
 
+func TestBuildAdoptionPlanNeverAllowsApplyFromReadableManualDataplane(t *testing.T) {
+	dir := t.TempDir()
+	xrayPath := filepath.Join(dir, "xray.json")
+	q205Path := filepath.Join(dir, "q205.args")
+	dnsPath := filepath.Join(dir, "dnsmasq.conf")
+	nftPath := filepath.Join(dir, "nft.txt")
+	writeManualFile(t, xrayPath, minimalXray(testUUID1))
+	writeManualFile(t, q205Path, "--qnum=205\n--filter-tcp=443\n")
+	writeManualFile(t, dnsPath, "server=/example.test/127.0.0.1#14010\n")
+	writeManualFile(t, nftPath, "table inet app_zapret { }\n")
+	report, err := Inspect(Options{
+		XrayPath: xrayPath, ZapretArgs: []string{q205Path}, DNSMasqPath: dnsPath,
+		NFTPaths: []string{nftPath}, OutputBundle: filepath.Join(dir, "candidate.json"), GeneratedAt: fixedTime(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildAdoptionPlan(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.ApplyAllowed || plan.MigrationState != "blocked_on_ownership_handoff" {
+		t.Fatalf("readable manual dataplane became applyable: %+v", plan)
+	}
+	if plan.CandidateSHA256 == "" {
+		t.Fatal("candidate hash was not carried into the plan")
+	}
+	var foundQueue, foundDNS, foundNFT, foundLifecycle bool
+	for _, resource := range plan.Resources {
+		switch resource.Kind + ":" + resource.Identifier {
+		case "nfqueue:queue:205":
+			foundQueue = resource.OwnershipState == ownershipForeign
+		case "file:manual-dnsmasq-include":
+			foundDNS = resource.OwnershipState == ownershipForeign
+		case "nft:manual-nft-snapshot":
+			foundNFT = resource.OwnershipState == ownershipForeign
+		case "lifecycle:manual-cron-procd":
+			foundLifecycle = resource.OwnershipState == ownershipForeign
+		}
+	}
+	if !foundQueue || !foundDNS || !foundNFT || !foundLifecycle {
+		t.Fatalf("ownership boundaries were not represented: queue=%v dns=%v nft=%v lifecycle=%v", foundQueue, foundDNS, foundNFT, foundLifecycle)
+	}
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), testUUID1) {
+		t.Fatal("adoption plan contains a VLESS credential")
+	}
+}
+
+func TestBuildAdoptionPlanRejectsSecretBearingReport(t *testing.T) {
+	if _, err := BuildAdoptionPlan(Report{SecretsPrinted: true}); err == nil {
+		t.Fatal("secret-bearing report was accepted")
+	}
+}
+
 func minimalXray(uuid string) string {
 	return `{"inbounds":[{"tag":"socks-proxy-1","listen":"127.0.0.1","port":12000,"protocol":"socks"}],"outbounds":[{"tag":"proxy-1","protocol":"vless","settings":{"vnext":[{"address":"vc9.example.com","port":22231,"users":[{"id":"` + uuid + `","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"tls"}}],"routing":{"rules":[{"type":"field","inboundTag":["socks-proxy-1"],"outboundTag":"proxy-1"}]}}`
 }

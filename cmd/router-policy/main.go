@@ -1177,6 +1177,7 @@ func run(args []string) error {
 		dnsmasqPath := fs.String("dnsmasq", "", "manual dnsmasq include (read-only input)")
 		nftPath := fs.String("nft", "", "manual nft evidence file (read-only input)")
 		outBundle := fs.String("out-bundle", "", "optional local 0600 Xray candidate output")
+		plan := fs.Bool("plan", false, "also print the review-only ownership handoff plan")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
@@ -1196,6 +1197,13 @@ func run(args []string) error {
 		})
 		if err != nil {
 			return err
+		}
+		if *plan {
+			handoff, err := manualimport.BuildAdoptionPlan(report)
+			if err != nil {
+				return err
+			}
+			return printJSON(map[string]any{"report": report, "adoption_plan": handoff})
 		}
 		return printJSON(report)
 	case "install-dry-run":
@@ -1264,7 +1272,7 @@ func usage() {
   subscription-normalize SUBSCRIPTION_JSON
   subscription-routes [--base-port PORT] SUBSCRIPTION_JSON
   subscription-xray [--base-port PORT] --out OUTPUT_JSON SUBSCRIPTION_JSON
-  manual-import --xray MANUAL_XRAY_JSON [--q205 ARGS] [--q208 ARGS] [--dnsmasq FILE] [--nft FILE] [--out-bundle CANDIDATE_JSON]
+  manual-import --xray MANUAL_XRAY_JSON [--q205 ARGS] [--q208 ARGS] [--dnsmasq FILE] [--nft FILE] [--out-bundle CANDIDATE_JSON] [--plan]
   daemon
   install-dry-run
   security audit

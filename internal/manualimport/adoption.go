@@ -1,0 +1,158 @@
+package manualimport
+
+import (
+	"errors"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+// AdoptionPlan is a review-only description of how a manually maintained
+// dataplane could be handed to FlintRoute. It deliberately has no apply
+// method: a report is evidence, not proof of ownership.
+type AdoptionPlan struct {
+	SchemaVersion   int                `json:"schema_version"`
+	GeneratedAt     string             `json:"generated_at"`
+	MigrationState  string             `json:"migration_state"`
+	ApplyAllowed    bool               `json:"apply_allowed"`
+	CandidateSHA256 string             `json:"candidate_sha256,omitempty"`
+	Resources       []AdoptionResource `json:"resources"`
+	Blockers        []Conflict         `json:"blockers"`
+	Steps           []string           `json:"steps"`
+}
+
+type AdoptionResource struct {
+	Kind           string   `json:"kind"`
+	Identifier     string   `json:"identifier"`
+	ObservedOwner  string   `json:"observed_owner"`
+	OwnershipState string   `json:"ownership_state"`
+	Evidence       []string `json:"evidence,omitempty"`
+	RequiredAction string   `json:"required_action"`
+}
+
+const (
+	ownershipForeign   = "foreign"
+	ownershipUnproven  = "unproven"
+	ownershipCollision = "collision"
+)
+
+// BuildAdoptionPlan converts the redacted inspection report into a bounded,
+// deterministic review plan. It never treats a readable file, live listener,
+// queue number or process name as ownership proof.
+func BuildAdoptionPlan(report Report) (AdoptionPlan, error) {
+	if report.SecretsPrinted {
+		return AdoptionPlan{}, errors.New("refusing adoption plan from a report that contains secrets")
+	}
+
+	plan := AdoptionPlan{
+		SchemaVersion:  1,
+		GeneratedAt:    report.GeneratedAt,
+		MigrationState: "blocked_on_ownership_handoff",
+		ApplyAllowed:   false,
+		Blockers:       append([]Conflict(nil), report.Conflicts...),
+		Resources:      []AdoptionResource{},
+		Steps: []string{
+			"freeze the manual owner only during a reviewed maintenance window",
+			"capture a versioned backup and prove the management recovery path",
+			"prove exact PID/start-time, listener, nft-table, NFQUEUE, DNS and lifecycle ownership",
+			"build and validate a ChangeSet without changing the manual dataplane",
+			"install a mark-scoped transition guard before any listener or routing switch",
+			"run OpenAI, Telegram, Zapret and Direct post-apply probes",
+			"retain the manual dataplane as rollback until every probe and persistence check passes",
+		},
+	}
+	if report.Xray.BundleReady {
+		plan.CandidateSHA256 = report.Xray.BundleSHA256
+	}
+
+	plan.Resources = append(plan.Resources, AdoptionResource{
+		Kind:           "process",
+		Identifier:     "manual-xray",
+		ObservedOwner:  "manual",
+		OwnershipState: ownershipUnproven,
+		Evidence:       []string{"manual Xray config was parsed; PID, start time and procd ownership were not proven"},
+		RequiredAction: "prove PID/start-time, exact config hash and lifecycle owner before claiming the process",
+	})
+	ports := append([]int(nil), report.Xray.ListenerPorts...)
+	sort.Ints(ports)
+	for _, port := range ports {
+		plan.Resources = append(plan.Resources, AdoptionResource{
+			Kind:           "listener",
+			Identifier:     "127.0.0.1:" + strconv.Itoa(port),
+			ObservedOwner:  "manual-xray",
+			OwnershipState: ownershipCollision,
+			Evidence:       []string{"listener is already occupied by the manual dataplane"},
+			RequiredAction: "do not bind or stop it until the owning PID and rollback handoff are proven",
+		})
+	}
+
+	for _, zapret := range report.Zapret {
+		queue := strconv.Itoa(zapret.Queue)
+		state := ownershipForeign
+		if !zapret.QueueSafe {
+			state = ownershipCollision
+		}
+		plan.Resources = append(plan.Resources,
+			AdoptionResource{
+				Kind:           "nfqueue",
+				Identifier:     "queue:" + queue,
+				ObservedOwner:  "manual-nfqws",
+				OwnershipState: state,
+				Evidence:       []string{"queue number was observed in manual nfqws arguments; kernel consumer ownership is unproven"},
+				RequiredAction: "prove the exact NFQUEUE consumer, nft rule set and cleanup boundary; never claim system queues 0/1",
+			},
+			AdoptionResource{
+				Kind:           "process",
+				Identifier:     "manual-nfqws-q" + queue,
+				ObservedOwner:  "manual",
+				OwnershipState: ownershipUnproven,
+				Evidence:       []string{"nfqws command line was parsed; PID, process group and lifecycle owner were not proven"},
+				RequiredAction: "prove PID/start-time/PGID and register cleanup only after an explicit ownership claim",
+			},
+		)
+	}
+
+	for _, file := range report.Files {
+		switch file.Role {
+		case "manual-dnsmasq":
+			plan.Resources = append(plan.Resources, AdoptionResource{
+				Kind:           "file",
+				Identifier:     "manual-dnsmasq-include",
+				ObservedOwner:  "manual",
+				OwnershipState: ownershipForeign,
+				Evidence:       []string{"manual dnsmasq include hash: " + file.SHA256},
+				RequiredAction: "include the exact file and dnsmasq runtime state in the reviewed transaction manifest",
+			})
+		case "manual-nft":
+			plan.Resources = append(plan.Resources, AdoptionResource{
+				Kind:           "nft",
+				Identifier:     "manual-nft-snapshot",
+				ObservedOwner:  "manual",
+				OwnershipState: ownershipForeign,
+				Evidence:       []string{"manual nft evidence hash: " + file.SHA256},
+				RequiredAction: "enumerate exact owned tables/chains/sets; do not flush or replace foreign tables",
+			})
+		}
+	}
+
+	// A process can be recreated by cron/procd even when its current PID is
+	// known. The lifecycle owner must therefore be handled as a separate
+	// resource, not inferred from the executable name.
+	plan.Resources = append(plan.Resources, AdoptionResource{
+		Kind:           "lifecycle",
+		Identifier:     "manual-cron-procd",
+		ObservedOwner:  "manual",
+		OwnershipState: ownershipForeign,
+		Evidence:       []string{"manual lifecycle recreation path is not included in the importer manifest"},
+		RequiredAction: "enumerate cron and procd entries, then disable or hand off only exact-owned entries during maintenance",
+	})
+
+	// Keep output stable for UI diffs and evidence hashing. The plan is never
+	// applyable while any resource is foreign, unproven or colliding.
+	sort.SliceStable(plan.Resources, func(i, j int) bool {
+		left := strings.Join([]string{plan.Resources[i].Kind, plan.Resources[i].Identifier}, "\x00")
+		right := strings.Join([]string{plan.Resources[j].Kind, plan.Resources[j].Identifier}, "\x00")
+		return left < right
+	})
+	return plan, nil
+}

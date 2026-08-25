@@ -17,6 +17,20 @@ server addresses, duplicate SOCKS/VLESS topology, missing SOCKS routing rules,
 symlink inputs, and reserved NFQUEUE 0/1. It keeps manual resources marked as
 `foreign/manual` until ownership is proven.
 
+Add `--plan` to print a deterministic, review-only ownership handoff plan next
+to the report:
+
+```text
+router-policy manual-import --xray ... --q205 ... --q208 ... --plan
+```
+
+The plan is deliberately `apply_allowed: false`. It lists occupied Xray
+listeners, manual nfqws processes and queues, DNS/nft evidence, and the
+manual cron/procd lifecycle as `foreign`, `unproven`, or `collision`. A
+candidate hash in that plan identifies what would be reviewed; it does not
+grant permission to stop a process, bind a listener, alter nftables, reload
+dnsmasq, or change routing.
+
 Example (local staging only):
 
 ```text
@@ -53,14 +67,16 @@ The current importer therefore reports these blocking conflicts:
 2. Detect processes, listeners, nft tables/chains/sets, routes, marks and
    NFQUEUE consumers; classify each as owned, foreign or conflict.
 3. Stage the Xray candidate and run offline schema/hash/Xray validation.
-4. Add a typed ChangeSet that proves the manual owner can be stopped and that
+4. Review the generated adoption plan and prove exact PID/start-time,
+   listener, nft-table, NFQUEUE, DNS and lifecycle ownership.
+5. Add a typed ChangeSet that proves the manual owner can be stopped and that
    the rollback can restore it without touching system queues 0/1 or foreign
    tables.
-5. Prepare a transition guard and management proof before changing any
+6. Prepare a transition guard and management proof before changing any
    listener, route, nft table, DNS include or service.
-6. Switch one generation atomically, verify the actual OpenAI/Telegram path and
+7. Switch one generation atomically, verify the actual OpenAI/Telegram path and
    Zapret device profiles, and retain the manual rollback until all probes pass.
-7. Only after post-apply evidence is complete may ownership be committed.
+8. Only after post-apply evidence is complete may ownership be committed.
 
 Until those steps exist, the correct state is `blocked_on_ownership_handoff`.
 An Xray config file or a listening port alone is not proof of a safe migration.
