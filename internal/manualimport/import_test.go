@@ -189,11 +189,23 @@ func TestInspectRecognizesOnlyAuditedTypedDeviceStrategy(t *testing.T) {
 	if len(report.Zapret) != 1 || report.Zapret[0].TypedModelReady || len(report.Zapret[0].ModelBlockers) == 0 {
 		t.Fatalf("q205 unsupported strategy was not fenced: %+v", report.Zapret)
 	}
+	if !containsConflict(report.Conflicts, "Zapret profile model 205") {
+		t.Fatalf("q205 typed-model blocker was not surfaced: %+v", report.Conflicts)
+	}
 }
 
 func contains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsConflict(values []Conflict, resource string) bool {
+	for _, value := range values {
+		if value.Resource == resource {
 			return true
 		}
 	}

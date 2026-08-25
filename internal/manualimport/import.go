@@ -757,6 +757,18 @@ func conflicts(xray XrayReport, zapret []ZapretReport) []Conflict {
 		if !item.QueueSafe {
 			conflicts = append(conflicts, Conflict{Resource: fmt.Sprintf("NFQUEUE %d", item.Queue), Severity: "SEV-1", Reason: "reserved system queue", Action: "refuse migration and leave the queue untouched"})
 		}
+		if !item.TypedModelReady {
+			reason := "manual nfqws vector is not covered by the audited typed profile model"
+			if len(item.ModelBlockers) > 0 {
+				reason += ": " + strings.Join(item.ModelBlockers, "; ")
+			}
+			conflicts = append(conflicts, Conflict{
+				Resource: fmt.Sprintf("Zapret profile model %d", item.Queue),
+				Severity: "SEV-2",
+				Reason:   reason,
+				Action:   "keep the profile foreign and define a structured asset/ownership manifest before migration",
+			})
+		}
 		if item.DeviceScoped {
 			conflicts = append(conflicts, Conflict{Resource: fmt.Sprintf("device-scoped Zapret queue %d", item.Queue), Severity: "SEV-1", Reason: "nft evidence binds this queue to a host-scoped source rule", Action: "keep it foreign until an explicit device-scoped profile, lifecycle owner and rollback are reviewed"})
 		}
