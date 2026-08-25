@@ -75,10 +75,27 @@ func (m *Manager) Status(ctx context.Context, kind Kind, checkUpstream bool) (St
 	if inspectErr != nil {
 		health = Health{State: "failed", ServiceState: "unknown", Reason: inspectErr.Error()}
 	}
-	if present && !record.Installed {
-		record = Record{Kind: kind, Installed: true, Version: detectedVersion, Source: "system", Architecture: "detected"}
-	}
 	status := statusFromRecord(record, release, health)
+	status.Detected = present
+	status.Managed = record.Installed
+	switch {
+	case record.Installed:
+		status.Ownership = "flintroute"
+	case present:
+		// A system binary without a FlintRoute registry record is evidence of
+		// an external/foreign installation, not permission to manage it. Do
+		// not expose the driver's managed-service health as a PASS signal.
+		status.Installed = true
+		status.Version = detectedVersion
+		status.Architecture = "detected"
+		status.Ownership = "foreign"
+		status.ServiceState = "foreign"
+		status.HealthState = "foreign"
+		status.HealthReady = false
+		status.HealthReason = "Компонент обнаружен вне FlintRoute; ownership и dataplane не подтверждены"
+	default:
+		status.Ownership = "absent"
+	}
 	if checkUpstream && m.Releases != nil {
 		latest, latestErr := m.Releases.Latest(ctx, release)
 		if latestErr != nil {
@@ -107,6 +124,19 @@ func (m *Manager) Execute(ctx context.Context, request Request) (Result, error) 
 	record, err := m.loadRecord(request.Kind)
 	if err != nil {
 		return Result{}, err
+	}
+	if !record.Installed && request.Action != ActionCheck && request.Action != ActionCheckUpdates {
+		// Never let an install/update/uninstall-style operation overwrite a
+		// binary that exists without a FlintRoute registry record. The UI also
+		// hides mutation controls for this state, but the backend must enforce
+		// the ownership fence for direct API callers and stale clients too.
+		_, present, _, inspectErr := m.Driver.Inspect(ctx, request.Kind)
+		if inspectErr != nil {
+			return Result{}, fmt.Errorf("component ownership check failed: %w", inspectErr)
+		}
+		if present {
+			return Result{}, errors.New("component resource is detected outside FlintRoute; ownership handoff is required before mutation")
+		}
 	}
 	result := Result{Action: request.Action}
 	switch request.Action {

@@ -1443,6 +1443,9 @@ const componentNames: Record<ComponentKind, string> = {
 };
 
 function componentNextStep(status: ComponentStatus): string {
+  if (status.ownership === 'foreign') {
+    return 'Бинарник найден, но FlintRoute им не управляет. Не перезапускайте и не удаляйте его из этого экрана: сначала нужен отдельный план миграции с проверкой listeners, nft/NFQUEUE и rollback.';
+  }
   if (!status.installed) return 'Компонент не установлен. FlintRoute сам выберет закреплённый build для архитектуры роутера и проверит SHA-256.';
   if (['stopped', 'disabled', 'not_used'].includes(String(status.service_state).toLowerCase()) && !status.health_ready) {
     return 'Компонент установлен, но сейчас не используется. Настрой сервисы, чтобы подключить его к маршрутам.';
@@ -1517,33 +1520,34 @@ function Components({ role, mutationLocked, navigate }: { role: SessionInfo['rol
     <PageHeader title="Внешние компоненты" text="Установка, проверка integrity, procd lifecycle, обновление и откат — из одного места. Ручные URL и shell-команды для обычного сценария не нужны." />
     {message && <p class="action-status">{message}</p>}
     {stage && <p class="source-note">Этапы: {stage}</p>}
-    <Grid>{items.map((item) => <EntityCard title={componentNames[item.kind]} status={statusWithFreshness(item.installed ? item.health_state : 'not installed', item)} onOpen={() => setSelected(item)} key={item.kind}>
+    <Grid>{items.map((item) => <EntityCard title={componentNames[item.kind]} status={statusWithFreshness(item.ownership === 'foreign' ? 'foreign' : (item.installed ? item.health_state : 'not installed'), item)} onOpen={() => setSelected(item)} key={item.kind}>
       <InfoGrid items={[
         ['Версия', item.version || 'не установлена'],
         ['Поддерживаемая', item.latest_supported_version],
+        ['Владелец', item.ownership === 'flintroute' ? 'FlintRoute' : item.ownership === 'foreign' ? 'Внешний ресурс' : 'Нет'],
         ['Сервис', item.service_state],
         ['Архитектура', item.architecture],
         ['Проверка', formatDateTime(item.last_successful_check)]
       ]} />
       <p>{componentNextStep(item)}</p>
-      {item.installed && item.kind === 'xray' && <button onClick={() => navigate('VLESS-серверы')}>Добавить VLESS</button>}
-      {item.installed && item.kind === 'zapret' && <button onClick={() => navigate('Zapret')}>Открыть настройку Zapret</button>}
-      {item.installed && item.kind === 'tg_ws_proxy' && <button onClick={() => navigate('TG WS Proxy')}>Настроить Telegram transport</button>}
+      {item.managed && item.kind === 'xray' && <button onClick={() => navigate('VLESS-серверы')}>Добавить VLESS</button>}
+      {item.managed && item.kind === 'zapret' && <button onClick={() => navigate('Zapret')}>Открыть настройку Zapret</button>}
+      {item.managed && item.kind === 'tg_ws_proxy' && <button onClick={() => navigate('TG WS Proxy')}>Настроить Telegram transport</button>}
       {role === 'administrator' && <div class="actions">
-         {!item.installed && <button class="primary" disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'install')}>Установить</button>}
-        {item.installed && <button disabled={busy !== null} onClick={() => run(item.kind, 'check')}>Проверить</button>}
-         {item.installed && <button disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'check_updates')}>Проверить обновления</button>}
-         {item.installed && item.update_available && <button class="primary" disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'update')}>Обновить</button>}
-         {item.installed && <button disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'restart')}>Перезапустить</button>}
-         {item.rollback_version && <button disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'rollback')}>Откатить {item.rollback_version}</button>}
-         {item.installed && <button class="danger" disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'uninstall')}>Удалить</button>}
+         {item.ownership === 'absent' && <button class="primary" disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'install')}>Установить</button>}
+        {item.managed && <button disabled={busy !== null} onClick={() => run(item.kind, 'check')}>Проверить</button>}
+         {item.managed && <button disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'check_updates')}>Проверить обновления</button>}
+         {item.managed && item.update_available && <button class="primary" disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'update')}>Обновить</button>}
+         {item.managed && <button disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'restart')}>Перезапустить</button>}
+         {item.managed && item.rollback_version && <button disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'rollback')}>Откатить {item.rollback_version}</button>}
+         {item.managed && <button class="danger" disabled={busy !== null || mutationLocked} onClick={() => run(item.kind, 'uninstall')}>Удалить</button>}
       </div>}
     </EntityCard>)}</Grid>
     {loading && <LoadingSkeleton />}
     {!loading && !items.length && !message && <EmptyState title="Компоненты не найдены" text="Backend не сообщил ни одного управляемого компонента. Повторите проверку или откройте диагностику." />}
     <DetailDrawer title={selected ? componentNames[selected.kind] : 'Компонент'} open={Boolean(selected)} onClose={() => setSelected(null)}>
       <InfoGrid items={[
-        ['Установлен', selected?.installed ? 'Да' : 'Нет'], ['Версия', selected?.version], ['Последняя поддерживаемая', selected?.latest_supported_version],
+        ['Обнаружен', selected?.detected ? 'Да' : 'Нет'], ['Управляется FlintRoute', selected?.managed ? 'Да' : 'Нет'], ['Владелец', selected?.ownership], ['Версия', selected?.version], ['Последняя поддерживаемая', selected?.latest_supported_version],
         ['Последняя upstream', selected?.latest_upstream_version], ['Источник', selected?.source], ['SHA-256', selected?.checksum],
         ['Service', selected?.service_state], ['Health', selected?.health_state], ['Причина', selected?.health_reason],
         ['Rollback', selected?.rollback_version], ['Последняя проверка', formatDateTime(selected?.last_checked_at)]

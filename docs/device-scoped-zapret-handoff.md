@@ -87,6 +87,23 @@ until a reviewed hardware ChangeSet proves the selector, process ownership,
 post-apply traffic and rollback. Local artifact/adapter tests are not hardware
 evidence.
 
+## Component inventory semantics
+
+The Component Manager reports executable detection separately from ownership:
+
+- `detected=true, managed=false, ownership=foreign` means that a compatible
+  binary exists, but FlintRoute has no registry record and must not restart,
+  update, or remove it;
+- `detected=true, managed=true, ownership=flintroute` means that the binary and
+  lifecycle are bound to a FlintRoute record and normal component actions are
+  allowed;
+- `ownership=absent` means that the managed component is not present.
+
+Foreign detection is not a dataplane health proof. The UI deliberately exposes
+the handoff blocker instead of presenting a manually running Xray/nfqws as a
+stopped or managed FlintRoute service. Adoption still requires the sequence
+above and a typed ChangeSet; the inventory endpoint is read-only.
+
 ## Acceptance tests
 
 - q205 and q208 render as separate services with distinct queues and exact

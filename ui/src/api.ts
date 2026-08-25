@@ -123,6 +123,9 @@ export type ComponentAction = 'install' | 'check' | 'check_updates' | 'update' |
 export type ComponentStatus = {
   kind: ComponentKind;
   installed: boolean;
+  detected: boolean;
+  managed: boolean;
+  ownership: 'flintroute' | 'foreign' | 'absent' | string;
   version?: string;
   latest_supported_version: string;
   latest_upstream_version?: string;

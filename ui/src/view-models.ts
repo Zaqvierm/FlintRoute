@@ -193,6 +193,7 @@ export function humanStatus(value: unknown): string {
     failed: 'Ошибка',
     error: 'Ошибка',
     stopped: 'Остановлено',
+    foreign: 'Обнаружен вне FlintRoute',
     absent: 'Не установлен',
     'not installed': 'Не установлен',
     'requires device': 'Нужна проверка на роутере',

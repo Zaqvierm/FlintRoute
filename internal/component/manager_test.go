@@ -206,6 +206,63 @@ func TestManagerKeepsInstalledTGWSPendingExplicitConfiguration(t *testing.T) {
 	}
 }
 
+func TestManagerMarksDetectedUnmanagedComponentAsForeign(t *testing.T) {
+	driver := &fakeDriver{
+		platform: Platform{GOARCH: "arm64"},
+		health:   Health{State: "ready", ServiceState: "running", Ready: true},
+		present:  true,
+		detected: "Xray 26.3.27",
+	}
+	manager := testManager(t, []byte("archive"), driver)
+	status, err := manager.Status(context.Background(), KindXray, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Installed || !status.Detected || status.Managed || status.Ownership != "foreign" {
+		t.Fatalf("detected external component was not classified as foreign: %+v", status)
+	}
+	if status.HealthReady || status.HealthState != "foreign" || status.ServiceState != "foreign" {
+		t.Fatalf("foreign component leaked managed health: %+v", status)
+	}
+}
+
+func TestManagerRejectsMutationOfDetectedForeignComponent(t *testing.T) {
+	driver := &fakeDriver{
+		platform:  Platform{GOARCH: "arm64"},
+		preflight: Preflight{Ready: true},
+		health:    Health{State: "ready", ServiceState: "running", Ready: true},
+		present:   true,
+		detected:  "Xray 26.3.27",
+	}
+	manager := testManager(t, []byte("archive"), driver)
+	if _, err := manager.Execute(context.Background(), Request{Kind: KindXray, Action: ActionInstall}); err == nil {
+		t.Fatal("install was allowed to overwrite a foreign component")
+	}
+	if driver.installCalls != 0 {
+		t.Fatalf("foreign component reached install: calls=%d", driver.installCalls)
+	}
+}
+
+func TestManagerMarksRegisteredComponentAsFlintRouteOwned(t *testing.T) {
+	driver := &fakeDriver{
+		platform: Platform{GOARCH: "arm64"},
+		health:   Health{State: "ready", ServiceState: "running", Ready: true},
+		present:  true,
+		detected: "Xray 26.3.27",
+	}
+	manager := testManager(t, []byte("archive"), driver)
+	if err := manager.saveRecord(Record{Kind: KindXray, Installed: true, Version: "Xray 26.3.27"}); err != nil {
+		t.Fatal(err)
+	}
+	status, err := manager.Status(context.Background(), KindXray, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Installed || !status.Detected || !status.Managed || status.Ownership != "flintroute" || !status.HealthReady {
+		t.Fatalf("registered component was not classified as owned: %+v", status)
+	}
+}
+
 func TestManagerUninstallRequiresManagedRecordAndConfirmation(t *testing.T) {
 	driver := &fakeDriver{platform: Platform{GOARCH: "arm64"}, health: Health{Ready: true}}
 	manager := testManager(t, []byte("archive"), driver)

@@ -100,8 +100,14 @@ type Record struct {
 }
 
 type Status struct {
-	Kind                 Kind       `json:"kind"`
-	Installed            bool       `json:"installed"`
+	Kind      Kind `json:"kind"`
+	Installed bool `json:"installed"`
+	// Detected means that a compatible executable/package was found on the
+	// platform. It is intentionally independent from Managed: a binary found
+	// outside FlintRoute must never be presented as a FlintRoute-owned service.
+	Detected             bool       `json:"detected"`
+	Managed              bool       `json:"managed"`
+	Ownership            string     `json:"ownership"` // flintroute, foreign, absent
 	Version              string     `json:"version,omitempty"`
 	LatestSupported      string     `json:"latest_supported_version"`
 	LatestUpstream       string     `json:"latest_upstream_version,omitempty"`
