@@ -291,7 +291,7 @@ func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, ser
 }
 
 func finalizeUnverifiedResult(result RouteResult, startedAt time.Time) RouteResult {
-	result.VerificationDurationMS = time.Since(startedAt).Milliseconds()
+	result.VerificationDurationMS = elapsedMilliseconds(startedAt)
 	if result.RouteLatencyAvailable {
 		result.LatencyMS = result.RouteLatencyMS
 	} else {
@@ -398,11 +398,11 @@ func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check
 		if attempt.Status == "OK" || attempt.Status == "REGION_BLOCK" || attempt.Status == "SUSPECTED_TSPU" {
 			res.Status = attempt.Status
 			res.Reason = attempt.Reason
-			res.VerificationDurationMS = time.Since(start).Milliseconds()
+			res.VerificationDurationMS = elapsedMilliseconds(start)
 			return res
 		}
 	}
-	res.VerificationDurationMS = time.Since(start).Milliseconds()
+	res.VerificationDurationMS = elapsedMilliseconds(start)
 	if lastReason != "" {
 		res.Reason = lastReason
 	}
@@ -911,15 +911,20 @@ func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route,
 // sub-millisecond local probe as 0 without making it look unavailable, so a
 // positive measured interval is reported as the smallest representable value.
 func measuredRouteLatency(start time.Time) (int64, bool) {
+	latency := elapsedMilliseconds(start)
+	return latency, latency > 0
+}
+
+func elapsedMilliseconds(start time.Time) int64 {
 	elapsed := time.Since(start)
 	if elapsed <= 0 {
-		return 0, false
+		return 0
 	}
 	latency := elapsed.Milliseconds()
 	if latency < 1 {
 		latency = 1
 	}
-	return latency, true
+	return latency
 }
 
 func splitAddr(addr net.Addr) (string, bool) {

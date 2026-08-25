@@ -252,7 +252,7 @@ func (e *Engine) beginPathProof(ctx context.Context, domain string, route config
 
 func (e *Engine) finishWithPathProof(ctx context.Context, _ *config.Config, route config.Route, result RouteResult, startedAt time.Time, session PathProofSession) RouteResult {
 	observation := observationFromResult(route, result, startedAt)
-	result.VerificationDurationMS = time.Since(startedAt).Milliseconds()
+	result.VerificationDurationMS = elapsedMilliseconds(startedAt)
 	if observation.RouteLatencyAvailable {
 		result.RouteLatencyMS = observation.RouteLatencyMS
 		result.LatencyMS = observation.RouteLatencyMS
