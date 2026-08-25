@@ -50,6 +50,9 @@ func NewOpenWrt(cfg *config.Config, configPath string) (*OpenWrt, error) {
 }
 
 func (a *OpenWrt) Diagnose(ctx context.Context) StepResult { return a.runGlobal(ctx, "diagnose") }
+func (a *OpenWrt) ClearBootGuard(ctx context.Context) StepResult {
+	return a.runGlobal(ctx, "clear-boot-guard")
+}
 func (a *OpenWrt) Reconcile(ctx context.Context, target RecoveryTarget) StepResult {
 	start := time.Now().UTC()
 	if err := validateRecoveryTarget(target); err != nil {
@@ -294,7 +297,7 @@ func parseEvidence(raw []byte) map[string]any {
 }
 
 func allowedGlobalCommand(command string) bool {
-	return command == "diagnose" || command == "reconcile" || command == "status"
+	return command == "diagnose" || command == "reconcile" || command == "status" || command == "clear-boot-guard"
 }
 
 func allowedTransactionCommand(command string) bool {

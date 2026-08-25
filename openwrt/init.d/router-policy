@@ -7,21 +7,16 @@ USE_PROCD=1
 
 start_service() {
   listen_address=127.0.0.1:8787
-  allow_firewalled_bind=0
   listener_config=/etc/router-policy/config/listener.conf
   if [ -f "$listener_config" ] && [ ! -L "$listener_config" ]; then
     configured_address="$(sed -n 's/^listen_address=//p' "$listener_config" | head -n 1)"
-    configured_allow="$(sed -n 's/^allow_firewalled_bind=//p' "$listener_config" | head -n 1)"
     [ -z "$configured_address" ] || listen_address="$configured_address"
-    case "$configured_allow" in
-      0|1) allow_firewalled_bind="$configured_allow" ;;
-    esac
   fi
   procd_open_instance
   procd_set_param env ROUTER_POLICY_CONFIG=/etc/router-policy/config/default.json
-  if [ "$allow_firewalled_bind" = 1 ]; then
-    procd_append_param env ROUTER_POLICY_ALLOW_FIREWALLED_BIND=1
-  fi
+  # The controller still runs as root in v1.  Never enable the legacy
+  # firewalled-bind escape hatch: the privileged API must remain loopback-only
+  # until the non-root controller/helper boundary is production-complete.
   procd_set_param command /usr/bin/router-policy run --listen "$listen_address"
   procd_set_param respawn 3600 5 0
   procd_set_param stdout 1

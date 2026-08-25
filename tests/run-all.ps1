@@ -38,6 +38,12 @@ if ($LASTEXITCODE -ne 0) {
   throw "go test failed with exit code $LASTEXITCODE"
 }
 
+Write-Host "== go test -race =="
+& $go test -race ./...
+if ($LASTEXITCODE -ne 0) {
+  throw "go test -race failed with exit code $LASTEXITCODE"
+}
+
 Write-Host "== go vet =="
 & $go vet ./...
 if ($LASTEXITCODE -ne 0) {
@@ -134,6 +140,12 @@ Write-Host "== bounded boot guard service =="
 & $gitSh tests/boot-guard-service.sh
 if ($LASTEXITCODE -ne 0) {
   throw "boot guard service test failed"
+}
+
+Write-Host "== controller bind safety =="
+& $gitSh tests/controller-bind-safety.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "controller bind safety test failed"
 }
 
 Write-Host "== scoped boot guard policy =="

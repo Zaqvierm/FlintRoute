@@ -25,10 +25,15 @@ ROUTER_POLICY_VERSION="${ROUTER_POLICY_VERSION:-unknown}"
 BACKUP_SOURCES="${BACKUP_SOURCES:-$SYSTEM_ROOT/etc/config/network $SYSTEM_ROOT/etc/config/firewall $SYSTEM_ROOT/etc/config/dhcp $SYSTEM_ROOT/etc/dnsmasq.d $SYSTEM_ROOT/etc/nftables.d $ETC_DIR}"
 TAR_BIN="${TAR_BIN:-tar}"
 UBUS_BIN="${UBUS_BIN:-ubus}"
+UCI_BIN="${UCI_BIN:-uci}"
 TIMEOUT_BIN="${TIMEOUT_BIN:-timeout}"
+DF_BIN="${DF_BIN:-df}"
+DU_BIN="${DU_BIN:-du}"
 SERVICES="router-policy-helper router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
 ENABLE_SERVICES="router-policy-dns-observer router-policy-boot-guard $SERVICES"
-INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $ROUTER_POLICY_HELPER_BIN $INIT_DIR/router-policy-helper $INIT_DIR/router-policy $INIT_DIR/router-policy-dns-observer $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/config/listener.conf $ETC_DIR/secrets/vpn-subscription-url $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
+INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $ROUTER_POLICY_HELPER_BIN $INIT_DIR/router-policy-helper $INIT_DIR/router-policy $INIT_DIR/router-policy-dns-observer $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/config/listener.conf $ETC_DIR/secrets $DNSMASQ_DIR/router-policy.conf $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
+
+PREFIX_SWITCH_MARKER="$STATE_DIR/prefix-switch.env"
 
 # These directories belong to OpenWrt, not to FlintRoute.  They must never be
 # represented by a rollback archive entry: restoring synthetic staging
@@ -65,7 +70,76 @@ need_root_for_apply() {
   fi
 }
 
+refresh_install_targets() {
+  # dnsmasq may use a platform-specific confdir.  Snapshot the exact observer
+  # file that this install can create instead of assuming one filesystem path.
+  detected_confdir=""
+  if [ -z "$SYSTEM_ROOT" ] && command -v "$UCI_BIN" >/dev/null 2>&1; then
+    detected_confdir="$($UCI_BIN -q get 'dhcp.@dnsmasq[0].confdir' 2>/dev/null || true)"
+  fi
+  if [ -n "$detected_confdir" ]; then
+    DNSMASQ_DIR="$detected_confdir"
+  fi
+  observer_target="$DNSMASQ_DIR/router-policy.conf"
+  case " $INSTALL_TARGETS " in
+    *" $observer_target "*) ;;
+    *) INSTALL_TARGETS="$INSTALL_TARGETS $observer_target" ;;
+  esac
+  # The production runtime maps /tmp/router-policy to dnsmasq's jail-owned
+  # log path.  Snapshot that exact object too; taking only the controller's
+  # generic runtime path would leave the active writer outside rollback.
+  if [ "$RUNTIME_DIR" = "$SYSTEM_ROOT/tmp/router-policy" ]; then
+    observation_target="$SYSTEM_ROOT/var/run/dnsmasq/router-policy-observations.log"
+  else
+    observation_target="$RUNTIME_DIR/dns-observations.log"
+  fi
+  case " $INSTALL_TARGETS " in
+    *" $observation_target "*) ;;
+    *) INSTALL_TARGETS="$INSTALL_TARGETS $observation_target" ;;
+  esac
+}
+
+path_size_kb() {
+  size_path="$1"
+  [ -e "$size_path" ] || { echo 0; return 0; }
+  "$DU_BIN" -sk "$size_path" 2>/dev/null | awk 'NR == 1 {print $1 + 0}'
+}
+
+preflight_disk_space() {
+  filesystem_path="$PREFIX"
+  [ -e "$filesystem_path" ] || filesystem_path="$(dirname "$PREFIX")"
+  available_kb="$($DF_BIN -Pk "$filesystem_path" 2>/dev/null | awk 'NR == 2 {print $4 + 0}')"
+  case "$available_kb" in
+    ''|*[!0-9]*) echo "install blocked: unable to determine free disk space" >&2; return 1 ;;
+  esac
+  existing_kb=0
+  for size_path in "$PREFIX" "$BACKUP_ROOT" "$ETC_DIR"; do
+    size_value="$(path_size_kb "$size_path")"
+    case "$size_value" in
+      ''|*[!0-9]*) echo "install blocked: unable to size $size_path" >&2; return 1 ;;
+    esac
+    existing_kb=$((existing_kb + size_value))
+  done
+  source_kb=0
+  for size_path in "$SOURCE_BINARY" "$SOURCE_HELPER_BINARY" "$ROOT/scripts" "$ROOT/openwrt"; do
+    size_value="$(path_size_kb "$size_path")"
+    case "$size_value" in
+      ''|*[!0-9]*) echo "install blocked: unable to size install source $size_path" >&2; return 1 ;;
+    esac
+    source_kb=$((source_kb + size_value))
+  done
+  # Snapshot + export backup + staged prefix + old prefix can coexist.  Keep a
+  # fixed 64 MiB cushion for filesystem metadata and OpenWrt overlay churn.
+  required_kb=$((existing_kb * 2 + source_kb * 2 + 65536))
+  [ "$available_kb" -ge "$required_kb" ] || {
+    echo "install blocked: insufficient free space available_kb=$available_kb required_kb=$required_kb" >&2
+    return 1
+  }
+  echo "disk_preflight=ok available_kb=$available_kb required_kb=$required_kb"
+}
+
 preflight_install() {
+  refresh_install_targets
   [ -f "$SOURCE_BINARY" ] || { echo "missing $SOURCE_BINARY; run scripts/build-go.sh before install" >&2; return 1; }
   [ -f "$SOURCE_HELPER_BINARY" ] || { echo "missing $SOURCE_HELPER_BINARY; run scripts/build-go.sh before install" >&2; return 1; }
   for p in "$ROOT/scripts" "$ROOT/openwrt" "$ROOT/config/default.json" "$ROOT/config/schema.json"; do
@@ -75,7 +149,7 @@ preflight_install() {
     command -v sha256sum >/dev/null 2>&1 || { echo "sha256sum is required to verify this install bundle" >&2; return 1; }
     (cd "$ROOT" && sha256sum -c SHA256SUMS >/dev/null) || { echo "install bundle checksum verification failed" >&2; return 1; }
   fi
-  validate_critical_system_dirs && validate_backup_paths
+  validate_critical_system_dirs && validate_backup_paths && preflight_disk_space
 }
 
 regular_file_mode_matches() {
@@ -353,7 +427,9 @@ preflight_runtime() {
   if [ -x "$INIT_DIR/router-policy" ] && run_bounded "$INIT_DIR/router-policy" running >/dev/null 2>&1; then
     wait_control_health
     PREINSTALL_ACTIVE_REVISION="$(health_json_field active_revision "$RUNTIME_DIR/install-health.json")"
-    export PREINSTALL_ACTIVE_REVISION
+    PREINSTALL_ACTIVE_CANDIDATE_HASH="$(health_json_field active_candidate_hash "$RUNTIME_DIR/install-health.json")"
+    PREINSTALL_ACTIVE_ARTIFACT_MANIFEST_HASH="$(health_json_field active_artifact_manifest_hash "$RUNTIME_DIR/install-health.json")"
+    export PREINSTALL_ACTIVE_REVISION PREINSTALL_ACTIVE_CANDIDATE_HASH PREINSTALL_ACTIVE_ARTIFACT_MANIFEST_HASH
     if [ ! -x "$ROUTER_POLICY_BIN" ] || ! run_bounded env ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$ROUTER_POLICY_BIN" maintenance status >/dev/null 2>&1; then
       echo "install blocked: running controller does not support safe maintenance; stop router-policy and its watchdog before retrying" >&2
       return 1
@@ -421,6 +497,7 @@ backup() {
 }
 
 snapshot_installation() {
+  refresh_install_targets
   validate_backup_paths || return 1
   snapshot="$BACKUP_DIR/install-rollback"
   staging="$snapshot/staging"
@@ -616,6 +693,10 @@ restore_installation() {
     echo "install_rollback=files-restored-services-unverified" >&2
     return 1
   fi
+  clear_prefix_switch_marker || {
+    echo "automatic install rollback unavailable: prefix switch marker could not be cleared" >&2
+    return 1
+  }
   echo "install_rollback=restored" >&2
 }
 
@@ -694,8 +775,15 @@ health_json_field() {
   tr '{},' '\n' < "$file" | sed -n "s/^[[:space:]]*\"$field\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\"[[:space:]]*$/\1/p" | head -n 1
 }
 
+valid_health_hash() {
+  value="$1"
+  printf '%s\n' "$value" | grep -Eq '^sha256:[0-9a-fA-F]{64}$'
+}
+
 wait_control_health() {
   expected_revision="${1:-}"
+  expected_candidate_hash="${2:-${PREINSTALL_ACTIVE_CANDIDATE_HASH:-}}"
+  expected_artifact_hash="${3:-${PREINSTALL_ACTIVE_ARTIFACT_MANIFEST_HASH:-}}"
   max_attempts="${ROUTER_POLICY_HEALTH_ATTEMPTS:-120}"
   case "$max_attempts" in *[!0-9]*|'') max_attempts=120 ;; esac
   [ "$max_attempts" -ge 1 ] && [ "$max_attempts" -le 120 ] || max_attempts=120
@@ -705,10 +793,31 @@ wait_control_health() {
     if wget -q -O "$RUNTIME_DIR/install-health.json" http://127.0.0.1:8787/api/v1/health; then
       health_status="$(health_json_field status "$RUNTIME_DIR/install-health.json")"
       recovery_status="$(health_json_field recovery_status "$RUNTIME_DIR/install-health.json")"
+      recovery_commit_phase="$(health_json_field recovery_commit_phase "$RUNTIME_DIR/install-health.json")"
       active_revision="$(health_json_field active_revision "$RUNTIME_DIR/install-health.json")"
-      if [ "$health_status" = "ok" ] && [ "$recovery_status" != "error" ] && [ -n "$active_revision" ] && { [ -z "$expected_revision" ] || [ "$active_revision" = "$expected_revision" ]; }; then
+      active_candidate_hash="$(health_json_field active_candidate_hash "$RUNTIME_DIR/install-health.json")"
+      active_artifact_hash="$(health_json_field active_artifact_manifest_hash "$RUNTIME_DIR/install-health.json")"
+      recovery_safe=0
+      case "$recovery_status:$recovery_commit_phase" in
+        ok:*) recovery_safe=1 ;;
+        not_required:baseline_confirmed) recovery_safe=1 ;;
+      esac
+      hash_binding_ok=0
+      if valid_health_hash "$active_candidate_hash" && { [ -z "$expected_candidate_hash" ] || [ "$active_candidate_hash" = "$expected_candidate_hash" ]; }; then
+        case "$recovery_status:$recovery_commit_phase:$active_artifact_hash" in
+          not_required:baseline_confirmed:) hash_binding_ok=1 ;;
+          ok:*:*)
+            if valid_health_hash "$active_artifact_hash" && { [ -z "$expected_artifact_hash" ] || [ "$active_artifact_hash" = "$expected_artifact_hash" ]; }; then
+              hash_binding_ok=1
+            fi
+            ;;
+        esac
+      fi
+      if [ "$health_status" = "ok" ] && [ "$recovery_safe" = "1" ] && [ -n "$active_revision" ] && [ "$hash_binding_ok" = "1" ] && { [ -z "$expected_revision" ] || [ "$active_revision" = "$expected_revision" ]; }; then
         echo "control_plane_health=ok"
         echo "control_plane_active_revision=$active_revision"
+        echo "control_plane_candidate_hash=$active_candidate_hash"
+        [ -z "$active_artifact_hash" ] || echo "control_plane_artifact_manifest_hash=$active_artifact_hash"
         return 0
       fi
     fi
@@ -844,10 +953,110 @@ atomic_copy() {
     rm -f "$tmp"
     return 1
   fi
-  sync -f "$(dirname "$target")" 2>/dev/null || true
+  # Synthetic roots used by local fault fixtures do not represent a power-loss
+  # boundary.  Avoid flushing the host filesystem for every copied file; real
+  # OpenWrt installs keep the durable sync below.
+  if [ -z "$SYSTEM_ROOT" ]; then
+    sync -f "$(dirname "$target")" 2>/dev/null || true
+  fi
+}
+
+sync_file_and_parent() {
+  sync_target="$1"
+  [ -n "$SYSTEM_ROOT" ] && return 0
+  if sync -f "$sync_target" 2>/dev/null; then
+    sync -f "$(dirname "$sync_target")" 2>/dev/null || sync
+  else
+    sync
+  fi
+}
+
+write_prefix_switch_marker() {
+  switch_phase="$1"
+  switch_staged="$2"
+  switch_old="$3"
+  case "$switch_staged" in "$PREFIX.install."*) ;; *) echo "install blocked: invalid staged prefix path" >&2; return 1 ;; esac
+  case "$switch_old" in "$PREFIX.old."*) ;; *) echo "install blocked: invalid old prefix path" >&2; return 1 ;; esac
+  mkdir -p "$STATE_DIR"
+  {
+    echo "version=1"
+    echo "phase=$switch_phase"
+    echo "prefix=$PREFIX"
+    echo "staged=$switch_staged"
+    echo "old=$switch_old"
+  } > "$PREFIX_SWITCH_MARKER.tmp"
+  chmod 600 "$PREFIX_SWITCH_MARKER.tmp"
+  mv "$PREFIX_SWITCH_MARKER.tmp" "$PREFIX_SWITCH_MARKER"
+  sync_file_and_parent "$PREFIX_SWITCH_MARKER"
+}
+
+clear_prefix_switch_marker() {
+  rm -f "$PREFIX_SWITCH_MARKER"
+  [ ! -e "$PREFIX_SWITCH_MARKER" ] || return 1
+}
+
+recover_prefix_switch() {
+  [ -f "$PREFIX_SWITCH_MARKER" ] || return 0
+  marker_version="$(sed -n 's/^version=//p' "$PREFIX_SWITCH_MARKER" | head -n 1)"
+  marker_prefix="$(sed -n 's/^prefix=//p' "$PREFIX_SWITCH_MARKER" | head -n 1)"
+  marker_phase="$(sed -n 's/^phase=//p' "$PREFIX_SWITCH_MARKER" | head -n 1)"
+  marker_staged="$(sed -n 's/^staged=//p' "$PREFIX_SWITCH_MARKER" | head -n 1)"
+  marker_old="$(sed -n 's/^old=//p' "$PREFIX_SWITCH_MARKER" | head -n 1)"
+  [ "$marker_version" = "1" ] && [ "$marker_prefix" = "$PREFIX" ] || {
+    echo "install blocked: invalid durable prefix switch marker" >&2
+    return 1
+  }
+  case "$marker_staged" in "$PREFIX.install."*) ;; *) echo "install blocked: invalid durable staged prefix marker" >&2; return 1 ;; esac
+  case "$marker_old" in "$PREFIX.old."*) ;; *) echo "install blocked: invalid durable old prefix marker" >&2; return 1 ;; esac
+  case "$marker_phase" in
+    prepared)
+      if [ -e "$PREFIX" ] && [ ! -e "$marker_old" ]; then
+        rm -rf "$marker_staged"
+      elif [ ! -e "$PREFIX" ] && [ -e "$marker_old" ] && [ -e "$marker_staged" ]; then
+        mv "$marker_staged" "$PREFIX"
+      else
+        echo "install blocked: prefix switch marker has ambiguous prepared state" >&2
+        return 1
+      fi
+      ;;
+    old_moved)
+      if [ ! -e "$PREFIX" ] && [ -e "$marker_staged" ]; then
+        mv "$marker_staged" "$PREFIX"
+      elif [ ! -e "$PREFIX" ] && [ ! -e "$marker_staged" ] && [ -e "$marker_old" ]; then
+        mv "$marker_old" "$PREFIX"
+      elif [ -e "$PREFIX" ] && [ -e "$marker_staged" ]; then
+        rm -rf "$marker_staged"
+      else
+        echo "install blocked: prefix switch marker has ambiguous old_moved state" >&2
+        return 1
+      fi
+      ;;
+    new_active)
+      [ -e "$PREFIX" ] || {
+        echo "install blocked: durable prefix marker says new generation is active but prefix is missing" >&2
+        return 1
+      }
+      [ ! -e "$marker_staged" ] || rm -rf "$marker_staged"
+      ;;
+    *)
+      echo "install blocked: unknown durable prefix switch phase" >&2
+      return 1
+      ;;
+  esac
+  sync_file_and_parent "$(dirname "$PREFIX")"
+  clear_prefix_switch_marker
+}
+
+finalize_prefix_switch() {
+  if [ -n "${old_prefix:-}" ]; then
+    case "$old_prefix" in "$PREFIX.old."*) ;; *) echo "install blocked: refusing unknown old prefix cleanup" >&2; return 1 ;; esac
+    [ ! -e "$old_prefix" ] || rm -rf "$old_prefix"
+  fi
+  clear_prefix_switch_marker
 }
 
 install_files() {
+  recover_prefix_switch
   mkdir -p "$(dirname "$PREFIX")" "$ETC_DIR/config" "$ETC_DIR/secrets" "$ETC_DIR/xray" "$ETC_DIR/zapret" "$ETC_DIR/firewall" "$STATE_DIR/last-good" "$RUNTIME_DIR" "$BIN_DIR" "$INIT_DIR" "$RC_DIR" "$HOTPLUG_IFACE_DIR" "$HOTPLUG_FIREWALL_DIR" "$DNSMASQ_DIR"
   staged_prefix="$PREFIX.install.$$"
   old_prefix="$PREFIX.old.$$"
@@ -870,12 +1079,16 @@ install_files() {
       return 1
     fi
   fi
-  [ ! -e "$PREFIX" ] || mv "$PREFIX" "$old_prefix"
+  write_prefix_switch_marker prepared "$staged_prefix" "$old_prefix"
+  if [ -e "$PREFIX" ]; then
+    mv "$PREFIX" "$old_prefix"
+    write_prefix_switch_marker old_moved "$staged_prefix" "$old_prefix"
+  fi
   if [ -d "$old_prefix/components" ]; then
     mv "$old_prefix/components" "$staged_prefix/components"
   fi
   mv "$staged_prefix" "$PREFIX"
-  rm -rf "$old_prefix"
+  write_prefix_switch_marker new_active "$staged_prefix" "$old_prefix"
   atomic_copy "$SOURCE_BINARY" "$ROUTER_POLICY_BIN" 755
   atomic_copy "$SOURCE_HELPER_BINARY" "$ROUTER_POLICY_HELPER_BIN" 755
   if [ ! -f "$ETC_DIR/config/default.json" ]; then
@@ -895,9 +1108,10 @@ install_files() {
     : > "$ETC_DIR/secrets/vpn-subscription-url"
   fi
   chmod 700 "$ETC_DIR/secrets"
-  for secret in "$ETC_DIR/secrets/"*; do
-    [ -e "$secret" ] && chmod 600 "$secret"
-  done
+  # Only the explicitly owned subscription file is normalized.  Other files
+  # in this directory may belong to an operator or another package and are
+  # covered by the directory snapshot without being rewritten.
+  chmod 600 "$ETC_DIR/secrets/vpn-subscription-url"
   atomic_copy "$ROOT/openwrt/init.d/router-policy-helper" "$INIT_DIR/router-policy-helper" 755
   atomic_copy "$ROOT/openwrt/init.d/router-policy" "$INIT_DIR/router-policy" 755
   atomic_copy "$ROOT/openwrt/init.d/router-policy-dns-observer" "$INIT_DIR/router-policy-dns-observer" 755
@@ -916,6 +1130,16 @@ activate_dns_observer() {
     echo "install blocked: DNS observation bootstrap helper is unavailable" >&2
     return 1
   }
+  # Creating the confdir fragment is part of the reversible install.  Do not
+  # restart dnsmasq while rollback is armed: a failed install must not leave a
+  # runtime service side effect outside its manifest.
+  "$observer"
+}
+
+reload_dns_observer_after_success() {
+  [ -z "$SYSTEM_ROOT" ] || return 0
+  observer="$PREFIX/openwrt/ensure-dns-observer.sh"
+  [ -x "$observer" ] || return 1
   "$observer" --reload-if-needed
 }
 
@@ -963,7 +1187,6 @@ case "$mode" in
     fi
     ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$ROUTER_POLICY_BIN" validate-config
     "$ROUTER_POLICY_BIN" backup register --root "$BACKUP_DIR" --operation "$(basename "$BACKUP_DIR")" --version "$ROUTER_POLICY_VERSION" --reason install --retention-class installer-fallback >/dev/null
-    "$ROUTER_POLICY_BIN" backup prune --root "$BACKUP_ROOT" --max 2 --max-bytes 134217728 --apply >/dev/null
     echo "== setup token =="
     ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$ROUTER_POLICY_BIN" auth setup-token --if-needed
     restart_running_services
@@ -981,6 +1204,26 @@ case "$mode" in
       echo "enable_services_with=install.sh --install --enable-services"
     fi
     INSTALL_ROLLBACK_ARMED=0
+    if [ "$enable_services" = "1" ]; then
+      if reload_dns_observer_after_success; then
+        echo "dns_observer_reload=ok"
+      else
+        echo "dns_observer_reload=failed" >&2
+        echo "dns_observer_action=retry_from_UI_or_restart_dnsmasq"
+      fi
+    fi
+    finalize_prefix_switch || {
+      echo "install warning: previous prefix generation could not be cleaned" >&2
+    }
+    # Retention pruning is deliberately last.  Until the new generation has
+    # passed validation, service recovery and control-plane health checks, the
+    # previous backup is part of the rollback contract and must not disappear.
+    if "$ROUTER_POLICY_BIN" backup prune --root "$BACKUP_ROOT" --max 2 --max-bytes 134217728 --apply >/dev/null; then
+      echo "backup_prune=ok"
+    else
+      echo "backup_prune=failed" >&2
+      echo "backup_prune_action=retry_after_install" >&2
+    fi
     end_maintenance
     trap - EXIT INT HUP TERM
     echo "installed=true"

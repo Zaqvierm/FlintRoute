@@ -2,7 +2,13 @@
 set -eu
 
 ROOT=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd)
-GO="${GO:-$ROOT/.tools/go1.26.5/go/bin/go}"
+if [ -z "${GO:-}" ]; then
+  if command -v go >/dev/null 2>&1; then
+    GO="$(command -v go)"
+  else
+    GO="$ROOT/.tools/go1.26.5/go/bin/go"
+  fi
+fi
 [ -x "$GO" ] || { echo "Go toolchain missing: $GO" >&2; exit 1; }
 command -v npm >/dev/null 2>&1 || { echo "npm is missing; install Node.js/npm to test the web UI" >&2; exit 1; }
 
@@ -10,7 +16,11 @@ cd "$ROOT"
 npm run typecheck
 npm run build
 "$GO" test ./...
+"$GO" test -race ./...
 "$GO" vet ./...
+# A clean clone has no checked-in dist/ binaries.  Build before any CLI or
+# installer test that consumes them; never treat a missing local artifact as a
+# reproducible green gate.
 sh scripts/build-go.sh
 sh tests/package-openwrt.sh
 sh tests/installer-backup.sh
@@ -18,6 +28,8 @@ sh tests/installer-lifecycle.sh
 sh tests/content-aware-install.sh
 sh tests/shell-library.sh
 sh tests/boot-guard-service.sh
+sh tests/controller-bind-safety.sh
+sh tests/secret-scan.sh
 sh tests/adapter-rollback.sh
 sh tests/helper-service.sh
 sh tests/hotplug-bounded.sh

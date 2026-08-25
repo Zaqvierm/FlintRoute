@@ -227,54 +227,28 @@ delete_boot_guard_table() {
 }
 
 install_boot_guard() {
-  [ -f "$state/last-good/manifest.txt" ] || {
-    echo "boot_guard=skipped-no-last-good"
-    return 0
-  }
-  marks=""
-  guard_config="$state/last-good/router-policy-config.json"
-  [ -f "$guard_config" ] || guard_config="$known_config"
-  marks_error_file="$runtime/boot-guard-marks.error"
-  if ! marks_output="$(ROUTER_POLICY_CONFIG="$guard_config" "$router_policy_bin" internal-print-managed-marks 2>"$marks_error_file")"; then
-    reason="$(head -c 256 "$marks_error_file" 2>/dev/null | tr '\r\n' ' ' | sed 's/[^A-Za-z0-9_.: =\/-]/_/g')"
-    rm -f "$marks_error_file"
-    echo "reason=managed_marks_query_failed${reason:+:$reason}" >&2
-    return 1
-  fi
-  rm -f "$marks_error_file"
-  while IFS='=' read -r mark_key value; do
-    [ "$mark_key" = "managed_mark" ] || continue
-    printf '%s\n' "$value" | grep -Eq '^0x[0-9a-fA-F]{1,8}$' || {
-      echo "reason=managed_mark_invalid" >&2
-      return 1
-    }
-    case " $marks " in
-      *" $value "*) ;;
-      *) marks="$marks $value" ;;
-    esac
-  done <<EOF
-$marks_output
-EOF
-  [ -n "$marks" ] || {
-    echo "boot_guard=skipped-no-managed-marks"
-    return 0
-  }
   mkdir -p "$runtime"
   {
     echo 'table inet router_policy_boot_guard {'
     echo '  comment "router-policy owner=flintroute"'
     echo '  chain forward {'
-    echo '    type filter hook forward priority -4; policy accept;'
-    for mark in $marks; do
-      echo "    meta mark $mark counter drop comment \"rp boot_guard source=meta\""
-      echo "    ct mark $mark counter drop comment \"rp boot_guard source=conntrack\""
-    done
+    # A mark-only guard is fail-open after reboot: new flows have mark=0.
+    # Drop all transit traffic until the exact committed generation is proven.
+    # Run before the generated classifier (priority -5) and normal fw4 filter
+    # chains.  A later accept must never be able to bypass the boot fence.
+    echo '    type filter hook forward priority -300; policy drop;'
+    echo '    counter comment "rp boot_guard action=drop_unclassified"'
     echo '  }'
     echo '}'
   } > "$boot_guard_file.tmp"
   mv "$boot_guard_file.tmp" "$boot_guard_file"
   replace_boot_guard_table
   echo "boot_guard=armed"
+}
+
+arm_transition_guard() {
+  install_boot_guard
+  echo "transition_guard=armed"
 }
 
 replace_boot_guard_table() {
@@ -1143,6 +1117,7 @@ apply_candidate() {
     echo "reason=unmanaged_service_apply_refused" >&2
     exit 3
   }
+  arm_transition_guard
   start_timer
   atomic_install "$generated/router-policy.nft" "$active_nft"
   atomic_install "$generated/router-policy-dnsmasq.conf" "$active_dnsmasq"
@@ -1678,6 +1653,9 @@ rollback_tx() {
   fi
   if pending_matches; then rm -f "$pending_file"; fi
   if active_matches; then rm -f "$active_file"; fi
+  # A successful owned restore is the only safe rollback point.  If any
+  # restore step failed, set -e leaves the fence armed for recovery.
+  clear_boot_guard
   write_status "rolled_back"
   echo "protocol_version=1"
   echo "operation=rollback"
@@ -1724,6 +1702,10 @@ reconcile_tx() {
   "$router_policy_bin" internal-verify-artifacts --root "$recovery_generated" --transaction "$txid" --revision "$revision" --candidate-hash "$recovery_candidate_hash" --manifest-hash "$recovery_artifact_manifest_hash" >/dev/null
   "$router_policy_bin" internal-validate-ip-plan --plan "$recovery_generated/ip-plan.json" --transaction "$txid" --revision "$revision" --candidate-hash "$recovery_candidate_hash" >/dev/null
   if committed_deployment_matches "$recovery_generated"; then
+    # The process may have died after the durable commit and before the normal
+    # clear operation.  Only an exact committed-generation match may remove
+    # the fail-closed fence.
+    clear_boot_guard
     echo "reconcile=noop"
     echo "noop=true"
     echo "network_changed=false"

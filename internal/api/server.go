@@ -2364,8 +2364,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeData(w, r, map[string]any{
 		"status": status, "provider": s.provider.Name(), "simulation": s.provider.Simulation(),
 		"recovery_status": recovery.Status, "recovery_reason_code": recovery.ReasonCode,
-		"recovery_reason": recovery.Reason, "active_revision": activeRevision,
-		"time": time.Now().UTC().Format(time.RFC3339),
+		"recovery_reason": recovery.Reason, "recovery_commit_phase": recovery.CommitPhase,
+		// Bind health to the durable generation that recovery proved. A revision
+		// identifier alone is not enough to exclude a stale or foreign artifact.
+		"active_revision": activeRevision, "active_candidate_hash": recovery.CandidateHash,
+		"active_artifact_manifest_hash": recovery.ArtifactManifestHash,
+		"time":                          time.Now().UTC().Format(time.RFC3339),
 	})
 }
 

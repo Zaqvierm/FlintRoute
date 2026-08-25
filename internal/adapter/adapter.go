@@ -42,6 +42,13 @@ type PreparedCommitter interface {
 	FinalizeCommit(context.Context, Transaction) StepResult
 }
 
+// BootGuardClearer is intentionally optional.  Production OpenWrt adapters
+// implement it; lightweight simulation/fake adapters do not own an nft table.
+// The API must never assume that a successful local fake is hardware proof.
+type BootGuardClearer interface {
+	ClearBootGuard(context.Context) StepResult
+}
+
 type RecoveryTarget struct {
 	TransactionID        string `json:"transaction_id"`
 	RevisionID           string `json:"revision_id"`

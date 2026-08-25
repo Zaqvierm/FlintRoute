@@ -36,9 +36,7 @@ chmod +x "$TMP/nft"
 
 cat > "$TMP/router-policy" <<'SH'
 #!/bin/sh
-set -eu
-[ "${1:-}" = "internal-print-managed-marks" ] || exit 2
-printf '%s\n' managed_mark=0x41 managed_mark=0x42 managed_mark=0x43 managed_mark=0x7f
+exit 0
 SH
 chmod +x "$TMP/router-policy"
 
@@ -54,20 +52,12 @@ export ROUTER_POLICY_ADAPTER_LIB_ONLY STATE_DIR RUNTIME_DIR ROUTER_POLICY_CONFIG
 . "$ROOT/openwrt/adapter.sh"
 
 install_boot_guard >/dev/null
-grep -Fx '    type filter hook forward priority -4; policy accept;' "$BOOT_GUARD_CAPTURE" >/dev/null
-if grep -Fx '    counter drop' "$BOOT_GUARD_CAPTURE" >/dev/null; then
-  echo "boot guard still drops all forwarded traffic" >&2
-  exit 1
-fi
-for mark in 0x41 0x42 0x43 0x7f; do
-  grep -F "meta mark $mark counter drop" "$BOOT_GUARD_CAPTURE" >/dev/null
-  grep -F "ct mark $mark counter drop" "$BOOT_GUARD_CAPTURE" >/dev/null
-done
+grep -Fx '    type filter hook forward priority -300; policy drop;' "$BOOT_GUARD_CAPTURE" >/dev/null
+grep -F 'rp boot_guard action=drop_unclassified' "$BOOT_GUARD_CAPTURE" >/dev/null
 
 printf 'table inet foreign { chain forward { counter accept; } }\n' > "$TMP/unclassified.nft"
 if grep -F 'meta mark' "$TMP/unclassified.nft" >/dev/null; then
   exit 1
 fi
 
-echo "boot_guard_scoped_to_managed_marks=true"
-echo "boot_guard_unclassified_forwarding_preserved=true"
+echo "boot_guard_unclassified_forwarding_fenced=true"

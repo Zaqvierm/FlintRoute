@@ -57,15 +57,20 @@ second=$(sh "$SCRIPT")
 printf '%s\n' "$second" | grep -Fx 'dns_observer=present' >/dev/null
 [ ! -e "$DNSMASQ_RESTART_LOG" ]
 
+existing_reload=$(sh "$SCRIPT" --reload-if-needed)
+printf '%s\n' "$existing_reload" | grep -Fx 'dns_observer=present' >/dev/null
+printf '%s\n' "$existing_reload" | grep -Fx 'dnsmasq_restart=performed' >/dev/null
+[ "$(wc -l < "$DNSMASQ_RESTART_LOG" | tr -d ' ')" -eq 1 ]
+
 printf 'server=/managed.example/1.1.1.1\n' > "$TMP/conf/router-policy.conf"
 sh "$SCRIPT" >/dev/null
 grep -Fx 'server=/managed.example/1.1.1.1' "$TMP/conf/router-policy.conf" >/dev/null
-[ ! -e "$DNSMASQ_RESTART_LOG" ]
+[ "$(wc -l < "$DNSMASQ_RESTART_LOG" | tr -d ' ')" -eq 1 ]
 
 mkdir "$TMP/conf-live"
 live=$(ROUTER_POLICY_DNSMASQ_CONFDIR="$TMP/conf-live" sh "$SCRIPT" --reload-if-needed)
 printf '%s\n' "$live" | grep -Fx 'dnsmasq_restart=performed' >/dev/null
-[ "$(wc -l < "$DNSMASQ_RESTART_LOG" | tr -d ' ')" -eq 1 ]
+[ "$(wc -l < "$DNSMASQ_RESTART_LOG" | tr -d ' ')" -eq 2 ]
 
 grep -Eq '^START=18$' "$ROOT/openwrt/init.d/router-policy-dns-observer"
 if grep -F 'ensure-dns-observer.sh' "$ROOT/openwrt/init.d/router-policy" >/dev/null; then

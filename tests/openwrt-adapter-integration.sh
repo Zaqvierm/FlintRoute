@@ -309,6 +309,14 @@ assert_order '^pidof router-policy$' '^wget '
 
 # Restart reconciliation is a true no-op while committed artifacts and runtime
 # routing state still match. Read-only checks are allowed; mutations are not.
+ # The direct shell fixture has no control-plane bbolt boundary. Mirror the
+ # production controller's post-persistence fence clear explicitly; commit
+ # itself must keep the transition fence armed.
+adapter clear-boot-guard "$ROUTER_POLICY_CONFIG_PATH" >/dev/null
+grep -Eq '^nft delete table inet router_policy_boot_guard$' "$TMP/openwrt-calls.log" || {
+  echo "explicit post-commit fence clear was not recorded" >&2
+  exit 1
+}
 : > "$TMP/openwrt-calls.log"
 noop_reconcile=$(adapter reconcile "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" "$candidate_hash" "$artifact_manifest_hash")
 printf '%s\n' "$noop_reconcile" | grep -F 'reconcile=noop' >/dev/null
@@ -551,7 +559,7 @@ adapter snapshot-current "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/
 adapter apply-candidate "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 cmp "$txdir/generated/nfqws.conf" "$ACTIVE_ZAPRET"
 grep -Fx 'running' "$TMP/service-state/zapret-init.state" >/dev/null
-assert_order '^zapret-init restart$' '^nft -f '
+assert_order '^nft -f .*nft-boot-guard-transition-' '^zapret-init restart$'
 adapter rollback "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 [ ! -e "$ACTIVE_ZAPRET" ] || { echo "rollback left the managed nfqws config behind" >&2; exit 1; }
 grep -Fx 'stopped' "$TMP/service-state/zapret-init.state" >/dev/null

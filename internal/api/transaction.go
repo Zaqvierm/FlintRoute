@@ -554,6 +554,10 @@ func (s *Server) confirmChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet,
 			s.markRecoveryRequired(target, "control_plane_finalize_persist_failed", err.Error(), cs.CommitPhase)
 			return cs, &actionFailure{Status: 503, Code: "recovery_required", Message: "adapter finalized but commit completion persistence is ambiguous"}
 		}
+		if failure := s.clearBootGuard(ctx); failure != nil {
+			s.markRecoveryRequired(target, "boot_guard_clear_failed", failure.Message, cs.CommitPhase)
+			return cs, failure
+		}
 	} else {
 		commit := s.adapter.Commit(ctx, tx)
 		cs.Steps = append(cs.Steps, commit)
@@ -597,6 +601,10 @@ func (s *Server) confirmChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet,
 			s.markRecoveryRequired(target, "legacy_commit_persist_failed", err.Error(), "legacy_committed")
 			return cs, &actionFailure{Status: 503, Code: "recovery_required", Message: "adapter committed but active revision persistence is ambiguous"}
 		}
+		if failure := s.clearBootGuard(ctx); failure != nil {
+			s.markRecoveryRequired(target, "boot_guard_clear_failed", failure.Message, "legacy_committed")
+			return cs, failure
+		}
 	}
 	s.mu.Lock()
 	s.activeConfig = candidate
@@ -613,6 +621,26 @@ func (s *Server) confirmChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet,
 	s.cleanupCommittedResources(tx, previousRevision)
 	s.publishChangeEvent(cs, "adapter_commit_succeeded")
 	return cs, nil
+}
+
+// clearBootGuard is deliberately an optional production capability.  The
+// OpenWrt adapter owns the nft fence; simulation/fake adapters do not.  A
+// production clear failure is never ignored: the committed revision remains
+// fenced and recovery must retry the exact-generation operation.
+func (s *Server) clearBootGuard(ctx context.Context) *actionFailure {
+	clearer, ok := s.adapter.(adapter.BootGuardClearer)
+	if !ok {
+		return nil
+	}
+	result := clearer.ClearBootGuard(ctx)
+	if stepOK(result) {
+		return nil
+	}
+	reason := result.Reason
+	if reason == "" {
+		reason = "adapter did not prove boot guard removal"
+	}
+	return &actionFailure{Status: 503, Code: "boot_guard_clear_failed", Message: reason}
 }
 
 func (s *Server) cleanupCommittedResources(tx adapter.Transaction, previous revisionRecord) {
@@ -1066,6 +1094,9 @@ func (s *Server) finalizeRecoveredCommit(cs *ChangeSet, tx adapter.Transaction) 
 		state.Entry{Bucket: "changes", Key: cs.ID, Value: *cs},
 	); err != nil {
 		return err
+	}
+	if failure := s.clearBootGuard(context.Background()); failure != nil {
+		return errors.New(failure.Message)
 	}
 	s.mu.Lock()
 	s.activeConfig = candidate

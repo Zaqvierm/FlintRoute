@@ -69,6 +69,12 @@ run_install "$BACKUP_BASE/first" >/dev/null
 [ -f "$SYSTEM_ROOT/etc/init.d/router-policy" ]
 [ "$(cat "$SYSTEM_ROOT/etc/router-policy/config/listener.conf")" = "$(cat "$ROOT/config/listener.conf")" ]
 grep -F 'v1:auth setup-token --if-needed' "$FAKE_CALL_LOG" >/dev/null
+auth_line=$(grep -n 'v1:auth setup-token --if-needed' "$FAKE_CALL_LOG" | head -n 1 | cut -d: -f1)
+prune_line=$(grep -n 'v1:backup prune' "$FAKE_CALL_LOG" | head -n 1 | cut -d: -f1)
+[ -n "$auth_line" ] && [ -n "$prune_line" ] && [ "$prune_line" -gt "$auth_line" ] || {
+  echo "installer pruned backups before post-install success" >&2
+  exit 1
+}
 snapshot_archive="$BACKUP_BASE/first/install-rollback/files.tar"
 if tar -tf "$snapshot_archive" | grep -Eq '^(usr|usr/lib|etc|etc/init\.d|etc/hotplug\.d)/?$'; then
   echo "installer archived synthetic system parent metadata" >&2
@@ -149,6 +155,9 @@ fi
 
 RUNTIME_DIR="$SYSTEM_ROOT/tmp/router-policy"
 mkdir -p "$TMP/fake-bin" "$RUNTIME_DIR"
+HEALTH_CANDIDATE_HASH='sha256:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff'
+HEALTH_ARTIFACT_HASH='sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210'
+export HEALTH_CANDIDATE_HASH HEALTH_ARTIFACT_HASH
 cat > "$TMP/fake-bin/wget" <<'SH'
 #!/bin/sh
 set -eu
@@ -157,7 +166,7 @@ count=0
 count=$((count + 1))
 printf '%s\n' "$count" > "$HEALTH_COUNTER"
 [ "$count" -ge 3 ] || exit 1
-printf '{"data":{"active_revision":"rev_1_test","recovery_status":"ok","status":"ok"}}\n' > "$3"
+printf '{"data":{"active_revision":"rev_1_test","active_candidate_hash":"%s","active_artifact_manifest_hash":"%s","recovery_status":"ok","status":"ok"}}\n' "$HEALTH_CANDIDATE_HASH" "$HEALTH_ARTIFACT_HASH" > "$3"
 SH
 chmod +x "$TMP/fake-bin/wget"
 cat > "$TMP/fake-bin/sleep" <<'SH'
@@ -175,6 +184,74 @@ export HEALTH_COUNTER PATH ROUTER_POLICY_INSTALL_LIB_ONLY RUNTIME_DIR ROUTER_POL
 wait_control_health >/dev/null
 [ "$(cat "$HEALTH_COUNTER")" = "3" ]
 
+HEALTH_COUNTER="$TMP/recovery-required-health-attempts"
+cat > "$TMP/fake-bin/wget" <<'SH'
+#!/bin/sh
+set -eu
+count=0
+[ ! -f "$HEALTH_COUNTER" ] || count=$(cat "$HEALTH_COUNTER")
+count=$((count + 1))
+printf '%s\n' "$count" > "$HEALTH_COUNTER"
+printf '{"data":{"active_revision":"rev_1_test","active_candidate_hash":"%s","active_artifact_manifest_hash":"%s","recovery_status":"recovery_required","recovery_commit_phase":"control_plane_committed","status":"ok"}}\n' "$HEALTH_CANDIDATE_HASH" "$HEALTH_ARTIFACT_HASH" > "$3"
+SH
+chmod +x "$TMP/fake-bin/wget"
+if wait_control_health >/dev/null 2>&1; then
+  echo "installer accepted fenced recovery_required health" >&2
+  exit 1
+fi
+[ "$(cat "$HEALTH_COUNTER")" = "3" ]
+
+HEALTH_COUNTER="$TMP/hash-health-attempts"
+cat > "$TMP/fake-bin/wget" <<'SH'
+#!/bin/sh
+set -eu
+count=0
+[ ! -f "$HEALTH_COUNTER" ] || count=$(cat "$HEALTH_COUNTER")
+count=$((count + 1))
+printf '%s\n' "$count" > "$HEALTH_COUNTER"
+printf '{"data":{"active_revision":"rev_1_test","active_candidate_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","active_artifact_manifest_hash":"%s","recovery_status":"ok","status":"ok"}}\n' "$HEALTH_ARTIFACT_HASH" > "$3"
+SH
+chmod +x "$TMP/fake-bin/wget"
+if wait_control_health rev_1_test "$HEALTH_CANDIDATE_HASH" >/dev/null 2>&1; then
+  echo "installer accepted a mismatched active candidate hash" >&2
+  exit 1
+fi
+[ "$(cat "$HEALTH_COUNTER")" = "3" ]
+
+HEALTH_COUNTER="$TMP/missing-hash-health-attempts"
+cat > "$TMP/fake-bin/wget" <<'SH'
+#!/bin/sh
+set -eu
+count=0
+[ ! -f "$HEALTH_COUNTER" ] || count=$(cat "$HEALTH_COUNTER")
+count=$((count + 1))
+printf '%s\n' "$count" > "$HEALTH_COUNTER"
+printf '{"data":{"active_revision":"rev_1_test","recovery_status":"ok","status":"ok"}}\n' > "$3"
+SH
+chmod +x "$TMP/fake-bin/wget"
+if wait_control_health rev_1_test >/dev/null 2>&1; then
+  echo "installer accepted health without generation hashes" >&2
+  exit 1
+fi
+[ "$(cat "$HEALTH_COUNTER")" = "3" ]
+
+HEALTH_COUNTER="$TMP/unproven-not-required-attempts"
+cat > "$TMP/fake-bin/wget" <<'SH'
+#!/bin/sh
+set -eu
+count=0
+[ ! -f "$HEALTH_COUNTER" ] || count=$(cat "$HEALTH_COUNTER")
+count=$((count + 1))
+printf '%s\n' "$count" > "$HEALTH_COUNTER"
+printf '{"data":{"active_revision":"rev_1_test","active_candidate_hash":"%s","active_artifact_manifest_hash":"","recovery_status":"not_required","recovery_commit_phase":"","status":"ok"}}\n' "$HEALTH_CANDIDATE_HASH" > "$3"
+SH
+chmod +x "$TMP/fake-bin/wget"
+if wait_control_health >/dev/null 2>&1; then
+  echo "installer accepted unproven not_required health" >&2
+  exit 1
+fi
+[ "$(cat "$HEALTH_COUNTER")" = "3" ]
+
 HEALTH_COUNTER="$TMP/degraded-health-attempts"
 cat > "$TMP/fake-bin/wget" <<'SH'
 #!/bin/sh
@@ -183,7 +260,7 @@ count=0
 [ ! -f "$HEALTH_COUNTER" ] || count=$(cat "$HEALTH_COUNTER")
 count=$((count + 1))
 printf '%s\n' "$count" > "$HEALTH_COUNTER"
-printf '{"data":{"active_revision":"rev_1_test","recovery_status":"error","status":"degraded"}}\n' > "$3"
+printf '{"data":{"active_revision":"rev_1_test","active_candidate_hash":"%s","active_artifact_manifest_hash":"%s","recovery_status":"error","status":"degraded"}}\n' "$HEALTH_CANDIDATE_HASH" "$HEALTH_ARTIFACT_HASH" > "$3"
 SH
 chmod +x "$TMP/fake-bin/wget"
 if wait_control_health >/dev/null 2>&1; then
@@ -200,7 +277,7 @@ count=0
 [ ! -f "$HEALTH_COUNTER" ] || count=$(cat "$HEALTH_COUNTER")
 count=$((count + 1))
 printf '%s\n' "$count" > "$HEALTH_COUNTER"
-printf '{"data":{"active_revision":"rev_2_changed","recovery_status":"ok","status":"ok"}}\n' > "$3"
+printf '{"data":{"active_revision":"rev_2_changed","active_candidate_hash":"%s","active_artifact_manifest_hash":"%s","recovery_status":"ok","status":"ok"}}\n' "$HEALTH_CANDIDATE_HASH" "$HEALTH_ARTIFACT_HASH" > "$3"
 SH
 chmod +x "$TMP/fake-bin/wget"
 if wait_control_health rev_1_expected >/dev/null 2>&1; then

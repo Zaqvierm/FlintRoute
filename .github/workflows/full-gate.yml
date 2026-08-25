@@ -1,0 +1,110 @@
+name: exact SHA full safety gate
+
+on:
+  push:
+    branches: [main, remediation/**]
+  pull_request:
+
+jobs:
+  full-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact event SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Record exact revision
+        run: |
+          git rev-parse HEAD
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Go format check
+        shell: bash
+        run: |
+          test -z "$(gofmt -l $(git ls-files '*.go'))"
+
+      - name: Go tests, race detector and vet
+        run: |
+          go test ./...
+          go test -race ./...
+          go vet ./...
+
+      - name: Frontend typecheck, unit tests and production build
+        run: |
+          npm run typecheck
+          npm test -- --run
+          npm run build
+
+      - name: Build reproducible OpenWrt artifacts
+        run: sh scripts/build-go.sh
+
+      - name: ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: './'
+          severity: warning
+
+      - name: Installer, adapter and recovery fixtures
+        run: |
+          sh tests/package-openwrt.sh
+          sh tests/installer-backup.sh
+          sh tests/installer-lifecycle.sh
+          sh tests/content-aware-install.sh
+          sh tests/shell-library.sh
+          sh tests/dns-observer-bootstrap.sh
+          sh tests/boot-guard-service.sh
+          sh tests/controller-bind-safety.sh
+          sh tests/boot-guard-policy.sh
+          sh tests/helper-service.sh
+          sh tests/hotplug-bounded.sh
+          sh tests/adapter-rollback.sh
+          sh tests/openwrt-adapter-integration.sh
+
+      - name: Zapret ownership and cleanup fixtures
+        run: |
+          sh tests/zapret-calibration-runtime.sh
+          sh tests/zapret-quick-contract.sh
+
+      - name: Linux namespace nft transition gate
+        run: sudo sh tests/nft-transition-namespace.sh
+
+      - name: Secret and forbidden-pattern scan
+        run: |
+          sh tests/secret-scan.sh
+          git diff --check
+
+      - name: Upload exact-SHA evidence manifest
+        if: always()
+        run: |
+          mkdir -p evidence
+          {
+            echo "sha=$(git rev-parse HEAD)"
+            echo "workflow_sha=${{ github.sha }}"
+            echo "runner=$(uname -a)"
+            echo "go=$(go version)"
+            echo "node=$(node --version)"
+          } > evidence/full-gate.env
+          sha256sum evidence/full-gate.env > evidence/full-gate.env.sha256
+      - name: Publish gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flintroute-full-gate-${{ github.sha }}
+          path: evidence/

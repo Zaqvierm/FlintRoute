@@ -10,10 +10,10 @@ CONFIG="${ROUTER_POLICY_CONFIG:-/etc/router-policy/config/default.json}"
 start_service() {
   "$ADAPTER" boot-guard "$CONFIG" || return 1
   procd_open_instance router-policy-boot-guard-lease
-  # The guard is mark-scoped and remains installed until the controller proves
-  # the exact committed generation. A wall-clock lease would create a fail-open
-  # window after a corrupt or missing control plane. procd owns only this tiny
-  # holder process; stop_service clears the table explicitly.
+  # The guard is fail-closed for forwarded traffic and remains installed until
+  # the controller proves the exact committed generation. A wall-clock lease
+  # would create a fail-open window after a corrupt or missing control plane.
+  # procd owns only this tiny holder process; stop_service clears the table.
   procd_set_param command /bin/sh -c 'exec sleep 2147483647' router-policy-boot-guard
   procd_set_param term_timeout 5
   procd_set_param stdout 1

@@ -45,7 +45,27 @@ target="$confdir/router-policy.conf"
 
 if [ -f "$target" ]; then
   echo "dns_observer=present"
-  echo "dnsmasq_restart=not-needed"
+  if [ "$reload_if_needed" = 1 ] && [ -x "$dnsmasq_init" ] && "$dnsmasq_init" running >/dev/null 2>&1; then
+    "$dnsmasq_init" restart
+    attempt=0
+    max_attempts="${ROUTER_POLICY_DNSMASQ_READY_ATTEMPTS:-30}"
+    while [ "$attempt" -lt "$max_attempts" ]; do
+      if "$dnsmasq_init" running >/dev/null 2>&1 &&
+        "$nslookup_bin" localhost 127.0.0.1 >/dev/null 2>&1; then
+        echo "dnsmasq_restart=performed"
+        break
+      fi
+      attempt=$((attempt + 1))
+      "$sleep_bin" 1
+    done
+    [ "$attempt" -lt "$max_attempts" ] || {
+      echo "dns_observer=error" >&2
+      echo "reason=dnsmasq_not_ready_after_restart" >&2
+      exit 1
+    }
+  else
+    echo "dnsmasq_restart=not-needed"
+  fi
   exit 0
 fi
 
