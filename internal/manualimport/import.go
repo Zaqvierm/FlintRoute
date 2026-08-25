@@ -723,6 +723,12 @@ func uniqueStrings(values []string) []string {
 }
 
 func zapretTokens(raw []byte) []string {
+	// /proc snapshots and exported command-line evidence may carry an UTF-8 BOM
+	// when they were written through a text-aware transport.  It is metadata,
+	// not part of argv[0]; strip it before matching the executable and the
+	// audited typed-profile vocabulary.  Do not otherwise normalize tokens:
+	// exact argument evidence must remain intact.
+	raw = bytes.TrimPrefix(raw, []byte{0xEF, 0xBB, 0xBF})
 	if bytes.IndexByte(raw, 0) >= 0 {
 		parts := bytes.Split(raw, []byte{0})
 		tokens := make([]string, 0, len(parts))

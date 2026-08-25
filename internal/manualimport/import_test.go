@@ -194,6 +194,22 @@ func TestInspectRecognizesOnlyAuditedTypedDeviceStrategy(t *testing.T) {
 	}
 }
 
+func TestInspectRecognizesAuditedTypedDeviceStrategyWithProcExportBOM(t *testing.T) {
+	dir := t.TempDir()
+	xrayPath := filepath.Join(dir, "xray.json")
+	q208Path := filepath.Join(dir, "q208.proc.args")
+	writeManualFile(t, xrayPath, minimalXray(testUUID1))
+	writeManualFile(t, q208Path, "\ufeff/usr/bin/nfqws\x00--qnum=208\x00--filter-tcp=443\x00--dpi-desync=fake\x00multidisorder\x00--dpi-desync-split-pos=1,midsld\x00--dpi-desync-fooling=badseq\x00md5sig\x00")
+
+	report, err := Inspect(Options{XrayPath: xrayPath, ZapretArgs: []string{q208Path}, GeneratedAt: fixedTime()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Zapret) != 1 || !report.Zapret[0].TypedModelReady || report.Zapret[0].TypedStrategy != "tv-fake-multidisorder-v1" {
+		t.Fatalf("BOM-prefixed proc export was not recognized: %+v", report.Zapret)
+	}
+}
+
 func contains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

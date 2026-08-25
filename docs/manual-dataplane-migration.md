@@ -88,6 +88,13 @@ its argument file is therefore not evidence that FlintRoute can reproduce or
 clean it safely. Unknown, split, or asset-backed vectors stay fenced and must
 receive a dedicated structured profile/manifest before adoption.
 
+Command-line evidence exported from `/proc/<pid>/cmdline` may be wrapped by a
+text-aware copier and acquire a UTF-8 BOM before the first NUL-delimited
+argument. The importer strips only that leading BOM before matching `argv[0]`;
+all other argument bytes remain exact evidence. This keeps the audited q208
+profile recognizable without weakening its ownership, device-scope, or
+rollback gates.
+
 ## Required adoption sequence
 
 1. Preserve a router backup and a private redacted inventory.
