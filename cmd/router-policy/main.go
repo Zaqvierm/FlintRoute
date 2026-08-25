@@ -35,6 +35,7 @@ import (
 	"router-policy/internal/geoip"
 	"router-policy/internal/lifecycle"
 	"router-policy/internal/managementproof"
+	"router-policy/internal/manualimport"
 	"router-policy/internal/planner"
 	"router-policy/internal/platform"
 	"router-policy/internal/probe"
@@ -1168,6 +1169,35 @@ func run(args []string) error {
 			return err
 		}
 		return printJSON(summary)
+	case "manual-import":
+		fs := flag.NewFlagSet("manual-import", flag.ContinueOnError)
+		xrayPath := fs.String("xray", "", "manual Xray JSON (read-only input)")
+		q205Path := fs.String("q205", "", "manual q205 nfqws arguments (read-only input)")
+		q208Path := fs.String("q208", "", "manual q208 nfqws arguments (read-only input)")
+		dnsmasqPath := fs.String("dnsmasq", "", "manual dnsmasq include (read-only input)")
+		nftPath := fs.String("nft", "", "manual nft evidence file (read-only input)")
+		outBundle := fs.String("out-bundle", "", "optional local 0600 Xray candidate output")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 || strings.TrimSpace(*xrayPath) == "" {
+			return errors.New("usage: router-policy manual-import --xray MANUAL_XRAY_JSON [--q205 ARGS] [--q208 ARGS] [--dnsmasq FILE] [--nft FILE] [--out-bundle CANDIDATE_JSON]")
+		}
+		zapretPaths := make([]string, 0, 2)
+		if strings.TrimSpace(*q205Path) != "" {
+			zapretPaths = append(zapretPaths, *q205Path)
+		}
+		if strings.TrimSpace(*q208Path) != "" {
+			zapretPaths = append(zapretPaths, *q208Path)
+		}
+		report, err := manualimport.Inspect(manualimport.Options{
+			XrayPath: *xrayPath, ZapretArgs: zapretPaths, DNSMasqPath: *dnsmasqPath,
+			NFTPaths: []string{*nftPath}, OutputBundle: *outBundle,
+		})
+		if err != nil {
+			return err
+		}
+		return printJSON(report)
 	case "install-dry-run":
 		return printJSON(map[string]any{
 			"dry_run": true,
@@ -1234,6 +1264,7 @@ func usage() {
   subscription-normalize SUBSCRIPTION_JSON
   subscription-routes [--base-port PORT] SUBSCRIPTION_JSON
   subscription-xray [--base-port PORT] --out OUTPUT_JSON SUBSCRIPTION_JSON
+  manual-import --xray MANUAL_XRAY_JSON [--q205 ARGS] [--q208 ARGS] [--dnsmasq FILE] [--nft FILE] [--out-bundle CANDIDATE_JSON]
   daemon
   install-dry-run
   security audit
