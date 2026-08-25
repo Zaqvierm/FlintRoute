@@ -17,6 +17,13 @@ The manual importer reports q208 as a redacted `device_scope` with an opaque
 per-report scope ID, TCP queue ports and UDP drop ports. It deliberately keeps
 the resource in `collision` and never emits an apply operation.
 
+The offline typed renderer in `internal/zapretprofile` now validates this
+shape and can render deterministic nft/nfqws candidates for tests. It accepts
+only fixed strategy presets, project-owned paths, non-system queues and typed
+selectors/rules. It is intentionally not wired to the production adapter yet;
+the absence of that wiring is a safety gate, not an implicit fallback to the
+single-profile renderer.
+
 ## Required managed model
 
 A managed device profile must bind all of the following to one generation:
