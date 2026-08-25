@@ -64,6 +64,14 @@ func BuildAdoptionPlan(report Report) (AdoptionPlan, error) {
 	if report.Xray.BundleReady {
 		plan.CandidateSHA256 = report.Xray.BundleSHA256
 	}
+	if report.Xray.Transparent > 0 || report.Xray.DNSInbounds > 0 {
+		plan.Blockers = append(plan.Blockers, Conflict{
+			Resource: "manual Xray candidate scope",
+			Severity: "SEV-1",
+			Reason:   "the staged candidate contains only loopback SOCKS/VLESS routes and cannot replace the manual transparent or DNS inbounds",
+			Action:   "model and validate TPROXY/DNS inbounds and their dataplane ownership before any Xray handoff",
+		})
+	}
 
 	plan.Resources = append(plan.Resources, AdoptionResource{
 		Kind:           "process",

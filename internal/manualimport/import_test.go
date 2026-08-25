@@ -295,6 +295,22 @@ func TestBuildAdoptionPlanRejectsSecretBearingReport(t *testing.T) {
 	}
 }
 
+func TestBuildAdoptionPlanFencesSOCKSCandidateWhenManualXrayHasTransparentOrDNSInbounds(t *testing.T) {
+	plan, err := BuildAdoptionPlan(Report{
+		GeneratedAt: fixedTime().Format(time.RFC3339),
+		Xray:        XrayReport{Transparent: 1, DNSInbounds: 1, BundleReady: true, BundleSHA256: "sha256:candidate"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, blocker := range plan.Blockers {
+		if blocker.Resource == "manual Xray candidate scope" && blocker.Severity == "SEV-1" {
+			return
+		}
+	}
+	t.Fatalf("transparent/DNS candidate scope was not fenced: %+v", plan.Blockers)
+}
+
 func minimalXray(uuid string) string {
 	return `{"inbounds":[{"tag":"socks-proxy-1","listen":"127.0.0.1","port":12000,"protocol":"socks"}],"outbounds":[{"tag":"proxy-1","protocol":"vless","settings":{"vnext":[{"address":"vc9.example.com","port":22231,"users":[{"id":"` + uuid + `","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"tls"}}],"routing":{"rules":[{"type":"field","inboundTag":["socks-proxy-1"],"outboundTag":"proxy-1"}]}}`
 }

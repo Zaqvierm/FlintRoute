@@ -54,6 +54,9 @@ OpenAI/Telegram traffic or recreate an apparently removed process.
 The current importer therefore reports these blocking conflicts:
 
 - one owner must be proven for every Xray listener and process;
+- the staged Xray artifact is SOCKS/VLESS-only; if the manual config also has
+  TPROXY or DNS inbounds, it is not a replacement candidate until those
+  inbounds and their routing/DNS ownership are modeled;
 - manual nft tables must stay foreign and must not be flushed or replaced;
 - DNS includes and runtime state need an install/recovery manifest;
 - manual cron/procd lifecycle must be disabled only in the same reviewed
