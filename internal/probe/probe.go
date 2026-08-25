@@ -851,9 +851,9 @@ func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route,
 
 	requestStarted := time.Now()
 	resp, err := client.Do(req)
-	routeLatencyMS := time.Since(requestStarted).Milliseconds()
+	routeLatencyMS, routeLatencyAvailable := measuredRouteLatency(requestStarted)
 	if err != nil {
-		return attemptResult{Status: "FAIL", ConnectedIP: connectedIP, ConnectedPort: connectedPort, LocalIP: localIP, AddressFamily: addressFamily, Transport: dialTransport, SocketMark: formatSocketMark(observedSocketMark), Reason: classifyTransportError(err), RouteLatencyMS: routeLatencyMS, RouteLatencyAvailable: routeLatencyMS > 0}
+		return attemptResult{Status: "FAIL", ConnectedIP: connectedIP, ConnectedPort: connectedPort, LocalIP: localIP, AddressFamily: addressFamily, Transport: dialTransport, SocketMark: formatSocketMark(observedSocketMark), Reason: classifyTransportError(err), RouteLatencyMS: routeLatencyMS, RouteLatencyAvailable: routeLatencyAvailable}
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
@@ -902,8 +902,24 @@ func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route,
 		SuspectedTSPU:         tspu,
 		Reason:                reason,
 		RouteLatencyMS:        routeLatencyMS,
-		RouteLatencyAvailable: routeLatencyMS > 0,
+		RouteLatencyAvailable: routeLatencyAvailable,
 	}
+}
+
+// measuredRouteLatency keeps the network-path timer separate from the full
+// verification duration. Millisecond fields cannot represent a successful
+// sub-millisecond local probe as 0 without making it look unavailable, so a
+// positive measured interval is reported as the smallest representable value.
+func measuredRouteLatency(start time.Time) (int64, bool) {
+	elapsed := time.Since(start)
+	if elapsed <= 0 {
+		return 0, false
+	}
+	latency := elapsed.Milliseconds()
+	if latency < 1 {
+		latency = 1
+	}
+	return latency, true
 }
 
 func splitAddr(addr net.Addr) (string, bool) {
