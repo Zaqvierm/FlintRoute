@@ -65,3 +65,15 @@ The Linux namespace workflows and local fixtures prove only the properties
 they execute.  They do not inherit hardware status.  Flint 2 is untouched in
 this remediation cycle; hardware work, if approved later, starts with
 read-only diagnostics and a saved recovery point.
+
+## Current evidence checkpoint
+
+- Remediation commit: `7089d3167a16a2536af5ea102a41d73f3528912f` (pushed to
+  `main`).
+- Local Windows gate: `gofmt`, `go test ./...`, `go test -race ./...`,
+  `go vet ./...`, frontend typecheck/unit/build, installer/adapter/recovery
+  fixtures, helper/hotplug checks, secret scan, shell syntax, and
+  `git diff --check` passed.
+- Linux-only nft namespace and Zapret process-group tests: `NOT RUN LOCALLY`
+  on Windows; the exact-SHA workflow runs them on Ubuntu and uploads evidence.
+- Hardware: no install, enable, apply, rollback, or reboot was performed.
