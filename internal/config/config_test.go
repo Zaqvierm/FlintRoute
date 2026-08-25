@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"router-policy/internal/zapretprofile"
 )
 
 func TestPlatformIPv6FalseKeepsLegacyCanonicalJSON(t *testing.T) {
@@ -267,6 +269,36 @@ func TestValidateRejectsMutableOrPartialZapretPins(t *testing.T) {
 	cfg.Zapret.ProviderSource = "https://downloads.example/nfqws/72.12/nfqws"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("immutable Zapret pins were rejected: %v", err)
+	}
+}
+
+func TestValidateRejectsDeviceScopedZapretProfilesUntilManagedLifecycleExists(t *testing.T) {
+	cfg := validConfig()
+	cfg.Zapret.DeviceProfiles = []zapretprofile.Profile{{
+		ID: "tv-q208", Scope: zapretprofile.Scope{IPv4: "192.168.0.162"}, QueueNum: 208,
+		Strategy: zapretprofile.StrategyTVFakeMultidisorder, Binary: "/usr/bin/nfqws",
+		ActiveConfig: "/etc/router-policy/zapret/profiles/tv-q208.conf",
+		InitScript:   "/etc/init.d/router-policy-zapret-tv-q208",
+		Rules: []zapretprofile.Rule{
+			{Protocol: "tcp", Ports: []zapretprofile.PortRange{{Start: 443, End: 443}}, Verdict: "queue", ConntrackFirstPack: 32},
+			{Protocol: "udp", Ports: []zapretprofile.PortRange{{Start: 443, End: 443}}, Verdict: "drop"},
+		},
+	}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "not activatable") {
+		t.Fatalf("device-scoped profile was not held behind the production lifecycle gate: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidDeviceScopedZapretProfilesBeforeActivationGate(t *testing.T) {
+	cfg := validConfig()
+	cfg.Zapret.DeviceProfiles = []zapretprofile.Profile{{
+		ID: "tv-q208", Scope: zapretprofile.Scope{IPv4: "192.168.0.162"}, QueueNum: 1,
+		Strategy: zapretprofile.StrategyTVFakeMultidisorder, Binary: "/usr/bin/nfqws",
+		ActiveConfig: "/etc/router-policy/zapret/profiles/tv-q208.conf",
+		InitScript:   "/etc/init.d/router-policy-zapret-tv-q208",
+	}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "profiles are invalid") {
+		t.Fatalf("invalid device-scoped profile was not rejected before activation: %v", err)
 	}
 }
 

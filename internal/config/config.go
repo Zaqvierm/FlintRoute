@@ -15,6 +15,7 @@ import (
 	"golang.org/x/net/idna"
 
 	"router-policy/internal/netpolicy"
+	"router-policy/internal/zapretprofile"
 )
 
 var sha256ReferencePattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -127,6 +128,11 @@ type Zapret struct {
 	AdaptiveEnabled     bool                      `json:"adaptive_enabled,omitempty"`
 	AdaptiveCatalogFile string                    `json:"adaptive_catalog_file,omitempty"`
 	AdaptiveAssignments []ZapretProfileAssignment `json:"adaptive_assignments,omitempty"`
+	// DeviceProfiles is deliberately typed in the config schema so an imported
+	// host-scoped profile cannot disappear during JSON decoding. Production
+	// activation remains blocked until the multi-profile adapter/helper
+	// lifecycle is implemented and ownership-gated.
+	DeviceProfiles []zapretprofile.Profile `json:"device_profiles,omitempty"`
 }
 
 type ZapretProfileAssignment struct {
@@ -448,6 +454,12 @@ func (c *Config) Validate() error {
 	}
 	if !hasZapret && (c.Zapret.AdaptiveEnabled || c.Zapret.AdaptiveCatalogFile != "" || len(c.Zapret.AdaptiveAssignments) != 0) {
 		return fmt.Errorf("adaptive Zapret requires an enabled zapret route")
+	}
+	if len(c.Zapret.DeviceProfiles) > 0 {
+		if err := zapretprofile.ValidateProfiles(c.Zapret.DeviceProfiles); err != nil {
+			return fmt.Errorf("device-scoped Zapret profiles are invalid: %w", err)
+		}
+		return fmt.Errorf("device-scoped Zapret profiles are not activatable: multi-profile production adapter/helper lifecycle is not implemented")
 	}
 	if !hasVLESS && c.Xray.OutboundBundleSHA256 != "" {
 		return fmt.Errorf("Xray outbound bundle is set without enabled vless routes")

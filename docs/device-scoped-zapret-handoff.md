@@ -24,6 +24,13 @@ selectors/rules. It is intentionally not wired to the production adapter yet;
 the absence of that wiring is a safety gate, not an implicit fallback to the
 single-profile renderer.
 
+The config schema now carries `zapret.device_profiles` as a typed field so an
+imported profile cannot be silently discarded by JSON decoding. `Config.Validate`
+validates the profiles and then rejects activation with an explicit
+`not activatable` error until the multi-profile adapter/helper lifecycle,
+manifest and rollback support exist. The normal artifact renderer therefore
+cannot accidentally absorb q208 as if it were the existing q205 profile.
+
 ## Required managed model
 
 A managed device profile must bind all of the following to one generation:
