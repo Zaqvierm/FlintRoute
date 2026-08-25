@@ -37,10 +37,12 @@ const (
 )
 
 var (
-	tagPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
-	queueValue  = regexp.MustCompile(`^--qnum(?:=|\s+)([0-9]+)$`)
-	optionValue = regexp.MustCompile(`^--(filter-(?:tcp|udp)|dpi-desync)(?:=|\s+)(.+)$`)
-	uuidPattern = regexp.MustCompile(`^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[1-5][a-fA-F0-9]{3}-[89abAB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}$`)
+	tagPattern      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	queueValue      = regexp.MustCompile(`^--qnum(?:=|\s+)([0-9]+)$`)
+	optionValue     = regexp.MustCompile(`^--(filter-(?:tcp|udp)|dpi-desync)(?:=|\s+)(.+)$`)
+	uuidPattern     = regexp.MustCompile(`^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[1-5][a-fA-F0-9]{3}-[89abAB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}$`)
+	nftSourceValue  = regexp.MustCompile(`(?i)\b(?:ip|ip6)\s+saddr\s+([0-9a-f:.\/]+)`)
+	nftQueueValue   = regexp.MustCompile(`(?i)\bqueue(?:\s+flags\s+[^\s]+)*\s+to\s+([0-9]+)\b`)
 )
 
 // Options identifies manually maintained files. All paths are read-only
@@ -103,13 +105,14 @@ type ServerSummary struct {
 }
 
 type ZapretReport struct {
-	Path      string   `json:"path"`
-	SHA256    string   `json:"sha256"`
-	Queue     int      `json:"queue"`
-	Filters   []string `json:"filters,omitempty"`
-	Desync    []string `json:"desync,omitempty"`
-	Ownership string   `json:"ownership"`
-	QueueSafe bool     `json:"queue_safe"`
+	Path         string   `json:"path"`
+	SHA256       string   `json:"sha256"`
+	Queue        int      `json:"queue"`
+	Filters      []string `json:"filters,omitempty"`
+	Desync       []string `json:"desync,omitempty"`
+	Ownership    string   `json:"ownership"`
+	QueueSafe    bool     `json:"queue_safe"`
+	DeviceScoped bool     `json:"device_scoped,omitempty"`
 }
 
 type Conflict struct {
@@ -214,15 +217,26 @@ func Inspect(opts Options) (Report, error) {
 		}
 		report.Files = append(report.Files, evidence)
 	}
+	deviceScopedQueues := map[int]bool{}
 	for _, path := range opts.NFTPaths {
 		if strings.TrimSpace(path) == "" {
 			continue
 		}
-		evidence, err := evidenceOnly(path, "manual-nft")
+		rawNFT, evidence, err := readBounded(path, maxEvidence, "manual-nft")
 		if err != nil {
 			return Report{}, err
 		}
 		report.Files = append(report.Files, evidence)
+		queues, err := inspectNFTDeviceScopedQueues(rawNFT)
+		if err != nil {
+			return Report{}, fmt.Errorf("inspect manual nft evidence: %w", err)
+		}
+		for queue := range queues {
+			deviceScopedQueues[queue] = true
+		}
+	}
+	for index := range report.Zapret {
+		report.Zapret[index].DeviceScoped = deviceScopedQueues[report.Zapret[index].Queue]
 	}
 
 	report.Conflicts = conflicts(report.Xray, report.Zapret)
@@ -235,6 +249,49 @@ func Inspect(opts Options) (Report, error) {
 		report.Xray.BundleReady = true
 	}
 	return report, nil
+}
+
+// inspectNFTDeviceScopedQueues extracts only a boolean ownership fact from
+// nft evidence. It deliberately does not return source IP/MAC values, so a
+// redacted migration report cannot leak LAN identity. A host-scoped source
+// (an address or a full-length /32 or /128 prefix) on the same rule as a queue
+// verdict is a device-scoped rule and must not be collapsed into a generic
+// Zapret profile.
+func inspectNFTDeviceScopedQueues(raw []byte) (map[int]bool, error) {
+	queues := map[int]bool{}
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	scanner.Buffer(make([]byte, 64*1024), maxEvidence)
+	for scanner.Scan() {
+		line := scanner.Text()
+		sourceMatch := nftSourceValue.FindStringSubmatch(line)
+		queueMatch := nftQueueValue.FindStringSubmatch(line)
+		if len(sourceMatch) != 2 || len(queueMatch) != 2 {
+			continue
+		}
+		if !hostScopedAddress(sourceMatch[1]) {
+			continue
+		}
+		queue, err := strconv.Atoi(queueMatch[1])
+		if err != nil || queue < 1 || queue > 65535 {
+			continue
+		}
+		queues[queue] = true
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return queues, nil
+}
+
+func hostScopedAddress(value string) bool {
+	if addr, err := netip.ParseAddr(value); err == nil {
+		return !addr.IsUnspecified()
+	}
+	prefix, err := netip.ParsePrefix(value)
+	if err != nil {
+		return false
+	}
+	return prefix.Bits() == prefix.Addr().BitLen() && !prefix.Addr().IsUnspecified()
 }
 
 func inspectXray(raw []byte) (XrayReport, []byte, error) {
@@ -517,6 +574,9 @@ func conflicts(xray XrayReport, zapret []ZapretReport) []Conflict {
 	for _, item := range zapret {
 		if !item.QueueSafe {
 			conflicts = append(conflicts, Conflict{Resource: fmt.Sprintf("NFQUEUE %d", item.Queue), Severity: "SEV-1", Reason: "reserved system queue", Action: "refuse migration and leave the queue untouched"})
+		}
+		if item.DeviceScoped {
+			conflicts = append(conflicts, Conflict{Resource: fmt.Sprintf("device-scoped Zapret queue %d", item.Queue), Severity: "SEV-1", Reason: "nft evidence binds this queue to a host-scoped source rule", Action: "keep it foreign until an explicit device-scoped profile, lifecycle owner and rollback are reviewed"})
 		}
 	}
 	return conflicts

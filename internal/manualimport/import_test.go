@@ -100,6 +100,55 @@ func TestInspectRejectsReservedSystemQueue(t *testing.T) {
 	}
 }
 
+func TestInspectMarksHostScopedNFTQueueWithoutLeakingSourceIdentity(t *testing.T) {
+	dir := t.TempDir()
+	xrayPath := filepath.Join(dir, "xray.json")
+	q205Path := filepath.Join(dir, "q205.args")
+	q208Path := filepath.Join(dir, "q208.args")
+	nftPath := filepath.Join(dir, "nft.txt")
+	writeManualFile(t, xrayPath, minimalXray(testUUID1))
+	writeManualFile(t, q205Path, "--qnum=205\n--filter-tcp=443\n")
+	writeManualFile(t, q208Path, "--qnum=208\n--filter-tcp=443\n")
+	writeManualFile(t, nftPath, `table inet app_zapret {
+  chain postrouting {
+    ip saddr 192.168.0.0/24 tcp dport 443 queue flags bypass to 205 comment "LAN"
+    ip saddr 192.168.0.162 udp dport 443 drop comment "TV-QUIC"
+    ip saddr 192.168.0.162 tcp dport 443 queue flags bypass to 208 comment "TV-TCP"
+  }
+}`)
+
+	report, err := Inspect(Options{
+		XrayPath: xrayPath, ZapretArgs: []string{q205Path, q208Path}, NFTPaths: []string{nftPath},
+		GeneratedAt: fixedTime(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Zapret) != 2 || report.Zapret[0].DeviceScoped || !report.Zapret[1].DeviceScoped {
+		t.Fatalf("host-scoped q208 evidence was not isolated: %+v", report.Zapret)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "192.168.0.162") || strings.Contains(string(encoded), "TV-TCP") {
+		t.Fatal("redacted report leaked nft source identity")
+	}
+	plan, err := BuildAdoptionPlan(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, resource := range plan.Resources {
+		if resource.Kind == "device-scope" && resource.Identifier == "queue:208" {
+			found = resource.OwnershipState == ownershipCollision
+		}
+	}
+	if !found {
+		t.Fatalf("device-scoped queue was not fenced in adoption plan: %+v", plan.Resources)
+	}
+}
+
 func TestInspectRejectsPrivateVLESSEndpoint(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "xray.json")

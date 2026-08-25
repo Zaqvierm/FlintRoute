@@ -61,6 +61,21 @@ The current importer therefore reports these blocking conflicts:
 - q205 and q208 need separate, device-aware managed profiles; collapsing them
   into one generic Zapret profile is not a valid migration.
 
+The importer also inspects the supplied nft evidence for host-scoped source
+rules on queue verdicts. A full-length host address (for example, a `/32`)
+marks that queue as `device_scoped` in the report; the source identity itself
+is never copied into the redacted report. The review plan adds a separate
+`device-scope` collision resource and keeps that queue foreign until the
+device selector, NFQUEUE/process lifecycle, and rollback boundary are all
+typed and proven. A subnet rule such as `192.168.0.0/24` is not treated as a
+device binding.
+
+On the current Flint 2 read-only snapshot, q205 is a LAN-wide queue while
+q208 has a host-scoped rule for the TV path. The importer therefore reports
+q208 as `device_scoped`/`SEV-1` and refuses to collapse it into the generic
+q205 profile. This is evidence for a migration gate, not permission to alter
+the live table.
+
 ## Required adoption sequence
 
 1. Preserve a router backup and a private redacted inventory.

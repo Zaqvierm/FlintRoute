@@ -110,6 +110,16 @@ func BuildAdoptionPlan(report Report) (AdoptionPlan, error) {
 				RequiredAction: "prove PID/start-time/PGID and register cleanup only after an explicit ownership claim",
 			},
 		)
+		if zapret.DeviceScoped {
+			plan.Resources = append(plan.Resources, AdoptionResource{
+				Kind:           "device-scope",
+				Identifier:     "queue:" + queue,
+				ObservedOwner:  "manual-nft",
+				OwnershipState: ownershipCollision,
+				Evidence:       []string{"nft evidence contains a host-scoped source rule for this queue; source identity is intentionally redacted"},
+				RequiredAction: "model and prove the exact device binding, queue lifecycle and rollback before importing this profile",
+			})
+		}
 	}
 
 	for _, file := range report.Files {
