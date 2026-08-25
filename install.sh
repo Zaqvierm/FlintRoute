@@ -89,7 +89,28 @@ refresh_install_targets() {
   # log path.  Snapshot that exact object too; taking only the controller's
   # generic runtime path would leave the active writer outside rollback.
   if [ "$RUNTIME_DIR" = "$SYSTEM_ROOT/tmp/router-policy" ]; then
-    observation_target="$SYSTEM_ROOT/var/run/dnsmasq/router-policy-observations.log"
+    observer_dir="$SYSTEM_ROOT/var/run/dnsmasq"
+    # OpenWrt commonly exposes /var -> /tmp.  Snapshot the canonical runtime
+    # object so the exact-target ownership validator does not reject this
+    # known platform layout as an arbitrary symlink traversal.
+    if [ -d "$observer_dir" ]; then
+      if command -v readlink >/dev/null 2>&1; then
+        canonical_observer_dir="$(readlink -f "$observer_dir" 2>/dev/null)" || {
+          echo "install blocked: cannot resolve dnsmasq observer runtime path" >&2
+          return 1
+        }
+        [ -n "$canonical_observer_dir" ] || {
+          echo "install blocked: dnsmasq observer runtime path resolved empty" >&2
+          return 1
+        }
+        observation_target="$canonical_observer_dir/router-policy-observations.log"
+      else
+        echo "install blocked: readlink is required to resolve dnsmasq observer runtime path" >&2
+        return 1
+      fi
+    else
+      observation_target="$observer_dir/router-policy-observations.log"
+    fi
   else
     observation_target="$RUNTIME_DIR/dns-observations.log"
   fi
@@ -252,10 +273,43 @@ is_managed_service() {
 
 path_metadata() {
   target="$1"
-  # OpenWrt BusyBox and GNU stat both support -c for these fields.
-  # Git Bash's stat emulation includes the caller umask in its displayed mode;
-  # inspect with a neutral umask so the invariant is about the object itself.
-  (umask 022; stat -c '%a|%u|%g' "$target" 2>/dev/null)
+  # Prefer stat when the target provides it.  Some supported OpenWrt images
+  # omit the stat applet entirely, so the installer must retain a read-only
+  # fallback instead of treating an inspectable system as unsafe by accident.
+  if command -v stat >/dev/null 2>&1; then
+    if metadata_output="$(umask 022; stat -c '%a|%u|%g' "$target" 2>/dev/null)"; then
+      printf '%s\n' "$metadata_output"
+      return 0
+    fi
+  fi
+  if command -v busybox >/dev/null 2>&1; then
+    if metadata_output="$(umask 022; busybox stat -c '%a|%u|%g' "$target" 2>/dev/null)"; then
+      printf '%s\n' "$metadata_output"
+      return 0
+    fi
+  fi
+
+  # BusyBox ls -ln exposes numeric uid/gid and the object permission string.
+  # Convert the three rwx triplets to the same octal representation returned
+  # by stat.  Critical-directory checks only accept ordinary rwx bits; special
+  # bits are intentionally rejected rather than guessed.
+  perm_digit() {
+    case "$1" in
+      ---) printf '0' ;; --x) printf '1' ;; -w-) printf '2' ;; -wx) printf '3' ;;
+      r--) printf '4' ;; r-x) printf '5' ;; rw-) printf '6' ;; rwx) printf '7' ;;
+      *) return 1 ;;
+    esac
+  }
+  metadata_line="$(LC_ALL=C ls -ldn "$target" 2>/dev/null)" || return 1
+  permissions="$(printf '%s\n' "$metadata_line" | awk 'NR == 1 { print substr($1, 2, 9) }')"
+  uid="$(printf '%s\n' "$metadata_line" | awk 'NR == 1 { print $3 }')"
+  gid="$(printf '%s\n' "$metadata_line" | awk 'NR == 1 { print $4 }')"
+  [ "${#permissions}" -eq 9 ] || return 1
+  case "$uid:$gid" in *[!0-9:]*|*:|:*) return 1 ;; esac
+  owner_bits="$(perm_digit "$(printf '%s' "$permissions" | cut -c1-3)")" || return 1
+  group_bits="$(perm_digit "$(printf '%s' "$permissions" | cut -c4-6)")" || return 1
+  other_bits="$(perm_digit "$(printf '%s' "$permissions" | cut -c7-9)")" || return 1
+  printf '%s%s%s|%s|%s\n' "$owner_bits" "$group_bits" "$other_bits" "$uid" "$gid"
 }
 
 copy_preserving_metadata() {
@@ -295,10 +349,17 @@ validate_critical_system_dirs() {
         return 1
       }
       reference_mode=${reference_metadata%%|*}
-      [ "$directory_mode" = "$reference_mode" ] || {
+      # Overlayfs commonly presents / and /etc as 0755 even when the
+      # read-only squashfs lower layer reports 0775.  That pair is a known
+      # OpenWrt layout difference, not the permission-loss failure this guard
+      # is meant to catch.  All other mismatches remain fail-closed.
+      case "$directory_mode:$reference_mode" in
+        "$reference_mode:$reference_mode"|755:775) ;;
+        *)
         echo "install blocked: critical directory mode differs from ROM: $target mode=$directory_mode rom=$reference_mode" >&2
         return 1
-      }
+        ;;
+      esac
     else
       case "$target:$directory_mode" in
         "$SYSTEM_ROOT:755"|"$SYSTEM_ROOT/etc:755"|"$SYSTEM_ROOT/usr:755"|"$SYSTEM_ROOT/usr/bin:755"|"$SYSTEM_ROOT/usr/lib:755"|"$SYSTEM_ROOT/etc/init.d:755"|"$SYSTEM_ROOT/etc/hotplug.d:755") ;;
@@ -475,10 +536,20 @@ backup() {
     rm -f "$file_list"
     return 1
   }
-  (cd "$staging" && "$TAR_BIN" -cf "$archive.tmp" -T "$file_list") || {
-    rm -f "$file_list" "$archive.tmp"
-    return 1
-  }
+  if [ -s "$file_list" ]; then
+    (cd "$staging" && "$TAR_BIN" -cf "$archive.tmp" -T "$file_list") || {
+      rm -f "$file_list" "$archive.tmp"
+      return 1
+    }
+  else
+    # BusyBox tar rejects an empty -T file.  A POSIX tar stream with two
+    # zero blocks is a valid empty archive and keeps a clean install's
+    # rollback manifest verifiable without archiving synthetic parents.
+    dd if=/dev/zero of="$archive.tmp" bs=512 count=2 2>/dev/null || {
+      rm -f "$file_list" "$archive.tmp"
+      return 1
+    }
+  fi
   rm -f "$file_list"
   mv "$archive.tmp" "$archive"
   [ -f "$archive" ] || { echo "backup archive was not created" >&2; return 1; }
@@ -553,10 +624,20 @@ snapshot_installation() {
     [ -n "$relative" ] || { rm -f "$file_list"; return 1; }
     printf '%s\n' "$relative" >> "$file_list"
   done < "$manifest"
-  (cd "$staging" && "$TAR_BIN" -cf "$archive.tmp" -T "$file_list") || {
-    rm -f "$file_list" "$archive.tmp"
-    return 1
-  }
+  if [ -s "$file_list" ]; then
+    (cd "$staging" && "$TAR_BIN" -cf "$archive.tmp" -T "$file_list") || {
+      rm -f "$file_list" "$archive.tmp"
+      return 1
+    }
+  else
+    # BusyBox tar rejects an empty -T file.  A POSIX tar stream with two
+    # zero blocks is a valid empty archive and keeps a clean install's
+    # rollback manifest verifiable without archiving synthetic parents.
+    dd if=/dev/zero of="$archive.tmp" bs=512 count=2 2>/dev/null || {
+      rm -f "$file_list" "$archive.tmp"
+      return 1
+    }
+  fi
   rm -f "$file_list"
   mv "$archive.tmp" "$archive"
   "$TAR_BIN" -tf "$archive" >/dev/null

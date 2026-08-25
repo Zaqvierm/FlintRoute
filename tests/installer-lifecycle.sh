@@ -301,6 +301,26 @@ if regular_file_mode_matches "$MODE_TARGET" 755; then
 fi
 unset -f stat
 
+# Supported OpenWrt images may not ship the stat applet.  Force the
+# installer down its ls -ln fallback and verify it still captures the mode
+# needed by the critical-directory and rollback invariants.
+NO_STAT_BIN="$TMP/no-stat-bin"
+mkdir -p "$NO_STAT_BIN"
+cat > "$NO_STAT_BIN/stat" <<'SH'
+#!/bin/sh
+exit 127
+SH
+chmod +x "$NO_STAT_BIN/stat"
+ORIGINAL_PATH="$PATH"
+PATH="$NO_STAT_BIN:$PATH"
+fallback_metadata=$(path_metadata "$MODE_TARGET")
+fallback_mode=${fallback_metadata%%|*}
+[ "$fallback_mode" = "600" ] || {
+  echo "installer stat fallback reported wrong mode: $fallback_metadata" >&2
+  exit 1
+}
+PATH="$ORIGINAL_PATH"
+
 LEGACY_ROOT="$TMP/legacy-maintenance"
 mkdir -p "$LEGACY_ROOT/etc/router-policy/config" "$LEGACY_ROOT/etc/init.d"
 cat > "$LEGACY_ROOT/router-policy" <<'SH'

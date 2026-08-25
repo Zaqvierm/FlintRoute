@@ -1,7 +1,12 @@
 # Установка на OpenWrt
 
-> **Статус на `effa938`:** это процедура и safety-gate. Установка на Flint 2
-> в этом цикле не выполнялась; старые deployment PASS не наследуются.
+> **Статус на `31d6d6a`:** контролируемая установка на GL-MT6000 выполнена
+> без `--enable-services`. Read-only post-install проверка подтвердила хэши
+> бинарников, нормальные режимы критических каталогов, DNS/WAN и сохранность
+> ручного Xray/VLESS + q205/q208 dataplane. Control plane, boot guard и
+> managed services намеренно не включались: текущая ручная маршрутизация не
+> должна быть перетёрта до отдельного migration/ownership плана. Это не
+> hardware PASS для UI/API, apply или reboot persistence.
 
 FlintRoute устанавливается из готового Linux arm64-архива. На роутере не нужны Go,
 Node.js, npm, Git или отдельный `coreutils-stat`: сборка и упаковка выполняются
@@ -65,6 +70,18 @@ sh install.sh --dry-run
 ```sh
 sh install.sh --install --enable-services
 ```
+
+Если на роутере уже работает внешний Xray/Zapret или другой production
+dataplane, сначала используйте безопасную установку файлов без запуска
+сервисов:
+
+```sh
+sh install.sh --install
+```
+
+После неё отдельно проверьте ownership listeners, nft/NFQUEUE и active policy.
+`--enable-services` нельзя применять как «проверку»: он разрешён только после
+подтверждённого плана миграции и backup текущего dataplane.
 
 Команда устанавливает ARM64-бинарник, OpenWrt adapter, init-скрипты и hotplug
 hooks. DNS observer, `router-policy`, boot guard и watchdog включаются для
