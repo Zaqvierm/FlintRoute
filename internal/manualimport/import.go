@@ -106,15 +106,18 @@ type ServerSummary struct {
 }
 
 type ZapretReport struct {
-	Path         string             `json:"path"`
-	SHA256       string             `json:"sha256"`
-	Queue        int                `json:"queue"`
-	Filters      []string           `json:"filters,omitempty"`
-	Desync       []string           `json:"desync,omitempty"`
-	Ownership    string             `json:"ownership"`
-	QueueSafe    bool               `json:"queue_safe"`
-	DeviceScoped bool               `json:"device_scoped,omitempty"`
-	DeviceScope  *ZapretDeviceScope `json:"device_scope,omitempty"`
+	Path            string             `json:"path"`
+	SHA256          string             `json:"sha256"`
+	Queue           int                `json:"queue"`
+	Filters         []string           `json:"filters,omitempty"`
+	Desync          []string           `json:"desync,omitempty"`
+	Ownership       string             `json:"ownership"`
+	QueueSafe       bool               `json:"queue_safe"`
+	TypedStrategy   string             `json:"typed_strategy,omitempty"`
+	TypedModelReady bool               `json:"typed_model_ready"`
+	ModelBlockers   []string           `json:"model_blockers,omitempty"`
+	DeviceScoped    bool               `json:"device_scoped,omitempty"`
+	DeviceScope     *ZapretDeviceScope `json:"device_scope,omitempty"`
 }
 
 // ZapretDeviceScope is a redacted, typed description of a host-scoped nft
@@ -613,7 +616,8 @@ func inspectZapret(path string) (ZapretReport, FileEvidence, error) {
 	}
 	report := ZapretReport{Path: path, SHA256: evidence.SHA256, Ownership: "foreign/manual", QueueSafe: true}
 	lines := 0
-	for _, token := range zapretTokens(raw) {
+	tokens := zapretTokens(raw)
+	for _, token := range tokens {
 		lines++
 		if lines > maxZapretLines {
 			return ZapretReport{}, FileEvidence{}, errors.New("Zapret argument file has too many lines")
@@ -645,7 +649,77 @@ func inspectZapret(path string) (ZapretReport, FileEvidence, error) {
 	if report.Queue == 0 {
 		return ZapretReport{}, FileEvidence{}, errors.New("Zapret argument file has no queue number")
 	}
+	report.TypedStrategy, report.TypedModelReady, report.ModelBlockers = classifyTypedStrategy(tokens)
 	return report, evidence, nil
+}
+
+// classifyTypedStrategy deliberately recognizes only the small, audited
+// device-profile vocabulary. A readable nfqws argument file is not a typed
+// managed profile: multi-stage hostlist/ipset strategies and payload assets
+// remain blocked until they have their own structured model and ownership
+// manifest.
+func classifyTypedStrategy(tokens []string) (string, bool, []string) {
+	normalized := normalizeStrategyTokens(tokens)
+	const tvStrategy = "tv-fake-multidisorder-v1"
+	expected := []string{
+		"--filter-tcp=443",
+		"--dpi-desync=fake,multidisorder",
+		"--dpi-desync-split-pos=1,midsld",
+		"--dpi-desync-fooling=badseq,md5sig",
+	}
+	if len(normalized) == len(expected) {
+		match := true
+		for index := range expected {
+			if normalized[index] != expected[index] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return tvStrategy, true, nil
+		}
+	}
+	blockers := []string{"nfqws strategy is not in the audited typed profile vocabulary"}
+	for _, token := range normalized {
+		if strings.HasPrefix(token, "--hostlist") || strings.HasPrefix(token, "--ipset") || strings.HasPrefix(token, "--dpi-desync-fake-") || token == "--new" {
+			blockers = append(blockers, "strategy uses multi-stage or external hostlist/ipset/payload assets")
+			break
+		}
+	}
+	return "", false, uniqueStrings(blockers)
+}
+
+func normalizeStrategyTokens(tokens []string) []string {
+	result := make([]string, 0, len(tokens))
+	for index := 0; index < len(tokens); index++ {
+		token := strings.TrimSpace(tokens[index])
+		if token == "" || token == "/usr/bin/nfqws" || strings.HasPrefix(token, "--qnum=") || token == "--qnum" {
+			continue
+		}
+		if token == "multidisorder" && len(result) > 0 && result[len(result)-1] == "--dpi-desync=fake" {
+			result[len(result)-1] = "--dpi-desync=fake,multidisorder"
+			continue
+		}
+		if token == "md5sig" && len(result) > 0 && result[len(result)-1] == "--dpi-desync-fooling=badseq" {
+			result[len(result)-1] = "--dpi-desync-fooling=badseq,md5sig"
+			continue
+		}
+		result = append(result, token)
+	}
+	return result
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func zapretTokens(raw []byte) []string {

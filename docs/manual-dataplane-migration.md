@@ -77,6 +77,17 @@ q208 as `device_scoped`/`SEV-1` and refuses to collapse it into the generic
 q205 profile. This is evidence for a migration gate, not permission to alter
 the live table.
 
+The importer now has a second, deliberately narrow readiness signal for
+Zapret. A profile is `typed_model_ready` only when its complete argument
+vector exactly matches an audited FlintRoute profile vocabulary. The current
+TV vector is recognized as `tv-fake-multidisorder-v1`; it is still reported as
+foreign/collision until the exact nft rule, process group, device selector and
+rollback handoff are proven. The LAN-wide q205 vector remains untyped because
+it contains multiple stages plus hostlist/ipset and payload assets. Reading
+its argument file is therefore not evidence that FlintRoute can reproduce or
+clean it safely. Unknown, split, or asset-backed vectors stay fenced and must
+receive a dedicated structured profile/manifest before adoption.
+
 ## Required adoption sequence
 
 1. Preserve a router backup and a private redacted inventory.

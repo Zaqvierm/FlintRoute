@@ -94,6 +94,24 @@ func BuildAdoptionPlan(report Report) (AdoptionPlan, error) {
 		}
 		plan.Resources = append(plan.Resources,
 			AdoptionResource{
+				Kind:          "profile-model",
+				Identifier:    "queue:" + queue,
+				ObservedOwner: "manual-nfqws",
+				OwnershipState: func() string {
+					if zapret.TypedModelReady {
+						return ownershipCollision
+					}
+					return ownershipUnproven
+				}(),
+				Evidence: append([]string{"typed strategy: " + zapret.TypedStrategy}, zapret.ModelBlockers...),
+				RequiredAction: func() string {
+					if zapret.TypedModelReady {
+						return "keep the profile foreign until the exact nft/process handoff is proven"
+					}
+					return "define a structured profile and asset manifest before migration"
+				}(),
+			},
+			AdoptionResource{
 				Kind:           "nfqueue",
 				Identifier:     "queue:" + queue,
 				ObservedOwner:  "manual-nfqws",

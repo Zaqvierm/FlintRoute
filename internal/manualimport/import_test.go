@@ -152,6 +152,45 @@ func TestInspectMarksHostScopedNFTQueueWithoutLeakingSourceIdentity(t *testing.T
 	}
 }
 
+func TestInspectRecognizesOnlyAuditedTypedDeviceStrategy(t *testing.T) {
+	dir := t.TempDir()
+	xrayPath := filepath.Join(dir, "xray.json")
+	q208Path := filepath.Join(dir, "q208.args")
+	writeManualFile(t, xrayPath, minimalXray(testUUID1))
+	writeManualFile(t, q208Path, "/usr/bin/nfqws\x00--qnum=208\x00--filter-tcp=443\x00--dpi-desync=fake\x00multidisorder\x00--dpi-desync-split-pos=1,midsld\x00--dpi-desync-fooling=badseq\x00md5sig\x00")
+	report, err := Inspect(Options{XrayPath: xrayPath, ZapretArgs: []string{q208Path}, GeneratedAt: fixedTime()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Zapret) != 1 || !report.Zapret[0].TypedModelReady || report.Zapret[0].TypedStrategy != "tv-fake-multidisorder-v1" {
+		t.Fatalf("q208 typed strategy was not recognized: %+v", report.Zapret)
+	}
+	plan, err := BuildAdoptionPlan(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var typedResource *AdoptionResource
+	for index := range plan.Resources {
+		if plan.Resources[index].Kind == "profile-model" && plan.Resources[index].Identifier == "queue:208" {
+			typedResource = &plan.Resources[index]
+			break
+		}
+	}
+	if typedResource == nil || typedResource.OwnershipState != ownershipCollision || !contains(typedResource.Evidence, "typed strategy: tv-fake-multidisorder-v1") {
+		t.Fatalf("typed q208 handoff was not fenced in the plan: %+v", plan.Resources)
+	}
+
+	q205Path := filepath.Join(dir, "q205.args")
+	writeManualFile(t, q205Path, "--qnum=205\n--hostlist=/etc/flint-manual/list.txt\n--dpi-desync=fake\n--new\n--filter-tcp=443\n")
+	report, err = Inspect(Options{XrayPath: xrayPath, ZapretArgs: []string{q205Path}, GeneratedAt: fixedTime()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Zapret) != 1 || report.Zapret[0].TypedModelReady || len(report.Zapret[0].ModelBlockers) == 0 {
+		t.Fatalf("q205 unsupported strategy was not fenced: %+v", report.Zapret)
+	}
+}
+
 func contains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
