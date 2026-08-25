@@ -209,6 +209,13 @@ test.describe('FlintRoute UI v2', () => {
     await expect(page.getByRole('heading', { name: 'Быстрая настройка' })).toBeVisible();
   });
 
+  test('keeps recovery reachable while first-run setup is incomplete', async ({ page }) => {
+    await mockAPI(page, { bootstrapRequired: true, recoveryStatus: 'starting' });
+    await page.goto(`/?screen=${encodeURIComponent('Ревизии и recovery')}`);
+    await expect(page.getByRole('heading', { name: 'Ревизии и recovery' })).toBeVisible();
+    await expect(page.getByText('Изменения временно заблокированы')).toBeVisible();
+  });
+
   test('loads setup provider state when the wizard first opens', async ({ page }) => {
     const setupRequests: string[] = [];
     page.on('request', (request) => {

@@ -355,9 +355,14 @@ function App() {
       setOnboarding(nextOnboarding);
       if (nextRevisions && nextRevisions.config_version <= 1 && nextServices.length === 0 && nextOnboarding?.completed !== true) {
         const firstRunScreen = navigation[0].screens[0];
-        // The URL is the navigation source of truth. Invalid/old URLs and
-        // stale local preferences must still land on the resumable wizard.
-        if (screenFromLocation() !== firstRunScreen) selectScreen(firstRunScreen);
+        const currentLocation = screenFromLocation();
+        // First-run should own the initial Overview, not trap every other
+        // screen. Recovery, diagnostics and read-only component screens must
+        // remain reachable while setup is incomplete; otherwise the user can
+        // see a recovery lock but cannot open the page that explains it.
+        if (currentLocation === 'Обзор' || (currentLocation === null && activeScreen === 'Обзор')) {
+          selectScreen(firstRunScreen);
+        }
       }
       const optional = await Promise.allSettled([
         maybe(needsChanges, 'changes', () => getChanges(signal), changes),
