@@ -111,12 +111,24 @@ func BuildAdoptionPlan(report Report) (AdoptionPlan, error) {
 			},
 		)
 		if zapret.DeviceScoped {
+			evidence := []string{"nft evidence contains a host-scoped source rule for this queue; source identity is intentionally redacted"}
+			if scope := zapret.DeviceScope; scope != nil {
+				evidence = append(evidence,
+					"scope fingerprint: "+scope.ScopeFingerprint,
+					"tcp queue ports: "+strings.Join(scope.TCPPorts, ","),
+					"udp drop ports: "+strings.Join(scope.UDPDropPorts, ","),
+					"source rule count: "+strconv.Itoa(scope.SourceRuleCount),
+				)
+				if scope.ScopeConflict {
+					evidence = append(evidence, "scope conflict: multiple host scopes were observed for one queue")
+				}
+			}
 			plan.Resources = append(plan.Resources, AdoptionResource{
 				Kind:           "device-scope",
 				Identifier:     "queue:" + queue,
 				ObservedOwner:  "manual-nft",
 				OwnershipState: ownershipCollision,
-				Evidence:       []string{"nft evidence contains a host-scoped source rule for this queue; source identity is intentionally redacted"},
+				Evidence:       evidence,
 				RequiredAction: "model and prove the exact device binding, queue lifecycle and rollback before importing this profile",
 			})
 		}

@@ -63,8 +63,9 @@ The current importer therefore reports these blocking conflicts:
 
 The importer also inspects the supplied nft evidence for host-scoped source
 rules on queue verdicts. A full-length host address (for example, a `/32`)
-marks that queue as `device_scoped` in the report; the source identity itself
-is never copied into the redacted report. The review plan adds a separate
+marks that queue as `device_scoped` and records only an opaque per-report
+scope ID plus typed TCP/UDP port facts; the source identity itself is never
+copied or hashed into the redacted report. The review plan adds a separate
 `device-scope` collision resource and keeps that queue foreign until the
 device selector, NFQUEUE/process lifecycle, and rollback boundary are all
 typed and proven. A subnet rule such as `192.168.0.0/24` is not treated as a

@@ -37,12 +37,13 @@ const (
 )
 
 var (
-	tagPattern      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
-	queueValue      = regexp.MustCompile(`^--qnum(?:=|\s+)([0-9]+)$`)
-	optionValue     = regexp.MustCompile(`^--(filter-(?:tcp|udp)|dpi-desync)(?:=|\s+)(.+)$`)
-	uuidPattern     = regexp.MustCompile(`^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[1-5][a-fA-F0-9]{3}-[89abAB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}$`)
-	nftSourceValue  = regexp.MustCompile(`(?i)\b(?:ip|ip6)\s+saddr\s+([0-9a-f:.\/]+)`)
-	nftQueueValue   = regexp.MustCompile(`(?i)\bqueue(?:\s+flags\s+[^\s]+)*\s+to\s+([0-9]+)\b`)
+	tagPattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	queueValue     = regexp.MustCompile(`^--qnum(?:=|\s+)([0-9]+)$`)
+	optionValue    = regexp.MustCompile(`^--(filter-(?:tcp|udp)|dpi-desync)(?:=|\s+)(.+)$`)
+	uuidPattern    = regexp.MustCompile(`^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[1-5][a-fA-F0-9]{3}-[89abAB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}$`)
+	nftSourceValue = regexp.MustCompile(`(?i)\b(?:ip|ip6)\s+saddr\s+([0-9a-f:.\/]+)`)
+	nftQueueValue  = regexp.MustCompile(`(?i)\bqueue(?:\s+flags\s+[^\s]+)*\s+to\s+([0-9]+)\b`)
+	nftPortValue   = regexp.MustCompile(`(?i)\b(tcp|udp)\s+dport\s+(\{[^}]+\}|[0-9]+(?:-[0-9]+)?)`)
 )
 
 // Options identifies manually maintained files. All paths are read-only
@@ -105,14 +106,28 @@ type ServerSummary struct {
 }
 
 type ZapretReport struct {
-	Path         string   `json:"path"`
-	SHA256       string   `json:"sha256"`
-	Queue        int      `json:"queue"`
-	Filters      []string `json:"filters,omitempty"`
-	Desync       []string `json:"desync,omitempty"`
-	Ownership    string   `json:"ownership"`
-	QueueSafe    bool     `json:"queue_safe"`
-	DeviceScoped bool     `json:"device_scoped,omitempty"`
+	Path         string             `json:"path"`
+	SHA256       string             `json:"sha256"`
+	Queue        int                `json:"queue"`
+	Filters      []string           `json:"filters,omitempty"`
+	Desync       []string           `json:"desync,omitempty"`
+	Ownership    string             `json:"ownership"`
+	QueueSafe    bool               `json:"queue_safe"`
+	DeviceScoped bool               `json:"device_scoped,omitempty"`
+	DeviceScope  *ZapretDeviceScope `json:"device_scope,omitempty"`
+}
+
+// ZapretDeviceScope is a redacted, typed description of a host-scoped nft
+// profile. ScopeFingerprint is an opaque per-report identifier used to join
+// rules without exposing or hashing a low-entropy LAN IP/MAC in the report. It
+// is evidence for a future profile handoff, not an apply instruction.
+type ZapretDeviceScope struct {
+	ScopeFingerprint string   `json:"scope_fingerprint"`
+	Queue            int      `json:"queue"`
+	TCPPorts         []string `json:"tcp_ports,omitempty"`
+	UDPDropPorts     []string `json:"udp_drop_ports,omitempty"`
+	SourceRuleCount  int      `json:"source_rule_count"`
+	ScopeConflict    bool     `json:"scope_conflict,omitempty"`
 }
 
 type Conflict struct {
@@ -217,7 +232,7 @@ func Inspect(opts Options) (Report, error) {
 		}
 		report.Files = append(report.Files, evidence)
 	}
-	deviceScopedQueues := map[int]bool{}
+	deviceScopedQueues := map[int]ZapretDeviceScope{}
 	for _, path := range opts.NFTPaths {
 		if strings.TrimSpace(path) == "" {
 			continue
@@ -231,12 +246,29 @@ func Inspect(opts Options) (Report, error) {
 		if err != nil {
 			return Report{}, fmt.Errorf("inspect manual nft evidence: %w", err)
 		}
-		for queue := range queues {
-			deviceScopedQueues[queue] = true
+		for queue, scope := range queues {
+			if previous, exists := deviceScopedQueues[queue]; exists {
+				if previous.ScopeFingerprint != scope.ScopeFingerprint {
+					previous.ScopeConflict = true
+				}
+				previous.TCPPorts = mergePortSpecs(previous.TCPPorts, scope.TCPPorts)
+				previous.UDPDropPorts = mergePortSpecs(previous.UDPDropPorts, scope.UDPDropPorts)
+				previous.SourceRuleCount += scope.SourceRuleCount
+				deviceScopedQueues[queue] = previous
+				continue
+			}
+			deviceScopedQueues[queue] = scope
 		}
 	}
 	for index := range report.Zapret {
-		report.Zapret[index].DeviceScoped = deviceScopedQueues[report.Zapret[index].Queue]
+		scope, ok := deviceScopedQueues[report.Zapret[index].Queue]
+		report.Zapret[index].DeviceScoped = ok
+		if ok {
+			scopeCopy := scope
+			scopeCopy.TCPPorts = append([]string(nil), scope.TCPPorts...)
+			scopeCopy.UDPDropPorts = append([]string(nil), scope.UDPDropPorts...)
+			report.Zapret[index].DeviceScope = &scopeCopy
+		}
 	}
 
 	report.Conflicts = conflicts(report.Xray, report.Zapret)
@@ -251,36 +283,112 @@ func Inspect(opts Options) (Report, error) {
 	return report, nil
 }
 
-// inspectNFTDeviceScopedQueues extracts only a boolean ownership fact from
+// inspectNFTDeviceScopedQueues extracts only typed, redacted ownership facts from
 // nft evidence. It deliberately does not return source IP/MAC values, so a
 // redacted migration report cannot leak LAN identity. A host-scoped source
-// (an address or a full-length /32 or /128 prefix) on the same rule as a queue
-// verdict is a device-scoped rule and must not be collapsed into a generic
-// Zapret profile.
-func inspectNFTDeviceScopedQueues(raw []byte) (map[int]bool, error) {
-	queues := map[int]bool{}
+// (an address or a full-length /32 or /128 prefix) on a queue verdict is a
+// device-scoped rule and must not be collapsed into a generic Zapret profile.
+func inspectNFTDeviceScopedQueues(raw []byte) (map[int]ZapretDeviceScope, error) {
+	queues := map[int]ZapretDeviceScope{}
+	scopeQueues := map[string]map[int]bool{}
+	udpDrops := map[string][]string{}
+	scopeIDs := map[string]string{}
 	scanner := bufio.NewScanner(bytes.NewReader(raw))
 	scanner.Buffer(make([]byte, 64*1024), maxEvidence)
 	for scanner.Scan() {
 		line := scanner.Text()
 		sourceMatch := nftSourceValue.FindStringSubmatch(line)
-		queueMatch := nftQueueValue.FindStringSubmatch(line)
-		if len(sourceMatch) != 2 || len(queueMatch) != 2 {
+		if len(sourceMatch) != 2 || !hostScopedAddress(sourceMatch[1]) {
 			continue
 		}
-		if !hostScopedAddress(sourceMatch[1]) {
+		scopeFingerprint := scopeID(scopeIDs, sourceMatch[1])
+		portMatch := nftPortValue.FindStringSubmatch(line)
+		if len(portMatch) == 3 && strings.Contains(strings.ToLower(line), " drop") {
+			if strings.EqualFold(portMatch[1], "udp") {
+				udpDrops[scopeFingerprint] = mergePortSpecs(udpDrops[scopeFingerprint], []string{portMatch[2]})
+			}
+		}
+		queueMatch := nftQueueValue.FindStringSubmatch(line)
+		if len(queueMatch) != 2 {
 			continue
 		}
 		queue, err := strconv.Atoi(queueMatch[1])
 		if err != nil || queue < 1 || queue > 65535 {
 			continue
 		}
-		queues[queue] = true
+		scope := queues[queue]
+		if scope.ScopeFingerprint == "" {
+			scope = ZapretDeviceScope{ScopeFingerprint: scopeFingerprint, Queue: queue}
+		} else if scope.ScopeFingerprint != scopeFingerprint {
+			scope.ScopeConflict = true
+		}
+		if len(portMatch) == 3 && strings.EqualFold(portMatch[1], "tcp") {
+			scope.TCPPorts = mergePortSpecs(scope.TCPPorts, []string{portMatch[2]})
+		}
+		scope.SourceRuleCount++
+		queues[queue] = scope
+		if scopeQueues[scopeFingerprint] == nil {
+			scopeQueues[scopeFingerprint] = map[int]bool{}
+		}
+		scopeQueues[scopeFingerprint][queue] = true
+	}
+	for fingerprint, queueSet := range scopeQueues {
+		for queue := range queueSet {
+			scope := queues[queue]
+			scope.UDPDropPorts = mergePortSpecs(scope.UDPDropPorts, udpDrops[fingerprint])
+			queues[queue] = scope
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
 	return queues, nil
+}
+
+func scopeID(ids map[string]string, rawSource string) string {
+	if id := ids[rawSource]; id != "" {
+		return id
+	}
+	id := fmt.Sprintf("scope-%03d", len(ids)+1)
+	ids[rawSource] = id
+	return id
+}
+
+func mergePortSpecs(existing, additions []string) []string {
+	seen := make(map[string]bool, len(existing)+len(additions))
+	for _, value := range append(append([]string(nil), existing...), additions...) {
+		for _, part := range strings.Split(strings.Trim(value, "{} "), ",") {
+			part = strings.TrimSpace(part)
+			if part == "" || !validNFTPortSpec(part) {
+				continue
+			}
+			seen[part] = true
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for value := range seen {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func validNFTPortSpec(value string) bool {
+	parts := strings.Split(value, "-")
+	if len(parts) > 2 {
+		return false
+	}
+	start, err := strconv.Atoi(parts[0])
+	if err != nil || start < 1 || start > 65535 {
+		return false
+	}
+	if len(parts) == 2 {
+		end, err := strconv.Atoi(parts[1])
+		if err != nil || end < start || end > 65535 {
+			return false
+		}
+	}
+	return true
 }
 
 func hostScopedAddress(value string) bool {

@@ -127,6 +127,9 @@ func TestInspectMarksHostScopedNFTQueueWithoutLeakingSourceIdentity(t *testing.T
 	if len(report.Zapret) != 2 || report.Zapret[0].DeviceScoped || !report.Zapret[1].DeviceScoped {
 		t.Fatalf("host-scoped q208 evidence was not isolated: %+v", report.Zapret)
 	}
+	if scope := report.Zapret[1].DeviceScope; scope == nil || scope.Queue != 208 || scope.ScopeFingerprint == "" || !contains(scope.TCPPorts, "443") || !contains(scope.UDPDropPorts, "443") || scope.ScopeConflict {
+		t.Fatalf("typed q208 scope evidence is incomplete: %+v", report.Zapret[1].DeviceScope)
+	}
 	encoded, err := json.Marshal(report)
 	if err != nil {
 		t.Fatal(err)
@@ -147,6 +150,15 @@ func TestInspectMarksHostScopedNFTQueueWithoutLeakingSourceIdentity(t *testing.T
 	if !found {
 		t.Fatalf("device-scoped queue was not fenced in adoption plan: %+v", plan.Resources)
 	}
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestInspectRejectsPrivateVLESSEndpoint(t *testing.T) {
