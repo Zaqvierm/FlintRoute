@@ -117,3 +117,31 @@ rollback gates.
 
 Until those steps exist, the correct state is `blocked_on_ownership_handoff`.
 An Xray config file or a listening port alone is not proof of a safe migration.
+
+## Flint 2 handoff boundary (current)
+
+The current manual Flint 2 dataplane has a larger Xray topology than the
+read-only candidate builder: twelve loopback SOCKS inbounds, two transparent
+inbounds, and one DNS inbound. The candidate builder intentionally emits only
+the SOCKS/VLESS subset because the managed artifact renderer needs typed
+transparent-proxy, DNS-proxy, mark, route-table, and outbound-bundle state. It
+must not be treated as a drop-in replacement for the manual service.
+
+The safe implementation order is therefore:
+
+1. Import and validate the full Xray topology into a typed, hash-bound bundle,
+   including transparent/DNS inbounds and exact outbound/rule references.
+2. Bind that bundle to the existing TPROXY mark/table and prove the generated
+   config preserves the manual listener and DNS contracts without starting a
+   second Xray.
+3. Add the manual DNS include and runtime readiness to the same ownership and
+   rollback manifest; do not restart dnsmasq as a side effect of inspection.
+4. Model the shared nft objects at exact rule/generation granularity. A table
+   name or queue number is not ownership proof; foreign rules remain untouched.
+5. Adopt q208 only after its device selector, process group, and rollback are
+   typed. Adopt q205 last, after its multi-stage assets have a bounded manifest
+   with hashes and cleanup ownership.
+
+Each phase needs its own candidate, backup, post-apply OpenAI/Telegram probe,
+and recovery evidence. Until phase 1 is complete, `apply_allowed` remains
+false even when individual SOCKS servers or a Zapret vector are readable.
