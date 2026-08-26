@@ -17,6 +17,12 @@ server addresses, duplicate SOCKS/VLESS topology, missing SOCKS routing rules,
 symlink inputs, and reserved NFQUEUE 0/1. It keeps manual resources marked as
 `foreign/manual` until ownership is proven.
 
+The full-topology review candidate additionally rejects non-loopback inbounds,
+unsupported inbound/outbound protocols, unsafe DNS inbounds, missing routing
+references, and a TPROXY topology without an explicit blackhole fail-closed
+rule. This validation is deliberately a staging gate; it does not claim that
+the managed renderer can yet replace the live manual service.
+
 Add `--plan` to print a deterministic, review-only ownership handoff plan next
 to the report:
 
@@ -42,6 +48,29 @@ router-policy manual-import \
   --nft C:\private\manual\base.nft \
   --out-bundle C:\private\candidates\manual-vless.json
 ```
+
+Для текущего ручного Xray можно дополнительно получить отдельный полный
+кандидат для ревью:
+
+```text
+router-policy manual-import \
+  --xray C:\private\manual\xray.json \
+  --out-full-bundle C:\private\candidates\manual-full-topology.json
+```
+
+`--out-full-bundle` сохраняет только проверенную top-level схему и loopback
+топологию TPROXY/DNS/SOCKS/VLESS. Это не разрешение на запуск: кандидат всё
+ещё review-only, а секреты находятся только в локальном файле с режимом 0600.
+Он нужен, чтобы следующим шагом связать полный Xray topology с owned nft,
+dnsmasq, сервисом и rollback в одном ChangeSet. Пока такой binding не доказан,
+ручной процесс остаётся production owner и не останавливается.
+
+For the current manual Xray, an additional full-topology review candidate can
+be generated with `--out-full-bundle`. It stores the validated loopback
+TPROXY/DNS/SOCKS/VLESS topology in a local 0600 artifact. This is review-only,
+not launch permission: ownership of listeners, nft, dnsmasq, services and
+rollback must still be bound in one ChangeSet before the manual owner is
+stopped.
 
 ## Why the candidate is not activated automatically
 

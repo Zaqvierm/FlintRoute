@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"router-policy/internal/xraybundle"
 )
 
 const testUUID1 = "11111111-1111-4111-8111-111111111111"
@@ -240,6 +243,180 @@ func TestInspectRejectsPrivateVLESSEndpoint(t *testing.T) {
 	}
 }
 
+func TestInspectBuildsFullTopologyReviewCandidateWithoutReportingSecrets(t *testing.T) {
+	dir := t.TempDir()
+	xrayPath := filepath.Join(dir, "xray.json")
+	outPath := filepath.Join(dir, "full-candidate.json")
+	writeManualFile(t, xrayPath, fullXray(testUUID1))
+
+	report, err := Inspect(Options{XrayPath: xrayPath, OutputFullBundle: outPath, GeneratedAt: fixedTime()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Xray.FullBundleReady || report.Xray.FullBundleSHA256 == "" {
+		t.Fatalf("full candidate was not recorded: %+v", report.Xray)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), testUUID1) {
+		t.Fatal("full-topology report contains a VLESS credential")
+	}
+	bundle, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(bundle), testUUID1) || !strings.Contains(string(bundle), "router-policy-tproxy-v4") || !strings.Contains(string(bundle), "router-policy-dns") || !strings.Contains(string(bundle), "router-policy-tproxy-drop") {
+		t.Fatalf("full candidate did not preserve reviewed topology: %s", bundle)
+	}
+	if got := xraybundle.Hash(bundle); got != report.Xray.FullBundleSHA256 {
+		t.Fatalf("full candidate hash mismatch: got=%s want=%s", got, report.Xray.FullBundleSHA256)
+	}
+}
+
+func TestInspectSummarizesManualPolicyRulesWithoutSecrets(t *testing.T) {
+	dir := t.TempDir()
+	xrayPath := filepath.Join(dir, "xray.json")
+	dnsPath := filepath.Join(dir, "dnsmasq.conf")
+	writeManualFile(t, xrayPath, fullXray(testUUID1))
+	writeManualFile(t, dnsPath, "# ignored\nserver=/chatgpt.com/openai.com/127.0.0.1#14010\nnftset=/chatgpt.com/4#inet#flintroute_lite#vpn_dns4\n")
+
+	report, err := Inspect(Options{XrayPath: xrayPath, DNSMasqPath: dnsPath, GeneratedAt: fixedTime()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var xrayRoute, dnsServer, dnsSet bool
+	for _, policy := range report.Policies {
+		switch policy.Kind + ":" + policy.Domain {
+		case "xray-route:domain:example.com":
+			xrayRoute = policy.OutboundTag == "proxy-1"
+		case "dnsmasq-server:domain:chatgpt.com":
+			dnsServer = policy.Target == "127.0.0.1#14010"
+		case "dnsmasq-server:domain:openai.com":
+			dnsServer = dnsServer && policy.Target == "127.0.0.1#14010"
+		case "dnsmasq-nftset:domain:chatgpt.com":
+			dnsSet = policy.Target == "4#inet#flintroute_lite#vpn_dns4"
+		}
+	}
+	if !xrayRoute || !dnsServer || !dnsSet {
+		t.Fatalf("manual policy inventory is incomplete: %+v", report.Policies)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), testUUID1) {
+		t.Fatal("policy inventory contains a VLESS credential")
+	}
+	plan, err := BuildAdoptionPlan(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var foundInventory bool
+	for _, resource := range plan.Resources {
+		if resource.Kind == "policy-inventory" && resource.Identifier == "manual-policy-rules" {
+			foundInventory = true
+		}
+	}
+	if !foundInventory {
+		t.Fatalf("adoption plan omitted policy inventory: %+v", plan.Resources)
+	}
+}
+
+func TestInspectPolicyInventoryRejectsUnsafeTagsAndTargets(t *testing.T) {
+	dir := t.TempDir()
+	xrayPath := filepath.Join(dir, "xray.json")
+	dnsPath := filepath.Join(dir, "dnsmasq.conf")
+	unsafeTag := strings.Replace(fullXray(testUUID1), `"outboundTag":"proxy-1"`, `"outboundTag":"`+testUUID1+`"`, 1)
+	writeManualFile(t, xrayPath, unsafeTag)
+	if _, err := Inspect(Options{XrayPath: xrayPath, GeneratedAt: fixedTime()}); err == nil || !strings.Contains(err.Error(), "unsafe outbound tag") {
+		t.Fatalf("expected unsafe Xray tag rejection, got %v", err)
+	}
+	writeManualFile(t, xrayPath, fullXray(testUUID1))
+	writeManualFile(t, dnsPath, "server=/example.com/10.0.0.1#53\n")
+	report, err := Inspect(Options{XrayPath: xrayPath, DNSMasqPath: dnsPath, GeneratedAt: fixedTime()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, policy := range report.Policies {
+		if policy.Kind == "dnsmasq-server" {
+			t.Fatalf("unsafe DNS target was included in inventory: %+v", policy)
+		}
+	}
+}
+
+func TestFullTopologyCandidateRejectsLANInboundAndMissingFailClosed(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(string) string
+		want   string
+	}{
+		{name: "lan inbound", mutate: func(raw string) string {
+			return strings.Replace(raw, `"listen":"127.0.0.1","port":12345`, `"listen":"192.168.0.1","port":12345`, 1)
+		}, want: "must listen on loopback"},
+		{name: "no fail closed", mutate: func(raw string) string {
+			return strings.Replace(raw, `,{"type":"field","inboundTag":["router-policy-tproxy-v4"],"outboundTag":"router-policy-tproxy-drop"}`, "", 1)
+		}, want: "no explicit fail-closed rule"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			xrayPath := filepath.Join(dir, "xray.json")
+			writeManualFile(t, xrayPath, test.mutate(fullXray(testUUID1)))
+			_, err := Inspect(Options{XrayPath: xrayPath, OutputFullBundle: filepath.Join(dir, "candidate.json")})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("expected %q, got %v", test.want, err)
+			}
+		})
+	}
+}
+
+func TestInspectPreservesDualStackListenerEndpoints(t *testing.T) {
+	dir := t.TempDir()
+	xrayPath := filepath.Join(dir, "xray.json")
+	raw := strings.Replace(fullXray(testUUID1), `{"tag":"router-policy-dns"`, `{"tag":"router-policy-tproxy-v6","listen":"::1","port":12345,"protocol":"dokodemo-door","settings":{"followRedirect":true,"network":"tcp,udp"},"streamSettings":{"sockopt":{"tproxy":"tproxy"}}},{"tag":"router-policy-dns"`, 1)
+	raw = strings.Replace(raw, `"inboundTag":["router-policy-tproxy-v4"]`, `"inboundTag":["router-policy-tproxy-v4","router-policy-tproxy-v6"]`, 1)
+	writeManualFile(t, xrayPath, raw)
+	report, err := Inspect(Options{XrayPath: xrayPath, OutputFullBundle: filepath.Join(dir, "candidate.json")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"127.0.0.1:12000", "127.0.0.1:12345", "127.0.0.1:14010", "[::1]:12345"}
+	if !reflect.DeepEqual(report.Xray.ListenerEndpoints, want) {
+		t.Fatalf("listener endpoints lost address-family identity: got=%v want=%v", report.Xray.ListenerEndpoints, want)
+	}
+	if len(report.Xray.ListenerPorts) != len(want) {
+		t.Fatalf("legacy listener port count mismatch: got=%v", report.Xray.ListenerPorts)
+	}
+}
+
+func TestBuildAdoptionPlanUsesFullCandidateAndFencesHandoff(t *testing.T) {
+	plan, err := BuildAdoptionPlan(Report{
+		GeneratedAt: fixedTime().Format(time.RFC3339),
+		Xray: XrayReport{
+			Transparent:       1,
+			DNSInbounds:       1,
+			FullBundleReady:   true,
+			FullBundleSHA256:  "sha256:full",
+			ListenerEndpoints: []string{"127.0.0.1:12345"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.ApplyAllowed || plan.CandidateSHA256 != "sha256:full" {
+		t.Fatalf("full candidate was not carried as fenced review input: %+v", plan)
+	}
+	var foundHandoff, foundOldScope bool
+	for _, blocker := range plan.Blockers {
+		foundHandoff = foundHandoff || blocker.Resource == "manual Xray topology handoff"
+		foundOldScope = foundOldScope || blocker.Resource == "manual Xray candidate scope"
+	}
+	if !foundHandoff || foundOldScope {
+		t.Fatalf("full candidate received the wrong blocker set: %+v", plan.Blockers)
+	}
+}
+
 func TestBuildAdoptionPlanNeverAllowsApplyFromReadableManualDataplane(t *testing.T) {
 	dir := t.TempDir()
 	xrayPath := filepath.Join(dir, "xray.json")
@@ -316,6 +493,10 @@ func TestBuildAdoptionPlanFencesSOCKSCandidateWhenManualXrayHasTransparentOrDNSI
 
 func minimalXray(uuid string) string {
 	return `{"inbounds":[{"tag":"socks-proxy-1","listen":"127.0.0.1","port":12000,"protocol":"socks"}],"outbounds":[{"tag":"proxy-1","protocol":"vless","settings":{"vnext":[{"address":"vc9.example.com","port":22231,"users":[{"id":"` + uuid + `","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"tls"}}],"routing":{"rules":[{"type":"field","inboundTag":["socks-proxy-1"],"outboundTag":"proxy-1"}]}}`
+}
+
+func fullXray(uuid string) string {
+	return `{"log":{"loglevel":"warning"},"inbounds":[{"tag":"router-policy-tproxy-v4","listen":"127.0.0.1","port":12345,"protocol":"dokodemo-door","settings":{"followRedirect":true,"network":"tcp,udp"},"streamSettings":{"sockopt":{"tproxy":"tproxy"}}},{"tag":"router-policy-dns","listen":"127.0.0.1","port":14010,"protocol":"dokodemo-door","settings":{"address":"1.1.1.1","port":53,"network":"tcp,udp"}},{"tag":"socks-proxy-1","listen":"127.0.0.1","port":12000,"protocol":"socks"}],"outbounds":[{"tag":"proxy-1","protocol":"vless","settings":{"vnext":[{"address":"vc9.example.com","port":443,"users":[{"id":"` + uuid + `","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"tls"}},{"tag":"direct","protocol":"freedom"},{"tag":"router-policy-tproxy-drop","protocol":"blackhole"}],"routing":{"domainStrategy":"AsIs","rules":[{"type":"field","inboundTag":["router-policy-tproxy-v4"],"outboundTag":"proxy-1","domain":["domain:example.com"]},{"type":"field","inboundTag":["router-policy-tproxy-v4"],"outboundTag":"router-policy-tproxy-drop"},{"type":"field","inboundTag":["router-policy-dns"],"outboundTag":"proxy-1"},{"type":"field","inboundTag":["socks-proxy-1"],"outboundTag":"proxy-1"}]}}`
 }
 
 func writeManualFile(t *testing.T, path, body string) {

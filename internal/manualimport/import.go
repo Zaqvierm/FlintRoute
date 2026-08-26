@@ -34,16 +34,19 @@ const (
 	maxXrayBytes   = 4 << 20
 	maxEvidence    = 1 << 20
 	maxZapretLines = 4096
+	maxPolicyRules = 2048
 )
 
 var (
-	tagPattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
-	queueValue     = regexp.MustCompile(`^--qnum(?:=|\s+)([0-9]+)$`)
-	optionValue    = regexp.MustCompile(`^--(filter-(?:tcp|udp)|dpi-desync)(?:=|\s+)(.+)$`)
-	uuidPattern    = regexp.MustCompile(`^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[1-5][a-fA-F0-9]{3}-[89abAB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}$`)
-	nftSourceValue = regexp.MustCompile(`(?i)\b(?:ip|ip6)\s+saddr\s+([0-9a-f:.\/]+)`)
-	nftQueueValue  = regexp.MustCompile(`(?i)\bqueue(?:\s+flags\s+[^\s]+)*\s+to\s+([0-9]+)\b`)
-	nftPortValue   = regexp.MustCompile(`(?i)\b(tcp|udp)\s+dport\s+(\{[^}]+\}|[0-9]+(?:-[0-9]+)?)`)
+	tagPattern        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	queueValue        = regexp.MustCompile(`^--qnum(?:=|\s+)([0-9]+)$`)
+	optionValue       = regexp.MustCompile(`^--(filter-(?:tcp|udp)|dpi-desync)(?:=|\s+)(.+)$`)
+	uuidPattern       = regexp.MustCompile(`^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[1-5][a-fA-F0-9]{3}-[89abAB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}$`)
+	nftSourceValue    = regexp.MustCompile(`(?i)\b(?:ip|ip6)\s+saddr\s+([0-9a-f:.\/]+)`)
+	nftQueueValue     = regexp.MustCompile(`(?i)\bqueue(?:\s+flags\s+[^\s]+)*\s+to\s+([0-9]+)\b`)
+	nftPortValue      = regexp.MustCompile(`(?i)\b(tcp|udp)\s+dport\s+(\{[^}]+\}|[0-9]+(?:-[0-9]+)?)`)
+	loopbackDNSTarget = regexp.MustCompile(`^(?:127\.0\.0\.1|\[?::1\]?):(?:[0-9]{1,5})$`)
+	nftsetTarget      = regexp.MustCompile(`^[46]#inet#[A-Za-z0-9_.-]{1,64}#[A-Za-z0-9_.-]{1,64}$`)
 )
 
 // Options identifies manually maintained files. All paths are read-only
@@ -55,7 +58,12 @@ type Options struct {
 	DNSMasqPath  string
 	NFTPaths     []string
 	OutputBundle string
-	GeneratedAt  time.Time
+	// OutputFullBundle requests a review-only candidate that preserves the
+	// complete loopback Xray topology (TPROXY, DNS and SOCKS/VLESS). It is
+	// intentionally separate from OutputBundle: the latter is the narrow
+	// SOCKS/VLESS bundle consumed by the managed renderer.
+	OutputFullBundle string
+	GeneratedAt      time.Time
 }
 
 // Report is intentionally safe to print. It contains counts, hashes and
@@ -67,6 +75,7 @@ type Report struct {
 	MigrationState string         `json:"migration_state"`
 	Files          []FileEvidence `json:"files"`
 	Xray           XrayReport     `json:"xray"`
+	Policies       []PolicyRule   `json:"policies,omitempty"`
 	Zapret         []ZapretReport `json:"zapret,omitempty"`
 	Conflicts      []Conflict     `json:"conflicts"`
 	NextSteps      []string       `json:"next_steps"`
@@ -80,18 +89,25 @@ type FileEvidence struct {
 }
 
 type XrayReport struct {
-	SourceSHA256  string          `json:"source_sha256"`
-	InboundCount  int             `json:"inbound_count"`
-	SOCKSCount    int             `json:"socks_count"`
-	VLESSCount    int             `json:"vless_count"`
-	Transparent   int             `json:"transparent_inbounds"`
-	DNSInbounds   int             `json:"dns_inbounds"`
-	ListenerPorts []int           `json:"listener_ports"`
-	Servers       []ServerSummary `json:"servers"`
-	BundleSHA256  string          `json:"bundle_sha256,omitempty"`
-	BundlePath    string          `json:"bundle_path,omitempty"`
-	BundleReady   bool            `json:"bundle_ready"`
-	BundleScope   string          `json:"bundle_scope,omitempty"`
+	SourceSHA256  string `json:"source_sha256"`
+	InboundCount  int    `json:"inbound_count"`
+	SOCKSCount    int    `json:"socks_count"`
+	VLESSCount    int    `json:"vless_count"`
+	Transparent   int    `json:"transparent_inbounds"`
+	DNSInbounds   int    `json:"dns_inbounds"`
+	ListenerPorts []int  `json:"listener_ports"`
+	// ListenerEndpoints preserves address-family identity. ListenerPorts is
+	// retained for schema compatibility, but a port alone is ambiguous when a
+	// manual topology exposes both 127.0.0.1 and ::1 on the same port.
+	ListenerEndpoints []string        `json:"listener_endpoints,omitempty"`
+	Servers           []ServerSummary `json:"servers"`
+	BundleSHA256      string          `json:"bundle_sha256,omitempty"`
+	BundlePath        string          `json:"bundle_path,omitempty"`
+	BundleReady       bool            `json:"bundle_ready"`
+	BundleScope       string          `json:"bundle_scope,omitempty"`
+	FullBundleSHA256  string          `json:"full_bundle_sha256,omitempty"`
+	FullBundlePath    string          `json:"full_bundle_path,omitempty"`
+	FullBundleReady   bool            `json:"full_bundle_ready,omitempty"`
 }
 
 type ServerSummary struct {
@@ -104,6 +120,19 @@ type ServerSummary struct {
 	InboundTag string `json:"inbound_tag"`
 	SOCKS5     string `json:"socks5"`
 	Credential bool   `json:"credential_present"`
+}
+
+// PolicyRule is a redacted, typed summary of a manual routing/DNS rule. It is
+// inventory evidence only: it never carries provider JSON, credentials or an
+// instruction that the adapter can execute. The target is restricted to the
+// small endpoint/token forms emitted by the manual dnsmasq include.
+type PolicyRule struct {
+	Source      string   `json:"source"`
+	Kind        string   `json:"kind"`
+	Domain      string   `json:"domain"`
+	InboundTags []string `json:"inbound_tags,omitempty"`
+	OutboundTag string   `json:"outbound_tag,omitempty"`
+	Target      string   `json:"target,omitempty"`
 }
 
 type ZapretReport struct {
@@ -217,6 +246,11 @@ func Inspect(opts Options) (Report, error) {
 	}
 	xrayReport.SourceSHA256 = evidence.SHA256
 	report.Xray = xrayReport
+	policies, err := inspectXrayPolicies(raw)
+	if err != nil {
+		return Report{}, fmt.Errorf("inspect manual Xray policy: %w", err)
+	}
+	report.Policies = append(report.Policies, policies...)
 
 	for _, path := range opts.ZapretArgs {
 		if strings.TrimSpace(path) == "" {
@@ -230,12 +264,22 @@ func Inspect(opts Options) (Report, error) {
 		report.Files = append(report.Files, evidence)
 	}
 	if opts.DNSMasqPath != "" {
-		evidence, err := evidenceOnly(opts.DNSMasqPath, "manual-dnsmasq")
+		rawDNS, evidence, err := readBounded(opts.DNSMasqPath, maxEvidence, "manual-dnsmasq")
 		if err != nil {
 			return Report{}, err
 		}
 		report.Files = append(report.Files, evidence)
+		dnsPolicies, err := inspectDNSMasqPolicies(rawDNS)
+		if err != nil {
+			return Report{}, fmt.Errorf("inspect manual dnsmasq policy: %w", err)
+		}
+		report.Policies = append(report.Policies, dnsPolicies...)
 	}
+	sort.SliceStable(report.Policies, func(i, j int) bool {
+		left := strings.Join([]string{report.Policies[i].Source, report.Policies[i].Kind, report.Policies[i].Domain, report.Policies[i].OutboundTag, report.Policies[i].Target}, "\x00")
+		right := strings.Join([]string{report.Policies[j].Source, report.Policies[j].Kind, report.Policies[j].Domain, report.Policies[j].OutboundTag, report.Policies[j].Target}, "\x00")
+		return left < right
+	})
 	deviceScopedQueues := map[int]ZapretDeviceScope{}
 	for _, path := range opts.NFTPaths {
 		if strings.TrimSpace(path) == "" {
@@ -284,6 +328,18 @@ func Inspect(opts Options) (Report, error) {
 		report.Xray.BundlePath = opts.OutputBundle
 		report.Xray.BundleReady = true
 		report.Xray.BundleScope = "loopback_socks_vless_only"
+	}
+	if opts.OutputFullBundle != "" {
+		fullBundle, err := fullTopologyCandidate(raw)
+		if err != nil {
+			return Report{}, fmt.Errorf("validate full Xray migration candidate: %w", err)
+		}
+		if err := writeCandidate(opts.OutputFullBundle, fullBundle); err != nil {
+			return Report{}, fmt.Errorf("write full Xray migration candidate: %w", err)
+		}
+		report.Xray.FullBundleSHA256 = xraybundle.Hash(fullBundle)
+		report.Xray.FullBundlePath = opts.OutputFullBundle
+		report.Xray.FullBundleReady = true
 	}
 	return report, nil
 }
@@ -421,6 +477,7 @@ func inspectXray(raw []byte) (XrayReport, []byte, error) {
 	listenersSeen := make(map[string]bool)
 	var report XrayReport
 	ports := make([]int, 0, len(cfg.Inbounds))
+	endpoints := make([]string, 0, len(cfg.Inbounds))
 	for _, rawInbound := range cfg.Inbounds {
 		var value inboundMeta
 		if err := json.Unmarshal(rawInbound, &value); err != nil {
@@ -439,6 +496,7 @@ func inspectXray(raw []byte) (XrayReport, []byte, error) {
 		listenersSeen[listenerKey] = true
 		inbounds[value.Tag] = value
 		ports = append(ports, value.Port)
+		endpoints = append(endpoints, net.JoinHostPort(value.Listen, strconv.Itoa(value.Port)))
 		report.InboundCount++
 		switch {
 		case value.Protocol == "socks" && value.Listen == "127.0.0.1":
@@ -542,6 +600,8 @@ func inspectXray(raw []byte) (XrayReport, []byte, error) {
 	report.VLESSCount = len(selectedOutbounds)
 	report.ListenerPorts = append([]int(nil), ports...)
 	sort.Ints(report.ListenerPorts)
+	report.ListenerEndpoints = append([]string(nil), endpoints...)
+	sort.Strings(report.ListenerEndpoints)
 
 	bundleRoot := struct {
 		Log       map[string]string `json:"log"`
@@ -564,6 +624,456 @@ func inspectXray(raw []byte) (XrayReport, []byte, error) {
 	}
 	bundle = append(bundle, '\n')
 	return report, bundle, nil
+}
+
+// inspectXrayPolicies extracts only domain-bearing field rules. It is kept
+// separate from inspectXray so the server inventory and the policy inventory
+// can evolve independently. Unknown Xray match selectors are intentionally
+// omitted rather than copied into a report that might later be fed to a
+// renderer.
+func inspectXrayPolicies(raw []byte) ([]PolicyRule, error) {
+	var cfg struct {
+		Routing struct {
+			Rules []json.RawMessage `json:"rules"`
+		} `json:"routing"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if err := decoder.Decode(&cfg); err != nil {
+		return nil, errors.New("manual Xray policy is invalid JSON")
+	}
+	if err := ensureEOF(decoder); err != nil {
+		return nil, errors.New("manual Xray policy has trailing data")
+	}
+	policies := make([]PolicyRule, 0)
+	for _, rawRule := range cfg.Routing.Rules {
+		var value struct {
+			Type        string   `json:"type"`
+			Domain      []string `json:"domain"`
+			InboundTags []string `json:"inboundTag"`
+			OutboundTag string   `json:"outboundTag"`
+		}
+		if err := json.Unmarshal(rawRule, &value); err != nil {
+			return nil, errors.New("manual Xray policy rule is invalid")
+		}
+		if value.Type != "field" || value.OutboundTag == "" {
+			continue
+		}
+		if !safePolicyTag(value.OutboundTag) {
+			return nil, errors.New("manual Xray policy has an unsafe outbound tag")
+		}
+		for _, inboundTag := range value.InboundTags {
+			if !safePolicyTag(inboundTag) {
+				return nil, errors.New("manual Xray policy has an unsafe inbound tag")
+			}
+		}
+		for _, match := range value.Domain {
+			match, ok := safePolicyMatch(match)
+			if !ok {
+				continue
+			}
+			if len(policies) >= maxPolicyRules {
+				return nil, errors.New("manual Xray policy has too many domain rules")
+			}
+			policies = append(policies, PolicyRule{
+				Source:      "manual-xray",
+				Kind:        "xray-route",
+				Domain:      match,
+				InboundTags: append([]string(nil), value.InboundTags...),
+				OutboundTag: value.OutboundTag,
+			})
+		}
+	}
+	return policies, nil
+}
+
+func safePolicyTag(value string) bool {
+	return tagPattern.MatchString(value) && !uuidPattern.MatchString(value)
+}
+
+// inspectDNSMasqPolicies understands only the two forms used by the manual
+// include: server=/domain/endpoint and nftset=/domain/4#family#table#set.
+// Anything else is ignored, because a raw dnsmasq directive is not a safe
+// migration instruction.
+func inspectDNSMasqPolicies(raw []byte) ([]PolicyRule, error) {
+	policies := make([]PolicyRule, 0)
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	scanner.Buffer(make([]byte, 1024), maxEvidence)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		kind, prefix := "", ""
+		switch {
+		case strings.HasPrefix(line, "server=/"):
+			kind, prefix = "dnsmasq-server", "server=/"
+		case strings.HasPrefix(line, "nftset=/"):
+			kind, prefix = "dnsmasq-nftset", "nftset=/"
+		default:
+			continue
+		}
+		value := strings.TrimPrefix(line, prefix)
+		parts := strings.Split(value, "/")
+		if len(parts) < 2 {
+			continue
+		}
+		target := strings.TrimSpace(parts[len(parts)-1])
+		if !safeDNSMasqTarget(kind, target) {
+			continue
+		}
+		for _, domain := range parts[:len(parts)-1] {
+			domain = strings.TrimSpace(domain)
+			if domain == "" {
+				continue
+			}
+			match, ok := safePolicyMatch("domain:" + domain)
+			if !ok {
+				continue
+			}
+			if len(policies) >= maxPolicyRules {
+				return nil, errors.New("manual dnsmasq policy has too many domain rules")
+			}
+			policies = append(policies, PolicyRule{Source: "manual-dnsmasq", Kind: kind, Domain: match, Target: target})
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return policies, nil
+}
+
+func safePolicyMatch(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 512 || strings.ContainsAny(value, "\r\n\x00") {
+		return "", false
+	}
+	for _, prefix := range []string{"domain:", "full:", "keyword:"} {
+		if strings.HasPrefix(strings.ToLower(value), prefix) {
+			name := strings.TrimSuffix(strings.TrimPrefix(strings.ToLower(value), prefix), ".")
+			if name == "" || strings.ContainsAny(name, " /\\@") {
+				return "", false
+			}
+			if prefix == "domain:" || prefix == "full:" {
+				normalized, err := normalizePolicyDomain(name)
+				if err != nil {
+					return "", false
+				}
+				name = normalized
+			} else {
+				for _, char := range name {
+					if !(char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || strings.ContainsRune("._-", char)) {
+						return "", false
+					}
+				}
+			}
+			return prefix + name, true
+		}
+	}
+	return "", false
+}
+
+func normalizePolicyDomain(value string) (string, error) {
+	value = strings.TrimSuffix(strings.TrimSpace(value), ".")
+	if value == "" || net.ParseIP(value) != nil {
+		return "", errors.New("policy domain is not a hostname")
+	}
+	ascii, err := idna.Lookup.ToASCII(value)
+	if err != nil {
+		return "", errors.New("policy domain is not valid IDNA")
+	}
+	ascii = strings.ToLower(strings.TrimSuffix(ascii, "."))
+	if len(ascii) > 253 {
+		return "", errors.New("policy domain is too long")
+	}
+	labels := strings.Split(ascii, ".")
+	if len(labels) < 2 {
+		return "", errors.New("policy domain has no public suffix")
+	}
+	for _, label := range labels {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return "", errors.New("policy domain label is invalid")
+		}
+		for _, char := range label {
+			if !(char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || char == '-') {
+				return "", errors.New("policy domain label contains an invalid character")
+			}
+		}
+	}
+	return ascii, nil
+}
+
+func safeDNSMasqTarget(kind, value string) bool {
+	if value == "" || len(value) > 256 || strings.ContainsAny(value, "\r\n\x00;|&'") {
+		return false
+	}
+	switch kind {
+	case "dnsmasq-server":
+		parts := strings.Split(value, "#")
+		if len(parts) != 2 || !loopbackDNSTarget.MatchString(parts[0]+":"+parts[1]) {
+			return false
+		}
+		port, err := strconv.Atoi(parts[1])
+		return err == nil && port >= 1 && port <= 65535
+	case "dnsmasq-nftset":
+		return nftsetTarget.MatchString(value)
+	default:
+		return false
+	}
+}
+
+// fullTopologyCandidate validates and canonicalizes the administrator-owned
+// Xray topology without turning it into a managed artifact. The narrow bundle
+// above is what the current renderer consumes; this candidate is deliberately
+// review-only until the generated nft/DNS/service handoff can bind every
+// listener and rule to the same transaction.
+func fullTopologyCandidate(raw []byte) ([]byte, error) {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return nil, errors.New("manual Xray config is invalid JSON")
+	}
+	for key := range root {
+		switch key {
+		case "log", "inbounds", "outbounds", "routing":
+		default:
+			return nil, fmt.Errorf("manual Xray top-level field %q is not supported", key)
+		}
+	}
+	logRaw, ok := root["log"]
+	if !ok {
+		return nil, errors.New("manual Xray config must define a log object")
+	}
+	var log map[string]json.RawMessage
+	if err := json.Unmarshal(logRaw, &log); err != nil {
+		return nil, errors.New("manual Xray log object is invalid")
+	}
+	var logLevel string
+	for key, value := range log {
+		if key != "loglevel" {
+			return nil, fmt.Errorf("manual Xray log field %q is not supported", key)
+		}
+		if err := json.Unmarshal(value, &logLevel); err != nil {
+			return nil, errors.New("manual Xray loglevel is invalid")
+		}
+	}
+	switch logLevel {
+	case "none", "error", "warning", "info", "debug":
+	default:
+		return nil, errors.New("manual Xray loglevel is unsupported")
+	}
+
+	var cfg rawConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return nil, errors.New("manual Xray config is invalid")
+	}
+	if len(cfg.Inbounds) == 0 || len(cfg.Outbounds) == 0 || len(cfg.Routing.Rules) == 0 {
+		return nil, errors.New("manual Xray topology is incomplete")
+	}
+	if err := validateFullInbounds(cfg.Inbounds); err != nil {
+		return nil, err
+	}
+	outboundProtocols, err := validateFullOutbounds(cfg.Outbounds)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateFullRules(cfg.Inbounds, cfg.Routing.Rules, outboundProtocols); err != nil {
+		return nil, err
+	}
+
+	// Marshal only the reviewed top-level contract. In particular, arbitrary
+	// provider fields cannot hitch a ride into a candidate that a future
+	// renderer might execute.
+	normalized := struct {
+		Log       json.RawMessage   `json:"log"`
+		Inbounds  []json.RawMessage `json:"inbounds"`
+		Outbounds []json.RawMessage `json:"outbounds"`
+		Routing   struct {
+			DomainStrategy string            `json:"domainStrategy"`
+			Rules          []json.RawMessage `json:"rules"`
+		} `json:"routing"`
+	}{
+		Log:       append(json.RawMessage(nil), logRaw...),
+		Inbounds:  append([]json.RawMessage(nil), cfg.Inbounds...),
+		Outbounds: append([]json.RawMessage(nil), cfg.Outbounds...),
+	}
+	var routing map[string]json.RawMessage
+	if err := json.Unmarshal(root["routing"], &routing); err != nil {
+		return nil, errors.New("manual Xray routing object is invalid")
+	}
+	for key := range routing {
+		if key != "domainStrategy" && key != "rules" {
+			return nil, fmt.Errorf("manual Xray routing field %q is not supported", key)
+		}
+	}
+	if value, ok := routing["domainStrategy"]; ok {
+		if err := json.Unmarshal(value, &normalized.Routing.DomainStrategy); err != nil {
+			return nil, errors.New("manual Xray domainStrategy is invalid")
+		}
+	}
+	normalized.Routing.Rules = append([]json.RawMessage(nil), cfg.Routing.Rules...)
+	result, err := json.MarshalIndent(normalized, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(result, '\n'), nil
+}
+
+type fullInboundMeta struct {
+	inboundMeta
+	Settings struct {
+		FollowRedirect bool   `json:"followRedirect"`
+		Network        string `json:"network"`
+		Address        string `json:"address"`
+		Port           int    `json:"port"`
+	} `json:"settings"`
+	StreamSettings struct {
+		Sockopt struct {
+			TProxy string `json:"tproxy"`
+		} `json:"sockopt"`
+	} `json:"streamSettings"`
+}
+
+func validateFullInbounds(rawInbounds []json.RawMessage) error {
+	seenTags := map[string]bool{}
+	seenListeners := map[string]bool{}
+	for _, raw := range rawInbounds {
+		var value fullInboundMeta
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return errors.New("manual Xray inbound is invalid")
+		}
+		if !tagPattern.MatchString(value.Tag) || value.Port < 1 || value.Port > 65535 {
+			return errors.New("manual Xray inbound has unsafe tag or port")
+		}
+		if seenTags[value.Tag] {
+			return fmt.Errorf("duplicate manual Xray inbound %s", value.Tag)
+		}
+		seenTags[value.Tag] = true
+		if !isLoopbackListen(value.Listen) {
+			return fmt.Errorf("manual Xray inbound %s must listen on loopback", value.Tag)
+		}
+		listener := fmt.Sprintf("%s:%d", value.Listen, value.Port)
+		if seenListeners[listener] {
+			return fmt.Errorf("duplicate manual Xray listener %s", listener)
+		}
+		seenListeners[listener] = true
+		switch value.Protocol {
+		case "socks":
+			if !strings.HasPrefix(value.Tag, "socks-") || value.Port < 1024 {
+				return fmt.Errorf("manual SOCKS inbound %s is unsafe", value.Tag)
+			}
+		case "dokodemo-door":
+			tag := strings.ToLower(value.Tag)
+			switch {
+			case strings.Contains(tag, "tproxy"):
+				if !value.Settings.FollowRedirect || !networkHasTCPAndUDP(value.Settings.Network) || value.StreamSettings.Sockopt.TProxy != "tproxy" {
+					return fmt.Errorf("manual TPROXY inbound %s lacks redirect/socket proof", value.Tag)
+				}
+			case strings.Contains(tag, "dns"):
+				if value.Settings.Port != 53 || !networkHasTCPAndUDP(value.Settings.Network) || validateServerAddress(value.Settings.Address) != nil {
+					return fmt.Errorf("manual DNS inbound %s is unsafe", value.Tag)
+				}
+			default:
+				return fmt.Errorf("manual dokodemo inbound %s has no supported role", value.Tag)
+			}
+		default:
+			return fmt.Errorf("manual Xray inbound %s uses unsupported protocol", value.Tag)
+		}
+	}
+	return nil
+}
+
+func isLoopbackListen(value string) bool {
+	addr, err := netip.ParseAddr(strings.TrimSpace(value))
+	return err == nil && addr.IsLoopback()
+}
+
+func networkHasTCPAndUDP(value string) bool {
+	seenTCP, seenUDP := false, false
+	for _, item := range strings.Split(value, ",") {
+		switch strings.TrimSpace(strings.ToLower(item)) {
+		case "tcp":
+			seenTCP = true
+		case "udp":
+			seenUDP = true
+		}
+	}
+	return seenTCP && seenUDP
+}
+
+func validateFullOutbounds(rawOutbounds []json.RawMessage) (map[string]string, error) {
+	protocols := make(map[string]string, len(rawOutbounds))
+	for _, raw := range rawOutbounds {
+		var value struct {
+			Tag      string `json:"tag"`
+			Protocol string `json:"protocol"`
+		}
+		if err := json.Unmarshal(raw, &value); err != nil || !tagPattern.MatchString(value.Tag) || value.Protocol == "" {
+			return nil, errors.New("manual Xray outbound is invalid")
+		}
+		if _, exists := protocols[value.Tag]; exists {
+			return nil, fmt.Errorf("duplicate manual Xray outbound %s", value.Tag)
+		}
+		switch value.Protocol {
+		case "vless":
+			var typed outboundMeta
+			if err := json.Unmarshal(raw, &typed); err != nil {
+				return nil, errors.New("manual VLESS outbound is invalid")
+			}
+			if err := validateVLESS(typed); err != nil {
+				return nil, fmt.Errorf("manual Xray outbound %s: %w", value.Tag, err)
+			}
+		case "freedom", "blackhole":
+			// These are local egress/fail-closed primitives. No remote target
+			// is accepted for either protocol.
+		default:
+			return nil, fmt.Errorf("manual Xray outbound %s uses unsupported protocol %s", value.Tag, value.Protocol)
+		}
+		protocols[value.Tag] = value.Protocol
+	}
+	return protocols, nil
+}
+
+func validateFullRules(rawInbounds, rawRules []json.RawMessage, outboundProtocols map[string]string) error {
+	inbounds := make(map[string]bool, len(rawInbounds))
+	tproxyTags := make(map[string]bool)
+	seenInboundRules := make(map[string]bool)
+	for _, raw := range rawInbounds {
+		var value inboundMeta
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return errors.New("manual Xray inbound is invalid")
+		}
+		inbounds[value.Tag] = true
+		if strings.Contains(strings.ToLower(value.Tag), "tproxy") {
+			tproxyTags[value.Tag] = true
+		}
+	}
+	failClosed := false
+	for _, raw := range rawRules {
+		var value ruleMeta
+		if err := json.Unmarshal(raw, &value); err != nil || value.Type != "field" || len(value.InboundTags) == 0 || value.OutboundTag == "" {
+			return errors.New("manual Xray routing rule is invalid")
+		}
+		for _, inboundTag := range value.InboundTags {
+			if !inbounds[inboundTag] {
+				return fmt.Errorf("manual Xray rule references unknown inbound %s", inboundTag)
+			}
+			seenInboundRules[inboundTag] = true
+			if tproxyTags[inboundTag] && outboundProtocols[value.OutboundTag] == "blackhole" && strings.Contains(strings.ToLower(value.OutboundTag), "drop") {
+				failClosed = true
+			}
+		}
+		if _, ok := outboundProtocols[value.OutboundTag]; !ok {
+			return fmt.Errorf("manual Xray rule references unknown outbound %s", value.OutboundTag)
+		}
+	}
+	for tag := range inbounds {
+		if !seenInboundRules[tag] {
+			return fmt.Errorf("manual Xray inbound %s has no routing rule", tag)
+		}
+	}
+	if len(tproxyTags) > 0 && !failClosed {
+		return errors.New("manual Xray TPROXY topology has no explicit fail-closed rule")
+	}
+	return nil
 }
 
 func validateVLESS(value outboundMeta) error {

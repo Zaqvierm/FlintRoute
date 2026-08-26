@@ -1177,12 +1177,13 @@ func run(args []string) error {
 		dnsmasqPath := fs.String("dnsmasq", "", "manual dnsmasq include (read-only input)")
 		nftPath := fs.String("nft", "", "manual nft evidence file (read-only input)")
 		outBundle := fs.String("out-bundle", "", "optional local 0600 Xray candidate output")
+		outFullBundle := fs.String("out-full-bundle", "", "optional local 0600 full-topology review candidate output")
 		plan := fs.Bool("plan", false, "also print the review-only ownership handoff plan")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		if fs.NArg() != 0 || strings.TrimSpace(*xrayPath) == "" {
-			return errors.New("usage: router-policy manual-import --xray MANUAL_XRAY_JSON [--q205 ARGS] [--q208 ARGS] [--dnsmasq FILE] [--nft FILE] [--out-bundle CANDIDATE_JSON]")
+			return errors.New("usage: router-policy manual-import --xray MANUAL_XRAY_JSON [--q205 ARGS] [--q208 ARGS] [--dnsmasq FILE] [--nft FILE] [--out-bundle CANDIDATE_JSON] [--out-full-bundle FULL_CANDIDATE_JSON]")
 		}
 		zapretPaths := make([]string, 0, 2)
 		if strings.TrimSpace(*q205Path) != "" {
@@ -1193,7 +1194,7 @@ func run(args []string) error {
 		}
 		report, err := manualimport.Inspect(manualimport.Options{
 			XrayPath: *xrayPath, ZapretArgs: zapretPaths, DNSMasqPath: *dnsmasqPath,
-			NFTPaths: []string{*nftPath}, OutputBundle: *outBundle,
+			NFTPaths: []string{*nftPath}, OutputBundle: *outBundle, OutputFullBundle: *outFullBundle,
 		})
 		if err != nil {
 			return err
@@ -1272,7 +1273,7 @@ func usage() {
   subscription-normalize SUBSCRIPTION_JSON
   subscription-routes [--base-port PORT] SUBSCRIPTION_JSON
   subscription-xray [--base-port PORT] --out OUTPUT_JSON SUBSCRIPTION_JSON
-  manual-import --xray MANUAL_XRAY_JSON [--q205 ARGS] [--q208 ARGS] [--dnsmasq FILE] [--nft FILE] [--out-bundle CANDIDATE_JSON] [--plan]
+  manual-import --xray MANUAL_XRAY_JSON [--q205 ARGS] [--q208 ARGS] [--dnsmasq FILE] [--nft FILE] [--out-bundle CANDIDATE_JSON] [--out-full-bundle FULL_CANDIDATE_JSON] [--plan]
   daemon
   install-dry-run
   security audit

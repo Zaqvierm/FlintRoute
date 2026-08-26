@@ -61,10 +61,20 @@ func BuildAdoptionPlan(report Report) (AdoptionPlan, error) {
 			"retain the manual dataplane as rollback until every probe and persistence check passes",
 		},
 	}
-	if report.Xray.BundleReady {
+	switch {
+	case report.Xray.FullBundleReady:
+		plan.CandidateSHA256 = report.Xray.FullBundleSHA256
+	case report.Xray.BundleReady:
 		plan.CandidateSHA256 = report.Xray.BundleSHA256
 	}
-	if report.Xray.Transparent > 0 || report.Xray.DNSInbounds > 0 {
+	if report.Xray.FullBundleReady {
+		plan.Blockers = append(plan.Blockers, Conflict{
+			Resource: "manual Xray topology handoff",
+			Severity: "SEV-1",
+			Reason:   "the full loopback topology was validated into a review-only candidate, but listener, DNS, nft and service ownership are not transaction-bound",
+			Action:   "bind the candidate to an owned ChangeSet and prove the complete dataplane handoff before activation",
+		})
+	} else if report.Xray.Transparent > 0 || report.Xray.DNSInbounds > 0 {
 		plan.Blockers = append(plan.Blockers, Conflict{
 			Resource: "manual Xray candidate scope",
 			Severity: "SEV-1",
@@ -81,12 +91,19 @@ func BuildAdoptionPlan(report Report) (AdoptionPlan, error) {
 		Evidence:       []string{"manual Xray config was parsed; PID, start time and procd ownership were not proven"},
 		RequiredAction: "prove PID/start-time, exact config hash and lifecycle owner before claiming the process",
 	})
-	ports := append([]int(nil), report.Xray.ListenerPorts...)
-	sort.Ints(ports)
-	for _, port := range ports {
+	endpoints := append([]string(nil), report.Xray.ListenerEndpoints...)
+	if len(endpoints) == 0 {
+		ports := append([]int(nil), report.Xray.ListenerPorts...)
+		sort.Ints(ports)
+		for _, port := range ports {
+			endpoints = append(endpoints, "127.0.0.1:"+strconv.Itoa(port))
+		}
+	}
+	sort.Strings(endpoints)
+	for _, endpoint := range endpoints {
 		plan.Resources = append(plan.Resources, AdoptionResource{
 			Kind:           "listener",
-			Identifier:     "127.0.0.1:" + strconv.Itoa(port),
+			Identifier:     endpoint,
 			ObservedOwner:  "manual-xray",
 			OwnershipState: ownershipCollision,
 			Evidence:       []string{"listener is already occupied by the manual dataplane"},
@@ -182,6 +199,23 @@ func BuildAdoptionPlan(report Report) (AdoptionPlan, error) {
 			})
 		}
 	}
+	if len(report.Policies) > 0 {
+		counts := map[string]int{}
+		for _, policy := range report.Policies {
+			counts[policy.Kind]++
+		}
+		plan.Resources = append(plan.Resources, AdoptionResource{
+			Kind:           "policy-inventory",
+			Identifier:     "manual-policy-rules",
+			ObservedOwner:  "manual",
+			OwnershipState: ownershipForeign,
+			Evidence: []string{
+				"redacted domain-policy rules: " + strconv.Itoa(len(report.Policies)),
+				"rule kinds: " + formatPolicyCounts(counts),
+			},
+			RequiredAction: "review domain-to-route and DNS ownership before creating a managed ChangeSet",
+		})
+	}
 
 	// A process can be recreated by cron/procd even when its current PID is
 	// known. The lifecycle owner must therefore be handled as a separate
@@ -203,4 +237,17 @@ func BuildAdoptionPlan(report Report) (AdoptionPlan, error) {
 		return left < right
 	})
 	return plan, nil
+}
+
+func formatPolicyCounts(counts map[string]int) string {
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+strconv.Itoa(counts[key]))
+	}
+	return strings.Join(parts, ",")
 }
