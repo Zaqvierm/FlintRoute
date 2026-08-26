@@ -21,6 +21,19 @@ const (
 
 var sha256Pattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 
+// normalizeSHA256 accepts both the historical xraybundle form
+// "sha256:<hex>" and the bare digest used by handoff proofs. Keeping the
+// comparison semantic avoids rejecting an otherwise identical plan solely
+// because its producer chose a prefix.
+func normalizeSHA256(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	value = strings.TrimPrefix(strings.TrimPrefix(value, "sha256:"), "SHA256:")
+	if !sha256Pattern.MatchString(value) {
+		return "", false
+	}
+	return strings.ToLower(value), true
+}
+
 // HandoffManifest is a proof envelope produced during a reviewed maintenance
 // window. It is input to EvaluateHandoff only; it is never an adapter command
 // and cannot activate or stop anything by itself.
@@ -76,7 +89,7 @@ func (m HandoffManifest) Validate() error {
 	if _, err := time.Parse(time.RFC3339Nano, m.GeneratedAt); err != nil {
 		return fmt.Errorf("invalid handoff generated_at: %w", err)
 	}
-	if !sha256Pattern.MatchString(m.CandidateSHA256) {
+	if _, ok := normalizeSHA256(m.CandidateSHA256); !ok {
 		return errors.New("handoff candidate_sha256 must be a 64-character hex digest")
 	}
 	if strings.TrimSpace(m.Generation) == "" || len(m.Generation) > 128 {
@@ -115,7 +128,7 @@ func (m HandoffManifest) Validate() error {
 		if resource.Generation != m.Generation {
 			return fmt.Errorf("resource %s/%s generation does not match manifest", resource.Kind, resource.Identifier)
 		}
-		if !sha256Pattern.MatchString(resource.EvidenceSHA256) {
+		if _, ok := normalizeSHA256(resource.EvidenceSHA256); !ok {
 			return fmt.Errorf("resource %s/%s evidence_sha256 is invalid", resource.Kind, resource.Identifier)
 		}
 		switch resource.Kind {
@@ -123,7 +136,10 @@ func (m HandoffManifest) Validate() error {
 			if resource.PID <= 0 || resource.StartTimeTicks == 0 || resource.PGID <= 0 {
 				return fmt.Errorf("process %s lacks PID/start-time/PGID identity", resource.Identifier)
 			}
-			if strings.TrimSpace(resource.Executable) == "" || !sha256Pattern.MatchString(resource.ConfigSHA256) {
+			if strings.TrimSpace(resource.Executable) == "" {
+				return fmt.Errorf("process %s lacks executable/config identity", resource.Identifier)
+			}
+			if _, ok := normalizeSHA256(resource.ConfigSHA256); !ok {
 				return fmt.Errorf("process %s lacks executable/config identity", resource.Identifier)
 			}
 		case "listener":
@@ -154,13 +170,15 @@ func EvaluateHandoff(plan AdoptionPlan, manifest HandoffManifest) (HandoffDecisi
 	if plan.SchemaVersion != 1 {
 		return decision, fmt.Errorf("unsupported adoption plan schema %d", plan.SchemaVersion)
 	}
-	if strings.TrimSpace(plan.CandidateSHA256) == "" {
+	planHash, planHashOK := normalizeSHA256(plan.CandidateSHA256)
+	manifestHash, manifestHashOK := normalizeSHA256(manifest.CandidateSHA256)
+	if !planHashOK || !manifestHashOK {
 		return decision, errors.New("adoption plan has no candidate hash")
 	}
 	if err := manifest.Validate(); err != nil {
 		return decision, err
 	}
-	if !strings.EqualFold(plan.CandidateSHA256, manifest.CandidateSHA256) {
+	if planHash != manifestHash {
 		return decision, errors.New("handoff candidate hash does not match adoption plan")
 	}
 

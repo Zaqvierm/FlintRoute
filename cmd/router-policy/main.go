@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -1261,6 +1262,66 @@ func run(args []string) error {
 			return err
 		}
 		return printJSON(decision)
+	case "manual-handoff-observe":
+		fs := flag.NewFlagSet("manual-handoff-observe", flag.ContinueOnError)
+		planPath := fs.String("plan", "", "redacted adoption plan JSON (read-only input)")
+		outPath := fs.String("out", "", "optional local 0600 observation JSON output")
+		var pidSpecs []string
+		fs.Func("pid", "repeatable process/<identifier>=PID observation target", func(value string) error {
+			pidSpecs = append(pidSpecs, value)
+			return nil
+		})
+		var evidenceSpecs []string
+		fs.Func("evidence", "repeatable kind/<identifier>=PATH evidence target", func(value string) error {
+			evidenceSpecs = append(evidenceSpecs, value)
+			return nil
+		})
+		var configSpecs []string
+		fs.Func("config", "repeatable process/<identifier>=PATH config hash target", func(value string) error {
+			configSpecs = append(configSpecs, value)
+			return nil
+		})
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 || strings.TrimSpace(*planPath) == "" {
+			return errors.New("usage: router-policy manual-handoff-observe --plan PLAN_JSON [--pid process/ID=PID] [--config process/ID=PATH] [--evidence kind/ID=PATH] [--out OUTPUT_JSON]")
+		}
+		planRaw, err := readBoundedRegularFile(*planPath, 2<<20)
+		if err != nil {
+			return fmt.Errorf("read adoption plan: %w", err)
+		}
+		var plan manualimport.AdoptionPlan
+		if err := decodeStrictJSON(planRaw, &plan); err != nil {
+			return fmt.Errorf("decode adoption plan: %w", err)
+		}
+		processTargets, err := parseObservationProcessTargets(plan, pidSpecs, configSpecs)
+		if err != nil {
+			return err
+		}
+		evidenceTargets, err := parseObservationEvidenceTargets(plan, evidenceSpecs)
+		if err != nil {
+			return err
+		}
+		observation, err := manualimport.CaptureLiveObservation(manualimport.LiveObservationOptions{
+			Plan:            plan,
+			ProcessTargets:  processTargets,
+			EvidenceTargets: evidenceTargets,
+		})
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(*outPath) != "" {
+			raw, marshalErr := json.MarshalIndent(observation, "", "  ")
+			if marshalErr != nil {
+				return fmt.Errorf("marshal live observation: %w", marshalErr)
+			}
+			raw = append(raw, '\n')
+			if err := writePrivateFileAtomic(*outPath, raw); err != nil {
+				return fmt.Errorf("write live observation: %w", err)
+			}
+		}
+		return printJSON(observation)
 	case "install-dry-run":
 		return printJSON(map[string]any{
 			"dry_run": true,
@@ -1329,6 +1390,7 @@ func usage() {
   subscription-xray [--base-port PORT] --out OUTPUT_JSON SUBSCRIPTION_JSON
   manual-import --xray MANUAL_XRAY_JSON [--q205 ARGS] [--q208 ARGS] [--dnsmasq FILE] [--nft FILE] [--out-bundle CANDIDATE_JSON] [--out-full-bundle FULL_CANDIDATE_JSON] [--plan]
   manual-handoff-check --plan PLAN_JSON --proof PROOF_JSON
+  manual-handoff-observe --plan PLAN_JSON [--pid process/ID=PID] [--config process/ID=PATH] [--evidence kind/ID=PATH] [--out OUTPUT_JSON]
   daemon
   install-dry-run
   security audit
@@ -1736,6 +1798,149 @@ func decodeStrictJSON(raw []byte, dst any) error {
 		return err
 	}
 	return nil
+}
+
+// parseObservationReference decodes the deliberately small CLI reference
+// syntax kind/identifier=value. The left hand side must identify a resource
+// from the reviewed adoption plan; the right hand side is an operator-supplied
+// PID or local path and is never interpreted as a command.
+func parseObservationReference(value string) (kind, identifier, rhs string, err error) {
+	left, rhs, ok := strings.Cut(value, "=")
+	if !ok || strings.TrimSpace(left) == "" || strings.TrimSpace(rhs) == "" {
+		return "", "", "", errors.New("observation target must use kind/identifier=value")
+	}
+	kind, identifier, ok = strings.Cut(left, "/")
+	if !ok || strings.TrimSpace(kind) == "" || strings.TrimSpace(identifier) == "" {
+		return "", "", "", errors.New("observation target must use kind/identifier=value")
+	}
+	if strings.Contains(identifier, "/") {
+		return "", "", "", errors.New("observation identifier must not contain '/'")
+	}
+	return strings.TrimSpace(kind), strings.TrimSpace(identifier), strings.TrimSpace(rhs), nil
+}
+
+func adoptionPlanResourceIndex(plan manualimport.AdoptionPlan) (map[string]manualimport.AdoptionResource, error) {
+	resources := make(map[string]manualimport.AdoptionResource, len(plan.Resources))
+	for _, resource := range plan.Resources {
+		kind := strings.TrimSpace(resource.Kind)
+		identifier := strings.TrimSpace(resource.Identifier)
+		if kind == "" || identifier == "" {
+			return nil, errors.New("adoption plan contains a resource without kind or identifier")
+		}
+		key := kind + "\x00" + identifier
+		if _, exists := resources[key]; exists {
+			return nil, fmt.Errorf("adoption plan contains duplicate resource %s/%s", kind, identifier)
+		}
+		resources[key] = resource
+	}
+	return resources, nil
+}
+
+func parseObservationProcessTargets(plan manualimport.AdoptionPlan, pidSpecs, configSpecs []string) ([]manualimport.LiveProcessTarget, error) {
+	resources, err := adoptionPlanResourceIndex(plan)
+	if err != nil {
+		return nil, err
+	}
+	type processTarget struct {
+		pid        int
+		configPath string
+	}
+	targets := make(map[string]processTarget)
+	for _, spec := range pidSpecs {
+		kind, identifier, rawPID, parseErr := parseObservationReference(spec)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		if kind != "process" {
+			return nil, fmt.Errorf("PID target %s/%s is not a process", kind, identifier)
+		}
+		resource, ok := resources[kind+"\x00"+identifier]
+		if !ok || resource.Kind != "process" {
+			return nil, fmt.Errorf("PID target %s/%s is absent from the adoption plan", kind, identifier)
+		}
+		pid, convErr := strconv.Atoi(rawPID)
+		if convErr != nil || pid <= 0 {
+			return nil, fmt.Errorf("PID target %s must be a positive integer", identifier)
+		}
+		key := kind + "\x00" + identifier
+		if _, exists := targets[key]; exists {
+			return nil, fmt.Errorf("duplicate PID target %s/%s", kind, identifier)
+		}
+		targets[key] = processTarget{pid: pid}
+	}
+	for _, spec := range configSpecs {
+		kind, identifier, path, parseErr := parseObservationReference(spec)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		if kind != "process" {
+			return nil, fmt.Errorf("config target %s/%s is not a process", kind, identifier)
+		}
+		if _, ok := resources[kind+"\x00"+identifier]; !ok {
+			return nil, fmt.Errorf("config target %s/%s is absent from the adoption plan", kind, identifier)
+		}
+		key := kind + "\x00" + identifier
+		target, ok := targets[key]
+		if !ok {
+			return nil, fmt.Errorf("config target %s/%s requires a matching PID target", kind, identifier)
+		}
+		if target.configPath != "" {
+			return nil, fmt.Errorf("duplicate config target %s/%s", kind, identifier)
+		}
+		target.configPath = path
+		targets[key] = target
+	}
+	result := make([]manualimport.LiveProcessTarget, 0, len(targets))
+	for key, target := range targets {
+		kind, identifier, ok := strings.Cut(key, "\x00")
+		if !ok {
+			return nil, errors.New("invalid process target key")
+		}
+		result = append(result, manualimport.LiveProcessTarget{
+			Kind:       kind,
+			Identifier: identifier,
+			PID:        target.pid,
+			ConfigPath: target.configPath,
+		})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Kind != result[j].Kind {
+			return result[i].Kind < result[j].Kind
+		}
+		return result[i].Identifier < result[j].Identifier
+	})
+	return result, nil
+}
+
+func parseObservationEvidenceTargets(plan manualimport.AdoptionPlan, specs []string) ([]manualimport.LiveEvidenceTarget, error) {
+	resources, err := adoptionPlanResourceIndex(plan)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(specs))
+	result := make([]manualimport.LiveEvidenceTarget, 0, len(specs))
+	for _, spec := range specs {
+		kind, identifier, path, parseErr := parseObservationReference(spec)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		key := kind + "\x00" + identifier
+		if _, ok := resources[key]; !ok {
+			return nil, fmt.Errorf("evidence target %s/%s is absent from the adoption plan", kind, identifier)
+		}
+		if _, exists := seen[key]; exists {
+			return nil, fmt.Errorf("duplicate evidence target %s/%s", kind, identifier)
+		}
+		seen[key] = struct{}{}
+		result = append(result, manualimport.LiveEvidenceTarget{Kind: kind, Identifier: identifier, Path: path})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Kind != result[j].Kind {
+			return result[i].Kind < result[j].Kind
+		}
+		return result[i].Identifier < result[j].Identifier
+	})
+	return result, nil
 }
 
 func writeIPStateSnapshot(path string, snap dataplane.IPStateSnapshot, reason string, captured bool) error {

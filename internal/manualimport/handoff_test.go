@@ -75,6 +75,19 @@ func TestEvaluateHandoffReturnsReadyOnlyForExactVerifiedProof(t *testing.T) {
 	}
 }
 
+func TestEvaluateHandoffAcceptsImporterPrefixedCandidateHash(t *testing.T) {
+	plan := handoffPlanFixture()
+	manifest := handoffManifestFixture()
+	plan.CandidateSHA256 = "sha256:" + plan.CandidateSHA256
+	if _, err := EvaluateHandoff(plan, manifest); err != nil {
+		t.Fatalf("prefixed adoption-plan hash should compare semantically: %v", err)
+	}
+	manifest.CandidateSHA256 = "SHA256:" + manifest.CandidateSHA256
+	if _, err := EvaluateHandoff(plan, manifest); err != nil {
+		t.Fatalf("case-insensitive prefixed proof hash should compare semantically: %v", err)
+	}
+}
+
 func TestEvaluateHandoffFailsClosedOnMissingOrChangedProof(t *testing.T) {
 	plan := handoffPlanFixture()
 	manifest := handoffManifestFixture()

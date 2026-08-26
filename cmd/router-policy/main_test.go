@@ -12,6 +12,7 @@ import (
 
 	"router-policy/internal/auth"
 	"router-policy/internal/config"
+	"router-policy/internal/manualimport"
 	"router-policy/internal/state"
 	"router-policy/internal/tspu"
 	"router-policy/internal/zapret"
@@ -52,6 +53,57 @@ func TestSetupTokenIfNeededIsIdempotentAfterAdminCreation(t *testing.T) {
 	}
 	if err := run([]string{"auth", "setup-token"}); err == nil {
 		t.Fatal("setup-token without --if-needed must still reject an initialized store")
+	}
+}
+
+func TestParseObservationTargetsBindsOnlyPlanResources(t *testing.T) {
+	plan := manualimport.AdoptionPlan{
+		SchemaVersion: 1,
+		Resources: []manualimport.AdoptionResource{
+			{Kind: "process", Identifier: "manual-xray"},
+			{Kind: "nft-table", Identifier: "manual-table"},
+		},
+	}
+	processes, err := parseObservationProcessTargets(plan,
+		[]string{"process/manual-xray=10775"},
+		[]string{"process/manual-xray=/etc/chatgpt-proxy/xray.json"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(processes) != 1 || processes[0].PID != 10775 || processes[0].ConfigPath == "" {
+		t.Fatalf("unexpected process targets: %+v", processes)
+	}
+	evidence, err := parseObservationEvidenceTargets(plan, []string{"nft-table/manual-table=/tmp/table.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evidence) != 1 || evidence[0].Path != "/tmp/table.txt" {
+		t.Fatalf("unexpected evidence targets: %+v", evidence)
+	}
+	if _, err := parseObservationProcessTargets(plan, []string{"process/unknown=1"}, nil); err == nil {
+		t.Fatal("unknown process resource must be rejected")
+	}
+	if _, err := parseObservationEvidenceTargets(plan, []string{"file/missing=/tmp/x"}); err == nil {
+		t.Fatal("unknown evidence resource must be rejected")
+	}
+}
+
+func TestParseObservationTargetsRejectAmbiguousReferences(t *testing.T) {
+	plan := manualimport.AdoptionPlan{
+		SchemaVersion: 1,
+		Resources:     []manualimport.AdoptionResource{{Kind: "process", Identifier: "p"}},
+	}
+	for _, spec := range []string{"process/p", "process/p=", "process//1", "process/p/extra=1", "process/p=0"} {
+		if _, err := parseObservationProcessTargets(plan, []string{spec}, nil); err == nil {
+			t.Fatalf("reference %q must be rejected", spec)
+		}
+	}
+	if _, err := parseObservationProcessTargets(plan,
+		[]string{"process/p=1"},
+		[]string{"process/p=/tmp/a", "process/p=/tmp/b"},
+	); err == nil {
+		t.Fatal("duplicate config target must be rejected")
 	}
 }
 

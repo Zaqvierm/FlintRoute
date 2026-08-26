@@ -205,6 +205,28 @@ are rejected. A successful result is `ready_for_change_set`; it never sets
 manual dataplane remains the rollback owner until a separately reviewed
 ChangeSet proves the complete handoff.
 
+Before producing a handoff proof, capture a live, redacted observation of the
+exact plan resources. This is read-only: it inspects `/proc` identity and
+hashes explicitly supplied evidence/config files, but never copies command
+lines, secrets or file paths into the output and never starts or stops a
+resource:
+
+```text
+router-policy manual-handoff-observe \
+  --plan /private/manual-adoption-plan.json \
+  --pid process/manual-xray=10775 \
+  --config process/manual-xray=/etc/chatgpt-proxy/xray.json \
+  --evidence nft/table-flintroute-lite=/private/evidence/flintroute-lite.txt \
+  --out /private/manual-live-observation.json
+```
+
+The `kind/identifier=value` references must name resources already present in
+the plan. Process observations include PID, start-time ticks, PGID,
+executable and a redacted identity digest; evidence observations include only
+a bounded SHA-256. Missing or unreadable targets are explicit `missing` or
+`error` states, never implicit proof. A live observation is evidence for the
+reviewer, not an ownership claim and not permission to apply a ChangeSet.
+
 ## Flint 2 handoff boundary (current)
 
 The current manual Flint 2 dataplane has a larger Xray topology than the

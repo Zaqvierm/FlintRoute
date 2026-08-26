@@ -71,6 +71,7 @@ const (
 type ProcessIdentity struct {
 	PID            int      `json:"pid"`
 	StartTimeTicks uint64   `json:"start_time_ticks"`
+	PGID           int      `json:"pgid,omitempty"`
 	Executable     string   `json:"executable"`
 	ConfigPath     string   `json:"config_path,omitempty"`
 	CommandLine    []string `json:"command_line,omitempty"`
