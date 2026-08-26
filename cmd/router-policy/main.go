@@ -1186,12 +1186,13 @@ func run(args []string) error {
 		})
 		outBundle := fs.String("out-bundle", "", "optional local 0600 Xray candidate output")
 		outFullBundle := fs.String("out-full-bundle", "", "optional local 0600 full-topology review candidate output")
+		outPlan := fs.String("out-plan", "", "optional local 0600 redacted ownership handoff plan output")
 		plan := fs.Bool("plan", false, "also print the review-only ownership handoff plan")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		if fs.NArg() != 0 || strings.TrimSpace(*xrayPath) == "" {
-			return errors.New("usage: router-policy manual-import --xray MANUAL_XRAY_JSON [--q205 ARGS] [--q208 ARGS] [--dnsmasq FILE] [--nft FILE] [--lifecycle FILE ...] [--out-bundle CANDIDATE_JSON] [--out-full-bundle FULL_CANDIDATE_JSON]")
+			return errors.New("usage: router-policy manual-import --xray MANUAL_XRAY_JSON [--q205 ARGS] [--q208 ARGS] [--dnsmasq FILE] [--nft FILE] [--lifecycle FILE ...] [--out-bundle CANDIDATE_JSON] [--out-full-bundle FULL_CANDIDATE_JSON] [--out-plan PLAN_JSON]")
 		}
 		zapretPaths := make([]string, 0, 2)
 		if strings.TrimSpace(*q205Path) != "" {
@@ -1208,11 +1209,24 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		if *plan {
+		var handoff manualimport.AdoptionPlan
+		if *plan || strings.TrimSpace(*outPlan) != "" {
 			handoff, err := manualimport.BuildAdoptionPlan(report)
 			if err != nil {
 				return err
 			}
+			if strings.TrimSpace(*outPlan) != "" {
+				rawPlan, err := json.MarshalIndent(handoff, "", "  ")
+				if err != nil {
+					return fmt.Errorf("marshal adoption plan: %w", err)
+				}
+				rawPlan = append(rawPlan, '\n')
+				if err := writePrivateFileAtomic(*outPlan, rawPlan); err != nil {
+					return fmt.Errorf("write adoption plan: %w", err)
+				}
+			}
+		}
+		if *plan {
 			return printJSON(map[string]any{"report": report, "adoption_plan": handoff})
 		}
 		return printJSON(report)

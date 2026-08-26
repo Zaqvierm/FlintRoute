@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -111,6 +112,46 @@ func TestServeRefusesUnsafeBind(t *testing.T) {
 	err := run([]string{"serve", "--listen", "0.0.0.0:8787"})
 	if err == nil || !strings.Contains(err.Error(), "refusing non-loopback") {
 		t.Fatalf("expected unsafe bind refusal, got %v", err)
+	}
+}
+
+func TestManualImportWritesRedactedPlanWithoutApplyPermission(t *testing.T) {
+	dir := t.TempDir()
+	xrayPath := filepath.Join(dir, "xray.json")
+	planPath := filepath.Join(dir, "adoption-plan.json")
+	const uuid = "11111111-1111-4111-8111-111111111111"
+	raw := `{
+  "inbounds": [{"tag":"socks-proxy-1","listen":"127.0.0.1","port":12000,"protocol":"socks"}],
+  "outbounds": [{"tag":"proxy-1","protocol":"vless","settings":{"vnext":[{"address":"vc9.example.com","port":443,"users":[{"id":"` + uuid + `","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"tls"}}],
+  "routing":{"rules":[{"type":"field","inboundTag":["socks-proxy-1"],"outboundTag":"proxy-1"}]}
+}`
+	if err := os.WriteFile(xrayPath, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"manual-import", "--xray", xrayPath, "--out-plan", planPath}); err != nil {
+		t.Fatalf("manual-import failed: %v", err)
+	}
+	planRaw, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan struct {
+		MigrationState string `json:"migration_state"`
+		ApplyAllowed   bool   `json:"apply_allowed"`
+	}
+	if err := json.Unmarshal(planRaw, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.MigrationState != "blocked_on_ownership_handoff" || plan.ApplyAllowed {
+		t.Fatalf("manual adoption plan was not fenced: %+v", plan)
+	}
+	if strings.Contains(string(planRaw), xrayPath) || strings.Contains(string(planRaw), uuid) {
+		t.Fatal("redacted adoption plan leaked an input path or credential")
+	}
+	if info, err := os.Stat(planPath); err != nil {
+		t.Fatal(err)
+	} else if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("adoption plan mode = %o, want 600", info.Mode().Perm())
 	}
 }
 

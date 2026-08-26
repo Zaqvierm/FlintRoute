@@ -30,6 +30,20 @@ to the report:
 router-policy manual-import --xray ... --q205 ... --q208 ... --plan
 ```
 
+Use `--out-plan` when another local tool or the UI needs a persisted,
+redacted plan. The file is written atomically with mode `0600`; it contains
+only ownership states, hashes, bounded evidence and next actions, never the
+manual configuration or credentials:
+
+```text
+router-policy manual-import --xray ... --plan \
+  --out-plan /tmp/router-policy/manual-adoption-plan.json
+```
+
+Writing this plan does not grant apply permission. A plan remains
+`apply_allowed: false` until a separately reviewed handoff proves every
+listener, process, nft/NFQUEUE object, DNS include and recreation lifecycle.
+
 Pass each manual recreation path with the repeatable `--lifecycle` flag. The
 files are bounded, hashed evidence only; they are never executed by the
 importer and their absolute paths are not copied into the redacted plan:
