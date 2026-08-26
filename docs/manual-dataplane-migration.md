@@ -30,6 +30,21 @@ to the report:
 router-policy manual-import --xray ... --q205 ... --q208 ... --plan
 ```
 
+Pass each manual recreation path with the repeatable `--lifecycle` flag. The
+files are bounded, hashed evidence only; they are never executed by the
+importer and their absolute paths are not copied into the redacted plan:
+
+```text
+router-policy manual-import --xray ... \
+  --lifecycle /etc/crontabs/root \
+  --lifecycle /etc/init.d/chatgpt-proxy \
+  --lifecycle /etc/init.d/nfqws-flowseal205
+```
+
+If no lifecycle evidence is supplied, the plan keeps an explicit
+`manual-cron-procd` missing-evidence resource. A readable Xray/Zapret config is
+not enough to claim that the old owner cannot recreate a process.
+
 The plan is deliberately `apply_allowed: false`. It lists occupied Xray
 listeners, manual nfqws processes and queues, DNS/nft evidence, and the
 manual cron/procd lifecycle as `foreign`, `unproven`, or `collision`. A

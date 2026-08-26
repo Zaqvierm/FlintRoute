@@ -53,11 +53,15 @@ var (
 // inputs except OutputBundle, which is an explicitly requested local
 // candidate artifact.
 type Options struct {
-	XrayPath     string
-	ZapretArgs   []string
-	DNSMasqPath  string
-	NFTPaths     []string
-	OutputBundle string
+	XrayPath    string
+	ZapretArgs  []string
+	DNSMasqPath string
+	NFTPaths    []string
+	// LifecyclePaths are read-only evidence files that can recreate a manual
+	// process or dataplane (for example an init script or cron fragment). They
+	// are never executed or copied into an applyable candidate.
+	LifecyclePaths []string
+	OutputBundle   string
 	// OutputFullBundle requests a review-only candidate that preserves the
 	// complete loopback Xray topology (TPROXY, DNS and SOCKS/VLESS). It is
 	// intentionally separate from OutputBundle: the latter is the narrow
@@ -274,6 +278,16 @@ func Inspect(opts Options) (Report, error) {
 			return Report{}, fmt.Errorf("inspect manual dnsmasq policy: %w", err)
 		}
 		report.Policies = append(report.Policies, dnsPolicies...)
+	}
+	for _, path := range opts.LifecyclePaths {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		_, evidence, err := readBounded(path, maxEvidence, "manual-lifecycle")
+		if err != nil {
+			return Report{}, fmt.Errorf("inspect manual lifecycle evidence: %w", err)
+		}
+		report.Files = append(report.Files, evidence)
 	}
 	sort.SliceStable(report.Policies, func(i, j int) bool {
 		left := strings.Join([]string{report.Policies[i].Source, report.Policies[i].Kind, report.Policies[i].Domain, report.Policies[i].OutboundTag, report.Policies[i].Target}, "\x00")

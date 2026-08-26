@@ -1176,6 +1176,14 @@ func run(args []string) error {
 		q208Path := fs.String("q208", "", "manual q208 nfqws arguments (read-only input)")
 		dnsmasqPath := fs.String("dnsmasq", "", "manual dnsmasq include (read-only input)")
 		nftPath := fs.String("nft", "", "manual nft evidence file (read-only input)")
+		lifecyclePaths := []string{}
+		fs.Func("lifecycle", "repeatable manual init/cron lifecycle evidence path (read-only input)", func(value string) error {
+			if strings.TrimSpace(value) == "" {
+				return errors.New("lifecycle path must not be empty")
+			}
+			lifecyclePaths = append(lifecyclePaths, value)
+			return nil
+		})
 		outBundle := fs.String("out-bundle", "", "optional local 0600 Xray candidate output")
 		outFullBundle := fs.String("out-full-bundle", "", "optional local 0600 full-topology review candidate output")
 		plan := fs.Bool("plan", false, "also print the review-only ownership handoff plan")
@@ -1183,7 +1191,7 @@ func run(args []string) error {
 			return err
 		}
 		if fs.NArg() != 0 || strings.TrimSpace(*xrayPath) == "" {
-			return errors.New("usage: router-policy manual-import --xray MANUAL_XRAY_JSON [--q205 ARGS] [--q208 ARGS] [--dnsmasq FILE] [--nft FILE] [--out-bundle CANDIDATE_JSON] [--out-full-bundle FULL_CANDIDATE_JSON]")
+			return errors.New("usage: router-policy manual-import --xray MANUAL_XRAY_JSON [--q205 ARGS] [--q208 ARGS] [--dnsmasq FILE] [--nft FILE] [--lifecycle FILE ...] [--out-bundle CANDIDATE_JSON] [--out-full-bundle FULL_CANDIDATE_JSON]")
 		}
 		zapretPaths := make([]string, 0, 2)
 		if strings.TrimSpace(*q205Path) != "" {
@@ -1194,7 +1202,8 @@ func run(args []string) error {
 		}
 		report, err := manualimport.Inspect(manualimport.Options{
 			XrayPath: *xrayPath, ZapretArgs: zapretPaths, DNSMasqPath: *dnsmasqPath,
-			NFTPaths: []string{*nftPath}, OutputBundle: *outBundle, OutputFullBundle: *outFullBundle,
+			NFTPaths: []string{*nftPath}, LifecyclePaths: lifecyclePaths,
+			OutputBundle: *outBundle, OutputFullBundle: *outFullBundle,
 		})
 		if err != nil {
 			return err

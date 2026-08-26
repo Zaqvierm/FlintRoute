@@ -469,6 +469,43 @@ func TestBuildAdoptionPlanNeverAllowsApplyFromReadableManualDataplane(t *testing
 	}
 }
 
+func TestInspectAndPlanBindConcreteLifecycleEvidenceWithoutLeakingPath(t *testing.T) {
+	dir := t.TempDir()
+	xrayPath := filepath.Join(dir, "xray.json")
+	lifecyclePath := filepath.Join(dir, "manual-init.sh")
+	writeManualFile(t, xrayPath, minimalXray(testUUID1))
+	writeManualFile(t, lifecyclePath, "#!/bin/sh\nexec /usr/bin/nfqws --qnum=205\n")
+
+	report, err := Inspect(Options{
+		XrayPath:       xrayPath,
+		LifecyclePaths: []string{lifecyclePath},
+		GeneratedAt:    fixedTime(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildAdoptionPlan(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), lifecyclePath) {
+		t.Fatalf("absolute lifecycle path leaked into adoption plan: %s", encoded)
+	}
+	var found bool
+	for _, resource := range plan.Resources {
+		if resource.Kind == "file" && strings.HasPrefix(resource.Identifier, "manual-lifecycle/file-") {
+			found = resource.OwnershipState == ownershipForeign && len(resource.Evidence) == 1 && strings.Contains(resource.Evidence[0], "manual lifecycle evidence hash:")
+		}
+	}
+	if !found {
+		t.Fatalf("concrete lifecycle evidence was not represented: %+v", plan.Resources)
+	}
+}
+
 func TestBuildAdoptionPlanRejectsSecretBearingReport(t *testing.T) {
 	if _, err := BuildAdoptionPlan(Report{SecretsPrinted: true}); err == nil {
 		t.Fatal("secret-bearing report was accepted")

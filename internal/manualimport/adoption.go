@@ -177,6 +177,7 @@ func BuildAdoptionPlan(report Report) (AdoptionPlan, error) {
 		}
 	}
 
+	lifecycleFiles := 0
 	for _, file := range report.Files {
 		switch file.Role {
 		case "manual-dnsmasq":
@@ -196,6 +197,16 @@ func BuildAdoptionPlan(report Report) (AdoptionPlan, error) {
 				OwnershipState: ownershipForeign,
 				Evidence:       []string{"manual nft evidence hash: " + file.SHA256},
 				RequiredAction: "enumerate exact owned tables/chains/sets; do not flush or replace foreign tables",
+			})
+		case "manual-lifecycle":
+			lifecycleFiles++
+			plan.Resources = append(plan.Resources, AdoptionResource{
+				Kind:           "file",
+				Identifier:     "manual-lifecycle/file-" + strconv.Itoa(lifecycleFiles),
+				ObservedOwner:  "manual",
+				OwnershipState: ownershipForeign,
+				Evidence:       []string{"manual lifecycle evidence hash: " + file.SHA256},
+				RequiredAction: "review this exact recreation path and disable or hand off it only in the same tested transaction",
 			})
 		}
 	}
@@ -218,16 +229,19 @@ func BuildAdoptionPlan(report Report) (AdoptionPlan, error) {
 	}
 
 	// A process can be recreated by cron/procd even when its current PID is
-	// known. The lifecycle owner must therefore be handled as a separate
-	// resource, not inferred from the executable name.
-	plan.Resources = append(plan.Resources, AdoptionResource{
-		Kind:           "lifecycle",
-		Identifier:     "manual-cron-procd",
-		ObservedOwner:  "manual",
-		OwnershipState: ownershipForeign,
-		Evidence:       []string{"manual lifecycle recreation path is not included in the importer manifest"},
-		RequiredAction: "enumerate cron and procd entries, then disable or hand off only exact-owned entries during maintenance",
-	})
+	// known. The lifecycle owner therefore remains a separate resource. When
+	// callers did not provide the concrete evidence files, retain an explicit
+	// missing-evidence blocker instead of pretending that lifecycle was audited.
+	if lifecycleFiles == 0 {
+		plan.Resources = append(plan.Resources, AdoptionResource{
+			Kind:           "lifecycle",
+			Identifier:     "manual-cron-procd",
+			ObservedOwner:  "manual",
+			OwnershipState: ownershipForeign,
+			Evidence:       []string{"manual lifecycle recreation path is not included in the importer manifest"},
+			RequiredAction: "enumerate cron and procd entries, then disable or hand off only exact-owned entries during maintenance",
+		})
+	}
 
 	// Keep output stable for UI diffs and evidence hashing. The plan is never
 	// applyable while any resource is foreign, unproven or colliding.
