@@ -53,6 +53,9 @@ func TestInspectBuildsCandidateWithoutSecretsInReport(t *testing.T) {
 	if report.MigrationState != "blocked_on_ownership_handoff" {
 		t.Fatalf("migration state = %q", report.MigrationState)
 	}
+	if !report.Xray.BundleReady || report.Xray.BundleScope != "loopback_socks_vless_only" {
+		t.Fatalf("candidate scope was not explicit: %+v", report.Xray)
+	}
 	if len(report.Zapret) != 2 || report.Zapret[0].Queue != 205 || report.Zapret[1].Queue != 208 {
 		t.Fatalf("unexpected Zapret report: %+v", report.Zapret)
 	}

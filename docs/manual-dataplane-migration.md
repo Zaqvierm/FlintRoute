@@ -64,6 +64,10 @@ The current importer therefore reports these blocking conflicts:
 - q205 and q208 need separate, device-aware managed profiles; collapsing them
   into one generic Zapret profile is not a valid migration.
 
+Every generated candidate reports `bundle_scope=loopback_socks_vless_only`.
+That field is an explicit scope contract, not a health signal: `bundle_ready`
+means only that the bounded candidate artifact was written and hashed.
+
 The importer also inspects the supplied nft evidence for host-scoped source
 rules on queue verdicts. A full-length host address (for example, a `/32`)
 marks that queue as `device_scoped` and records only an opaque per-report

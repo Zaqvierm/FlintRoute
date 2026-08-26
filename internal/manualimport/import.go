@@ -91,6 +91,7 @@ type XrayReport struct {
 	BundleSHA256  string          `json:"bundle_sha256,omitempty"`
 	BundlePath    string          `json:"bundle_path,omitempty"`
 	BundleReady   bool            `json:"bundle_ready"`
+	BundleScope   string          `json:"bundle_scope,omitempty"`
 }
 
 type ServerSummary struct {
@@ -282,6 +283,7 @@ func Inspect(opts Options) (Report, error) {
 		report.Xray.BundleSHA256 = xraybundle.Hash(bundle)
 		report.Xray.BundlePath = opts.OutputBundle
 		report.Xray.BundleReady = true
+		report.Xray.BundleScope = "loopback_socks_vless_only"
 	}
 	return report, nil
 }
