@@ -1813,9 +1813,6 @@ func parseObservationReference(value string) (kind, identifier, rhs string, err 
 	if !ok || strings.TrimSpace(kind) == "" || strings.TrimSpace(identifier) == "" {
 		return "", "", "", errors.New("observation target must use kind/identifier=value")
 	}
-	if strings.Contains(identifier, "/") {
-		return "", "", "", errors.New("observation identifier must not contain '/'")
-	}
 	return strings.TrimSpace(kind), strings.TrimSpace(identifier), strings.TrimSpace(rhs), nil
 }
 

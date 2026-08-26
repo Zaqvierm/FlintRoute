@@ -62,6 +62,7 @@ func TestParseObservationTargetsBindsOnlyPlanResources(t *testing.T) {
 		Resources: []manualimport.AdoptionResource{
 			{Kind: "process", Identifier: "manual-xray"},
 			{Kind: "nft-table", Identifier: "manual-table"},
+			{Kind: "file", Identifier: "manual-lifecycle/file-1"},
 		},
 	}
 	processes, err := parseObservationProcessTargets(plan,
@@ -80,6 +81,10 @@ func TestParseObservationTargetsBindsOnlyPlanResources(t *testing.T) {
 	}
 	if len(evidence) != 1 || evidence[0].Path != "/tmp/table.txt" {
 		t.Fatalf("unexpected evidence targets: %+v", evidence)
+	}
+	evidence, err = parseObservationEvidenceTargets(plan, []string{"file/manual-lifecycle/file-1=/tmp/lifecycle.txt"})
+	if err != nil || len(evidence) != 1 || evidence[0].Identifier != "manual-lifecycle/file-1" {
+		t.Fatalf("hierarchical resource identifier was not accepted: %+v err=%v", evidence, err)
 	}
 	if _, err := parseObservationProcessTargets(plan, []string{"process/unknown=1"}, nil); err == nil {
 		t.Fatal("unknown process resource must be rejected")
