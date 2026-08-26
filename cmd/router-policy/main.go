@@ -1230,6 +1230,37 @@ func run(args []string) error {
 			return printJSON(map[string]any{"report": report, "adoption_plan": handoff})
 		}
 		return printJSON(report)
+	case "manual-handoff-check":
+		fs := flag.NewFlagSet("manual-handoff-check", flag.ContinueOnError)
+		planPath := fs.String("plan", "", "redacted adoption plan JSON (read-only input)")
+		proofPath := fs.String("proof", "", "typed ownership proof JSON (read-only input)")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 || strings.TrimSpace(*planPath) == "" || strings.TrimSpace(*proofPath) == "" {
+			return errors.New("usage: router-policy manual-handoff-check --plan PLAN_JSON --proof PROOF_JSON")
+		}
+		planRaw, err := readBoundedRegularFile(*planPath, 2<<20)
+		if err != nil {
+			return fmt.Errorf("read adoption plan: %w", err)
+		}
+		proofRaw, err := readBoundedRegularFile(*proofPath, 2<<20)
+		if err != nil {
+			return fmt.Errorf("read handoff proof: %w", err)
+		}
+		var plan manualimport.AdoptionPlan
+		if err := decodeStrictJSON(planRaw, &plan); err != nil {
+			return fmt.Errorf("decode adoption plan: %w", err)
+		}
+		var proof manualimport.HandoffManifest
+		if err := decodeStrictJSON(proofRaw, &proof); err != nil {
+			return fmt.Errorf("decode handoff proof: %w", err)
+		}
+		decision, err := manualimport.EvaluateHandoff(plan, proof)
+		if err != nil {
+			return err
+		}
+		return printJSON(decision)
 	case "install-dry-run":
 		return printJSON(map[string]any{
 			"dry_run": true,
@@ -1297,6 +1328,7 @@ func usage() {
   subscription-routes [--base-port PORT] SUBSCRIPTION_JSON
   subscription-xray [--base-port PORT] --out OUTPUT_JSON SUBSCRIPTION_JSON
   manual-import --xray MANUAL_XRAY_JSON [--q205 ARGS] [--q208 ARGS] [--dnsmasq FILE] [--nft FILE] [--out-bundle CANDIDATE_JSON] [--out-full-bundle FULL_CANDIDATE_JSON] [--plan]
+  manual-handoff-check --plan PLAN_JSON --proof PROOF_JSON
   daemon
   install-dry-run
   security audit
@@ -1688,6 +1720,22 @@ func printJSON(v any) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
+}
+
+func decodeStrictJSON(raw []byte, dst any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("trailing JSON data")
+		}
+		return err
+	}
+	return nil
 }
 
 func writeIPStateSnapshot(path string, snap dataplane.IPStateSnapshot, reason string, captured bool) error {

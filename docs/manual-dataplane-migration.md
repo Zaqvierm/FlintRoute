@@ -180,6 +180,31 @@ rollback gates.
 Until those steps exist, the correct state is `blocked_on_ownership_handoff`.
 An Xray config file or a listening port alone is not proof of a safe migration.
 
+## Typed ownership proof gate
+
+The importer can now validate a separate, redacted handoff proof without
+touching the router. The proof must bind every resource in the adoption plan
+to the same candidate hash and generation. Process proofs include PID,
+start-time ticks, PGID, executable and config digest; listeners reference the
+proved process; non-process resources carry an evidence digest. The envelope
+also records that the manual lifecycle is quiesced, a mark-scoped transition
+guard is prepared, rollback is retained, and the management path is proved.
+
+Run the check only on local evidence files:
+
+```text
+router-policy manual-handoff-check \
+  --plan /private/manual-adoption-plan.json \
+  --proof /private/manual-handoff-proof.json
+```
+
+The command is read-only and strict: unknown JSON fields, missing resources,
+changed owners, stale generations, weak process identity and extra resources
+are rejected. A successful result is `ready_for_change_set`; it never sets
+`apply_allowed` and cannot replace the transaction/adapter state machine. The
+manual dataplane remains the rollback owner until a separately reviewed
+ChangeSet proves the complete handoff.
+
 ## Flint 2 handoff boundary (current)
 
 The current manual Flint 2 dataplane has a larger Xray topology than the
