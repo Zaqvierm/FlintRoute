@@ -1262,6 +1262,51 @@ func run(args []string) error {
 			return err
 		}
 		return printJSON(decision)
+	case "manual-handoff-draft":
+		fs := flag.NewFlagSet("manual-handoff-draft", flag.ContinueOnError)
+		planPath := fs.String("plan", "", "redacted adoption plan JSON (read-only input)")
+		proofPath := fs.String("proof", "", "typed ownership proof JSON (read-only input)")
+		outPath := fs.String("out", "", "optional local 0600 review-only draft output")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 || strings.TrimSpace(*planPath) == "" || strings.TrimSpace(*proofPath) == "" {
+			return errors.New("usage: router-policy manual-handoff-draft --plan PLAN_JSON --proof PROOF_JSON [--out OUTPUT_JSON]")
+		}
+		planRaw, err := readBoundedRegularFile(*planPath, 2<<20)
+		if err != nil {
+			return fmt.Errorf("read adoption plan: %w", err)
+		}
+		proofRaw, err := readBoundedRegularFile(*proofPath, 2<<20)
+		if err != nil {
+			return fmt.Errorf("read handoff proof: %w", err)
+		}
+		var plan manualimport.AdoptionPlan
+		if err := decodeStrictJSON(planRaw, &plan); err != nil {
+			return fmt.Errorf("decode adoption plan: %w", err)
+		}
+		var proof manualimport.HandoffManifest
+		if err := decodeStrictJSON(proofRaw, &proof); err != nil {
+			return fmt.Errorf("decode handoff proof: %w", err)
+		}
+		draft, err := manualimport.BuildAdoptionDraft(plan, proof)
+		if err != nil {
+			return err
+		}
+		if err := draft.Validate(); err != nil {
+			return err
+		}
+		if strings.TrimSpace(*outPath) != "" {
+			raw, marshalErr := json.MarshalIndent(draft, "", "  ")
+			if marshalErr != nil {
+				return fmt.Errorf("marshal adoption draft: %w", marshalErr)
+			}
+			raw = append(raw, '\n')
+			if err := writePrivateFileAtomic(*outPath, raw); err != nil {
+				return fmt.Errorf("write adoption draft: %w", err)
+			}
+		}
+		return printJSON(draft)
 	case "manual-handoff-observe":
 		fs := flag.NewFlagSet("manual-handoff-observe", flag.ContinueOnError)
 		planPath := fs.String("plan", "", "redacted adoption plan JSON (read-only input)")
@@ -1390,6 +1435,7 @@ func usage() {
   subscription-xray [--base-port PORT] --out OUTPUT_JSON SUBSCRIPTION_JSON
   manual-import --xray MANUAL_XRAY_JSON [--q205 ARGS] [--q208 ARGS] [--dnsmasq FILE] [--nft FILE] [--out-bundle CANDIDATE_JSON] [--out-full-bundle FULL_CANDIDATE_JSON] [--plan]
   manual-handoff-check --plan PLAN_JSON --proof PROOF_JSON
+  manual-handoff-draft --plan PLAN_JSON --proof PROOF_JSON [--out OUTPUT_JSON]
   manual-handoff-observe --plan PLAN_JSON [--pid process/ID=PID] [--config process/ID=PATH] [--evidence kind/ID=PATH] [--out OUTPUT_JSON]
   daemon
   install-dry-run

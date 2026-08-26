@@ -205,6 +205,23 @@ are rejected. A successful result is `ready_for_change_set`; it never sets
 manual dataplane remains the rollback owner until a separately reviewed
 ChangeSet proves the complete handoff.
 
+To materialize the review sequence without granting execution permission, use
+the typed draft command:
+
+```text
+router-policy manual-handoff-draft \
+  --plan /private/manual-adoption-plan.json \
+  --proof /private/manual-handoff-proof.json \
+  --out /private/manual-adoption-draft.json
+```
+
+The draft is either blocked with its exact blockers or marked
+`eligible_for_change_set`. In both cases `apply_allowed` is always `false`.
+A ready draft contains the fixed sequence (verify handoff, guard, quiesce the
+manual owner, activate, verify management and dataplane, persist the active
+revision, finalize ownership) as typed review steps. It is not an adapter
+request, does not execute commands, and cannot stop the live manual service.
+
 Before producing a handoff proof, capture a live, redacted observation of the
 exact plan resources. This is read-only: it inspects `/proc` identity and
 hashes explicitly supplied evidence/config files, but never copies command

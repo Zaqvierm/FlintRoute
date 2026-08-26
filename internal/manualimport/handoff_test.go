@@ -160,3 +160,52 @@ func TestHandoffManifestRejectsWeakProcessIdentityAndUnknownKind(t *testing.T) {
 		t.Fatalf("unknown resource kind was accepted: %v", err)
 	}
 }
+
+func TestBuildAdoptionDraftKeepsBlockedHandoffNonExecutable(t *testing.T) {
+	plan := handoffPlanFixture()
+	manifest := handoffManifestFixture()
+	manifest.TransitionGuardReady = false
+	draft, err := BuildAdoptionDraft(plan, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := draft.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if draft.EligibleForChangeSet || draft.ApplyAllowed || len(draft.Operations) != 0 {
+		t.Fatalf("blocked handoff became executable: %+v", draft)
+	}
+}
+
+func TestBuildAdoptionDraftReadySequenceStillRequiresChangeSet(t *testing.T) {
+	draft, err := BuildAdoptionDraft(handoffPlanFixture(), handoffManifestFixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := draft.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if !draft.EligibleForChangeSet || draft.ApplyAllowed || len(draft.Operations) != 8 {
+		t.Fatalf("ready draft has unsafe contract: %+v", draft)
+	}
+	if draft.Operations[0].Action != "verify_handoff" || draft.Operations[len(draft.Operations)-1].Action != "finalize_ownership" {
+		t.Fatalf("unexpected handoff sequence: %+v", draft.Operations)
+	}
+	if got, want := strings.Join(draft.Operations[0].ResourceRefs, ","), "process/manual-xray,listener/127.0.0.1:12345"; got != want {
+		t.Fatalf("verify operation was not bound to exact plan resources: %q", got)
+	}
+	if got, want := strings.Join(draft.Operations[2].ResourceRefs, ","), "process/manual-xray"; got != want {
+		t.Fatalf("quiesce operation was not bound to manual resource: %q", got)
+	}
+}
+
+func TestAdoptionDraftRejectsApplyEscalation(t *testing.T) {
+	draft, err := BuildAdoptionDraft(handoffPlanFixture(), handoffManifestFixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft.ApplyAllowed = true
+	if err := draft.Validate(); err == nil || !strings.Contains(err.Error(), "cannot grant apply") {
+		t.Fatalf("apply escalation was accepted: %v", err)
+	}
+}
