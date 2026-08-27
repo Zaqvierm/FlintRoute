@@ -5,7 +5,7 @@
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `6af275416daf74554bedecaa5d2d3ba4a871b73b`.
+- Текущий проверяемый code HEAD: `184ac5699eab830fc67e77e8e2e88e55bfbb120c`.
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -56,6 +56,7 @@
 | Immutable bootstrap | `tests/openwrt-adapter-integration.sh` | PASS | mock |
 | Права родителей installer | `tests/installer-lifecycle.sh` | PASS | mock |
 | Installer durability sync failure | `tests/installer-durability.sh` | PASS; failure is surfaced and install cannot report success | mock |
+| Export backup synthetic-directory exclusion | `tests/installer-backup.sh` | PASS; archive carries files only, never staging parent modes | mock |
 | Typed health response parsing | `go test ./internal/healthjson`, `router-policy internal-health-field` | PASS | local |
 | HTML/portal response rejection | `go test ./internal/vpnsub -run TestFetchSubscriptionRejectsHTML` | PASS | local |
 | Канонические ownership paths | `tests/installer-lifecycle.sh`, `tests/installer-backup.sh` | PASS | mock |
@@ -156,6 +157,9 @@ response fails the installer health gate closed.
   отдельными regression/CI проверками.
 - `observe_only` действительно не вызывает active probe/adapter; discovery queue
   ограничена 32, общий route-probe budget — четыре concurrent jobs.
+- Export backup archives omit synthetic staging directories, so even an
+  accidental future restore cannot replay installer umask modes onto system
+  parents; `tests/installer-backup.sh` asserts the exact file-only member set.
 - `NO_SAFE_ROUTE` — только terminal exhaustion; `VERIFYING` не превращается в
   ложный отказ. `route_latency_ms` отделён от `verification_duration_ms`.
 - DNS watcher отслеживает inode/rotation и никогда не обнуляет live dnsmasq log;
