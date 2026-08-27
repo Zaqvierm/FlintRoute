@@ -39,6 +39,19 @@ export async function mockAPI(page: Page, options: { securityFailure?: boolean; 
     }
     if (path === '/services') return route.fulfill(envelope(options.bootstrapRequired ? [] : [{ id: 'Discord', name: 'Discord', category: 'TELEGRAM', domains: ['discord.com'], route: 'VLESS', applied: true, source: 'configured', health: 'ready' }]));
     if (path === '/routes') return route.fulfill(envelope([{ type: 'system_default', tag: 'Direct', status: options.objectStatuses ? { status: 'ready' } : 'ready' }]));
+    if (path === '/xray/subscription/secret') return route.fulfill(envelope({ configured: true, present: true, count: 1, capacity: 5, sources: [{ source_masked: 'https://portal.example/add-key?subkey=••••', source_type: 'happ', crypto_version: 'crypt4' }] }));
+    if (path === '/xray/subscription/hwid') return route.fulfill(envelope({ mode: 'preset', source: 'composite', current_hwid: 'a330268d-7d9d-4343-8672-f6191f80a25c', preset_configured: true, preset: 'a330268d-7d9d-4343-8672-f6191f80a25c', preview: [
+      { source: 'preset', label: 'Preset / вручную заданный HWID', value: 'a330268d-7d9d-4343-8672-f6191f80a25c', hwid: 'a330268d-7d9d-4343-8672-f6191f80a25c', available: true, selected: true },
+      { source: 'mac', label: 'MAC (base/LAN)', value: '02:00:00:00:00:44', hwid: '11111111-1111-4111-8111-111111111111', available: true, selected: false },
+      { source: 'machine_id', label: 'Machine ID', value: 'fixture-machine', hwid: '22222222-2222-4222-8222-222222222222', available: true, selected: false },
+      { source: 'router_serial', label: 'Router serial / board serial', value: 'fixture-serial', hwid: '33333333-3333-4333-8333-333333333333', available: true, selected: false },
+      { source: 'hostname', label: 'Hostname', value: 'fixture-router', hwid: '44444444-4444-4444-8444-444444444444', available: true, selected: false },
+      { source: 'device_model', label: 'Device model', value: 'fixture-model', hwid: '55555555-5555-4555-8555-555555555555', available: true, selected: false },
+      { source: 'ssid', label: 'SSID', value: 'fixture-wifi', hwid: '66666666-6666-4666-8666-666666666666', available: true, selected: false },
+      { source: 'custom_seed', label: 'Custom seed', value: 'fixture-seed', hwid: '77777777-7777-4777-8777-777777777777', available: true, selected: false },
+      { source: 'composite', label: 'Composite', value: 'стабильные поля роутера', hwid: '88888888-8888-4888-8888-888888888888', available: true, selected: false }
+    ] }));
+    if (path === '/xray/manual-servers') return route.fulfill(envelope({ servers: [], count: 0, capacity: 100 }));
     if (path === '/events') {
       if (!options.decisionState) return route.fulfill(envelope([]));
       const terminal = options.decisionState === 'no_safe_route';
@@ -131,14 +144,38 @@ test.describe('FlintRoute UI v2', () => {
   });
 
   test('purges revealed address data when privacy is switched back to hidden', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('flintroute-address-privacy', 'hidden'));
     await mockAPI(page);
     await page.goto('/?screen=Устройства');
-    await page.getByText('Показать адреса').click();
+    await page.getByRole('button', { name: 'Показать адреса' }).click();
     await expect(page.getByText(rawIP)).toBeVisible();
-    await page.getByText('Скрыть адреса').click();
+    await page.getByRole('button', { name: 'Скрыть адреса' }).click();
     await expect(page.getByText('Адреса скрыты')).toBeVisible();
     await expect(page.locator('body')).not.toContainText(rawIP);
     await expect(page.locator('body')).not.toContainText(rawMAC);
+  });
+
+  test('keeps the address visibility preference until the user changes it', async ({ page }) => {
+    await mockAPI(page);
+    await page.goto(`/?screen=${encodeURIComponent('Устройства')}`);
+    await expect(page.getByText('Адреса устройств видны')).toBeVisible();
+    await page.getByRole('button', { name: 'Скрыть адреса' }).click();
+    await expect(page.getByText('Адреса скрыты')).toBeVisible();
+    await page.reload();
+    await expect(page.getByText('Адреса скрыты')).toBeVisible();
+    await page.getByRole('button', { name: 'Показать адреса' }).click();
+    await page.reload();
+    await expect(page.getByText('Адреса устройств видны')).toBeVisible();
+  });
+
+  test('exposes the persistent address preference in Settings', async ({ page }) => {
+    await mockAPI(page);
+    await page.goto(`/?screen=${encodeURIComponent('Настройки')}`);
+    const privacyCard = page.locator('.entity-card').filter({ hasText: 'Приватность' });
+    await expect(privacyCard).toContainText('Адреса устройств сейчас видны');
+    await privacyCard.getByRole('button', { name: 'Скрыть адреса' }).click();
+    await expect(privacyCard).toContainText('Адреса устройств сейчас скрыты');
+    await expect(privacyCard.getByRole('button', { name: 'Показать адреса' })).toBeVisible();
   });
 
   test('does not present unfinished device actions as clickable controls', async ({ page }) => {
@@ -214,6 +251,21 @@ test.describe('FlintRoute UI v2', () => {
     await page.goto(`/?screen=${encodeURIComponent('Ревизии и recovery')}`);
     await expect(page.getByRole('heading', { name: 'Ревизии и recovery' })).toBeVisible();
     await expect(page.getByText('Изменения временно заблокированы')).toBeVisible();
+  });
+
+  test('does not redirect an explicit component deep-link into fast start', async ({ page }) => {
+    await mockAPI(page, { bootstrapRequired: true });
+    await page.goto(`/?screen=${encodeURIComponent('Zapret')}`);
+    await expect(page.getByRole('heading', { name: 'Zapret' }).first()).toBeVisible();
+    await expect.poll(() => new URL(page.url()).searchParams.get('screen')).toBe('Zapret');
+  });
+
+  test('lets the user leave fast start without falsely completing it', async ({ page }) => {
+    await mockAPI(page, { bootstrapRequired: true });
+    await page.goto(`/?screen=${encodeURIComponent('Быстрая настройка')}`);
+    await page.getByRole('button', { name: 'К компонентам без завершения' }).click();
+    await expect(page).toHaveURL(/screen=%D0%9A%D0%BE%D0%BC%D0%BF%D0%BE%D0%BD%D0%B5%D0%BD%D1%82%D1%8B/);
+    await expect(page.getByRole('heading', { name: 'Компоненты' }).first()).toBeVisible();
   });
 
   test('loads setup provider state when the wizard first opens', async ({ page }) => {
@@ -298,5 +350,18 @@ test.describe('FlintRoute UI v2', () => {
     await mockAPI(page, { decisionState: 'no_safe_route' });
     await page.goto('/?screen=Поток решений');
     await expect(page.getByText('Безопасный маршрут не найден')).toBeVisible();
+  });
+
+  test('opens the compact HWID source table on the VLESS screen', async ({ page }) => {
+    await mockAPI(page);
+    await page.goto(`/?screen=${encodeURIComponent('VLESS-серверы')}`);
+    await expect(page.getByRole('heading', { name: 'VLESS-серверы' })).toBeVisible();
+    await page.getByRole('button', { name: 'HWID', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Источник HWID' });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator('table')).toContainText('MAC (base/LAN)');
+    await expect(dialog.locator('table')).toContainText('02:00:00:00:00:44');
+    const presetHWID = ['a330268d', '7d9d', '4343', '8672', 'f6191f80a25c'].join('-');
+    await expect(dialog.locator('table')).toContainText(presetHWID);
   });
 });

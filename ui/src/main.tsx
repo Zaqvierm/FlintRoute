@@ -8,6 +8,7 @@ import {
   componentAction,
   activateExternalSOCKS,
   activateZapretSetup,
+  applyDiscoverySuggestion,
   changeAction,
   checkExternalSOCKS,
   checkZapretSetup,
@@ -34,6 +35,7 @@ import {
   getSecuritySummary,
   getSmartDNS,
   getServices,
+  getSubscriptionHWID,
   getSubscriptionSecretStatus,
   getSystem,
   getSettings,
@@ -47,11 +49,15 @@ import {
   getTopology,
   getZapret,
   getZapretCalibration,
+  ignoreDiscoverySuggestion,
   login,
   logout,
   me,
   prepareSubscription,
+  removeSubscriptionSource,
   saveSubscriptionSecrets,
+  saveSubscriptionHWID,
+  verifyService,
   runVLESSSpeedTest,
   setVLESSTariff,
   startZapretCalibration,
@@ -69,6 +75,7 @@ import {
   type OnboardingState,
   type RevisionSummary,
   type SessionInfo,
+  type SubscriptionHWIDSettings,
   type TrafficSnapshot,
   type ZapretCalibrationStatus
 } from './api';
@@ -247,7 +254,12 @@ function App() {
   const sliceRetryAbort = useRef<AbortController | null>(null);
   const refreshGeneration = useRef(0);
   const [privacyHidden, setPrivacyHidden] = useState(() => {
-    try { return window.localStorage.getItem('flintroute-address-privacy') !== 'visible'; } catch { return true; }
+    // Address visibility is a persistent UI preference.  The safe choice is
+    // still available at any time, but do not silently change a user's
+    // preference after a timer or a refresh.  Existing installs that have no
+    // preference start in the visible mode so the network map is useful on
+    // first launch; opting into hidden mode is explicit and persistent.
+    try { return window.localStorage.getItem('flintroute-address-privacy') === 'hidden'; } catch { return false; }
   });
   const screenRef = useRef(screen);
 
@@ -355,14 +367,18 @@ function App() {
       setOnboarding(nextOnboarding);
       if (nextRevisions && nextRevisions.config_version <= 1 && nextServices.length === 0 && nextOnboarding?.completed !== true) {
         const firstRunScreen = navigation[0].screens[0];
-        const currentLocation = screenFromLocation();
-        // First-run should own the initial Overview, not trap every other
-        // screen. Recovery, diagnostics and read-only component screens must
-        // remain reachable while setup is incomplete; otherwise the user can
-        // see a recovery lock but cannot open the page that explains it.
-        if (currentLocation === 'Обзор' || (currentLocation === null && activeScreen === 'Обзор')) {
-          selectScreen(firstRunScreen);
-        }
+        const locationScreen = screenFromLocation();
+        // Resume the wizard only from the landing screen (or an invalid URL).
+        // An explicit deep-link to a component is a deliberate user action;
+        // redirecting it on every refresh made Rules -> Zapret impossible to
+        // use until onboarding was completed, and created a visible loop.
+        // Recovery, diagnostics and read-only component screens must remain
+        // reachable while setup is incomplete, so they are never trapped.
+        const shouldResumeWizard = (screenRef.current === 'Обзор' || screenRef.current === notFoundScreen)
+          && (locationScreen === null || ['Обзор', firstRunScreen, notFoundScreen].includes(locationScreen));
+        const explicitComponentNavigation = locationScreen !== null
+          && !['Обзор', firstRunScreen, notFoundScreen].includes(locationScreen);
+        if (shouldResumeWizard && !explicitComponentNavigation && locationScreen !== firstRunScreen) selectScreen(firstRunScreen);
       }
       const optional = await Promise.allSettled([
         maybe(needsChanges, 'changes', () => getChanges(signal), changes),
@@ -564,12 +580,6 @@ function App() {
     await refresh(next);
   }
 
-  useEffect(() => {
-    if (privacyHidden) return;
-    const timer = window.setTimeout(() => { void togglePrivacy(); }, 10 * 60 * 1000);
-    return () => window.clearTimeout(timer);
-  }, [privacyHidden]);
-
   async function handleLogin(username: string, password: string) {
     setAuthError('');
     try {
@@ -676,7 +686,7 @@ function App() {
         <AlertCenter errors={sliceErrors} onRetry={(name) => { void retrySlice(name); }} onRetryAll={() => { void refresh(); }} retrying={retryingSlice} />
         <RecoveryMutationBanner overview={overview} navigate={selectScreen} onRetry={() => refresh()} />
         <OperationCenterSummary changes={changes} navigate={selectScreen} />
-        {loading ? <LoadingSkeleton /> : <ScreenErrorBoundary key={`${screen}:${privacyHidden ? 'hidden' : 'visible'}`}><Content screen={screen} session={session} configVersion={configVersion} overview={overview} mutationLocked={!recoveryMutationAllowed(overview)} onboarding={onboarding} topology={topology} devices={devices} services={services} discovery={discovery} routes={routes} traffic={traffic} events={events} changes={changes} security={security} securitySummary={securitySummary} system={system} diagnostics={diagnostics} lifecycle={lifecycle} storage={storage} settings={settings} backups={backups} revisions={revisions} refresh={refresh} onboardingAction={async (step: string, action: 'skip' | 'accept' | 'automatic' | 'complete') => { const next = await updateOnboarding(step, action); setOnboarding(next); return next; }} navigate={selectScreen} /></ScreenErrorBoundary>}
+        {loading ? <LoadingSkeleton /> : <ScreenErrorBoundary key={`${screen}:${privacyHidden ? 'hidden' : 'visible'}`}><Content screen={screen} session={session} configVersion={configVersion} overview={overview} mutationLocked={!recoveryMutationAllowed(overview)} onboarding={onboarding} topology={topology} devices={devices} services={services} discovery={discovery} routes={routes} traffic={traffic} events={events} changes={changes} security={security} securitySummary={securitySummary} system={system} diagnostics={diagnostics} lifecycle={lifecycle} storage={storage} settings={settings} backups={backups} revisions={revisions} privacyHidden={privacyHidden} onTogglePrivacy={togglePrivacy} refresh={refresh} onboardingAction={async (step: string, action: 'skip' | 'accept' | 'automatic' | 'complete') => { const next = await updateOnboarding(step, action); setOnboarding(next); return next; }} navigate={selectScreen} /></ScreenErrorBoundary>}
       </main>
     </div>
   );
@@ -750,7 +760,7 @@ function Content(props: any) {
     case 'Удалённые клиенты':
       return <Generic title="Удалённые клиенты" text="Профили удалённого доступа, лимиты, срок действия и политика маршрутизации." />;
     case 'Настройки':
-      return <Settings data={props.settings} />;
+      return <Settings data={props.settings} privacyHidden={props.privacyHidden} onTogglePrivacy={props.onTogglePrivacy} mutationLocked={props.mutationLocked} role={props.session.role} />;
     case 'Обновление':
       return <Generic title="Обновление" text="Проверка версии, подпись выпуска, checksum, staged install и rollback." />;
     case 'Резервное копирование':
@@ -782,7 +792,7 @@ function OverviewScreen({ overview, topology, devices, system, services, events 
           {!decisions.length && <EmptyState title="Решений пока нет" text="Они появятся после наблюдения за DNS и маршрутизацией." />}
         </Card>
       </div>
-    </section>
+     </section>
   );
 }
 
@@ -1004,7 +1014,7 @@ function RouterDetails({ router }: { router: any }) {
 
 const serviceColumns = [
   { category: 'GEO_LOCKED', title: 'GEO · VPN', hint: 'Smart DNS → VLESS → блокировка' },
-  { category: 'TSPU_RESTRICTED', title: 'TSPU', hint: 'Zapret → Smart DNS → VLESS → Direct' },
+  { category: 'TSPU_RESTRICTED', title: 'TSPU', hint: 'Zapret → Smart DNS → VLESS → блокировка' },
   { category: 'TELEGRAM', title: 'Telegram', hint: 'Telegram policy — отдельный маршрут' },
   { category: 'DIRECT_PREFERRED', title: 'Direct предпочтительно', hint: 'Direct → управляемый fallback' },
   { category: 'DIRECT_ONLY', title: 'Direct', hint: 'Только прямое подключение под управлением FlintRoute' },
@@ -1042,6 +1052,8 @@ function Services({
   const [message, setMessage] = useState('');
   const [editor, setEditor] = useState<{ domain: string; category: string; paths: string[] } | null>(null);
   const [selectedService, setSelectedService] = useState<any>(null);
+  const [verificationBusy, setVerificationBusy] = useState(false);
+  const [verificationMessage, setVerificationMessage] = useState('');
   const [serviceView, setServiceView] = useState<'table' | 'board'>('table');
   const [serviceQuery, setServiceQuery] = useState('');
   const grouped = useMemo(() => groupServices(services), [services]);
@@ -1067,6 +1079,45 @@ function Services({
       setMessage(error instanceof Error ? error.message : 'Не удалось изменить маршрут');
     } finally {
       setMoving('');
+    }
+  }
+
+  async function verifyConfiguredService(service: any) {
+    if (role !== 'administrator' || verificationBusy) return;
+    const serviceID = textValue(service?.id, '');
+    const domain = textValue(asArray(service?.domains)[0], '');
+    if (!serviceID || !domain) {
+      setVerificationMessage('Для проверки у сервиса должен быть домен.');
+      return;
+    }
+    setVerificationBusy(true);
+    setVerificationMessage('Проверяю текущий путь без изменения правил…');
+    try {
+      const result = await verifyService(serviceID, domain);
+      setSelectedService((current: any) => current ? {
+        ...current,
+        status: result.path_verified ? 'VERIFIED' : result.status,
+        probe_state: result.path_verified ? 'verified_candidate' : result.verification_state,
+        verification_state: result.verification_state,
+        verification_reason: result.reason ?? result.error,
+        selected_route_tag: result.selected_route_tag || current.selected_route_tag,
+        selected_route_type: result.selected_route_type || current.selected_route_type,
+        checked_at: result.checked_at,
+        latest_checked_at: result.checked_at,
+        verification_duration_ms: result.verification_duration_ms,
+        verification_route_latency_ms: result.route_latency_ms,
+        verification_route_latency_available: result.route_latency_ms !== undefined,
+        verification_candidates: result.candidates
+      } : current);
+      await refresh();
+      setVerificationMessage(result.path_verified
+        ? `Путь подтверждён: ${result.selected_route_tag || result.selected_route_type || 'маршрут'}${result.route_latency_ms !== undefined ? `, ${result.route_latency_ms} мс` : ''}. Правило не изменялось.`
+        : `Путь не подтверждён. ${result.error || result.reason || 'Проверка не дала безопасного результата'}. Правило не изменялось.`);
+    } catch (error) {
+      const info = errorInfo(error);
+      setVerificationMessage(`${info.code}: ${info.message}`);
+    } finally {
+      setVerificationBusy(false);
     }
   }
 
@@ -1200,7 +1251,13 @@ function Services({
        {mutationLocked && <p class="action-status">Изменения заблокированы: FlintRoute ещё не подтвердил безопасное состояние восстановления.</p>}
        <p class={message.includes('создан') ? 'action-status ok' : 'action-status'}>{message || 'Домены появляются после наблюдения и проверки. Перетащи карточку, чтобы создать черновик правила.'}</p>
       <DetailDrawer title={textValue(selectedService?.id, 'Сервис')} open={Boolean(selectedService)} onClose={() => setSelectedService(null)}>
-         <ServiceDetails service={selectedService} onEdit={mutationLocked ? undefined : () => selectedService && editRule(selectedService)} />
+         <ServiceDetails
+           service={selectedService}
+           onVerify={selectedService?.applied ? () => void verifyConfiguredService(selectedService) : undefined}
+           verifyBusy={verificationBusy}
+           verifyMessage={verificationMessage}
+           onEdit={mutationLocked ? undefined : () => selectedService && editRule(selectedService)}
+         />
       </DetailDrawer>
     </section>
   );
@@ -1223,10 +1280,13 @@ function ServiceGroup({
 }) {
   if (!service) return <Generic title="Группа сервиса" text="Сервис не выбран." />;
   const observation = !Boolean(service.applied) && asArray(service.sources).includes('automatic') && !asArray(service.sources).includes('configured');
+  const verificationState = textValue(service.probe_state, '').toLowerCase().replace(/[._-]+/g, ' ');
   const selectedRoute = textValue(service.selected_route_tag ?? service.selected_route_type, '');
   const routeStatus = observation
     ? (selectedRoute ? `Проверенный кандидат: ${selectedRoute}` : 'Ни один безопасный маршрут не прошёл проверку')
-    : textValue(service.status ?? service.selected_route_tag, 'Ожидает проверки');
+    : verificationState === 'not checked'
+      ? 'Настроено · путь ещё не проверен'
+      : humanStatus(service.status ?? service.selected_route_tag ?? 'Ожидает проверки');
   return (
     <article
       class={`service-card ${busy ? 'busy' : ''}`}
@@ -1244,7 +1304,7 @@ function ServiceGroup({
   );
 }
 
-function ServiceDetails({ service, onEdit }: { service: any; onEdit?: () => void }) {
+function ServiceDetails({ service, onVerify, verifyBusy = false, verifyMessage = '', onEdit }: { service: any; onVerify?: () => void; verifyBusy?: boolean; verifyMessage?: string; onEdit?: () => void }) {
   if (!service) return null;
   const classificationConfidence = service.classification_confidence ?? service.classificationConfidence ?? service.confidence;
   // The legacy details row reads `confidence`; normalize that compatibility
@@ -1260,10 +1320,14 @@ function ServiceDetails({ service, onEdit }: { service: any; onEdit?: () => void
         ? 'no_safe_route'
         : service.policy_state === 'observed' && serviceVerificationState === 'not run observe only'
           ? 'observed'
+          : serviceVerificationState === 'not checked' || textValue(service.verification_state, '').toLowerCase().replace(/[._-]+/g, ' ') === 'not checked'
+            ? 'not_checked'
           : 'unverified';
-  return <><InfoGrid items={[["Политика", observation ? (service.policy_state === 'suggested' ? 'Предложено — не применено' : 'Наблюдение — не применено') : 'Применена'], ["Классификация", service.classification_state === 'classified' ? service.category : 'Не определена'], ["Уверенность классификации", Number(service.confidence) > 0 ? service.confidence : 'Нет достаточных данных'], ["Проверка пути", verificationPresentationLabel(serviceVerification as Parameters<typeof verificationPresentationLabel>[0])], ["Источник", asArray(service.sources).join(', ')], [observation ? "Кандидат маршрута" : "Маршрут", service.selected_route_tag ?? service.selected_route_type], ["Health", service.health], ["Fallback", asArray(service.allowed_paths).join(' → ')], ["Последняя проверка", formatDateTime(service.latest_checked_at)]]} />
+  return <><InfoGrid items={[["Политика", observation ? (service.policy_state === 'suggested' ? 'Предложено — не применено' : 'Наблюдение — не применено') : 'Применена'], ["Классификация", service.classification_state === 'classified' ? service.category : 'Не определена'], ["Уверенность классификации", Number(service.confidence) > 0 ? service.confidence : 'Нет достаточных данных'], ["Проверка пути", verificationPresentationLabel(serviceVerification as Parameters<typeof verificationPresentationLabel>[0])], ["Источник", asArray(service.sources).join(', ')], [observation ? "Кандидат маршрута" : "Маршрут", service.selected_route_tag ?? service.selected_route_type], ["Health", service.health], ["Fallback", asArray(service.allowed_paths).join(' → ')], ["Latency", service.verification_route_latency_available ? `${service.verification_route_latency_ms} мс` : null], ["Последняя проверка", formatDateTime(service.latest_checked_at)]]} />
     <h3>Связанные домены</h3><div class="domain-list">{asArray(service.domains).map((domain) => <span class="chip mono">{textValue(domain)}</span>)}</div>
     <h3>Наследование и исключения</h3><p>{asArray(service.forbidden_paths).length ? `Запрещены: ${asArray(service.forbidden_paths).join(', ')}` : 'Явных конфликтов и исключений нет.'}</p>
+    {onVerify && <div class="actions"><button class="primary" disabled={verifyBusy} onClick={onVerify}>{verifyBusy ? 'Проверяю…' : 'Проверить путь сейчас'}</button></div>}
+    {verifyMessage && <p class="action-status">{verifyMessage}</p>}
     {onEdit && <button class="primary" onClick={onEdit}>Настроить правило</button>}<RawDisclosure value={service} /></>;
 }
 
@@ -1564,6 +1628,8 @@ function Discovery({ data, configVersion, role, mutationLocked, refresh }: { dat
   const [hourly, setHourly] = useState(data?.max_new_rules_per_hour ?? 4);
   const [rollbacks, setRollbacks] = useState(data?.max_consecutive_rollbacks ?? 3);
   const [busy, setBusy] = useState(false);
+  const [actionDomain, setActionDomain] = useState('');
+  const [routeChoices, setRouteChoices] = useState<Record<string, string>>({});
   const [message, setMessage] = useState('');
   useEffect(() => {
     if (!data) return;
@@ -1589,11 +1655,38 @@ function Discovery({ data, configVersion, role, mutationLocked, refresh }: { dat
       setBusy(false);
     }
   }
+  async function actOnSuggestion(item: Record<string, unknown>, action: 'apply' | 'ignore') {
+    const domain = String(item.domain ?? '').trim();
+    if (!domain || role !== 'administrator' || mutationLocked) return;
+    setActionDomain(domain);
+    setMessage('');
+    try {
+      if (action === 'apply') {
+        const route = typeof item.route === 'string' ? item.route : undefined;
+        const result = await applyDiscoverySuggestion(domain, route);
+        if (!result.applied || !result.post_apply_proof) throw new Error('Backend не подтвердил назначение маршрута и post-apply proof.');
+        const proof = result.post_apply_proof_kind === 'revision_bound_path_evidence'
+          ? 'сохранено подтверждение текущей ревизии'
+          : 'путь подтверждён';
+        setMessage(`Маршрут ${result.route} назначен для ${result.domain}; ${proof}.`);
+      } else {
+        await ignoreDiscoverySuggestion(domain);
+        setMessage(`Предложение для ${domain} скрыто.`);
+      }
+      await refresh();
+    } catch (reason) {
+      const info = errorInfo(reason);
+      setMessage(`${info.code}: ${info.message}`);
+    } finally {
+      setActionDomain('');
+    }
+  }
   if (!data) return <Generic title="Discovery" text="Загружаю состояние…" />;
   return <section class="grid">
     <Card title="Наблюдение за доменами">
-      <div class="row"><b>{data.observation_source?.status === 'receiving' ? 'Вижу DNS-запросы' : data.observation_source?.status === 'listening' ? 'Жду новые запросы' : 'DNS-запросы не поступают'}</b><span>{humanStatus(data.observation_source?.status)}</span><small>{data.observation_source?.last_updated ? `последний запрос: ${formatDateTime(data.observation_source.last_updated)}` : textValue(data.observation_source?.reason, 'Источник ещё не создал журнал')}</small></div>
-      <p>{data.observation_source?.status === 'waiting' || data.observation_source?.status === 'unavailable' ? 'FlintRoute пока не получает наблюдения от DNS. Проверь, что клиент использует DNS роутера.' : 'Открывай сайты с устройства в LAN или Wi-Fi — новые домены появятся в Потоке решений.'}</p>
+      <div class="row"><b>{data.observation_source?.status === 'disabled' ? 'Discovery выключен' : data.observation_source?.status === 'receiving' ? 'Вижу DNS-запросы' : data.observation_source?.status === 'stale' ? 'Последние DNS-записи устарели' : data.observation_source?.status === 'listening' ? 'Жду новые запросы' : data.observation_source?.status === 'waiting' ? 'Журнал DNS ещё не создан' : 'Источник DNS недоступен'}</b><span>{humanStatus(data.observation_source?.status)}</span><small>{data.observation_source?.last_updated ? `последний запрос: ${formatDateTime(data.observation_source.last_updated)}` : textValue(data.observation_source?.reason, 'Источник ещё не создал журнал')}</small></div>
+      <div class="row"><span>Очередь проверок</span><b>{data.queue_depth ?? 0} / {data.queue_capacity || '—'}</b><small>Активных route jobs: {data.active_probe_jobs ?? 0}; отброшено наблюдений: {data.observation_source?.dropped ?? 0}</small></div>
+      <p>{data.observation_source?.status === 'disabled' ? 'Discovery не включён и не читает журнал dnsmasq. Включи наблюдение ниже, затем открой новый домен с устройства в LAN или Wi-Fi.' : data.observation_source?.status === 'waiting' || data.observation_source?.status === 'unavailable' ? 'Discovery включён, но журнал DNS ещё не создан или недоступен. Это не означает, что весь DNS сломан: проверь, что клиент использует DNS роутера и что dnsmasq запущен.' : data.observation_source?.status === 'stale' ? 'Журнал dnsmasq есть, но новых записей не было больше пяти минут. Discovery наблюдает DNS-запросы, а не все пакеты. Проверь DNS клиента и открой новый домен.' : 'Discovery видит DNS-наблюдения, а не отдельные пакеты. Открывай сайты с устройства в LAN или Wi-Fi — новые домены появятся в Потоке решений.'}</p>
     </Card>
     <Card title="Режим discovery">
       <div class="row"><b>{textValue(data.mode, 'неизвестный режим')}</b><span>{data.paused ? `остановлен: ${textValue(data.paused_reason, 'причина не указана')}` : 'активен'}</span><small>{textValue(data.applied_last_hour, '0')} правил за последний час</small></div>
@@ -1611,8 +1704,22 @@ function Discovery({ data, configVersion, role, mutationLocked, refresh }: { dat
       </div>}
     </Card>
     <Card title="Предложения">
-      {(data.suggestions ?? []).map((item: any) => <div class="row" key={textValue(item.domain, 'unknown')}><b>{textValue(item.domain, 'Домен не указан')}</b><span>{textValue(item.route_type, 'Маршрут не определён')} · {textValue(item.route, 'не выбран')}</span><small>{item.path_verified ? 'Кандидат прошёл проверку пути' : 'Безопасный кандидат не найден'} · политика не применена</small></div>)}
+      {(data.suggestions ?? []).map((item: Record<string, unknown>) => {
+        const domain = String(item.domain ?? '');
+        const verified = item.path_verified === true && Boolean(item.route);
+        const busySuggestion = actionDomain === domain;
+        const candidates = Array.isArray(item.candidates) ? item.candidates.filter((candidate): candidate is Record<string, unknown> => Boolean(candidate && typeof candidate === 'object')) : [];
+        const verifiedCandidates = candidates.filter((candidate) => candidate.path_verified === true && typeof candidate.route === 'string' && candidate.route);
+        const selectedRoute = routeChoices[domain] ?? String(item.route ?? '');
+        const applyItem = selectedRoute && selectedRoute !== String(item.route ?? '') ? { ...item, route: selectedRoute } : item;
+        return <div class="row discovery-suggestion" key={domain || 'unknown'}><div><b>{textValue(domain, 'Домен не указан')}</b><small>{textValue(item.category, 'Категория не определена')} · {textValue(item.route_type, 'Маршрут не определён')} · {textValue(item.route, 'не выбран')}</small>{candidates.length > 0 && <div class="suggestion-candidates">{candidates.map((candidate, index) => <small key={`${String(candidate.route ?? index)}:${index}`}>{textValue(candidate.route, 'Маршрут')} — {candidate.path_verified === true ? 'PASS' : textValue(candidate.status, 'FAIL')}{candidate.reason ? ` · ${textValue(candidate.reason, '')}` : ''}</small>)}</div>}</div><span>{verified ? 'Путь подтверждён' : textValue(item.probe_state, 'Проверка не завершена')}</span><small>{textValue(item.reason, 'Причина не указана')} · наблюдений: {textValue(item.count, '1')}</small>{role === 'administrator' && <div class="actions">{verifiedCandidates.length > 1 && <label class="inline-select"><span>Изменить маршрут</span><select value={selectedRoute} disabled={mutationLocked || busySuggestion} onChange={(event) => setRouteChoices((old) => ({ ...old, [domain]: (event.target as HTMLSelectElement).value }))}>{verifiedCandidates.map((candidate, index) => <option value={String(candidate.route)} key={`${String(candidate.route)}:${index}`}>{String(candidate.route)}</option>)}</select></label>}<button class="primary" disabled={!verified || mutationLocked || busySuggestion} onClick={() => void actOnSuggestion(applyItem, 'apply')}>{busySuggestion ? 'Проверяю…' : 'Применить'}</button><button disabled={mutationLocked || busySuggestion} onClick={() => void actOnSuggestion(item, 'ignore')}>Игнорировать</button></div>}</div>;
+      })}
       {!data.suggestions?.length && <p class="empty-state">Предложений пока нет</p>}
+    </Card>
+    <Card title="Последние наблюдения">
+      <div class="row"><span>Наблюдений в памяти</span><b>{data.observations?.length ?? 0}</b><small>Очередь ограничена; запись DNS не создаёт bbolt write на каждый запрос.</small></div>
+      {(data.observations ?? []).slice(0, 20).map((item) => <div class="row" key={`${item.domain}:${item.observed_at}`}><b>{item.domain}</b><span>{item.query_type ?? 'DNS'}</span><small>{item.client || 'клиент скрыт'} · {item.observed_at ? formatDateTime(item.observed_at) : 'время неизвестно'}</small></div>)}
+      {!data.observations?.length && <p class="empty-state">Новых DNS-наблюдений пока нет. Устройство должно использовать DNS роутера.</p>}
     </Card>
   </section>;
 }
@@ -1684,10 +1791,18 @@ function Vless({
   refresh: () => Promise<void>;
   navigate: (screen: string) => void;
 }) {
+  const defaultHappPresetHWID = 'a330268d-7d9d-4343-8672-f6191f80a25c';
   const vless = routes.filter((r) => r.type === 'vless');
-  const [urls, setURLs] = useState(() => Array(5).fill('') as string[]);
+  const [urls, setURLs] = useState<string[]>(['']);
   const [present, setPresent] = useState<boolean | null>(null);
   const [configuredCount, setConfiguredCount] = useState(0);
+  const [sourceStatuses, setSourceStatuses] = useState<Array<{ source_masked: string; source_type: string; crypto_version?: string }>>([]);
+  const [hwid, setHWID] = useState<SubscriptionHWIDSettings | null>(null);
+  const [hwidMode, setHWIDMode] = useState('generated');
+  const [hwidSource, setHWIDSource] = useState('composite');
+  const [hwidPreset, setHWIDPreset] = useState('');
+  const [hwidCustomSeed, setHWIDCustomSeed] = useState('');
+  const [hwidOpen, setHWIDOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [checkedServers, setCheckedServers] = useState<any[]>([]);
@@ -1698,31 +1813,82 @@ function Vless({
   const [manualEditorOpen, setManualEditorOpen] = useState(false);
   const [pool, setPool] = useState<any>({ tariff_mbps: 300, sources: [], servers: [], provider_matches: [] });
   const [tariff, setTariff] = useState(300);
+  const [xrayAvailable, setXrayAvailable] = useState(false);
+  const confirmDialog = useConfirmDialog();
+
+  function forceHappPreset(value: SubscriptionHWIDSettings): SubscriptionHWIDSettings {
+    const preview = (value.preview ?? []).map((row) => ({ ...row, selected: row.source === 'preset' }));
+    const presetRow = {
+      source: 'preset',
+      label: 'Preset / вручную заданный HWID',
+      value: defaultHappPresetHWID,
+      hwid: defaultHappPresetHWID,
+      available: true,
+      selected: true
+    };
+    const withoutPreset = preview.filter((row) => row.source !== 'preset');
+    return { ...value, mode: 'preset', preset: defaultHappPresetHWID, current_hwid: defaultHappPresetHWID, preview: [presetRow, ...withoutPreset] };
+  }
+
+  function sourceRequiresHappHWID(value: string): boolean {
+    const normalized = value.trim().toLowerCase();
+    return normalized.startsWith('happ://') || /[?&]subkey=(?:happ(?:%3a|:)\/\/|happ\\:\/\/)/i.test(normalized);
+  }
 
   useEffect(() => {
     const controller = new AbortController();
-    const requests: Promise<any>[] = [getVLESSPool(controller.signal)];
-    if (role === 'administrator') requests.push(getSubscriptionSecretStatus(controller.signal), getManualVLESSServers(controller.signal));
-    Promise.allSettled(requests).then(([poolResult, subscription, manual]) => {
+    const requests: Promise<any>[] = [getVLESSPool(controller.signal), getComponents(controller.signal)];
+    if (role === 'administrator') requests.push(getSubscriptionSecretStatus(controller.signal), getManualVLESSServers(controller.signal), getSubscriptionHWID(controller.signal));
+    Promise.allSettled(requests).then(([poolResult, componentsResult, subscription, manual, hwidResult]) => {
       if (controller.signal.aborted) return;
       if (poolResult.status === 'fulfilled') {
         setPool(poolResult.value);
         setTariff(poolResult.value.tariff_mbps || 300);
       }
+      if (componentsResult.status === 'fulfilled') {
+        const xrayComponent = componentsResult.value.find((item: ComponentStatus) => item.kind === 'xray');
+        setXrayAvailable(Boolean(xrayComponent?.installed || xrayComponent?.health_ready || xrayComponent?.service_state === 'running'));
+      }
       if (!subscription || !manual) return;
       if (subscription.status === 'fulfilled') {
         setPresent(subscription.value.present);
         setConfiguredCount(subscription.value.count ?? 0);
+        setSourceStatuses(subscription.value.sources ?? []);
       } else {
         setPresent(null);
+        setSourceStatuses([]);
       }
       if (manual.status === 'fulfilled') setManualServers(manual.value.servers);
+      if (hwidResult?.status === 'fulfilled') {
+        const hasHappSource = subscription?.status === 'fulfilled' && (subscription.value.sources ?? []).some((source: any) => source.source_type === 'happ' || source.crypto_version);
+        // Happ subscriptions require the provider-compatible stable identity.
+        // Do not let an older generated/custom setting silently win when a
+        // Happ source is present; the save flow persists this exact preset
+        // before it starts provider preparation.
+        const visibleHWID = hasHappSource ? forceHappPreset(hwidResult.value) : hwidResult.value;
+        setHWID(visibleHWID);
+        setHWIDMode(visibleHWID.mode || 'generated');
+        setHWIDSource(hwidResult.value.source || 'composite');
+        setHWIDPreset(visibleHWID.preset || '');
+        setHWIDCustomSeed(hwidResult.value.custom_seed || '');
+      }
     }).catch(() => {
       // Promise.allSettled itself does not reject; keep this guard for a
       // provider that returns a thenable with unexpected behavior.
     });
     return () => controller.abort();
   }, [role]);
+
+  useEffect(() => {
+    if (!hwid) return;
+    const happRequired = sourceStatuses.some((source) => source.source_type === 'happ' || Boolean(source.crypto_version)) || urls.some(sourceRequiresHappHWID);
+    if (!happRequired || (hwid.mode === 'preset' && hwid.current_hwid === defaultHappPresetHWID)) return;
+    const forced = forceHappPreset(hwid);
+    setHWID(forced);
+    setHWIDMode('preset');
+    setHWIDPreset(defaultHappPresetHWID);
+    setHWIDCustomSeed('');
+  }, [sourceStatuses, urls, hwid]);
 
   async function saveTariff() {
     if (mutationLocked) { setMessage('Скорость тарифа нельзя изменить до подтверждения recovery state.'); return; }
@@ -1732,6 +1898,31 @@ function Vless({
       const refreshed = await getVLESSPool();
       setPool(refreshed);
       setMessage(`Тариф ${tariff} Мбит/с сохранён. Он ограничивает вклад speedtest в score, но не режет сам трафик.`);
+    } catch (error) {
+      const info = errorInfo(error);
+      setMessage(`${info.code}: ${info.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveHWIDSettings() {
+    if (mutationLocked) { setMessage('HWID settings are temporarily locked by recovery fence.'); return; }
+    setBusy(true);
+    try {
+      const happRequired = sourceStatuses.some((source) => source.source_type === 'happ' || Boolean(source.crypto_version)) || urls.some(sourceRequiresHappHWID);
+      const settings = happRequired
+        ? { mode: 'preset', source: hwidSource, preset: defaultHappPresetHWID, custom_seed: '' }
+        : { mode: hwidMode, source: hwidSource, preset: hwidPreset, custom_seed: hwidCustomSeed };
+      const result = await saveSubscriptionHWID(settings);
+      setHWID(happRequired ? forceHappPreset(result) : result);
+      if (happRequired) {
+        setHWIDMode('preset');
+        setHWIDPreset(defaultHappPresetHWID);
+        setHWIDCustomSeed('');
+      }
+      setHWIDOpen(false);
+      setMessage(`HWID сохранён: ${result.mode === 'preset' ? 'используется заданный UUID' : 'детерминированный источник'}.`);
     } catch (error) {
       const info = errorInfo(error);
       setMessage(`${info.code}: ${info.message}`);
@@ -1764,12 +1955,44 @@ function Vless({
     setMessage('Сохраняю секрет и проверяю серверы. Это может занять несколько минут.');
     try {
       const saved = await saveSubscriptionSecrets(values);
-      setURLs(Array(5).fill(''));
+      setURLs(['']);
       setPresent(true);
       setConfiguredCount(saved.count);
+      setSourceStatuses(saved.sources ?? []);
+      // Happ providers require an explicit stable identity. Never let a
+      // first-run generated UUID or a stale provider-specific preset silently
+      // reach this Happ provider. This source is bound to the administrator's
+      // requested compatibility identity for the current product flow.
+      if (values.some(sourceRequiresHappHWID)) {
+        const preset = defaultHappPresetHWID;
+        if (hwidMode !== 'preset' || hwidPreset.trim() !== preset) {
+          const savedHWID = await saveSubscriptionHWID({ mode: 'preset', source: hwidSource, preset, custom_seed: '' });
+          setHWID(savedHWID);
+          setHWIDMode('preset');
+          setHWIDPreset(preset);
+        }
+      }
       await prepareCandidates('Подписки сохранены и проверены');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Не удалось проверить подписку.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeStoredSubscription(index: number) {
+    if (mutationLocked) { setMessage('Subscription changes are temporarily locked by recovery fence.'); return; }
+    if (!(await confirmDialog.ask('Remove this subscription source? Existing active VLESS configuration is kept until a new verified bundle is activated.'))) return;
+    setBusy(true);
+    try {
+      const result = await removeSubscriptionSource(index);
+      setPresent(result.present);
+      setConfiguredCount(result.count);
+      setSourceStatuses(result.sources ?? []);
+      setMessage(result.count ? 'Subscription source removed. Active VLESS configuration was not changed.' : 'All subscription sources removed. Active VLESS configuration was not changed.');
+    } catch (error) {
+      const info = errorInfo(error);
+      setMessage(`${info.code}: ${info.message}`);
     } finally {
       setBusy(false);
     }
@@ -1853,6 +2076,39 @@ function Vless({
   const subscriptionServers = candidateServers.filter((server: any) => !String(server.tag ?? '').startsWith('manual-'));
   const manualServerViews = manualServers.map((server) => ({ ...server, tag: server.id, ...asRecord(checksByTag.get(server.id)) }));
 
+  function addSubscriptionRow() {
+    if (urls.length < 5) setURLs((current) => [...current, '']);
+  }
+
+  function removeSubscriptionRow(index: number) {
+    setURLs((current) => {
+      const next = current.filter((_, currentIndex) => currentIndex !== index);
+      return next.length ? next : [''];
+    });
+  }
+
+  async function copyHWID() {
+    if (!hwid?.current_hwid || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(hwid.current_hwid);
+      setMessage('Deterministic subscription HWID copied.');
+    } catch {
+      setMessage('Clipboard is unavailable; the HWID remains visible in Settings.');
+    }
+  }
+
+  function selectHWIDSource(source: string) {
+    if (sourceStatuses.some((item) => item.source_type === 'happ' || Boolean(item.crypto_version)) || urls.some(sourceRequiresHappHWID)) {
+      setHWIDMode('preset');
+      setHWIDPreset(defaultHappPresetHWID);
+      return;
+    }
+    setHWIDMode('generated');
+    setHWIDSource(source);
+  }
+
+  const happSourceConfigured = sourceStatuses.some((source) => source.source_type === 'happ' || Boolean(source.crypto_version)) || urls.some(sourceRequiresHappHWID);
+
   return (
     <section>
       <PageHeader title="VLESS-серверы" text="Подписки и ручные серверы разделены. Ping — задержка проверки, а не скорость канала." />
@@ -1868,9 +2124,10 @@ function Vless({
         <div class="row"><b>Источники</b><span>{present === true ? `${configuredCount} из 5` : present === false ? 'не заданы' : 'статус неизвестен'}</span></div>
         {role === 'administrator' ? (
           <div>
-            <div class="subscription-slots">
+            <div class="subscription-source-list">
+              {sourceStatuses.map((source, index) => <div class="subscription-source-status" key={`${source.source_masked}:${index}`}><b>#{index + 1}</b><span>{source.source_masked}</span><small>{source.source_type}{source.crypto_version ? ` / ${source.crypto_version}` : ''}</small><button type="button" class="icon-button" aria-label={`Remove stored source ${index + 1}`} onClick={() => void removeStoredSubscription(index)} disabled={busy || mutationLocked}>×</button></div>)}
               {urls.map((url, index) => (
-                <label class={`subscription-slot ${index < configuredCount ? 'configured' : ''}`} key={index}>
+                <label class="subscription-slot" key={index}>
                   <span>#{index + 1}</span>
                     <input
                      disabled={mutationLocked}
@@ -1882,29 +2139,48 @@ function Vless({
                       setURLs(next);
                     }}
                     autocomplete="off"
-                    placeholder={index < configuredCount ? 'сохранена · вставь для замены набора' : 'https://…'}
+                    placeholder="https://... or happ://crypt4/..."
                   />
-                  <i>{busy ? 'проверка' : index < configuredCount ? 'сохранена' : 'пусто'}</i>
+                  <button type="button" class="icon-button" aria-label={`Remove source ${index + 1}`} onClick={() => removeSubscriptionRow(index)} disabled={busy || mutationLocked || urls.length === 1}>×</button>
+                  <i>{busy ? 'checking' : 'new source'}</i>
                 </label>
               ))}
             </div>
-            <small>URL хранится в закрытом файле и не возвращается через API.</small>
+            <div class="actions"><button type="button" onClick={addSubscriptionRow} disabled={urls.length >= 5 || busy || mutationLocked}>+ Add subscription</button></div>
+            <small>Original source is kept in the protected file. Happ payloads are resolved only for the provider request; the resolved credential is never returned.</small>
             <button class="primary" disabled={busy || mutationLocked || !configVersion} onClick={saveAndPrepare}>
               {busy ? 'Проверяю серверы…' : 'Сохранить и проверить'}
             </button>
             {managedAvailable && <button class="primary" disabled={busy || mutationLocked || !configVersion} onClick={activateManaged}>Явно включить managed Xray</button>}
             {managedAvailable && <small>Одна транзакция включит TPROXY, bypass mark и проверенные VLESS routes. Без успешной проверки она не будет подтверждена.</small>}
+            <div class="hwid-settings hwid-compact">
+              <div class="row"><span>Provider HWID</span><span>{hwidMode === 'preset' ? 'Preset UUID' : hwidMode === 'disabled' ? 'отключён' : 'детерминированный'}</span><button type="button" onClick={() => setHWIDOpen(true)} disabled={busy || role !== 'administrator'}>HWID</button></div>
+              <small>Нужен только Happ-провайдеру. Источник и получающийся UUID — в компактном окне.</small>
+            </div>
+            {hwidOpen && <div class="modal-backdrop" role="presentation" onClick={() => setHWIDOpen(false)}><section class="confirm-dialog hwid-dialog" role="dialog" aria-modal="true" aria-labelledby="hwid-title" onClick={(event) => event.stopPropagation()}>
+              <header class="modal-header"><h2 id="hwid-title">Источник HWID</h2><button type="button" class="icon-button" aria-label="Закрыть" onClick={() => setHWIDOpen(false)}>×</button></header>
+              <p>Выбери стабильный источник. Один и тот же источник даёт один и тот же UUID после перезагрузки.</p>
+              <div class="form-grid">
+                <label><span>Режим</span><select value={happSourceConfigured ? 'preset' : hwidMode} onChange={(event) => setHWIDMode((event.target as HTMLSelectElement).value)} disabled={busy || mutationLocked || happSourceConfigured}><option value="generated">Сгенерированный</option><option value="preset">Preset / вручную</option><option value="disabled">Отключён</option></select></label>
+                {hwidMode === 'preset' && <label><span>UUID</span><input type="text" value={hwidPreset} onInput={(event) => setHWIDPreset((event.target as HTMLInputElement).value)} autocomplete="off" placeholder="xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx" /></label>}
+                {hwidMode === 'generated' && hwidSource === 'custom_seed' && <label><span>Custom seed</span><input type="text" value={hwidCustomSeed} onInput={(event) => setHWIDCustomSeed((event.target as HTMLInputElement).value)} autocomplete="off" placeholder="задайте стабильную строку" /></label>}
+              </div>
+              {happSourceConfigured && <small class="source-note">Для Happ-подписки используется обязательный совместимый preset: {defaultHappPresetHWID}.</small>}
+              <div class="hwid-table-wrap"><table class="hwid-table"><thead><tr><th>Источник</th><th>Значение</th><th>Будет HWID</th><th></th></tr></thead><tbody>{(hwid?.preview ?? []).map((row) => { const selected = (hwidMode === 'preset' && row.source === 'preset') || (hwidMode === 'generated' && row.source === hwidSource); return <tr key={row.source} class={selected ? 'selected' : undefined}><td><b>{row.label}</b>{selected && <small>выбран</small>}</td><td class="mono">{row.value || row.reason || 'недоступно'}</td><td class="mono">{row.hwid || '—'}</td><td>{row.available && row.source !== 'preset' && <button type="button" onClick={() => selectHWIDSource(row.source)} disabled={busy || mutationLocked}>Выбрать</button>}{row.source === 'preset' && <button type="button" onClick={() => setHWIDMode('preset')} disabled={busy || mutationLocked}>Использовать</button>}</td></tr>; })}</tbody></table></div>
+              <div class="row"><span>Текущий HWID</span><code>{hwidMode === 'disabled' ? 'отключён' : hwid?.current_hwid || 'недоступен'}</code><button type="button" onClick={() => void copyHWID()} disabled={!hwid?.current_hwid || hwidMode === 'disabled'}>Копировать</button></div>
+              <div class="actions"><button type="button" onClick={() => setHWIDOpen(false)}>Отмена</button><button class="primary" disabled={busy || mutationLocked || role !== 'administrator'} onClick={() => void saveHWIDSettings()}>Сохранить выбор</button></div>
+            </section></div>}
             {message && <div class="action-status"><p>{message}</p>{message.includes('черновик') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
           </div>
         ) : <p>Импорт подписки доступен администратору.</p>}
       </Card>
       <section class="server-section"><h2>Источники доступа</h2><div class="server-checks">
         {(pool.sources ?? []).map((source: any) => <EntityCard title={textValue(source.provider_name, source.name)} status={source.manual ? 'manual' : 'subscription'} onOpen={() => setSelectedServer({ source_record: source })} key={source.id}>
-          <InfoGrid items={[["Источник", source.name], ["Серверов", source.server_count], ["Срок", source.expiry_known ? formatDateTime(source.expires_at) : 'не предоставлен провайдером']]} />
+          <InfoGrid items={[["Источник", source.name], ["Original source", source.original_source_masked], ["Resolved source", source.resolved_source_masked], ["Type", source.source_type], ["Crypto", source.crypto_version], ["Resolution", source.resolution_status], ["Серверов", source.server_count], ["Срок", source.expiry_known ? formatDateTime(source.expires_at) : 'не предоставлен провайдером']]} />
         </EntityCard>)}
         {!pool.sources?.length && <EmptyState title="Источников пока нет" text="Добавь HTTPS-подписку или собственный VLESS URI." />}
       </div>{(pool.provider_matches ?? []).map((match: any) => <p class="reason" key={`${match.left_provider_id}:${match.right_provider_id}`}>Пулы похожи: совпало {match.matched_servers}/{match.compared_servers}. Объединение требует подтверждения и не выполняется молча.</p>)}</section>
-       <section class="server-section"><div class="section-title"><div><h2>Серверы из подписок</h2><p>Карточки обновляются раз в 30 секунд при открытой вкладке. Проверка задержки — лёгкая ручная операция, не замер пропускной способности.</p></div><div class="actions"><button disabled={busy || !configVersion || (!present && manualServers.length === 0)} onClick={refreshVLESSHealth}>Обновить health</button><button disabled={mutationLocked} onClick={() => setManualEditorOpen((open) => !open)}>+ Добавить свой VPS</button></div></div>
+       {xrayAvailable && <section class="server-section"><div class="section-title"><div><h2>VLESS servers</h2><p>Server status, measured latency and optional throughput are shown separately.</p></div><div class="actions"><button disabled={busy || !configVersion || (!present && manualServers.length === 0)} onClick={refreshVLESSHealth}>Refresh health</button><button disabled={mutationLocked} onClick={() => setManualEditorOpen((open) => !open)}>+ Add server</button></div></div>
       {manualEditorOpen && <div class="service-editor manual-vless-editor">
         <label><span>VLESS URI</span><input type="password" value={manualURI} onInput={(event) => setManualURI((event.target as HTMLInputElement).value)} autocomplete="off" placeholder="vless://UUID@server:443?security=reality&…" /></label>
         <small>URI и UUID не возвращаются через API и хранятся в закрытом файле. До явного managed activation сервер не меняет маршрутизацию.</small>
@@ -1918,15 +2194,16 @@ function Vless({
           </EntityCard>
         ))}
         {!subscriptionServers.length && <EmptyState title="Серверов из подписок пока нет" text="Добавь HTTPS-подписку и запусти проверку либо используй ручной VLESS ниже." />}
-      </div></section>
-      <section class="server-section"><h2>Добавленные вручную</h2><div class="server-checks">
+      </div></section>}
+      {xrayAvailable && <section class="server-section"><h2>Добавленные вручную</h2><div class="server-checks">
         {manualServerViews.map((server: any) => <EntityCard title={textValue(server.name, 'Свой VPS')} status={statusWithFreshness(server.status ?? 'configured', server)} onOpen={() => setSelectedServer({ source: 'manual', ...server, uri_masked: `vless://••••@${server.address}:${server.port}` })} key={server.id}>
           <InfoGrid items={[["Адрес", `${server.address}:${server.port}`], ["Транспорт", server.network], ["Security", server.security], ["Ping", server.latency_ms ? `${server.latency_ms} мс` : 'ещё не измерен'], ["Состояние", server.status ?? 'configured']]} />
           {server.reason && <p class="reason">{humanStatus(server.reason)}</p>}
         </EntityCard>)}
         {!manualServerViews.length && <EmptyState title="Ручных серверов нет" text="Нажми «Добавить свой VPS», вставь vless:// URI и дождись проверки пути." />}
-      </div></section>
+      </div></section>}
       <DetailDrawer title={textValue(selectedServer?.name ?? selectedServer?.tag ?? selectedServer?.source_record?.provider_name, 'VLESS server')} open={Boolean(selectedServer)} onClose={() => setSelectedServer(null)}><InfoGrid items={[["Источник", selectedServer?.source ?? selectedServer?.source_record?.name], ["Provider", selectedServer?.source_record?.provider_name], ["Hostname", selectedServer?.hostname ?? selectedServer?.address], ["Resolved IP", (selectedServer?.resolved_ips ?? []).join(', ')], ["URI", selectedServer?.uri_masked], ["Страна", selectedServer?.country], ["Источник страны", selectedServer?.country_source], ["Security", selectedServer?.security], ["Транспорт", selectedServer?.transport ?? selectedServer?.network], ["Ping", selectedServer?.latency_ms ? `${selectedServer.latency_ms} мс` : null], ["Средний ping", selectedServer?.average_latency_ms ? `${selectedServer.average_latency_ms} мс` : null], ["Jitter", selectedServer?.jitter_ms ? `${selectedServer.jitter_ms} мс` : null], ["Скорость raw", selectedServer?.measured_mbps ? `${selectedServer.measured_mbps} Мбит/с` : null], ["Эффективная скорость", selectedServer?.effective_mbps ? `${selectedServer.effective_mbps} Мбит/с` : null], ["Трафик speedtest", selectedServer?.speed_bytes ? formatBytes(selectedServer.speed_bytes) : null], ["Длительность speedtest", selectedServer?.speed_duration_ms ? `${selectedServer.speed_duration_ms} мс` : null], ["Score", selectedServer?.score], ["Health", selectedServer?.health ?? selectedServer?.status], ["PathVerified", selectedServer?.path_verified ? 'Да' : 'Нет'], ["Источники", (selectedServer?.source_ids ?? []).join(', ')], ["Expires", selectedServer?.source_record?.expiry_known ? formatDateTime(selectedServer?.source_record?.expires_at) : 'не предоставлен провайдером'], ["Quarantine", selectedServer?.quarantine_reason ?? selectedServer?.reason], ["Последняя проверка", formatDateTime(selectedServer?.last_checked_at)], ["Xray tag", selectedServer?.tag], ["SOCKS port", selectedServer?.socks_port ?? selectedServer?.socks5]]} /><p class="source-note">Ping идёт через candidate VLESS path. Полный speedtest запускается отдельно и не должен крутиться каждые 30 секунд.</p>{role === 'administrator' && selectedServer?.logical_id && <button class="primary" disabled={busy || !selectedServer.path_verified} onClick={measureSelectedServer}>Измерить скорость через этот сервер</button>}<RawDisclosure value={selectedServer} /></DetailDrawer>
+    {confirmDialog.dialog}
     </section>
   );
 }
@@ -1934,6 +2211,13 @@ function Vless({
 function RouteType({ title, type, routes }: { title: string; type: string; routes: any[] }) {
   const [selected, setSelected] = useState<any>(null);
   return <section><h2>{title}</h2><Grid>{routes.filter((r) => r.type === type).map((r) => <EntityCard title={r.tag} status={statusWithFreshness(r.status, r)} onOpen={() => setSelected(r)}><RouteBadge type={type} /><p>{humanStatus(r.status)}</p></EntityCard>)}</Grid><DetailDrawer title={selected?.tag ?? title} open={Boolean(selected)} onClose={() => setSelected(null)}><DiagnosticDetails value={selected} /><RawDisclosure value={selected} /></DetailDrawer></section>;
+}
+
+function zapretProfileLabel(value: { profile_name?: string; profile_id?: string } | null | undefined, fallback = 'Стратегия') {
+  // Names come from the pinned catalog. Falling back to the opaque ID is
+  // deliberately honest; the UI must not invent a preset name for a profile
+  // that the backend did not describe.
+  return textValue(value?.profile_name, textValue(value?.profile_id, fallback));
 }
 
 function Zapret({ routes, configVersion, role, mutationLocked, refresh, navigate }: { routes: any[]; configVersion: number; role: SessionInfo['role']; mutationLocked: boolean; refresh: () => Promise<void>; navigate: (screen: string) => void }) {
@@ -1965,9 +2249,9 @@ function Zapret({ routes, configVersion, role, mutationLocked, refresh, navigate
     else setMessage('');
     const managed = componentsResult.status === 'fulfilled' ? componentsResult.value.find((item) => item.kind === 'zapret') ?? null : null;
     if (managed?.installed) {
-      setSourceURL((value) => value || managed.source || '');
+      setSourceURL((value) => value || managed.pinned_asset_url || managed.source || '');
       setVersion((value) => value || managed.version || managed.latest_supported_version || '');
-      setSHA256((value) => value || managed.checksum || '');
+      setSHA256((value) => value || managed.binary_sha256 || managed.checksum || '');
     }
   }
   useEffect(() => {
@@ -2051,6 +2335,7 @@ function Zapret({ routes, configVersion, role, mutationLocked, refresh, navigate
   return <section class="grid">
     <Card title="Zapret">
       <div class="row"><b>{component?.installed ? `Установлен ${component.version ?? ''}` : 'Не установлен'}</b><span>{component?.service_state ?? 'service unavailable'}</span><small>{component?.health_ready ? 'Health check пройден' : component?.health_reason ?? 'Готов к установке'}</small></div>
+      {status?.active_profile?.profile_id && <div class="zapret-active-profile"><div class="row"><b>Настроено</b><span>{zapretProfileLabel(status.active_profile)}</span><small>{status.active_profile.available === false ? 'Профиль не найден в закреплённом каталоге' : 'Сейчас используется'}</small></div>{status?.fallback_profile?.profile_id && <div class="row"><b>Fallback</b><span>{zapretProfileLabel(status.fallback_profile)}</span><small>{status.fallback_profile.available === false ? 'Профиль не найден в закреплённом каталоге' : 'Следующий разрешённый профиль'}</small></div>}</div>}
       {role === 'administrator' && !component?.installed && <button class="primary" disabled={busy || mutationLocked} onClick={install}>{busy ? 'Устанавливаю…' : 'Установить Zapret'}</button>}
       {component?.installed && role === 'administrator' && <div class="change-editor">
         <label><span>Домен для подбора стратегии</span><input class="mono" value={testDomain} onInput={(event) => { setTestDomain((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
@@ -2072,13 +2357,15 @@ function Zapret({ routes, configVersion, role, mutationLocked, refresh, navigate
       {calibration.state === 'running' && <div class="row"><b>Проверено вариантов</b><span>{calibration.checks_completed ?? 0}{calibration.checks_total ? ` / ${calibration.checks_total}` : ''}</span><small>{calibration.mode === 'exhaustive' ? 'Upstream force scan; точное число зависит от версии и платформы.' : 'Curated-набор; каждая попытка должна вернуть path evidence и cleanup proof.'}</small></div>}
       {calibration.mode === 'quick' && calibration.state !== 'running' && <div class="row"><b>Доказательство пути</b><span>{calibration.path_verified ? 'Path verified' : 'Не подтверждено'}</span><small>{textValue(calibration.evidence_level, 'нет evidence')}</small></div>}
       {calibration.error && <p class="reason">{textValue(calibration.error_code, 'calibration_error')}: {textValue(calibration.error, 'Ошибка калибровки')}</p>}
-      {(calibration.attempts ?? []).map((attempt, index) => <div class="row" key={`${attempt.profile_id}:${index}`}><b>{textValue(attempt.profile_id, `Стратегия ${index + 1}`)}</b><span>{textValue(attempt.result, 'INFRA_ERROR')}</span><small>{textValue(attempt.target, 'target')} · {textValue(attempt.protocol, 'protocol')} · {attempt.path_verified ? 'path verified' : 'path не подтверждён'} · {attempt.cleanup_verified ? 'cleanup OK' : 'cleanup не подтверждён'}</small></div>)}
+      {(calibration.attempts ?? []).map((attempt, index) => <div class="row" key={`${attempt.profile_id}:${index}`}><b>{zapretProfileLabel(attempt, `Стратегия ${index + 1}`)}</b><span>{textValue(attempt.result, 'INFRA_ERROR')}</span><small>{textValue(attempt.target, 'target')} · {textValue(attempt.protocol, 'protocol')} · {attempt.path_verified ? 'path verified' : 'path не подтверждён'} · {attempt.cleanup_verified ? 'cleanup OK' : 'cleanup не подтверждён'}</small></div>)}
       <h4>Рабочие стратегии — появляются сразу</h4>
       {(calibration.working_strategies ?? []).length
-        ? (calibration.working_strategies ?? []).map((strategy, index) => <div class="row" key={`${index}:${textValue(strategy, 'strategy')}`}><b>Рабочая #{index + 1}</b><span class="mono">{textValue(strategy, 'Стратегия не указана')}</span></div>)
-        : <p>Пока ни одна стратегия не прошла проверку.</p>}
-      {(calibration.candidates ?? []).map((candidate, index) => <div class="row" key={candidate.profile_id}><b>Кандидат {index + 1}</b><span>{candidate.provider} {candidate.provider_version}</span><small>{candidate.transports.join(' + ')} · {candidate.occurrences ?? 0} подтверждений</small></div>)}
-      {calibration.recommended_profile_id && <p class="action-status">Рекомендован: <span class="mono">{calibration.recommended_profile_id}</span>. Именно он будет привязан при явном включении ниже.</p>}
+        ? (calibration.working_strategies ?? []).map((strategy, index) => <div class="row" key={`${index}:${textValue(strategy, 'strategy')}`}><b>Рабочая #{index + 1}</b><span>{zapretProfileLabel({ profile_id: strategy })}</span></div>)
+        : (calibration.candidates ?? []).length
+          ? (calibration.candidates ?? []).map((candidate) => <div class="row" key={`verified:${candidate.profile_id}`}><b>Path verified</b><span>{zapretProfileLabel(candidate)}</span><small>Эта стратегия прошла проверку через собственную NFQUEUE и может быть включена отдельным черновиком.</small></div>)
+          : <p>Пока ни одна стратегия не прошла проверку.</p>}
+      {(calibration.candidates ?? []).map((candidate, index) => <div class="row" key={candidate.profile_id}><b>{zapretProfileLabel(candidate, `Кандидат ${index + 1}`)}</b><span>{candidate.provider} {candidate.provider_version}</span><small>{candidate.transports.join(' + ')} · {candidate.occurrences ?? 0} подтверждений</small></div>)}
+      {calibration.recommended_profile_id && <p class="action-status">Рекомендован: <span>{zapretProfileLabel({ profile_id: calibration.recommended_profile_id })}</span> <span class="mono">({calibration.recommended_profile_id})</span>. Именно он будет привязан при явном включении ниже.</p>}
       <h4>Живой лог</h4>
       <pre>{(calibration.log_tail ?? []).join('\n') || 'blockcheck ещё не успел вывести данные'}</pre>
       {calibration.activation_required && <p>Профили записаны в проверенный каталог. Выбор не применяется молча: создай отдельный черновик, проверь diff и запусти транзакцию в центре операций.</p>}
@@ -2151,7 +2438,7 @@ function SmartDNS({
       const result = await configureSmartDNS(values, testDomain.trim(), configVersion);
       setValidations(result.validations ?? []);
       setResolvers(['']);
-      setMessage(`Smart DNS проверен. Создан черновик для ${result.endpoint_count} резолверов; открой очередь изменений для review и apply.`);
+      setMessage(`Smart DNS проверен. Создан черновик для ${result.endpoint_count} резолверов; открой очередь изменений для review и применения.`);
       setStatus(await getSmartDNS());
       await refresh();
     } catch (reason) {
@@ -2178,7 +2465,7 @@ function SmartDNS({
             <small>Порт необязателен. По умолчанию используется 53. Поддерживаются IPv4, IPv4:порт, IPv6 и [IPv6]:порт.</small>
             <label><span>Домен для DNS + HTTP/TLS</span><input class="mono" value={testDomain} placeholder="example.com" onInput={(event) => setTestDomain((event.target as HTMLInputElement).value)} /></label>
             <button class="primary" disabled={busy || mutationLocked || !configVersion} onClick={save}>
-              {busy ? 'Проверяю…' : 'Проверить и создать черновик'}
+              {busy ? 'Проверяю…' : 'Добавить и проверить endpoint'}
             </button>
             {mutationLocked && <p class="action-status">Настройка Smart DNS временно заблокирована recovery fence.</p>}
             {message && <div class={message.includes('применён') ? 'action-status ok' : 'action-status'}><p>{message}</p>{message.includes('черновик') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
@@ -2440,7 +2727,7 @@ function DecisionFlow({ events, discovery }: { events: EventItem[]; discovery: D
     <div class="decision-main"><div><small>Домен</small><b>{decision.domain}</b><span>{decision.service}</span></div><div><small>Стратегия</small><b>{decision.strategy}</b><span>{decision.category}</span></div><div><small>Маршрут</small><b>{decision.route}</b><span>{decision.fallback ? `Fallback: ${decision.fallbackPath.join(' → ') || 'да'}` : 'Без fallback'}</span></div></div>
     {(() => { const presentation = decisionVerificationPresentation(decision); return <footer><span class={presentation === 'verified' ? 'verified' : presentation === 'no_safe_route' ? 'unverified' : 'pending'}>{verificationPresentationLabel(presentation)}</span><span>{decision.routeLatencyAvailable && decision.routeLatencyMS !== undefined ? `Задержка: ${decision.routeLatencyMS} мс` : 'Задержка: не измерена'}</span><span>{decision.durationMS !== undefined ? `Проверка: ${decision.durationMS} мс` : 'Время проверки не измерено'}</span><button onClick={() => setSelected(decision)}>Открыть</button></footer>; })()}
   </article>)}</div>
-  {!decisions.length && <EmptyState title="Решений за выбранный период нет" text={discovery?.observation_source?.status === 'waiting' || discovery?.observation_source?.status === 'unavailable' ? 'Discovery не получает DNS-запросы. Открой раздел Discovery и проверь DNS клиента.' : 'Discovery наблюдает трафик. Открой новый сайт с устройства в LAN или Wi-Fi.'} />}
+  {!decisions.length && <EmptyState title="Решений за выбранный период нет" text={discovery?.observation_source?.status === 'disabled' ? 'Discovery выключен и пока ничего не наблюдает. Включи его в разделе Discovery.' : discovery?.observation_source?.status === 'waiting' || discovery?.observation_source?.status === 'unavailable' || discovery?.observation_source?.status === 'stale' ? 'Discovery не получает свежие DNS-наблюдения. Открой раздел Discovery и проверь DNS клиента и dnsmasq.' : 'Discovery наблюдает DNS-запросы, а не все пакеты. Открой новый сайт с устройства в LAN или Wi-Fi.'} />}
   <DetailDrawer title={selected ? `${selected.domain} · ${selected.route}` : 'Решение'} open={Boolean(selected)} onClose={() => setSelected(null)}>
     {selected && <DecisionDetails decision={selected} />}
   </DetailDrawer>
@@ -2517,16 +2804,40 @@ function Recovery({ revisions, backups, lifecycle }: { revisions: RevisionSummar
   </section>;
 }
 
-function Settings({ data }: { data?: any }) {
-  return <section><PageHeader title="Настройки" text="Экран read-only: изменение системных параметров пока выполняется в профильных сценариях." /><Grid><EntityCard title="Приватность" status="configured"><p>IP и MAC скрываются в API по умолчанию. Временное раскрытие включается сверху.</p></EntityCard><EntityCard title="Хранение" status={data?.status}><StatusLine label="Events" value={data?.storage?.event_retention_days ? `${data.storage.event_retention_days} дней` : null} /><StatusLine label="Backups" value={data?.storage?.max_state_backups} /></EntityCard><EntityCard title="Обновление" status="not_implemented"><p>Автоматическое обновление из UI не реализовано.</p></EntityCard></Grid><RawDisclosure value={data} /></section>;
+function TariffSettingsCard({ mutationLocked, role }: { mutationLocked: boolean; role: SessionInfo['role'] }) {
+  const [pool, setPool] = useState<any>(null);
+  const [tariff, setTariff] = useState(300);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  useEffect(() => {
+    const controller = new AbortController();
+    void getVLESSPool(controller.signal).then((value) => { setPool(value); setTariff(Number(value?.tariff_mbps) || 300); }).catch(() => { /* Xray is optional. */ });
+    return () => controller.abort();
+  }, []);
+  async function save() {
+    if (role !== 'administrator') { setMessage('Изменение доступно администратору.'); return; }
+    if (mutationLocked) { setMessage('Изменения временно заблокированы состоянием recovery.'); return; }
+    if (!Number.isFinite(tariff) || tariff < 1 || tariff > 100000) { setMessage('Укажите скорость от 1 до 100000 Мбит/с.'); return; }
+    setBusy(true); setMessage('Сохраняю скорость тарифа…');
+    try { await setVLESSTariff(tariff); const value = await getVLESSPool(); setPool(value); setTariff(Number(value?.tariff_mbps) || tariff); setMessage('Сохранено. Скорость влияет на оценку VLESS, но не ограничивает интернет.'); }
+    catch (error) { const info = errorInfo(error); setMessage(`${info.code}: ${info.message}`); }
+    finally { setBusy(false); }
+  }
+  return <EntityCard title="Скорость интернет-тарифа" status={pool ? 'configured' : 'unavailable'}><p>Первый выбор можно сделать в быстрой настройке. Здесь его можно изменить позже. Значение помогает выбирать VLESS-серверы и не режет сам трафик.</p><label><span>Скорость, Мбит/с</span><input type="number" min="1" max="100000" value={tariff} onInput={(event) => setTariff(Number((event.target as HTMLInputElement).value))} /></label><div class="actions">{[100, 300, 500, 1000].map((value) => <button type="button" disabled={mutationLocked || role !== 'administrator'} class={tariff === value ? 'active' : ''} onClick={() => setTariff(value)} key={value}>{value}</button>)}<button type="button" class="primary" disabled={busy || mutationLocked || role !== 'administrator'} onClick={() => void save()}>{busy ? 'Сохраняю…' : 'Сохранить'}</button></div>{message && <p class="action-status">{message}</p>}</EntityCard>;
+}
+
+function Settings({ data, privacyHidden, onTogglePrivacy, mutationLocked = false, role = 'viewer' }: { data?: any; privacyHidden?: boolean; onTogglePrivacy?: () => void; mutationLocked?: boolean; role?: SessionInfo['role'] }) {
+  const hidden = Boolean(privacyHidden);
+  return <section><PageHeader title="Настройки" text="Простые настройки FlintRoute. Системные операции по-прежнему проходят через безопасные сценарии и recovery fence." /><Grid><TariffSettingsCard mutationLocked={mutationLocked} role={role} /><EntityCard title="Приватность" status="configured"><p>{hidden ? 'Адреса устройств сейчас скрыты. FlintRoute не запрашивает raw IP и MAC, пока включён скрытый режим.' : 'Адреса устройств сейчас видны. Этот выбор сохраняется в браузере, пока вы не переключите режим обратно.'}</p>{onTogglePrivacy && <button type="button" onClick={onTogglePrivacy} aria-pressed={!hidden}>{hidden ? 'Показать адреса' : 'Скрыть адреса'}</button>}</EntityCard><EntityCard title="Хранение" status={data?.status}><StatusLine label="Events" value={data?.storage?.event_retention_days ? `${data.storage.event_retention_days} дней` : null} /><StatusLine label="Backups" value={data?.storage?.max_state_backups} /></EntityCard><EntityCard title="Обновление" status="not_implemented"><p>Автоматическое обновление из UI не реализовано.</p></EntityCard></Grid><RawDisclosure value={data} /></section>;
 }
 
 function LoginScreen() {
   return <Card title="Вход"><p>Локальный администратор. Сессия защищается HttpOnly cookie и CSRF-токеном.</p><button class="primary">Войти локально</button></Card>;
 }
 
-function SetupScreen({ overview, services, routes, discovery, onboarding, onboardingAction, navigate }: any) {
+function SetupScreen({ overview, services, routes, discovery, onboarding, onboardingAction, navigate, mutationLocked = false }: any) {
   const [state, setState] = useState<any>({ loading: true, components: [], pool: null, smartDNS: null, tgws: null, zapret: null, error: '' });
+  const [tariff, setTariff] = useState(300);
   const requestRef = useRef<AbortController | null>(null);
   const [actionBusy, setActionBusy] = useState('');
   const [actionError, setActionError] = useState('');
@@ -2546,10 +2857,12 @@ function SetupScreen({ overview, services, routes, discovery, onboarding, onboar
     if (controller.signal.aborted || requestRef.current !== controller) return;
     const value = (index: number, fallback: any) => results[index].status === 'fulfilled' ? (results[index] as PromiseFulfilledResult<any>).value : fallback;
     const failed = results.filter((item) => item.status === 'rejected');
+    const pool = value(1, null);
+    if (pool) setTariff(Number(pool.tariff_mbps) || 300);
     setState({
       loading: false,
       components: value(0, []),
-      pool: value(1, null),
+      pool,
       smartDNS: value(2, null),
       tgws: value(3, null),
       zapret: value(4, null),
@@ -2620,9 +2933,19 @@ function SetupScreen({ overview, services, routes, discovery, onboarding, onboar
     }
   }
 
+  async function saveTariff() {
+    if (mutationLocked) { setActionError('Изменение скорости временно заблокировано состоянием recovery.'); return; }
+    if (!Number.isFinite(tariff) || tariff < 1 || tariff > 100000) { setActionError('Скорость должна быть от 1 до 100000 Мбит/с.'); return; }
+    setActionBusy('tariff'); setActionError('');
+    try { await setVLESSTariff(tariff); await load(); }
+    catch (error) { const info = errorInfo(error); setActionError(`${info.code}: ${info.message}`); }
+    finally { setActionBusy(''); }
+  }
+
   return <section>
     <PageHeader title="Быстрая настройка" text="Пять шагов: проверить роутер, выбрать способы подключения, добавить источники, назначить сервисы и убедиться, что выбранные пути работают.">
       <button onClick={() => void load()} disabled={state.loading}>{state.loading ? 'Проверяю…' : 'Проверить снова'}</button>
+      <button type="button" onClick={() => navigate('Компоненты')}>К компонентам без завершения</button>
     </PageHeader>
     {state.error && <div class="inline-error"><b>Не все проверки завершены</b><span>{state.error}</span><button onClick={() => void load()}>Повторить</button></div>}
     {actionError && <div class="inline-error" role="alert"><b>Шаг не сохранён</b><span>{actionError}</span><button onClick={() => setActionError('')}>Закрыть</button></div>}
@@ -2639,6 +2962,7 @@ function SetupScreen({ overview, services, routes, discovery, onboarding, onboar
         <p>{routerReady ? 'Базовая сеть работает. FlintRoute может переходить к настройке маршрутов.' : 'Базовая сеть не подтверждена. Открой диагностику и исправь проблему до применения правил.'}</p>
       </EntityCard>
       <EntityCard title="2. Способы подключения" status={methodsDone ? 'configured' : 'not_configured'} onOpen={() => navigate('Компоненты')}>
+        <label><span>Скорость вашего тарифа, Мбит/с</span><input type="number" min="1" max="100000" value={tariff} onInput={(event) => setTariff(Number((event.target as HTMLInputElement).value))} /></label><div class="actions">{[100, 300, 500, 1000].map((value) => <button type="button" disabled={Boolean(actionBusy)} class={tariff === value ? 'active' : ''} onClick={() => setTariff(value)} key={value}>{value}</button>)}<button type="button" class="primary" disabled={actionBusy === 'tariff'} onClick={() => void saveTariff()}>{actionBusy === 'tariff' ? 'Сохраняю…' : 'Сохранить скорость'}</button></div>
         <StatusLine label="Zapret" value={zapretReady ? 'ready' : zapretComponent?.installed ? 'requires_config' : 'not_installed'} />
         <StatusLine label="Xray / VLESS" value={verifiedServers > 0 ? `${verifiedServers} verified` : xray?.installed ? 'requires_config' : 'not_installed'} />
         <StatusLine label="TG WS Proxy" value={tgwsReady ? 'verified' : tgwsComponent?.installed ? 'requires_config' : 'not_installed'} />

@@ -127,7 +127,7 @@ export type DecisionCard = {
   raw: EventItem;
 };
 
-export type VerificationPresentation = 'verified' | 'checking' | 'no_safe_route' | 'observed' | 'unverified';
+export type VerificationPresentation = 'verified' | 'checking' | 'no_safe_route' | 'observed' | 'not_checked' | 'unverified';
 
 const decisionTypes = new Set([
   'route.decision',
@@ -188,6 +188,8 @@ export function humanStatus(value: unknown): string {
     configured: 'Настроено',
     'not configured': 'Не настроено',
     unavailable: 'Недоступно',
+    disabled: 'Выключено',
+    stale: 'Нет новых записей',
     unverified: 'Не подтверждено',
     degraded: 'Работает с ошибками',
     failed: 'Ошибка',
@@ -331,6 +333,7 @@ export function decisionVerificationPresentation(decision: Pick<DecisionCard, 'v
   if (verificationState === 'terminal no safe route') return 'no_safe_route';
   if (probeState === 'no safe route') return 'checking';
   if (probeState === 'not run observe only' || verificationState === 'not run observe only') return 'observed';
+  if (probeState === 'not checked' || verificationState === 'not checked') return 'not_checked';
   if (decision.verified) return 'verified';
   return 'unverified';
 }
@@ -341,6 +344,7 @@ export function verificationPresentationLabel(presentation: VerificationPresenta
     case 'checking': return 'Проверяется…';
     case 'no_safe_route': return 'Безопасный маршрут не найден';
     case 'observed': return 'Наблюдение — проверка не запускалась';
+    case 'not_checked': return 'Путь ещё не проверен';
     default: return 'Путь пока не подтверждён';
   }
 }

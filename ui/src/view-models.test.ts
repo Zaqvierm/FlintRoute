@@ -85,6 +85,17 @@ describe('service view model', () => {
     expect(observed.applied).toBe(false);
     expect(observed.sources).toEqual(['automatic']);
   });
+
+  it('keeps a configured service honest when its path was never checked', () => {
+    const [youtube] = groupServices([{
+      id: 'YouTube', category: 'TSPU_RESTRICTED', domains: ['youtube.com'], source: 'configured', applied: true,
+      status: 'CONFIGURED', probe_state: 'not_checked', verification_state: 'not_checked', selected_route_tag: 'zapret'
+    }]);
+    expect(youtube.health).toBe('CONFIGURED');
+    expect(youtube.probe_state).toBe('not_checked');
+    expect(decisionVerificationPresentation({ verified: false, probeState: 'not_checked', policyState: 'applied', details: { verification_state: 'not_checked' } })).toBe('not_checked');
+    expect(verificationPresentationLabel('not_checked')).toBe('Путь ещё не проверен');
+  });
 });
 
 describe('onboarding truthfulness', () => {

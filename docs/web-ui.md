@@ -54,13 +54,14 @@ controller работает с root-привилегиями, loopback bind ос
 
 ```text
 # /etc/router-policy/config/listener.conf
-listen_address=0.0.0.0:8787
+listen_address=192.168.0.1:8787
 allow_firewalled_bind=1
 ```
 
-Non-loopback bind сам не открывает firewall. TCP-порт должен быть разрешён только
-из доверенной management subnet. Значение по умолчанию остаётся
-`127.0.0.1:8787`.
+Это явный LAN opt-in для точного адреса роутера. Non-loopback bind сам не
+открывает firewall и не принимает wildcard/public адреса: TCP-порт должен быть
+разрешён только из доверенной management subnet. Значение по умолчанию
+остаётся `127.0.0.1:8787`.
 
 ## Общий UX
 
@@ -126,12 +127,15 @@ wireless station. Имя устройства и IP для этого не ис�
 клиенты; неполные данные не превращаются в выдуманное подключение.
 
 MAC и IP показываются по умолчанию. Переключатель privacy mode сохраняется в
-браузере и запрашивает `privacy=hidden`; backend удаляет raw values до
+браузере и действует постоянно, пока пользователь не переключит его обратно.
+В режиме скрытия UI запрашивает `privacy=hidden`; backend удаляет raw values до
 serialization, а маски приходят отдельно как `ip_display`/`mac_display` и
-никогда не используются как network identity. Simulation provider не выдумывает
-raw IP/MAC. Карточка устройства содержит тип подключения, interface,
-SSID, RSSI, трафик, first/last seen, policy и последние решения. Действия без
-готового API честно disabled.
+никогда не используются как network identity. Кнопки `Показать адреса` и
+`Скрыть адреса` явно переключают постоянную настройку; таймер сам её не меняет.
+Simulation
+provider не выдумывает raw IP/MAC. Карточка устройства содержит тип подключения,
+interface, SSID, RSSI, трафик, first/last seen, policy и последние решения.
+Действия без готового API честно disabled.
 
 ## Сервисы
 
