@@ -216,7 +216,12 @@ func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, ser
 		} else if err != nil {
 			result.EgressReason = err.Error()
 		}
-		if svc.RequireNonRUEgress {
+		// Smart DNS changes the resolver answer and preserves the user's normal
+		// egress; requiring a non-RU external-IP consensus here would reject a
+		// valid regional DNS path even after its returned address and content
+		// have been verified. VLESS/other proxy routes still require the explicit
+		// non-RU egress proof for GEO_LOCKED services.
+		if svc.RequireNonRUEgress && route.Type != "smart_dns" {
 			if country == "RU" {
 				reason := "ru_exit_for_geo_locked"
 				result.ApplicationStatus = "RU_EXIT"
@@ -911,14 +916,28 @@ func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route,
 // sub-millisecond local probe as 0 without making it look unavailable, so a
 // positive measured interval is reported as the smallest representable value.
 func measuredRouteLatency(start time.Time) (int64, bool) {
-	latency := elapsedMilliseconds(start)
-	return latency, latency > 0
+	elapsed := time.Since(start)
+	// A completed request is a valid path measurement even when the host
+	// clock reports a zero-duration interval. Round that sub-millisecond
+	// success up to the smallest representable millisecond instead of
+	// incorrectly labelling latency as unavailable.
+	if elapsed < 0 {
+		return 0, false
+	}
+	latency := elapsed.Milliseconds()
+	if latency < 1 {
+		latency = 1
+	}
+	return latency, true
 }
 
 func elapsedMilliseconds(start time.Time) int64 {
 	elapsed := time.Since(start)
 	if elapsed <= 0 {
-		return 0
+		// The operation has completed, but a wall-clock adjustment can make a
+		// monotonic sample appear non-positive. Keep duration distinct from
+		// latency and report the smallest representable completed interval.
+		return 1
 	}
 	latency := elapsed.Milliseconds()
 	if latency < 1 {

@@ -2,15 +2,14 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"router-policy/internal/config"
@@ -24,8 +23,16 @@ type xraySubscriptionPrepareRequest struct {
 }
 
 type xraySubscriptionSecretRequest struct {
-	URL  string   `json:"url,omitempty"`
-	URLs []string `json:"urls,omitempty"`
+	URL   string   `json:"url,omitempty"`
+	URLs  []string `json:"urls,omitempty"`
+	Index *int     `json:"index,omitempty"`
+}
+
+type xraySubscriptionHWIDRequest struct {
+	Mode       vpnsub.HWIDMode   `json:"mode,omitempty"`
+	Source     vpnsub.HWIDSource `json:"source,omitempty"`
+	Preset     string            `json:"preset,omitempty"`
+	CustomSeed string            `json:"custom_seed,omitempty"`
 }
 
 type xraySubscriptionPreparation struct {
@@ -55,15 +62,27 @@ func (s *Server) handleXraySubscriptionSecret(w http.ResponseWriter, r *http.Req
 			return
 		}
 		count := 0
+		var sources []vpnsub.SourceDescription
 		if present {
-			urls, err := vpnsub.ReadSubscriptionURLFiles(path)
+			urls, err := vpnsub.ReadSubscriptionSourceFiles(path)
 			if err != nil {
 				writeError(w, r, http.StatusInternalServerError, "subscription_secret_invalid", err.Error())
 				return
 			}
 			count = len(urls)
+			sources = make([]vpnsub.SourceDescription, 0, len(urls))
+			for _, value := range urls {
+				description, describeErr := vpnsub.DescribeSource(value)
+				if describeErr != nil {
+					writeError(w, r, http.StatusInternalServerError, "subscription_secret_invalid", "subscription source is invalid")
+					return
+				}
+				sources = append(sources, description)
+			}
 		}
-		writeData(w, r, subscriptionSecretStatus(present, count))
+		status := subscriptionSecretStatus(present, count)
+		status["sources"] = sources
+		writeData(w, r, status)
 	case http.MethodPut:
 		release, failure := s.acquireMutationLease()
 		if failure != nil {
@@ -96,10 +115,138 @@ func (s *Server) handleXraySubscriptionSecret(w http.ResponseWriter, r *http.Req
 		})
 		status := subscriptionSecretStatus(true, len(normalized))
 		status["changed"] = changed
+		status["sources"] = describeSubscriptionSources(normalized)
 		writeData(w, r, status)
+	case http.MethodDelete:
+		release, failure := s.acquireMutationLease()
+		if failure != nil {
+			writeError(w, r, failure.Status, failure.Code, failure.Message)
+			return
+		}
+		defer release()
+		var request xraySubscriptionSecretRequest
+		if err := readJSON(r, &request); err != nil {
+			writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())
+			return
+		}
+		if request.Index == nil || *request.Index < 0 {
+			writeError(w, r, http.StatusBadRequest, "invalid_subscription_index", "subscription index is required")
+			return
+		}
+		values, err := vpnsub.ReadSubscriptionSourceFiles(path)
+		if err != nil {
+			writeError(w, r, http.StatusConflict, "subscription_secret_invalid", "subscription sources could not be read safely")
+			return
+		}
+		if *request.Index >= len(values) {
+			writeError(w, r, http.StatusNotFound, "subscription_index_not_found", "subscription source was not found")
+			return
+		}
+		remaining := append([]string(nil), values[:*request.Index]...)
+		remaining = append(remaining, values[*request.Index+1:]...)
+		changed, err := removeOrStoreSubscriptionSources(path, remaining)
+		if err != nil {
+			writeError(w, r, http.StatusInternalServerError, "subscription_secret_write_failed", err.Error())
+			return
+		}
+		status := subscriptionSecretStatus(len(remaining) > 0, len(remaining))
+		status["changed"] = changed
+		status["sources"] = describeSubscriptionSources(remaining)
+		s.publishEvent(Event{Type: "xray.subscription_secret_updated", Severity: "info", ReasonCode: "subscription_source_removed", Durable: true, Details: map[string]any{"changed": changed, "source_count": len(remaining)}})
+		writeData(w, r, status)
+	default:
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "GET, PUT or DELETE required")
+	}
+}
+
+func describeSubscriptionSources(values []string) []vpnsub.SourceDescription {
+	result := make([]vpnsub.SourceDescription, 0, len(values))
+	for _, value := range values {
+		description, err := vpnsub.DescribeSource(value)
+		if err != nil {
+			// Values have already passed normalizeSubscriptionURLs. Keep this
+			// defensive branch non-sensitive if a future caller violates that
+			// contract.
+			continue
+		}
+		result = append(result, description)
+	}
+	return result
+}
+
+func (s *Server) handleXraySubscriptionHWID(w http.ResponseWriter, r *http.Request) {
+	cfg := s.currentConfig()
+	path := vpnsub.HWIDSettingsPath(cfg.Xray.SubscriptionSecretFile)
+	if path == "" {
+		writeError(w, r, http.StatusServiceUnavailable, "xray_not_configured", "VPN subscription secret path is not configured")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		settings, err := vpnsub.LoadHWIDSettings(path)
+		if err != nil {
+			writeError(w, r, http.StatusInternalServerError, "subscription_hwid_invalid", err.Error())
+			return
+		}
+		payload, err := subscriptionHWIDPayload(r.Context(), settings)
+		if err != nil && settings.Mode != vpnsub.HWIDModeDisabled {
+			writeError(w, r, http.StatusInternalServerError, "subscription_hwid_unavailable", err.Error())
+			return
+		}
+		writeData(w, r, payload)
+	case http.MethodPut:
+		release, failure := s.acquireMutationLease()
+		if failure != nil {
+			writeError(w, r, failure.Status, failure.Code, failure.Message)
+			return
+		}
+		defer release()
+		var request xraySubscriptionHWIDRequest
+		if err := readJSON(r, &request); err != nil {
+			writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())
+			return
+		}
+		settings := vpnsub.NormalizeHWIDSettings(vpnsub.HWIDSettings{Mode: request.Mode, Source: request.Source, Preset: request.Preset, CustomSeed: request.CustomSeed})
+		if err := settings.Validate(); err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_subscription_hwid", err.Error())
+			return
+		}
+		if err := vpnsub.StoreHWIDSettings(path, settings); err != nil {
+			writeError(w, r, http.StatusInternalServerError, "subscription_hwid_write_failed", err.Error())
+			return
+		}
+		payload, resolveErr := subscriptionHWIDPayload(r.Context(), settings)
+		if resolveErr != nil && settings.Mode != vpnsub.HWIDModeDisabled {
+			writeError(w, r, http.StatusInternalServerError, "subscription_hwid_unavailable", resolveErr.Error())
+			return
+		}
+		s.publishEvent(Event{Type: "xray.subscription_hwid_updated", Severity: "info", ReasonCode: "subscription_hwid_saved", Durable: true, Details: map[string]any{"mode": settings.Mode, "source": settings.Source}})
+		writeData(w, r, payload)
 	default:
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "GET or PUT required")
 	}
+}
+
+func subscriptionHWIDPayload(ctx context.Context, settings vpnsub.HWIDSettings) (map[string]any, error) {
+	provider := vpnsub.SystemFingerprintProvider{}
+	current, err := vpnsub.ResolveHWID(ctx, settings, provider)
+	if err != nil && settings.Mode != vpnsub.HWIDModeDisabled {
+		return nil, err
+	}
+	preview, previewErr := vpnsub.PreviewHWIDs(ctx, settings, provider)
+	if previewErr != nil && settings.Mode != vpnsub.HWIDModeDisabled {
+		return nil, previewErr
+	}
+	return map[string]any{
+		"mode": string(settings.Mode), "source": string(settings.Source), "custom_seed": settings.CustomSeed,
+		"current_hwid": current, "preset_configured": settings.Mode == vpnsub.HWIDModePreset,
+		"preset": func() string {
+			if settings.Mode == vpnsub.HWIDModePreset {
+				return settings.Preset
+			}
+			return ""
+		}(), "preview": preview,
+	}, nil
 }
 
 func normalizeSubscriptionURLs(values []string) ([]string, error) {
@@ -134,15 +281,18 @@ func subscriptionSecretStatus(present bool, count int) map[string]any {
 }
 
 func normalizeSubscriptionURL(raw string) (string, error) {
-	value := strings.TrimSpace(raw)
-	if value == "" || len(value) > 4096 {
-		return "", errors.New("subscription URL must contain 1..4096 characters")
+	value, err := vpnsub.NormalizeSource(raw)
+	if err != nil {
+		return "", err
 	}
-	parsed, err := url.ParseRequestURI(value)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
-		return "", errors.New("subscription URL must be an HTTPS URL without user info or fragment")
+	info, err := vpnsub.DetectSource(value)
+	if err != nil {
+		return "", err
 	}
-	return parsed.String(), nil
+	if info.Type == vpnsub.SourceTypeHTTP {
+		return "", errors.New("subscription source must be HTTPS or a supported Happ URI")
+	}
+	return info.Canonical, nil
 }
 
 func subscriptionSecretPresent(path string) (bool, error) {
@@ -213,6 +363,33 @@ func storeSubscriptionSecrets(path string, values []string) (bool, error) {
 	return true, nil
 }
 
+func removeOrStoreSubscriptionSources(path string, values []string) (bool, error) {
+	if len(values) > 5 {
+		return false, errors.New("subscription secret requires at most 5 sources")
+	}
+	if len(values) > 0 {
+		return storeSubscriptionSecrets(path, values)
+	}
+	if !filepath.IsAbs(path) {
+		return false, errors.New("subscription secret path must be absolute")
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return false, errors.New("subscription secret target is not a regular file")
+	}
+	if err := os.Remove(path); err != nil {
+		return false, err
+	}
+	writebudget.RecordFileWrite(false, 0, 1, "subscription_secret_remove")
+	return true, nil
+}
+
 func (s *Server) handleXraySubscriptionPrepare(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
@@ -249,6 +426,11 @@ func (s *Server) handleXraySubscriptionPrepare(w http.ResponseWriter, r *http.Re
 	prepared, err := s.subscriptionPreparer.Prepare(r.Context(), active)
 	if err != nil {
 		s.publishEvent(Event{Type: "xray.subscription_prepare_failed", Severity: "error", ReasonCode: "xray_candidate_rejected", Details: map[string]any{"reason": err.Error()}})
+		var sourceErr *vpnsub.SourceError
+		if errors.As(err, &sourceErr) {
+			writeError(w, r, http.StatusBadGateway, sourceErr.Code, sourceErr.Error())
+			return
+		}
 		writeError(w, r, http.StatusBadGateway, "xray_candidate_rejected", err.Error())
 		return
 	}

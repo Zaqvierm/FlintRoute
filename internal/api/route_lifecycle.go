@@ -206,11 +206,13 @@ func (s *Server) processRouteFailure(ctx context.Context, report routeFailureRep
 		return
 	}
 	s.healthTracker.Observe(fallbackResult, active.Policy, time.Now().UTC())
-	if err := s.commitVLESSFailover(ctx, serviceID, report.Route, fallback.Tag); err != nil {
-		s.publishEvent(Event{Type: "route.fallback", Severity: "error", Domain: report.Domain, Route: report.Route, ReasonCode: "route_failover_apply_failed", Details: map[string]any{"candidate": fallback.Tag, "error": err.Error()}})
-		return
-	}
-	s.publishEvent(Event{Type: "route.fallback", Severity: "warning", Domain: report.Domain, Route: fallback.Tag, ReasonCode: "route_failover_applied", Details: map[string]any{"from": report.Route, "to": fallback.Tag, "probe_count": 2, "path_verified": true}})
+	// Reactive health detection may verify a standby route, but it must not
+	// invoke the full ChangeSet/apply pipeline from a background event. That
+	// pipeline can rebuild Xray/Zapret, nft topology and the management path.
+	// Keep the verified fallback as an explicit review action until a dedicated
+	// route-only assignment exists for configured services as well as unknown
+	// domains.
+	s.publishEvent(Event{Type: "route.fallback", Severity: "warning", Domain: report.Domain, Route: fallback.Tag, ReasonCode: "route_failover_pending_review", Details: map[string]any{"from": report.Route, "to": fallback.Tag, "probe_count": 2, "path_verified": true, "assignment": "not_applied"}})
 }
 
 func (s *Server) startFailedRouteRecoveryScheduler(ctx context.Context) {
@@ -363,36 +365,6 @@ func (s *Server) nextKnownGoodVLESS(cfg *config.Config, service config.Service, 
 		}
 	}
 	return config.Route{}, false
-}
-
-func (s *Server) commitVLESSFailover(ctx context.Context, serviceID, from, to string) error {
-	if failure := s.mutationFailureNow(); failure != nil {
-		return errors.New(failure.Message)
-	}
-	s.mu.Lock()
-	baseVersion := s.configVersion
-	s.mu.Unlock()
-	change, err := s.createDraftChange("Switch failed VLESS route", fmt.Sprintf("Reactive failover from %s to %s", from, to), baseVersion, []ChangeOp{{Type: "set", Path: "/services/" + escapeJSONPointer(serviceID) + "/selected_route_tag", Value: to}}, "reactive-failover")
-	if err != nil {
-		return err
-	}
-	change, failure := s.validateChangeSet(change)
-	if failure == nil {
-		change, failure = s.applyChangeSet(withAutomaticManagementProof(ctx), change)
-	}
-	if failure == nil && change.State != "awaiting_confirmation" {
-		failure = conflict("reactive_failover_unverified", "failover transaction did not reach confirmation")
-	}
-	if failure == nil {
-		change, failure = s.confirmChangeSet(ctx, change)
-	}
-	if failure != nil {
-		if change.TransactionID != "" && change.State != "rolled_back" && change.State != "expired" {
-			_, _ = s.rollbackChangeSet(context.WithoutCancel(ctx), change, false)
-		}
-		return errors.New(failure.Message)
-	}
-	return nil
 }
 
 func (s *Server) startClassifiedRevalidationScheduler(ctx context.Context) {

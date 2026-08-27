@@ -372,6 +372,29 @@ func TestTSPUInitialDelayUsesPersistedFreshness(t *testing.T) {
 	}
 }
 
+func TestTSPUInitialDelayDoesNotMaterializeCorruptLargeCache(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Storage.StateDir = t.TempDir()
+	now := time.Date(2026, 7, 27, 2, 0, 0, 0, time.UTC)
+	cache := tspu.BuildCache(now, time.Hour,
+		[]tspu.SourceReport{{Name: "fixture", Accepted: true, Fresh: true, Confidence: 0.9}},
+		map[string][]string{"fixture": {"one.example"}})
+	cachePath := filepath.Join(cfg.Storage.StateDir, "tspu-cache.json")
+	if err := tspu.Save(cachePath, cache); err != nil {
+		t.Fatal(err)
+	}
+	// Scheduling only needs the validated freshness sidecar.  A damaged or
+	// very large index must not be materialised merely to calculate the next
+	// refresh time; the refresh path will handle that error when it runs.
+	if err := os.WriteFile(cachePath, []byte(strings.Repeat("{", 1024*1024)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fallback := 30 * time.Second
+	if got, want := tspuInitialDelay(cfg, 6*time.Hour, now, fallback), 55*time.Minute; got != want {
+		t.Fatalf("freshness-only initial delay=%s want=%s", got, want)
+	}
+}
+
 func TestTSPUSchedulerConfigInheritsBootstrapSourcesWithoutChangingActiveConfig(t *testing.T) {
 	bootstrap := testAPIConfig(t)
 	bootstrap.TSPUSources = []config.TSPUSource{{Name: "primary", Type: "domains", URL: "https://example.test/domains"}}

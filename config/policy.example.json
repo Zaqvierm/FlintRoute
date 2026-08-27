@@ -9,7 +9,7 @@
     "health_check_interval_seconds": 300,
     "subscription_update_interval_seconds": 21600,
     "tspu_list_update_interval_seconds": 21600,
-    "max_subscription_bytes": 2097152,
+    "max_subscription_bytes": 4194304,
     "max_probe_seconds": 15
   },
   "paths": {
@@ -51,4 +51,3 @@
     ]
   }
 }
-

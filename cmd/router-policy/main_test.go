@@ -166,8 +166,9 @@ func TestSafeListenAddress(t *testing.T) {
 
 func TestServeRefusesUnsafeBind(t *testing.T) {
 	t.Setenv("ROUTER_POLICY_ALLOW_FIREWALLED_BIND", "")
+	t.Setenv("ROUTER_POLICY_ALLOW_LAN_BIND", "")
 	err := run([]string{"serve", "--listen", "0.0.0.0:8787"})
-	if err == nil || !strings.Contains(err.Error(), "refusing non-loopback") {
+	if err == nil || !strings.Contains(err.Error(), "refusing listen address") {
 		t.Fatalf("expected unsafe bind refusal, got %v", err)
 	}
 }
@@ -209,6 +210,30 @@ func TestManualImportWritesRedactedPlanWithoutApplyPermission(t *testing.T) {
 		t.Fatal(err)
 	} else if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("adoption plan mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestLanBindRequiresExplicitOptIn(t *testing.T) {
+	t.Setenv("ROUTER_POLICY_ALLOW_LAN_BIND", "")
+	for _, addr := range []string{"192.168.0.1:8787", "10.0.0.1:8787", "[fd00::1]:8787"} {
+		if allowedListenAddress(addr) {
+			t.Fatalf("expected LAN bind %s to require explicit opt-in", addr)
+		}
+	}
+
+	t.Setenv("ROUTER_POLICY_ALLOW_LAN_BIND", "1")
+	for _, addr := range []string{"192.168.0.1:8787", "10.0.0.1:8787", "[fd00::1]:8787"} {
+		if !allowedListenAddress(addr) {
+			t.Fatalf("expected private LAN bind %s to be allowed", addr)
+		}
+	}
+	for _, addr := range []string{"0.0.0.0:8787", "[::]:8787", "169.254.1.1:8787", "203.0.113.1:8787", ":8787"} {
+		if allowedListenAddress(addr) {
+			t.Fatalf("expected unsafe LAN bind %s to be rejected", addr)
+		}
+	}
+	if !allowedListenAddress("127.0.0.1:8787") {
+		t.Fatal("loopback must remain allowed regardless of LAN opt-in")
 	}
 }
 

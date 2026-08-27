@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -189,6 +190,197 @@ func TestWatcherDetectsRecreatedLogByIdentity(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWatcherDrainsOversizedHistoricalLogAndReachesFreshTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dns.log")
+	line := "dnsmasq: query[A] historical.example from 192.0.2.10\n"
+	count := (12<<20)/len(line) + 1
+	var content strings.Builder
+	content.Grow(count * len(line))
+	for i := 0; i < count; i++ {
+		content.WriteString(line)
+	}
+	content.WriteString("dnsmasq: query[HTTPS] fresh-tail.example from 192.0.2.11\n")
+	if err := os.WriteFile(path, []byte(content.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var fresh int
+	watcher := Watcher{Path: path, MaxBytes: 1 << 20, Emit: func(_ context.Context, item Observation) {
+		if item.Domain == "fresh-tail.example" {
+			fresh++
+		}
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var offset int64
+	for offset < int64(len(content.String())) {
+		next, _, err := watcher.readFrom(ctx, offset, 1<<20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if next <= offset {
+			t.Fatalf("bounded reader made no progress at %d/%d", offset, len(content.String()))
+		}
+		offset = next
+	}
+	if fresh != 1 {
+		t.Fatalf("fresh tail emitted %d times, want exactly once", fresh)
+	}
+}
+
+func TestWatcherDoesNotPersistCursorInsideChunkBoundary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dns.log")
+	line := "dnsmasq: query[A] chunk.example from 192.0.2.10\n"
+	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var observed int
+	watcher := Watcher{Path: path, MaxBytes: int64(strings.IndexByte(line, '\n')), Emit: func(context.Context, Observation) { observed++ }}
+	offset, _, err := watcher.readFrom(context.Background(), 0, watcher.MaxBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offset != 0 || observed != 0 {
+		t.Fatalf("partial line advanced cursor: offset=%d observations=%d", offset, observed)
+	}
+	offset, _, err = watcher.readFrom(context.Background(), offset, int64(len(line)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offset != int64(len(line)) || observed != 1 {
+		t.Fatalf("complete line was not emitted after continuation: offset=%d observations=%d", offset, observed)
+	}
+}
+
+func TestWatcherAppendLargerThanBoundedPassReachesTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dns.log")
+	if err := os.WriteFile(path, []byte("dnsmasq: query[A] first.example from 192.0.2.10\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var fresh int
+	watcher := Watcher{Path: path, MaxBytes: 1 << 20, Emit: func(_ context.Context, item Observation) {
+		if item.Domain == "appended-tail.example" {
+			fresh++
+		}
+	}}
+	initial, _, err := watcher.readFrom(context.Background(), 0, watcher.MaxBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 40000; i++ {
+		if _, err := f.WriteString("dnsmasq: query[A] appended-" + strconv.Itoa(i) + ".example from 192.0.2.10\n"); err != nil {
+			_ = f.Close()
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.WriteString("dnsmasq: query[HTTPS] appended-tail.example from 192.0.2.10\n"); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offset := initial
+	for offset < info.Size() {
+		next, _, err := watcher.readFrom(context.Background(), offset, watcher.MaxBytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if next <= offset {
+			t.Fatalf("append drain stalled at %d/%d", offset, info.Size())
+		}
+		offset = next
+	}
+	if fresh != 1 {
+		t.Fatalf("appended tail emitted %d times, want once", fresh)
+	}
+}
+
+func TestWatcherDrainsOversizedMalformedLineWithoutLoop(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dns.log")
+	bad := strings.Repeat("x", 512<<10)
+	content := bad + "\n" + "dnsmasq: query[A] after-malformed.example from 192.0.2.10\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var observed int
+	watcher := Watcher{Path: path, MaxBytes: 1 << 20, Emit: func(_ context.Context, item Observation) {
+		if item.Domain == "after-malformed.example" {
+			observed++
+		}
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var offset int64
+	for offset < int64(len(content)) {
+		next, _, err := watcher.readFrom(ctx, offset, watcher.MaxBytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if next <= offset {
+			t.Fatalf("malformed line drain stalled at %d", offset)
+		}
+		offset = next
+	}
+	if observed != 1 {
+		t.Fatalf("valid record after malformed line emitted %d times", observed)
+	}
+}
+
+func TestWatcherDrainsPathologicalLineBeyondPassBudget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dns.log")
+	content := strings.Repeat("x", 2<<20) + "\n" + "dnsmasq: query[A] after-pathological.example from 192.0.2.10\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var observed int
+	watcher := Watcher{Path: path, MaxBytes: 1 << 20, Emit: func(_ context.Context, item Observation) {
+		if item.Domain == "after-pathological.example" {
+			observed++
+		}
+	}}
+	var offset int64
+	for offset < int64(len(content)) {
+		next, _, err := watcher.readFrom(context.Background(), offset, watcher.MaxBytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if next <= offset {
+			t.Fatalf("pathological line pinned the cursor at %d", offset)
+		}
+		offset = next
+	}
+	if observed != 1 {
+		t.Fatalf("valid record after pathological line emitted %d times", observed)
+	}
+}
+
+func TestWatcherDoesNotDuplicateStableTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dns.log")
+	if err := os.WriteFile(path, []byte("dnsmasq: query[A] stable.example from 192.0.2.10\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var observed int
+	watcher := Watcher{Path: path, MaxBytes: 4096, Emit: func(context.Context, Observation) { observed++ }}
+	offset, _, err := watcher.readFrom(context.Background(), 0, watcher.MaxBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := watcher.readFrom(context.Background(), offset, watcher.MaxBytes); err != nil {
+		t.Fatal(err)
+	}
+	if observed != 1 {
+		t.Fatalf("stable tail emitted %d times, want one", observed)
 	}
 }
 

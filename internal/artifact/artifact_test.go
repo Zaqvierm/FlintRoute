@@ -866,6 +866,39 @@ func TestRoutesUsedByPoliciesExcludesConfiguredButUnusedRoutes(t *testing.T) {
 	}
 }
 
+func TestRequiredProofsKeepInstalledRulePriority(t *testing.T) {
+	cfg := testConfig(t, t.TempDir())
+	routes := []config.Route{
+		{Type: "direct", Tag: "direct", Priority: 10, Mark: "0x41"},
+		{Type: "zapret", Tag: "zapret", Priority: 20, Mark: "0x42"},
+		{Type: "drop", Tag: "drop", Priority: 100, Mark: "0x4f"},
+	}
+	allProofs := buildProofPlan(cfg, routes)
+	used := routesUsedByPolicies(routes, []domainPolicy{{Domain: "youtube.com", Route: routes[1]}})
+	required := selectProofs(allProofs, used)
+	if len(required) != 1 || required[0].Tag != "zapret" {
+		t.Fatalf("unexpected required proof selection: %+v", required)
+	}
+	installed := buildIPRules(cfg, allProofs)
+	if required[0].RulePriority != allProofs[1].RulePriority {
+		t.Fatalf("required proof was re-indexed: required=%+v all=%+v", required[0], allProofs[1])
+	}
+	matched := false
+	for _, rule := range installed {
+		if rule.Family == "ipv4" && rule.Mark == required[0].Mark && rule.Table == required[0].Table && rule.Priority == required[0].RulePriority {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		t.Fatalf("required proof does not match the installed IPv4 rule: proof=%+v rules=%+v", required[0], installed)
+	}
+	legacy := buildProofPlan(cfg, used)
+	if legacy[0].RulePriority == required[0].RulePriority {
+		t.Fatalf("regression fixture did not expose subset re-indexing: legacy=%+v required=%+v", legacy[0], required[0])
+	}
+}
+
 func writeFlowDiagnostics(t *testing.T, root, status string, software, hardware bool) {
 	t.Helper()
 	diagnostics := fmt.Sprintf(`{"status":"VERIFIED","source":"flow-offload-fixture","simulation":true,"wan_interface":"wan","lan_interfaces":["br-lan"],"ipv4_gateway":"192.0.2.1","ipv6_gateway":"2001:db8::1","ipv6_available":true,"transparent_proxy_mode":"tproxy","flow_offloading_status":%q,"software_flow_offloading":%t,"hardware_flow_offloading":%t,"collected_at":"1969-01-01T00:00:00Z","expires_at":"2999-01-01T00:00:00Z"}`, status, software, hardware)

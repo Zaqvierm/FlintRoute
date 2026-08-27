@@ -469,15 +469,15 @@ func TestFreshTSPUMatchStartsWithZapret(t *testing.T) {
 	}
 }
 
-func TestTSPUFallbackOrderUsesZapretThenVLESSThenDrop(t *testing.T) {
+func TestTSPUFallbackOrderUsesZapretThenSmartDNSThenVLESSThenDrop(t *testing.T) {
 	got := orderForService("TSPU_RESTRICTED", "MATCH", "zapret_first")
-	want := []string{"zapret", "vless", "drop"}
+	want := []string{"zapret", "smart_dns", "vless", "drop"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("TSPU fallback order = %v, want %v", got, want)
 	}
 }
 
-func TestTSPUCheckFallsBackFromZapretToVLESS(t *testing.T) {
+func TestTSPUCheckFallsBackFromZapretToSmartDNSBeforeVLESS(t *testing.T) {
 	cfg := discoveryConfig(t)
 	prober := &scriptedProber{results: map[string]probe.RouteResult{
 		"zapret":    failedResult("zapret", "zapret", "strategy_failed"),
@@ -491,10 +491,10 @@ func TestTSPUCheckFallsBackFromZapretToVLESS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Selected == nil || result.Selected.Route != "vless-one" {
-		t.Fatalf("VLESS was not selected after Zapret failed: %+v", result)
+	if result.Selected == nil || result.Selected.Route != "smart-one" {
+		t.Fatalf("Smart DNS was not selected after Zapret failed: %+v", result)
 	}
-	want := []string{"zapret", "vless-one"}
+	want := []string{"zapret", "smart-one"}
 	if !reflect.DeepEqual(prober.calls, want) {
 		t.Fatalf("unexpected TSPU fallback calls=%v", prober.calls)
 	}

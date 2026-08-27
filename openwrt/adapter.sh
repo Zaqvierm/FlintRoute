@@ -75,26 +75,37 @@ process_start() {
   awk '{print $22}' "/proc/$pid_value/stat"
 }
 
+process_state() {
+  pid_value="$1"
+  [ -r "/proc/$pid_value/stat" ] || return 1
+  awk '{print $3}' "/proc/$pid_value/stat"
+}
+
+process_terminated() {
+  pid_value="$1"
+  ! kill -0 "$pid_value" 2>/dev/null || [ "$(process_state "$pid_value" 2>/dev/null || true)" = "Z" ]
+}
+
 terminate_owned_timer_pid() {
   timer_pid_arg="$1"
   timer_start_arg="$2"
-  kill -0 "$timer_pid_arg" 2>/dev/null || return 0
+  process_terminated "$timer_pid_arg" && return 0
   current_timer_start="$(process_start "$timer_pid_arg" 2>/dev/null || true)"
   [ -n "$current_timer_start" ] && [ "$current_timer_start" = "$timer_start_arg" ] || return 1
   kill -TERM "$timer_pid_arg" 2>/dev/null || return 1
   timer_wait=0
-  while [ "$timer_wait" -lt 5 ] && kill -0 "$timer_pid_arg" 2>/dev/null; do
+  while [ "$timer_wait" -lt 5 ] && ! process_terminated "$timer_pid_arg"; do
     current_timer_start="$(process_start "$timer_pid_arg" 2>/dev/null || true)"
     [ "$current_timer_start" = "$timer_start_arg" ] || return 0
     sleep 1
     timer_wait=$((timer_wait + 1))
   done
-  if kill -0 "$timer_pid_arg" 2>/dev/null; then
+  if ! process_terminated "$timer_pid_arg"; then
     current_timer_start="$(process_start "$timer_pid_arg" 2>/dev/null || true)"
     [ "$current_timer_start" = "$timer_start_arg" ] || return 1
     kill -KILL "$timer_pid_arg" 2>/dev/null || return 1
     sleep 1
-    kill -0 "$timer_pid_arg" 2>/dev/null && return 1
+    process_terminated "$timer_pid_arg" || return 1
   fi
 }
 
@@ -1335,6 +1346,7 @@ verify_management() {
   active_matches || exit 4
   process_health=false
   loopback_api_health=false
+  loopback_api_required=true
   proof_valid=false
   lan_management_path=false
   admin_http_path=false
@@ -1363,6 +1375,14 @@ verify_management() {
     admin_http_url="$(printf '%s\n' "$proof_output" | sed -n 's/^admin_http_url=//p' | head -n 1)"
     admin_http_required="$(printf '%s\n' "$proof_output" | sed -n 's/^admin_http_required=//p' | head -n 1)"
     admin_http_health="$(printf '%s\n' "$proof_output" | sed -n 's/^admin_http_health=//p' | head -n 1)"
+    # LAN/automatic proofs validate the controller through the proved
+    # management interface. Requiring a second loopback listener would reject
+    # the supported LAN-bound listener even when that signed path is healthy.
+    # Headless proofs retain the stricter local check because their control
+    # plane URL is loopback.
+    case "$management_mode" in
+      lan|automatic) loopback_api_required=false ;;
+    esac
     if "$ip_bin" route get "$management_client_ip" 2>/dev/null | grep -F "dev $management_interface" >/dev/null 2>&1; then
       route_to_management_client=true
     fi
@@ -1381,6 +1401,7 @@ verify_management() {
   if "$nslookup_bin" localhost 127.0.0.1 >/dev/null 2>&1; then dns_availability=true; fi
   echo "process_health=$process_health"
   echo "loopback_api_health=$loopback_api_health"
+  echo "loopback_api_required=$loopback_api_required"
   echo "proof_valid=$proof_valid"
   echo "management_mode=$management_mode"
   echo "management_interface=$management_interface"
@@ -1394,7 +1415,7 @@ verify_management() {
   echo "legacy_management_env_present=$legacy_management_env_present"
   echo "default_gateway_path=$default_gateway_path"
   echo "dns_availability=$dns_availability"
-  if [ "$process_health" != "true" ] || [ "$loopback_api_health" != "true" ]; then
+  if [ "$process_health" != "true" ] || { [ "$loopback_api_required" = "true" ] && [ "$loopback_api_health" != "true" ]; }; then
     write_status "management_failed"
     echo "management_ok=false"
     echo "verification_status=ERROR"

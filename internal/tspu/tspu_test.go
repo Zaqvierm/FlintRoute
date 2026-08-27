@@ -173,6 +173,29 @@ func TestRefreshFilePreservesValidCacheWhenAllSourcesFail(t *testing.T) {
 	}
 }
 
+func TestRefreshFileDefersOversizedExistingCacheBeforeDecode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tspu-cache.json")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(maxRefreshExistingCacheBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Policy:      config.Policy{TSPUListUpdateIntervalSeconds: 3600, MaxTSPUListBytes: 4096},
+		TSPUSources: []config.TSPUSource{{Name: "fixture", Type: "domains", URL: "https://example.invalid/list"}},
+	}
+	_, err = RefreshFile(context.Background(), nil, cfg, path, time.Now().UTC())
+	if err == nil || !strings.Contains(err.Error(), "memory-safe limit") {
+		t.Fatalf("oversized cache was not deferred before decode: %v", err)
+	}
+}
+
 func TestSaveKeepsPreviousAndLoadRejectsCorruption(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "tspu-cache.json")

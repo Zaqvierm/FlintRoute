@@ -758,7 +758,10 @@ func saveFreshness(path, cacheSHA256 string, cache Cache) error {
 	return writeAtomic(target, raw, 0o600)
 }
 
-func loadFreshness(path, cacheSHA256 string) (Freshness, error) {
+// LoadFreshness reads only the small freshness sidecar.  Callers that only
+// need scheduling metadata must not load the (potentially very large) domain
+// index into a map just to find its expiry time.
+func LoadFreshness(path string) (Freshness, error) {
 	raw, err := readBoundedRegular(freshnessPath(path), maxFreshnessFileBytes)
 	if err != nil {
 		return Freshness{}, err
@@ -773,7 +776,6 @@ func loadFreshness(path, cacheSHA256 string) (Freshness, error) {
 	}
 	if value.Version != FreshnessVersion ||
 		value.CacheSHA256 == "" ||
-		value.CacheSHA256 != cacheSHA256 ||
 		value.ValidatedAt.IsZero() ||
 		value.ExpiresAt.IsZero() ||
 		len(value.SourceExpiry) > len(value.Sources) ||
@@ -784,6 +786,17 @@ func loadFreshness(path, cacheSHA256 string) (Freshness, error) {
 		if !validSourceName(source) || expires.IsZero() || expires.After(value.ExpiresAt) {
 			return Freshness{}, errors.New("invalid TSPU freshness source expiry")
 		}
+	}
+	return value, nil
+}
+
+func loadFreshness(path, cacheSHA256 string) (Freshness, error) {
+	value, err := LoadFreshness(path)
+	if err != nil {
+		return Freshness{}, err
+	}
+	if value.CacheSHA256 != cacheSHA256 {
+		return Freshness{}, errors.New("invalid TSPU freshness file")
 	}
 	return value, nil
 }

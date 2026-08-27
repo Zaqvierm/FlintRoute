@@ -144,7 +144,7 @@ func TestSmartDNSStatusPublishesConditionalDNSFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), `"tspu":["zapret","vless","drop"]`) {
+	if !strings.Contains(string(raw), `"tspu":["zapret","smart_dns","vless","drop"]`) {
 		t.Fatalf("Smart DNS fallback contract is wrong: %s", raw)
 	}
 }

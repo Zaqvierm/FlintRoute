@@ -856,6 +856,67 @@ health_json_field() {
   tr '{},' '\n' < "$file" | sed -n "s/^[[:space:]]*\"$field\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\"[[:space:]]*$/\1/p" | head -n 1
 }
 
+resolve_control_health_url() {
+  # The controller may be intentionally exposed on a private LAN address.
+  # Never accept an arbitrary URL here: installer health checks must stay on
+  # the local router and must follow the same owned listener configuration as
+  # the init script.  The test-only SYSTEM_ROOT path is accepted without an
+  # address lookup because it has no real network namespace.
+  health_host="127.0.0.1"
+  health_port="8787"
+  listener_config="$ETC_DIR/config/listener.conf"
+  if [ -f "$listener_config" ] && [ ! -L "$listener_config" ]; then
+    configured_listener="$(sed -n 's/^listen_address=//p' "$listener_config" | head -n 1)"
+    if [ -n "$configured_listener" ]; then
+      case "$configured_listener" in
+        *:*:*|*/*|*\ *|*[!A-Za-z0-9.:-]*)
+          echo "install blocked: invalid controller listener address in $listener_config" >&2
+          return 1
+          ;;
+        *:*)
+          health_host="${configured_listener%:*}"
+          health_port="${configured_listener##*:}"
+          ;;
+        *)
+          echo "install blocked: controller listener has no port in $listener_config" >&2
+          return 1
+          ;;
+      esac
+    fi
+  fi
+  case "$health_host" in
+    127.0.0.1)
+      ;;
+    ''|0.0.0.0|::|\[::*\]|*.*.*.*.*|*[!0-9.]*)
+      echo "install blocked: controller health listener is not a supported local IPv4 address: $health_host" >&2
+      return 1
+      ;;
+    *)
+      if [ -z "$SYSTEM_ROOT" ]; then
+        command -v ip >/dev/null 2>&1 || {
+          echo "install blocked: ip is required to verify the controller listener address" >&2
+          return 1
+        }
+        if ! ip -4 addr show 2>/dev/null | awk -v wanted="$health_host" '$1 == "inet" {sub("/.*", "", $2); if ($2 == wanted) found=1} END {exit(found ? 0 : 1)}'; then
+          echo "install blocked: controller listener address is not assigned locally: $health_host" >&2
+          return 1
+        fi
+      fi
+      ;;
+  esac
+  case "$health_port" in
+    ''|*[!0-9]*)
+      echo "install blocked: invalid controller listener port: $health_port" >&2
+      return 1
+      ;;
+  esac
+  [ "$health_port" -ge 1 ] 2>/dev/null && [ "$health_port" -le 65535 ] 2>/dev/null || {
+    echo "install blocked: controller listener port out of range: $health_port" >&2
+    return 1
+  }
+  printf 'http://%s:%s/api/v1/health\n' "$health_host" "$health_port"
+}
+
 valid_health_hash() {
   value="$1"
   printf '%s\n' "$value" | grep -Eq '^sha256:[0-9a-fA-F]{64}$'
@@ -869,9 +930,10 @@ wait_control_health() {
   case "$max_attempts" in *[!0-9]*|'') max_attempts=120 ;; esac
   [ "$max_attempts" -ge 1 ] && [ "$max_attempts" -le 120 ] || max_attempts=120
   command -v wget >/dev/null 2>&1 || { echo "wget is required to verify the control plane" >&2; return 1; }
+  health_url="$(resolve_control_health_url)" || return 1
   attempt=0
   while [ "$attempt" -lt "$max_attempts" ]; do
-    if wget -q -O "$RUNTIME_DIR/install-health.json" http://127.0.0.1:8787/api/v1/health; then
+    if wget -q -O "$RUNTIME_DIR/install-health.json" "$health_url"; then
       health_status="$(health_json_field status "$RUNTIME_DIR/install-health.json")"
       recovery_status="$(health_json_field recovery_status "$RUNTIME_DIR/install-health.json")"
       recovery_commit_phase="$(health_json_field recovery_commit_phase "$RUNTIME_DIR/install-health.json")"

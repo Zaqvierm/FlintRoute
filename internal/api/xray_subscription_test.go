@@ -248,6 +248,150 @@ func TestXraySubscriptionSecretRejectsInsecureURLAndSymlink(t *testing.T) {
 	}
 }
 
+func TestXraySubscriptionSecretAcceptsHappSourceAndMasksIt(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	secretPath := filepath.Join(srv.cfg.Storage.StateDir, "secrets", "vpn-subscription-url")
+	srv.cfg.Xray.SubscriptionSecretFile = secretPath
+	srv.mu.Lock()
+	srv.activeConfig.Xray.SubscriptionSecretFile = secretPath
+	srv.mu.Unlock()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client, csrf := login(t, ts.URL)
+	const source = `happ://crypt4/very-secret-payload`
+	request, _ := http.NewRequest(http.MethodPut, ts.URL+"/api/v1/xray/subscription/secret", strings.NewReader(`{"url":"`+source+`"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", csrf)
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("Happ source update status=%d", response.StatusCode)
+	}
+	var updateEnvelope Envelope
+	updateBody, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err := json.Unmarshal(updateBody, &updateEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(updateBody), "source_masked") || strings.Contains(string(updateBody), "very-secret-payload") {
+		t.Fatalf("Happ source metadata was not returned safely on update: %s", updateBody)
+	}
+	request, _ = http.NewRequest(http.MethodGet, ts.URL+"/api/v1/xray/subscription/secret", nil)
+	request.Header.Set("X-CSRF-Token", csrf)
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	raw, _ := io.ReadAll(response.Body)
+	if strings.Contains(string(raw), source) || strings.Contains(string(raw), "very-secret-payload") {
+		t.Fatalf("Happ source leaked through status API: %s", raw)
+	}
+	if !strings.Contains(string(raw), "crypt4") || !strings.Contains(string(raw), "source_masked") {
+		t.Fatalf("Happ source metadata missing: %s", raw)
+	}
+	request, _ = http.NewRequest(http.MethodDelete, ts.URL+"/api/v1/xray/subscription/secret", strings.NewReader(`{"index":0}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", csrf)
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("Happ source removal status=%d", response.StatusCode)
+	}
+	removed, _ := io.ReadAll(response.Body)
+	if strings.Contains(string(removed), source) || strings.Contains(string(removed), "very-secret-payload") || !strings.Contains(string(removed), `"count":0`) {
+		t.Fatalf("Happ source removal response was unsafe: %s", removed)
+	}
+}
+
+func TestXraySubscriptionSecretAcceptsPortalHappWrapper(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	secretPath := filepath.Join(srv.cfg.Storage.StateDir, "secrets", "vpn-subscription-url")
+	srv.cfg.Xray.SubscriptionSecretFile = secretPath
+	srv.mu.Lock()
+	srv.activeConfig.Xray.SubscriptionSecretFile = secretPath
+	srv.mu.Unlock()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client, csrf := login(t, ts.URL)
+	// The portal URL is the original source.  The nested Happ value is kept
+	// encoded so the API must not mistake the portal HTML response for the
+	// subscription payload; source resolution happens later in vpnsub.Fetch.
+	const source = "https://portal.example/add-key?subkey=happ%3A%2F%2Fcrypt4%2Fmasked-payload"
+	request, _ := http.NewRequest(http.MethodPut, ts.URL+"/api/v1/xray/subscription/secret", strings.NewReader(`{"url":"`+source+`"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", csrf)
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("portal source update status=%d body=%s", response.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "portal.example") || !strings.Contains(string(body), "crypt4") || strings.Contains(string(body), "masked-payload") {
+		t.Fatalf("portal source was not stored/masked safely: %s", body)
+	}
+	stored, err := os.ReadFile(secretPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(stored, []byte("portal.example")) || !bytes.Contains(stored, []byte("subkey=")) {
+		t.Fatalf("original portal source was not retained: %s", stored)
+	}
+}
+
+func TestSubscriptionHWIDEndpointPersistsDeterministicSettings(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	secretPath := filepath.Join(srv.cfg.Storage.StateDir, "secrets", "vpn-subscription-url")
+	srv.cfg.Xray.SubscriptionSecretFile = secretPath
+	srv.mu.Lock()
+	srv.activeConfig.Xray.SubscriptionSecretFile = secretPath
+	srv.mu.Unlock()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client, csrf := login(t, ts.URL)
+	body := `{"mode":"preset","preset":"33333333-3333-4333-8333-333333333333"}`
+	request, _ := http.NewRequest(http.MethodPut, ts.URL+"/api/v1/xray/subscription/hwid", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", csrf)
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawResponse, readErr := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("HWID update status=%d", response.StatusCode)
+	}
+	settings, err := vpnsub.LoadHWIDSettings(vpnsub.HWIDSettingsPath(srv.cfg.Xray.SubscriptionSecretFile))
+	if err != nil || settings.Mode != vpnsub.HWIDModePreset {
+		t.Fatalf("HWID settings were not persisted: %+v %v", settings, err)
+	}
+	var envelope Envelope
+	// The response is intentionally useful to the UI: it contains preview rows
+	// but never any subscription source or provider credential.
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if err := json.NewDecoder(bytes.NewReader(rawResponse)).Decode(&envelope); err != nil {
+		t.Fatal(err)
+	}
+	data, ok := envelope.Data.(map[string]any)
+	if !ok || data["current_hwid"] != "33333333-3333-4333-8333-333333333333" {
+		t.Fatalf("HWID response did not contain the selected preset: %#v", envelope.Data)
+	}
+}
+
 func stagePreparedBundleForAPI(t *testing.T, stateDir string) vpnsub.PreparedBundle {
 	t.Helper()
 	raw := []byte(`{"log":{"loglevel":"warning"},"inbounds":[{"tag":"socks-new-vless","listen":"127.0.0.1","port":13000,"protocol":"socks","settings":{"auth":"noauth","udp":true,"ip":"127.0.0.1"}}],"outbounds":[{"tag":"new-vless","protocol":"vless","settings":{"vnext":[{"address":"new.example","port":443,"users":[{"id":"33333333-3333-4333-8333-333333333333","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"tls"}}],"routing":{"domainStrategy":"AsIs","rules":[{"type":"field","inboundTag":["socks-new-vless"],"outboundTag":"new-vless"}]}}`)

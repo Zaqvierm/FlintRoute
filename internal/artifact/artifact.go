@@ -248,7 +248,14 @@ func Generate(cfg *config.Config, root string, binding Binding, generatedAt time
 		return Manifest{}, "", err
 	}
 	allProofs := buildProofPlan(cfg, routes)
-	proofs := buildProofPlan(cfg, routesUsedByPolicies(routes, domainPolicies))
+	// The IP plan installs rules for every enabled route, while the manifest
+	// only carries proofs for routes referenced by a policy.  Select those
+	// proofs from the already-built full plan so the rule priority remains
+	// identical to the rule that will actually be installed.  Rebuilding the
+	// plan from the subset re-indexes priorities and makes a valid route look
+	// unverified at apply time (for example zapret becoming 10010 in the
+	// manifest while the kernel rule is 10020).
+	proofs := selectProofs(allProofs, routesUsedByPolicies(routes, domainPolicies))
 	ipPlan := buildIPPlan(cfg, binding, allProofs, hasPolicyTraffic(domainPolicies), generatedAt.UTC())
 	dnsProxies, err := buildDNSProxyPlans(cfg, routes, domainPolicies)
 	if err != nil {
@@ -334,6 +341,23 @@ func routesUsedByPolicies(routes []config.Route, policies []domainPolicy) []conf
 	for _, route := range routes {
 		if used[route.Tag] {
 			selected = append(selected, route)
+		}
+	}
+	return selected
+}
+
+// selectProofs returns the required route proofs without changing their
+// identity or installed-rule priority.  Proofs are generated once from the
+// complete enabled-route plan; filtering is intentionally by route tag only.
+func selectProofs(all []RouteProof, routes []config.Route) []RouteProof {
+	used := make(map[string]bool, len(routes))
+	for _, route := range routes {
+		used[route.Tag] = true
+	}
+	selected := make([]RouteProof, 0, len(used))
+	for _, proof := range all {
+		if used[proof.Tag] {
+			selected = append(selected, proof)
 		}
 	}
 	return selected

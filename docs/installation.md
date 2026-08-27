@@ -45,6 +45,11 @@ sh scripts/build-go.sh
 Listener по умолчанию устанавливается как loopback-only в
 `/etc/router-policy/config/listener.conf`. При upgrade существующий regular file
 сохраняется; symlink вместо listener config отклоняется.
+Чтобы открывать панель напрямую с LAN, укажите точный адрес LAN роутера
+(например, `listen_address=192.168.0.1:8787`) и явно включите
+`allow_firewalled_bind=1`. Wildcard (`0.0.0.0`) и публичные адреса для этого
+режима отклоняются; firewall должен отдельно ограничивать TCP/8787 доверенной
+management subnet.
 
 ## Первая установка
 

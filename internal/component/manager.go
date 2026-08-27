@@ -422,9 +422,25 @@ func (m *Manager) removeRecord(kind Kind) error {
 }
 
 func statusFromRecord(record Record, release Release, health Health) Status {
+	checksum := canonicalDigest(record.Checksum)
+	binaryChecksum := canonicalDigest(record.BinaryChecksum)
+	asset, hasAsset := pinnedAsset(record, release)
+	// A component discovered on the host has no registry record yet.  If its
+	// detected version matches the vetted release, expose the catalog digest as
+	// the expected setup pin.  The setup checker still hashes the actual binary
+	// and rejects a mismatch; this is metadata for preflight, not proof that the
+	// file is trusted.
+	if checksum == "" && sameReleaseVersion(record.Version, release.Version) {
+		if hasAsset {
+			checksum = canonicalDigest(asset.SHA256)
+		}
+	}
+	if binaryChecksum == "" && sameReleaseVersion(record.Version, release.Version) && hasAsset {
+		binaryChecksum = canonicalDigest(asset.BinarySHA256)
+	}
 	status := Status{
 		Kind: record.Kind, Installed: record.Installed, Version: record.Version, LatestSupported: release.Version,
-		Architecture: record.Architecture, Source: release.Source, Checksum: record.Checksum,
+		Architecture: record.Architecture, Source: release.Source, PinnedAssetURL: pinnedAssetURL(record, release), Checksum: checksum, BinaryChecksum: binaryChecksum,
 		ServiceState: health.ServiceState, HealthState: health.State, HealthReady: health.Ready,
 		HealthReason: health.Reason, LastSuccessfulCheck: health.LastSuccessful, LastCheckedAt: record.LastCheckedAt,
 		RollbackVersion: record.RollbackVersion,
@@ -438,6 +454,45 @@ func statusFromRecord(record Record, release Release, health Health) Status {
 		status.NextActions = []string{"configure_proxy", "verify_telegram_transport"}
 	}
 	return status
+}
+
+func pinnedAssetURL(record Record, release Release) string {
+	asset, ok := pinnedAsset(record, release)
+	if ok {
+		return asset.URL
+	}
+	return ""
+}
+
+func pinnedAsset(record Record, release Release) (Asset, bool) {
+	for _, asset := range release.Assets {
+		if record.Architecture != "" && asset.Architecture == record.Architecture {
+			return asset, true
+		}
+	}
+	if len(release.Assets) == 1 {
+		return release.Assets[0], true
+	}
+	return Asset{}, false
+}
+
+func sameReleaseVersion(left, right string) bool {
+	left = strings.TrimPrefix(strings.TrimSpace(left), "v")
+	right = strings.TrimPrefix(strings.TrimSpace(right), "v")
+	return left != "" && left == right
+}
+
+func canonicalDigest(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if strings.HasPrefix(value, "sha256:") {
+		return value
+	}
+	if len(value) == sha256.Size*2 {
+		if _, err := hex.DecodeString(value); err == nil {
+			return "sha256:" + value
+		}
+	}
+	return value
 }
 
 type GitHubReleaseSource struct{ Client *http.Client }

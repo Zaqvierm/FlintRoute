@@ -78,6 +78,14 @@ Production связывает `ExecCalibrationRunner.QuickScript` со
 счётчика, target IP, HTTP-результат, latency и cleanup proof. Ответ HTTP 200 при
 неизменившемся счётчике собственной NFQUEUE — `INFRA_ERROR`, а не `PASS`.
 
+На embedded OpenWrt `su` часто отсутствует. Это не блокирует quick-check:
+если `/bin/su` (или эквивалентный доверенный helper) недоступен, runner
+переходит в явно обозначенный `probe_privilege_mode=root_fallback`, запускает
+ограниченный curl от root и ставит в owned output rule `meta skuid 0`. Такой
+результат всё равно обязан содержать NFQUEUE counter/path evidence и cleanup
+proof; отсутствие privilege-drop helper не превращается в «PASS по старту
+nfqws».
+
 Quick и exhaustive используют один runtime lock
 `/tmp/router-policy/zapret-calibration.lock` (или настроенный runtime-каталог).
 Это не позволяет curated-проверке конфликтовать с upstream scan, NFQUEUE/nft

@@ -240,6 +240,16 @@ func TestCalibrationCommandErrorClassifiesUpstreamTimeout(t *testing.T) {
 	}
 }
 
+func TestCalibrationCommandErrorClassifiesMissingPrivilegeHelper(t *testing.T) {
+	err := calibrationCommandError([]byte("quick Zapret check: su is unavailable"))
+	if !errors.Is(err, errCalibrationPrivilegeHelperUnavailable) {
+		t.Fatalf("missing privilege helper was not classified: %v", err)
+	}
+	if !strings.Contains(err.Error(), "su is unavailable") {
+		t.Fatalf("diagnostic was lost: %v", err)
+	}
+}
+
 func TestCalibrationStatusReportsLiveCompletedChecks(t *testing.T) {
 	runner := &progressCalibrationRunner{completed: 2, release: make(chan struct{}), logTail: []string{"checking strategy"}, working: []string{"strategy-a"}}
 	manager := NewCalibrationManager(runner)

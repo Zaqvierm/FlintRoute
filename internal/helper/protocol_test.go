@@ -155,7 +155,9 @@ func TestCallRejectsSemanticHashMismatch(t *testing.T) {
 		response.CandidateHash = "sha256:" + strings.Repeat("b", 64)
 		_ = json.NewEncoder(connection).Encode(response)
 	}()
-	_, err = Call(context.Background(), socket, validRequest("transaction.rollback"))
+	request := validRequest("transaction.rollback")
+	request.Transaction = &TransactionRequest{Operation: "rollback"}
+	_, err = Call(context.Background(), socket, request)
 	if err == nil || !strings.Contains(err.Error(), "binding mismatch") {
 		t.Fatalf("semantic hash mismatch was accepted: %v", err)
 	}

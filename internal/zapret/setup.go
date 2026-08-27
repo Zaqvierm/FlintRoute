@@ -138,7 +138,10 @@ func writeNFQueueCandidate(dir string, queue int) (string, error) {
 	if err := file.Chmod(0o600); err != nil {
 		return "", err
 	}
-	content := fmt.Sprintf("table inet router_policy_capability { chain probe { type filter hook output priority 0; tcp dport 443 queue num %d bypass; } }\n", queue)
+	// Keep the probe in the multiline nft grammar accepted by the OpenWrt
+	// nftables build.  The compact one-line nested form is rejected by nft
+	// 1.1.x even though it looks equivalent to humans.
+	content := fmt.Sprintf("table inet router_policy_capability {\n chain probe {\n  type filter hook output priority 0;\n  tcp dport 443 queue num %d bypass\n }\n}\n", queue)
 	if _, err := file.WriteString(content); err != nil {
 		return "", err
 	}

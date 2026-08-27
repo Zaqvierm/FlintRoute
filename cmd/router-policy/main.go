@@ -1494,7 +1494,7 @@ func runWatchdog(healthURL string, interval, startupGrace time.Duration, failure
 
 func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) error {
 	if !allowedListenAddress(listen) {
-		return fmt.Errorf("refusing non-loopback listen address %q; set ROUTER_POLICY_ALLOW_FIREWALLED_BIND=1 only with a source-restricted firewall rule", listen)
+		return fmt.Errorf("refusing listen address %q; use loopback or explicitly opt in to a private LAN address with listener.conf", listen)
 	}
 	cfg, err := loadRuntimeConfig(cfgPath)
 	if err != nil {
@@ -2096,6 +2096,22 @@ func safeListenAddress(addr string) bool {
 func allowedListenAddress(addr string) bool {
 	if safeListenAddress(addr) {
 		return true
+	}
+	if os.Getenv("ROUTER_POLICY_ALLOW_LAN_BIND") == "1" {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return false
+		}
+		portNumber, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || portNumber == 0 {
+			return false
+		}
+		ip := net.ParseIP(host)
+		// The production init script uses this narrow opt-in.  Exact private
+		// unicast binding keeps the controller off WAN/wildcard addresses; the
+		// default remains loopback-only.  Binding fails closed if the address is
+		// not assigned on the router.
+		return ip != nil && ip.IsPrivate() && !ip.IsUnspecified() && !ip.IsLoopback() && !ip.IsMulticast() && !ip.IsLinkLocalUnicast()
 	}
 	if os.Getenv("ROUTER_POLICY_ALLOW_FIREWALLED_BIND") != "1" {
 		return false

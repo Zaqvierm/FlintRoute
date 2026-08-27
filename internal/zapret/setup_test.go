@@ -70,3 +70,21 @@ func TestLocalSetupCheckerRejectsMutableSourceAndNFQueueFailure(t *testing.T) {
 		t.Fatalf("NFQUEUE failure not reported: %v", err)
 	}
 }
+
+func TestNFQueueCandidateUsesOpenWrtCompatibleGrammar(t *testing.T) {
+	path, err := writeNFQueueCandidate(t.TempDir(), 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, "table inet router_policy_capability {\n chain probe {") {
+		t.Fatalf("candidate is not multiline nft grammar: %q", text)
+	}
+	if !strings.Contains(text, "tcp dport 443 queue num 200 bypass\n") {
+		t.Fatalf("candidate is missing queue probe: %q", text)
+	}
+}

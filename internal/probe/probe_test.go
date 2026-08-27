@@ -235,6 +235,34 @@ func TestSmartDNSConnectsToResolvedIP(t *testing.T) {
 	}
 }
 
+func TestSmartDNSGEOPathDoesNotRequireProxyEgressConsensus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("regional content"))
+	}))
+	defer srv.Close()
+	_, port, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dnsAddr, closeDNS := startTestDNSServer(t, net.ParseIP("127.0.0.1"))
+	defer closeDNS()
+
+	service := serviceWithProbe("http://smart.test:"+port+"/", []int{http.StatusOK}, "required", []string{"regional content"})
+	service.Category = "GEO_LOCKED"
+	service.RequireNonRUEgress = true
+	service.AllowedPaths = []string{"smart_dns", "drop"}
+	result := ProbeRoute(context.Background(), testConfig(), "smart.test", "geo", service, config.Route{
+		Type: "smart_dns", Tag: "smart", DNSServer: dnsAddr, ConnectToResolvedIP: true,
+	})
+	if result.ApplicationStatus != "OK" || !result.ServiceOK || result.Status != "UNVERIFIED" {
+		t.Fatalf("verified Smart DNS content was rejected as proxy egress failure: %+v", result)
+	}
+	if result.EgressReason != "" || result.ExternalCountry != "" {
+		t.Fatalf("Smart DNS GEO probe unexpectedly required external-IP consensus: %+v", result)
+	}
+}
+
 func TestSmartDNSRejectsPrivateAnswerOutsideTestMode(t *testing.T) {
 	dnsAddr, closeDNS := startTestDNSServer(t, net.ParseIP("127.0.0.1"))
 	defer closeDNS()

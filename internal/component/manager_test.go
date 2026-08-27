@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -295,6 +296,22 @@ func TestManagerDownloadDoesNotExposeTransportErrors(t *testing.T) {
 	_, err := manager.Execute(context.Background(), Request{Kind: KindXray, Action: ActionInstall})
 	if err == nil || err.Error() != "component download failed" {
 		t.Fatalf("transport error leaked or was lost: %v", err)
+	}
+}
+
+func TestStatusIncludesImmutablePinnedAssetURL(t *testing.T) {
+	release := Release{Kind: KindZapret, Version: "v72.13", Source: "https://github.com/bol-van/zapret", Assets: []Asset{
+		{Architecture: "arm64", URL: "https://github.com/bol-van/zapret/releases/download/v72.13/zapret.tar.gz", SHA256: strings.Repeat("a", 64), BinarySHA256: strings.Repeat("b", 64)},
+	}}
+	status := statusFromRecord(Record{Kind: KindZapret, Installed: true, Version: "72.13", Architecture: "arm64"}, release, Health{})
+	if status.PinnedAssetURL != release.Assets[0].URL {
+		t.Fatalf("pinned asset URL = %q, want %q", status.PinnedAssetURL, release.Assets[0].URL)
+	}
+	if status.Checksum != "sha256:"+strings.Repeat("a", 64) {
+		t.Fatalf("detected release checksum = %q, want catalog digest", status.Checksum)
+	}
+	if status.BinaryChecksum != "sha256:"+strings.Repeat("b", 64) {
+		t.Fatalf("detected binary checksum = %q, want executable digest", status.BinaryChecksum)
 	}
 }
 

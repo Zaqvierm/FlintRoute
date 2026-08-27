@@ -238,7 +238,7 @@ func servicesForZapretTest(active *config.Config, domain string) (map[string]con
 		owner = "zapret-setup-" + hex.EncodeToString(sum[:6])
 		services[owner] = config.Service{
 			Category: "TSPU_RESTRICTED", Domains: []string{domain},
-			AllowedPaths: []string{"zapret", "direct", "drop"}, SelectedRouteTag: "zapret",
+			AllowedPaths: []string{"zapret", "smart_dns", "vless", "drop"}, SelectedRouteTag: "zapret",
 			ProbeURLs: []config.ProbeCheck{{Name: "managed-zapret", URL: "https://" + domain + "/", Required: true, ExpectedCodes: []int{200, 204, 301, 302, 307, 308, 401, 403}, BodyMode: "optional"}},
 		}
 		return services, nil
@@ -246,7 +246,10 @@ func servicesForZapretTest(active *config.Config, domain string) (map[string]con
 	service := services[owner]
 	allowed := []string{"zapret"}
 	for _, path := range service.AllowedPaths {
-		if path != "zapret" {
+		// A Zapret setup probe is a TSPU-restricted decision.  Keeping a
+		// pre-existing Direct fallback here would allow a failed interception
+		// check to be presented as a safe production route.
+		if path != "zapret" && path != "direct" {
 			allowed = append(allowed, path)
 		}
 	}

@@ -205,7 +205,7 @@ func TestAutomaticDomainCommitRespectsRecoveryFence(t *testing.T) {
 			}
 			result := srv.commitAutomaticDomain(nil, planner.DomainCheck{
 				Domain: "blocked.example", Category: "GEO_LOCKED", Confidence: 1,
-				Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true},
+				Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true},
 			})
 			if result.Reason == "" {
 				t.Fatalf("status %q returned an empty blocked reason: %+v", status, result)
@@ -217,7 +217,7 @@ func TestAutomaticDomainCommitRespectsRecoveryFence(t *testing.T) {
 	}
 }
 
-func TestAutomaticDomainCommitNeverRunsFullApplyWhileRouteOnlyIsUnavailable(t *testing.T) {
+func TestAutomaticDomainCommitUsesRouteOnlyWithoutFullApply(t *testing.T) {
 	fake := newFakeAdapter()
 	srv, ts, _, _, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
 	defer ts.Close()
@@ -225,16 +225,16 @@ func TestAutomaticDomainCommitNeverRunsFullApplyWhileRouteOnlyIsUnavailable(t *t
 
 	result := srv.commitAutomaticDomain(context.Background(), planner.DomainCheck{
 		Domain: "verified.example", ETLDPlusOne: "verified.example", Category: "GEO_LOCKED", Confidence: 1,
-		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true},
+		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true},
 	})
-	if result.Applied || result.RolledBack || result.Reason != "automatic_route_assignment_unavailable" {
-		t.Fatalf("automatic discovery unexpectedly mutated or returned the wrong state: %+v", result)
+	if !result.Applied || result.RolledBack {
+		t.Fatalf("automatic route-only assignment did not commit: %+v", result)
 	}
 	if calls := fakeAdapterCallCount(fake); calls != 0 {
 		t.Fatalf("automatic discovery invoked the adapter despite route-only being unavailable: %d calls", calls)
 	}
-	if service := srv.currentConfig().ServiceForDomain("verified.example"); service != "" {
-		t.Fatalf("automatic discovery persisted a service without route-only support: %q", service)
+	if _, ok, err := srv.domainDecisions.Lookup("verified.example", srv.activeRevision, time.Now().UTC()); err != nil || !ok {
+		t.Fatalf("automatic discovery did not persist a revision-bound route decision: ok=%v err=%v", ok, err)
 	}
 }
 

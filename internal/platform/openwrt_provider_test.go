@@ -89,6 +89,9 @@ func TestOpenWrtProviderCollectsLiveFactsWithoutExposingWANIP(t *testing.T) {
 	if overview["data_plane"] != "UNVERIFIED" || overview["simulation"] != false {
 		t.Fatalf("provider claimed unproved data plane: %#v", overview)
 	}
+	if overview["data_plane_reason_code"] != "managed_route_not_applied_or_verified" || overview["data_plane_reason"] == "" {
+		t.Fatalf("unverified data plane did not explain the missing proof: %#v", overview)
+	}
 	if overview["wan_speed_mbps"] != int64(2500) {
 		t.Fatalf("WAN speed was not parsed: %#v", overview["wan_speed_mbps"])
 	}

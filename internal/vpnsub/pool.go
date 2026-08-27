@@ -17,15 +17,20 @@ import (
 )
 
 type SubscriptionSource struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	ProviderID   string `json:"provider_id"`
-	ProviderName string `json:"provider_name"`
-	AddedAt      string `json:"added_at,omitempty"`
-	ExpiresAt    string `json:"expires_at,omitempty"`
-	ExpiryKnown  bool   `json:"expiry_known"`
-	ServerCount  int    `json:"server_count"`
-	Manual       bool   `json:"manual,omitempty"`
+	ID                   string `json:"id"`
+	Name                 string `json:"name"`
+	ProviderID           string `json:"provider_id"`
+	ProviderName         string `json:"provider_name"`
+	AddedAt              string `json:"added_at,omitempty"`
+	ExpiresAt            string `json:"expires_at,omitempty"`
+	ExpiryKnown          bool   `json:"expiry_known"`
+	ServerCount          int    `json:"server_count"`
+	Manual               bool   `json:"manual,omitempty"`
+	OriginalSourceMasked string `json:"original_source_masked,omitempty"`
+	ResolvedSourceMasked string `json:"resolved_source_masked,omitempty"`
+	SourceType           string `json:"source_type,omitempty"`
+	CryptoVersion        string `json:"crypto_version,omitempty"`
+	ResolutionStatus     string `json:"resolution_status,omitempty"`
 }
 
 type ProviderMatch struct {
@@ -223,7 +228,13 @@ func analyzeSubscriptionSources(urls []string, paths []string, fetched []FetchSu
 				}
 			}
 		}
-		parsed, _ := url.Parse(urls[index])
+		originSource := urls[index]
+		if fetched[index].ResolvedSource != "" {
+			// Provider identity is derived from the resolved URL in memory. The
+			// credential-bearing value is never exposed in the pool snapshot.
+			originSource = fetched[index].ResolvedSource
+		}
+		parsed, _ := url.Parse(originSource)
 		origin := strings.ToLower(parsed.Scheme + "://" + parsed.Host)
 		providerName := fetched[index].ProviderName
 		if providerName == "" {
@@ -234,6 +245,10 @@ func analyzeSubscriptionSources(urls []string, paths []string, fetched []FetchSu
 			ProviderID: "provider_" + shortHash(origin), ProviderName: providerName,
 			AddedAt: now.UTC().Format(time.RFC3339), ExpiresAt: fetched[index].ExpiresAt,
 			ExpiryKnown: fetched[index].ExpiresAt != "", ServerCount: len(set),
+			OriginalSourceMasked: fetched[index].OriginalSourceMasked,
+			ResolvedSourceMasked: fetched[index].ResolvedSourceMasked,
+			SourceType:           fetched[index].SourceType, CryptoVersion: fetched[index].CryptoVersion,
+			ResolutionStatus: "resolved",
 		}
 		sources = append(sources, source)
 		serverSets = append(serverSets, set)

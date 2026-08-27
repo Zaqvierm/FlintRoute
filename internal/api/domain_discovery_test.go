@@ -21,7 +21,7 @@ func TestAutomaticServiceUsesVerifiedTSPUFallbackOrder(t *testing.T) {
 	if !ok || id != "auto_video_example" || service.Category != "TSPU_RESTRICTED" || service.SelectedRouteTag != "zapret" {
 		t.Fatalf("automatic TSPU service mismatch: id=%q service=%+v ok=%v", id, service, ok)
 	}
-	expected := []string{"zapret", "vless", "drop"}
+	expected := []string{"zapret", "smart_dns", "vless", "drop"}
 	if len(service.AllowedPaths) != len(expected) {
 		t.Fatalf("fallback count=%d", len(service.AllowedPaths))
 	}
@@ -54,6 +54,29 @@ func TestAutomaticServiceDoesNotPersistDirectOrDrop(t *testing.T) {
 		}
 		if _, _, ok := automaticServiceForDecision(check); ok {
 			t.Fatalf("%s decision should stay runtime-only", routeType)
+		}
+	}
+}
+
+func TestAutomaticServiceAllowsVerifiedUnknownRouteAssignment(t *testing.T) {
+	check := planner.DomainCheck{
+		Domain: "new.example", ETLDPlusOne: "new.example", Category: "DIRECT_PREFERRED",
+		Selected: &probe.RouteResult{Route: "smart-primary", RouteType: "smart_dns"},
+	}
+	service, _, ok := automaticServiceForDecision(check)
+	if !ok || service.Category != "DIRECT_PREFERRED" || len(service.AllowedPaths) != 5 {
+		t.Fatalf("unknown route assignment was not represented as a bounded direct-preferred policy: %+v ok=%v", service, ok)
+	}
+	for _, path := range []string{"direct", "zapret", "smart_dns", "vless", "drop"} {
+		found := false
+		for _, allowed := range service.AllowedPaths {
+			if allowed == path {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("unknown route assignment omitted allowed path %q: %v", path, service.AllowedPaths)
 		}
 	}
 }
@@ -131,7 +154,7 @@ func TestTSPUDefaultFallbackIsZapretThenVLESSThenDrop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"zapret", "vless", "drop"}
+	want := []string{"zapret", "smart_dns", "vless", "drop"}
 	if !reflect.DeepEqual(service.AllowedPaths, want) {
 		t.Fatalf("TSPU fallback=%v, want %v", service.AllowedPaths, want)
 	}
@@ -145,7 +168,7 @@ func TestManualServiceRuleStoresOnlyVerifiedSelectedRoute(t *testing.T) {
 		if domain != "discord.com" || serviceID != "user_discord_com" {
 			t.Fatalf("unexpected verification target: %s %s", domain, serviceID)
 		}
-		if got := candidate.Services[serviceID].AllowedPaths; len(got) != 3 || got[0] != "zapret" || got[1] != "vless" || got[2] != "drop" {
+		if got := candidate.Services[serviceID].AllowedPaths; len(got) != 4 || got[0] != "zapret" || got[1] != "smart_dns" || got[2] != "vless" || got[3] != "drop" {
 			t.Fatalf("candidate lost fallback order: %v", got)
 		}
 		if opts.TSPUResult.Status != "MATCH" {
@@ -158,7 +181,7 @@ func TestManualServiceRuleStoresOnlyVerifiedSelectedRoute(t *testing.T) {
 	}
 	service := config.Service{
 		Category: "TSPU_RESTRICTED", Domains: []string{"discord.com"},
-		AllowedPaths: []string{"zapret", "vless", "drop"},
+		AllowedPaths: []string{"zapret", "smart_dns", "vless", "drop"},
 		ProbeURLs:    []config.ProbeCheck{{URL: "https://discord.com/", Required: true}},
 	}
 	check, err := srv.selectVerifiedServiceRoute(context.Background(), "user_discord_com", service)
@@ -228,7 +251,7 @@ func TestObservationClassificationDoesNotExposeResolvedDirectAsUnknown(t *testin
 }
 
 func TestRouteTypeInOrderRejectsStaleDirectForTSPU(t *testing.T) {
-	order := []string{"zapret", "vless", "drop"}
+	order := []string{"zapret", "smart_dns", "vless", "drop"}
 	if routeTypeInOrder(order, "direct") || !routeTypeInOrder(order, "vless") {
 		t.Fatalf("route order membership is wrong for TSPU: %v", order)
 	}

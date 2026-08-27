@@ -16,6 +16,11 @@ import (
 
 const MaxObservationLogBytes int64 = 1 << 20
 
+// maxObservationLineBytes prevents one corrupt/hostile log line from growing
+// the reader buffer without bound. Oversized lines are drained and discarded
+// once their terminating newline is seen.
+const maxObservationLineBytes = 128 << 10
+
 type Observation struct {
 	Domain    string `json:"domain"`
 	QueryType string `json:"query_type"`
@@ -31,6 +36,9 @@ type Watcher struct {
 	// bounded replay can leave it false.
 	StartAtEnd bool
 	Emit       func(context.Context, Observation)
+	// Progress is called after each bounded pass with the durable cursor and
+	// number of emitted records. It is intentionally observational only.
+	Progress func(cursor int64, emitted uint64)
 }
 
 func ParseDNSMasqLine(line string) (Observation, bool) {
@@ -113,7 +121,8 @@ func (w Watcher) readFromWithIdentity(ctx context.Context, offset, maxBytes int6
 		return offset, false, previousIdentity, errors.New("DNS observation log is not a regular file")
 	}
 	identity := observationFileIdentity(info)
-	if (identity != "" && previousIdentity != "" && identity != previousIdentity) || info.Size() < offset {
+	reset := (identity != "" && previousIdentity != "" && identity != previousIdentity) || info.Size() < offset
+	if reset {
 		offset = 0
 	}
 	file, err := os.Open(w.Path)
@@ -130,30 +139,95 @@ func (w Watcher) readFromWithIdentity(ctx context.Context, offset, maxBytes int6
 		_ = file.Close()
 		return offset, false, identity, err
 	}
-	scanner := bufio.NewScanner(io.LimitReader(file, maxBytes+1))
-	scanner.Buffer(make([]byte, 4096), 128<<10)
-	for scanner.Scan() {
-		if observation, ok := ParseDNSMasqLine(scanner.Text()); ok {
-			w.Emit(ctx, observation)
+	if maxBytes <= 0 {
+		maxBytes = MaxObservationLogBytes
+	}
+	// Cap normal work at maxBytes. A pathological line can be larger than one
+	// bounded pass, so once it is known to be oversized we replace this limited
+	// reader with a direct fixed-size reader and drain only that line to its
+	// newline. This keeps memory bounded while allowing the cursor to advance
+	// only after a complete record.
+	limited := &io.LimitedReader{R: file, N: maxBytes}
+	reader := bufio.NewReaderSize(limited, 64<<10)
+	var consumed int64
+	var emitted uint64
+	var lineBytes int64
+	var line []byte
+	overlong := false
+	for consumed < maxBytes || overlong {
+		fragment, readErr := reader.ReadSlice('\n')
+		consumed += int64(len(fragment))
+		lineBytes += int64(len(fragment))
+		if len(line)+len(fragment) <= maxObservationLineBytes {
+			line = append(line, fragment...)
+		} else {
+			overlong = true
+		}
+		complete := len(fragment) > 0 && fragment[len(fragment)-1] == '\n'
+		if complete {
+			if !overlong {
+				if observation, ok := ParseDNSMasqLine(strings.TrimSuffix(string(line), "\n")); ok {
+					w.Emit(ctx, observation)
+					emitted++
+				}
+			}
+			line = line[:0]
+			lineBytes = 0
+			overlong = false
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				if overlong && !complete && consumed >= maxBytes {
+					// The pass budget ended in the middle of an oversized line.
+					// Continue from the same file position without retaining the
+					// line in memory; the next ReadSlice will find its newline.
+					reader = bufio.NewReaderSize(file, 64<<10)
+					continue
+				}
+				break
+			}
+			if errors.Is(readErr, bufio.ErrBufferFull) {
+				if consumed >= maxBytes {
+					if overlong {
+						reader = bufio.NewReaderSize(file, 64<<10)
+						continue
+					}
+					break
+				}
+				continue
+			}
+			_ = file.Close()
+			return offset, reset, identity, readErr
+		}
+		if !complete {
+			if overlong && consumed >= maxBytes {
+				// Keep draining an oversized record beyond the normal pass budget;
+				// otherwise its newline can never be observed and the cursor would
+				// remain pinned at the same offset on every poll.
+				continue
+			}
+			// EOF or the bounded pass ended in the middle of a line. Do not
+			// advance the durable cursor: the next pass will reread this
+			// partial line together with its continuation.
+			break
 		}
 	}
-	position, seekErr := file.Seek(0, io.SeekCurrent)
 	closeErr := file.Close()
-	if err := scanner.Err(); err != nil {
-		return offset, false, identity, err
-	}
-	if seekErr != nil {
-		return offset, false, identity, seekErr
-	}
 	if closeErr != nil {
-		return offset, false, identity, closeErr
+		return offset, reset, identity, closeErr
 	}
-	// The reader is not allowed to truncate a file owned by dnsmasq.  Rotation
-	// or truncation is detected on the next pass by size/boundary checks; an
-	// external writer remains the sole owner of its inode.  Keep the cursor at
-	// the bytes actually consumed so an oversized log is drained in bounded
-	// chunks without replaying or destroying the writer's data.
-	return position, false, identity, nil
+	// Only complete newline-terminated records advance the cursor. If the
+	// bounded pass ended inside a line, consumed includes that partial fragment
+	// but it must not be persisted or the next pass would either duplicate or
+	// skip data. A complete record is allowed to end exactly at maxBytes.
+	position := offset + consumed
+	if lineBytes > 0 {
+		position -= lineBytes
+	}
+	if w.Progress != nil {
+		w.Progress(position, emitted)
+	}
+	return position, reset, identity, nil
 }
 
 // observationFileIdentity returns the stable device/inode pair on Unix-like

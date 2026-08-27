@@ -425,12 +425,12 @@ func orderForService(category, tspuStatus, stalePolicy string) []string {
 	case "TELEGRAM":
 		return []string{"external_socks", "vless", "drop"}
 	case "TSPU_RESTRICTED":
-		return []string{"zapret", "vless", "drop"}
+		return []string{"zapret", "smart_dns", "vless", "drop"}
 	case "BLOCKED":
 		return []string{"drop"}
 	case "DIRECT_PREFERRED", "":
 		if tspuStatus == "MATCH" || tspuStatus == "STALE_MATCH" && stalePolicy == "zapret_first" {
-			return []string{"zapret", "vless", "drop"}
+			return []string{"zapret", "smart_dns", "vless", "drop"}
 		}
 		if tspuStatus == "STALE_MATCH" && stalePolicy == "fail_closed" {
 			return []string{"drop"}

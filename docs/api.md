@@ -19,9 +19,11 @@ state-changing операция идёт через API и ChangeSet.
 
 ## Аутентификация
 
-- Default listener `127.0.0.1:8787`. Non-loopback bind требует
-  `ROUTER_POLICY_ALLOW_FIREWALLED_BIND=1`; на OpenWrt его включает только
-  `/etc/router-policy/config/listener.conf` с `allow_firewalled_bind=1`.
+- Default listener `127.0.0.1:8787`. Для доступа из LAN можно явно указать
+  адрес самого LAN-интерфейса, например `192.168.0.1:8787`, и установить
+  `allow_firewalled_bind=1` в `/etc/router-policy/config/listener.conf`.
+  Init-скрипт включает узкий `ROUTER_POLICY_ALLOW_LAN_BIND`; бинарник принимает
+  только private unicast-адреса (не wildcard, loopback или link-local).
 - Нет default admin password. Первый admin — через one-time setup token.
 - Пароли — Argon2id hashes, bounded params, concurrency-limited.
 - User/setup файлы — atomic (temp + fsync + rename).
@@ -32,8 +34,9 @@ state-changing операция идёт через API и ChangeSet.
   temp-файлов создаются только через проверенный `crypto/rand`; ошибка entropy
   source останавливает операцию.
 - Security audit различает loopback, wildcard и non-loopback listeners.
-  Opt-in разрешает bind, но не создаёт firewall rule: доступ обязан быть
-  ограничен management subnet отдельным правилом firewall4.
+  LAN opt-in не создаёт firewall rule: адрес должен быть точным адресом LAN, а
+  входящий TCP/8787 всё равно обязан быть ограничен trusted management subnet
+  правилами firewall4. Значение по умолчанию остаётся loopback-only.
 
 ## Конечные точки
 

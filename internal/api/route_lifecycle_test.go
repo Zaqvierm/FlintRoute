@@ -61,12 +61,17 @@ func TestReactiveFailureIsHystereticAndBounded(t *testing.T) {
 	}
 	var sawFallback bool
 	for _, event := range srv.broker.Recent(0, 40) {
-		if event.ReasonCode == "route_failover_applied" || event.ReasonCode == "route_failover_apply_failed" {
+		if event.ReasonCode == "route_failover_pending_review" {
 			sawFallback = true
 		}
 	}
 	if !sawFallback {
-		t.Fatal("thresholded failure did not produce a failover outcome")
+		t.Fatal("thresholded failure did not produce a reviewable fallback outcome")
+	}
+	if fake, ok := srv.adapter.(*fakeAdapter); ok {
+		if calls := fakeAdapterCallCount(fake); calls != 0 {
+			t.Fatalf("reactive fallback invoked full adapter apply: %d calls", calls)
+		}
 	}
 }
 
