@@ -119,8 +119,16 @@ deactivate_committed_dataplane() {
   binding="$STATE_DIR/last-good/active-transaction.env"
   [ -f "$binding" ] || binding="$STATE_DIR/last-good/transaction.env"
   [ -f "$binding" ] || {
+    # Absence of last-good is not proof that no dataplane was ever committed.
+    # A crash can leave transaction journals while the binding write is still
+    # missing.  Never claim a safe empty state in that case: without the
+    # journal's exact IP plan there is no ownership proof for cleanup.
+    if [ -d "$STATE_DIR/transactions" ] && [ -n "$(ls -A "$STATE_DIR/transactions" 2>/dev/null)" ]; then
+      echo "uninstall blocked: committed transaction binding is missing while transaction journals remain" >&2
+      return 1
+    fi
     restore_flow_offloading_baseline
-    echo "dataplane_deactivation=skipped-no-last-good"
+    echo "dataplane_deactivation=verified-empty"
     return 0
   }
   transaction_id="$(sed -n 's/^transaction_id=//p' "$binding" | head -n 1)"

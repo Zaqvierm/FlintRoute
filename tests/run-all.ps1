@@ -106,6 +106,12 @@ if (Test-Path $gitSh) {
   throw "Git sh is required for installer backup behavior test"
 }
 
+Write-Host "== installer disk preflight =="
+& $gitSh tests/installer-disk-preflight.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "installer disk preflight test failed"
+}
+
 Write-Host "== OpenWrt package =="
 & $gitSh tests/package-openwrt.sh
 if ($LASTEXITCODE -ne 0) {

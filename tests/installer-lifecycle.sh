@@ -702,8 +702,29 @@ env \
   RESULT_PATH="$UNINSTALL_NO_LAST_GOOD_ROOT/result.txt" \
   sh "$UNINSTALL_DEACTIVATE_HELPER"
 grep -Fx 'flow_offloading_restore=persistent-baseline-restored' "$UNINSTALL_NO_LAST_GOOD_ROOT/result.txt" >/dev/null
-grep -Fx 'dataplane_deactivation=skipped-no-last-good' "$UNINSTALL_NO_LAST_GOOD_ROOT/result.txt" >/dev/null
+grep -Fx 'dataplane_deactivation=verified-empty' "$UNINSTALL_NO_LAST_GOOD_ROOT/result.txt" >/dev/null
 grep -Fx 'commit firewall' "$UNINSTALL_UCI_LOG" >/dev/null
+
+UNINSTALL_MISSING_BINDING_ROOT="$TMP/uninstall-missing-binding"
+mkdir -p "$UNINSTALL_MISSING_BINDING_ROOT/etc/router-policy/state/transactions/rev_orphan"
+: >"$UNINSTALL_MISSING_BINDING_ROOT/etc/router-policy/state/transactions/rev_orphan/status.env"
+set +e
+env \
+  ROUTER_POLICY_UNINSTALL_LIB_ONLY=1 \
+  SYSTEM_ROOT="$UNINSTALL_MISSING_BINDING_ROOT" \
+  ETC_DIR="$UNINSTALL_MISSING_BINDING_ROOT/etc/router-policy" \
+  STATE_DIR="$UNINSTALL_MISSING_BINDING_ROOT/etc/router-policy/state" \
+  RUNTIME_DIR="$UNINSTALL_MISSING_BINDING_ROOT/tmp/router-policy" \
+  BIN_DIR="$UNINSTALL_DEACTIVATE_ROOT/bin" \
+  UCI_BIN="$UNINSTALL_DEACTIVATE_ROOT/bin/uci" \
+  PROJECT_ROOT="$PROJECT_ROOT" \
+  RESULT_PATH="$UNINSTALL_MISSING_BINDING_ROOT/result.txt" \
+  sh "$UNINSTALL_DEACTIVATE_HELPER" >"$UNINSTALL_MISSING_BINDING_ROOT/stdout.txt" 2>"$UNINSTALL_MISSING_BINDING_ROOT/stderr.txt"
+missing_binding_status=$?
+set -e
+[ "$missing_binding_status" -ne 0 ]
+grep -F 'committed transaction binding is missing while transaction journals remain' \
+  "$UNINSTALL_MISSING_BINDING_ROOT/stderr.txt" >/dev/null
 
 UNINSTALL_DNS_READY_ROOT="$TMP/uninstall-dns-ready"
 mkdir -p "$UNINSTALL_DNS_READY_ROOT/bin"
