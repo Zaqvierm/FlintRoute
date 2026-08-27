@@ -43,6 +43,31 @@ if [ -f "$STATE_DIR/last-backup-path" ]; then
 fi
 echo "installer_invalid_backup_blocked=true"
 
+# Export backups must not carry modes for synthetic staging parents.  Archive
+# a nested source with the installer's 077 umask and assert that only the
+# allowlisted file is present, never `source/` or other directory members.
+mkdir -p "$TMP/source/nested"
+printf 'nested-fixture\n' > "$TMP/source/nested/file"
+BACKUP_DIR="$TMP/valid-backup"
+BACKUP_ROOT="$TMP"
+BACKUP_SOURCES="$TMP/source"
+STATE_DIR="$TMP/state-valid"
+TAR_BIN=tar
+mkdir -p "$STATE_DIR"
+export BACKUP_ROOT BACKUP_DIR BACKUP_SOURCES STATE_DIR TAR_BIN
+backup >/dev/null
+archive_members=$(tar -tf "$BACKUP_DIR/config.tar")
+expected_member="${TMP#/}/source/nested/file"
+printf '%s\n' "$archive_members" | grep -Fx "$expected_member" >/dev/null || {
+  echo "valid backup omitted allowlisted file" >&2
+  exit 1
+}
+if printf '%s\n' "$archive_members" | grep -Eq '/$|^(source|source/nested)/$'; then
+  echo "valid backup carried synthetic directory metadata" >&2
+  exit 1
+fi
+echo "installer_backup_excludes_synthetic_directories=true"
+
 SYSTEM_ROOT="$TMP/uninstall-root"
 mkdir -p "$SYSTEM_ROOT/etc/router-policy" "$SYSTEM_ROOT/usr/bin"
 printf 'config\n' > "$SYSTEM_ROOT/etc/router-policy/default.json"

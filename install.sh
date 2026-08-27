@@ -529,10 +529,12 @@ backup() {
   done
   [ "$backup_items" -gt 0 ] || { echo "backup has no source files" >&2; return 1; }
   # Do not store the synthetic staging root or its umask-derived parents.
-  # This archive is an export backup, but keeping only allowlisted descendants
+  # This archive is an export backup, but keeping only non-directory members
   # makes accidental future restore code unable to replay /etc or /usr modes.
+  # Parent directories are created by the restoring filesystem with its own
+  # permissions; directory metadata from a 077 staging umask is never carried.
   file_list="$BACKUP_DIR/files.list"
-  (cd "$staging" && find . -mindepth 1 -print | sed 's#^\./##' > "$file_list") || {
+  (cd "$staging" && find . -mindepth 1 ! -type d -print | sed 's#^\./##' > "$file_list") || {
     rm -f "$file_list"
     return 1
   }
