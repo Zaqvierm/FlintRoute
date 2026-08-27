@@ -5,7 +5,7 @@
 
 ## Область проверки
 
-- Текущий проверяемый HEAD: `4e9d45f`.
+- Текущий проверяемый code HEAD: `309dda871b08bf853df4e2fe9c279965ac62048c`.
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -33,12 +33,12 @@
 | Область | Результат | Доказательство |
 |---|---|---|
 | Go unit/integration, race, vet, форматирование | PASS (локально на текущем HEAD, 2026-08-28) | `go test ./...`, `go test -race ./...`, `go vet ./...`, `gofmt` |
-| Frontend unit/typecheck/build | PASS | 44 Vitest-теста, `npm run typecheck`, `npm run build` |
+| Frontend unit/typecheck/build | PASS | 47 Vitest-тестов, `npm run typecheck`, `npm run build` |
 | Browser/responsive UI | PASS | CI run [32615235578](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235578) |
 | Linux nft transition | STALE FOR CURRENT SHA | CI run [32615235570](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235570) |
 | Linux Zapret process-group и Quick contract | STALE FOR CURRENT SHA | CI run [32615235591](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235591) |
 | Linux-only harness на Windows | NOT RUN LOCALLY | namespace/procfs/mode требуют Linux |
-| Root-helper privilege split | PASS (service contract; runtime proof pending) | production init запускает controller как `daemon`, root startup и отсутствие helper socket отвергаются; typed helper покрывает global/transaction paths |
+| Root-helper privilege split | PASS (service contract; runtime proof pending) | production init запускает controller как `daemon`, root startup и отсутствие helper socket отвергаются; typed helper покрывает global/transaction paths и ограничивает concurrent connections |
 | Route-only assignment dataplane | PARTIAL | revision-bound decision cache и post-probe есть; nft/dnsmasq runtime consumer не доказан |
 | Flint 2 hardware | NOT RUN / STALE | hardware не трогалось |
 
@@ -60,6 +60,7 @@
 | Канонические ownership paths | `tests/installer-lifecycle.sh`, `tests/installer-backup.sh` | PASS | mock |
 | Boot guard | `tests/boot-guard-policy.sh`, `tests/boot-guard-service.sh` | PASS | mock |
 | Typed helper boundary | `tests/helper-service.sh`, `go test ./internal/helper` | PASS | local/mock |
+| Helper connection budget | `TestServeUnixBoundsConcurrentHelperWork` | PASS (Linux-only test; Windows skips) | local/Linux semantics |
 | Чужой helper socket не удаляется | `TestServeUnixDoesNotRemoveForeignSocketPathObject` | PASS | local/mock |
 | Typed recovery reconcile | `go test ./internal/adapter ./internal/helper` | PASS | local; controller status PARTIAL |
 | Atomic nft transition | `tests/nft-transition-namespace.sh` | PASS | Linux CI |
@@ -74,7 +75,7 @@
 | Latency/duration разделены | probe/API separation tests | PASS | local |
 | Неизвестная latency не считается нулём | `TestSelectBestDoesNotTreatUnknownLatencyAsZero` | PASS | local |
 | ShellCheck | `.tools/shellcheck-v0.11.0/shellcheck.exe -x <tracked shell>` | PASS | local |
-| Полный локальный runner | `tests/run-all.ps1` | PASS, `all_tests_ok=true`, 303.3 s | Windows; Linux части NOT RUN LOCALLY |
+| Полный локальный runner | `tests/run-all.ps1` | PASS, `all_tests_ok=true`; включает 47 Vitest и 26 Playwright tests | Windows; Linux части NOT RUN LOCALLY |
 | `git diff --check` | `git diff --check` | PASS | local |
 
 ### Installer health parser boundary
@@ -170,8 +171,10 @@ UI не выдумывает это число.
 - Полное отсутствие split-brain не заявляется до reboot/fault matrix и hardware
   evidence; текущая гарантия — fencing подтверждённых ambiguous states.
 - Production controller запускается от dedicated `daemon` account и требует
-  fixed helper socket; root/без-helper запуск отвергается. Runtime Linux/OpenWrt
-  и hardware proof ещё не выполнены. LAN exposure остаётся явным opt-in.
+  fixed helper socket; root/без-helper запуск отвергается. Helper принимает
+  ограниченное число concurrent connections и закрывает новые соединения при
+  насыщении. Runtime Linux/OpenWrt и hardware proof ещё не выполнены. LAN
+  exposure остаётся явным opt-in.
 - Automatic route-only assignment разрешён только в явном
   `auto_apply_verified` режиме и только для уже enabled route с доказанным
   `PathVerified`; topology/component apply из discovery запрещён.
