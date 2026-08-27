@@ -512,6 +512,7 @@ func (s GitHubReleaseSource) Latest(ctx context.Context, release Release) (strin
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
+	defer client.CloseIdleConnections()
 	response, err := client.Do(request)
 	if err != nil {
 		return "", errors.New("upstream release metadata is unavailable")

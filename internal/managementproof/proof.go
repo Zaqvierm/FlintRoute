@@ -782,6 +782,7 @@ func probeAdminHTTP(ctx context.Context, rawURL string) bool {
 		Timeout:       time.Second,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 	}
+	defer client.CloseIdleConnections()
 	response, err := client.Do(request)
 	if err != nil {
 		return false

@@ -1480,6 +1480,7 @@ func runWatchdog(healthURL string, interval, startupGrace time.Duration, failure
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	client := &http.Client{Timeout: min(interval/2, 5*time.Second)}
+	defer client.CloseIdleConnections()
 	controller := watchdog.Controller{StartedAt: time.Now().UTC(), StartupGrace: startupGrace, FailureThreshold: failureThreshold}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
