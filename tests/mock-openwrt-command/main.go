@@ -48,6 +48,9 @@ func main() {
 	if name == "xray-init" || name == "zapret-init" {
 		os.Exit(handleService(name, args))
 	}
+	if name == "wget" && strings.Contains(strings.Join(args, " "), "127.0.0.1:8787") && os.Getenv("MOCK_LOOPBACK_API_HEALTH") == "0" {
+		os.Exit(1)
+	}
 	if name == "nft" {
 		os.Exit(handleNFT(args))
 	}

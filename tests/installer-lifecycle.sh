@@ -1,4 +1,7 @@
 #!/bin/sh
+# These globals are intentionally assigned for functions loaded from
+# install.sh; static analysis cannot see their cross-file consumers.
+# shellcheck disable=SC2034
 set -eu
 
 ROOT=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd)
@@ -199,6 +202,14 @@ ROUTER_POLICY_HEALTH_ATTEMPTS=3
 export HEALTH_COUNTER PATH ROUTER_POLICY_INSTALL_LIB_ONLY RUNTIME_DIR ROUTER_POLICY_HEALTH_ATTEMPTS
 # shellcheck source=install.sh
 . "$ROOT/install.sh"
+
+# Installer health must follow the explicitly configured local management
+# listener instead of assuming loopback.  A synthetic SYSTEM_ROOT has no real
+# network namespace, so the resolver accepts its fixture address; production
+# OpenWrt additionally proves the address is assigned by `ip -4 addr`.
+printf 'listen_address=192.0.2.1:8787\nallow_firewalled_bind=1\n' > "$SYSTEM_ROOT/etc/router-policy/config/listener.conf"
+[ "$(resolve_control_health_url)" = "http://192.0.2.1:8787/api/v1/health" ]
+printf 'listen_address=127.0.0.1:8787\nallow_firewalled_bind=0\n' > "$SYSTEM_ROOT/etc/router-policy/config/listener.conf"
 wait_control_health >/dev/null
 [ "$(cat "$HEALTH_COUNTER")" = "3" ]
 

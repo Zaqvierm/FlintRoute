@@ -9,7 +9,11 @@ mkdir -p "$TMP/state" "$TMP/runtime" "$TMP/etc" "$TMP/xray"
 STATE_DIR="$TMP/state"
 RUNTIME_DIR="$TMP/runtime"
 ROUTER_POLICY_CONFIG_PATH="$TMP/etc/config.json"
-ROUTER_POLICY_BIN="$ROOT/dist/router-policy.exe"
+if [ -x "$ROOT/dist/router-policy" ]; then
+  ROUTER_POLICY_BIN="$ROOT/dist/router-policy"
+else
+  ROUTER_POLICY_BIN="$ROOT/dist/router-policy.exe"
+fi
 ROUTER_POLICY_ADAPTER_LIB_ONLY=1
 mock_uci() {
   if [ "${1:-}" = "-q" ] && [ "${2:-}" = "get" ]; then
@@ -21,10 +25,17 @@ mock_uci() {
   fi
   return 0
 }
+# The adapter library is sourced below and consumes this command name through
+# its own globals; ShellCheck cannot infer that cross-file read.
+# shellcheck disable=SC2034
 UCI_BIN=mock_uci
 export STATE_DIR RUNTIME_DIR ROUTER_POLICY_CONFIG_PATH ROUTER_POLICY_BIN ROUTER_POLICY_ADAPTER_LIB_ONLY
 # shellcheck source=openwrt/adapter.sh
 . "$ROOT/openwrt/adapter.sh"
+
+# Keep the transaction root explicit for the fixture as it is initialized by
+# the sourced adapter rather than assigned in this test file.
+txroot="$STATE_DIR/transactions"
 
 config="$TMP/etc/config.json"
 active_nft="$TMP/etc/router-policy.nft"

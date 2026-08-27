@@ -41,6 +41,16 @@ else
   GO="${GO:-$ROOT/.tools/go1.26.5/go/bin/go}"
   ROUTER_POLICY_BIN="${ROUTER_POLICY_BIN:-$ROOT/dist/router-policy}"
 fi
+# CI and clean clones may provide Go through PATH instead of the repository's
+# pinned tool cache.  Prefer the pinned tool when present, but never fail just
+# because that optional cache is absent.
+if [ ! -x "$GO" ]; then
+  GO=$(command -v go || true)
+fi
+[ -n "$GO" ] && [ -x "$GO" ] || {
+  echo "go toolchain not found (set GO or install Go)" >&2
+  exit 1
+}
 STATE_DIR="$TMP_NATIVE/state"
 RUNTIME_DIR="$TMP_NATIVE/runtime"
 ROUTER_POLICY_CONFIG_PATH="$TMP_NATIVE/etc/config.json"
@@ -95,12 +105,13 @@ MOCK_UCI_STATE="$TMP_NATIVE/uci-state.env"
 MOCK_IP_STATE="$TMP_NATIVE/ip-state.json"
 MOCK_SERVICE_STATE="$TMP_NATIVE/service-state"
 MOCK_MANAGEMENT_INTERFACE=br-lan
+MOCK_LOOPBACK_API_HEALTH=0
 ROUTER_POLICY_BOOT_ID_PATH="$TMP_NATIVE/boot-id"
 export STATE_DIR RUNTIME_DIR ROUTER_POLICY_CONFIG_PATH ROUTER_POLICY_BIN ROUTER_POLICY_ADAPTER_SELF
 export ACTIVE_NFT ACTIVE_DNSMASQ ACTIVE_XRAY ACTIVE_ZAPRET MOCK_OPENWRT_LOG MOCK_NFT_BOOT_GUARD_STATE
 export NFT_BIN FW4_BIN DNSMASQ_BIN DNSMASQ_INIT XRAY_BIN XRAY_INIT NFQWS_BIN ZAPRET_INIT IP_BIN UCI_BIN WGET_BIN NSLOOKUP_BIN PIDOF_BIN
 export ROUTER_POLICY_ALLOW_SIMULATED_DIAGNOSTICS ROUTER_POLICY_AUTO_COLLECT_EVIDENCE MOCK_UCI_STATE MOCK_IP_STATE MOCK_SERVICE_STATE
-export MOCK_MANAGEMENT_INTERFACE ROUTER_POLICY_BOOT_ID_PATH
+export MOCK_MANAGEMENT_INTERFACE MOCK_LOOPBACK_API_HEALTH ROUTER_POLICY_BOOT_ID_PATH
 
 printf '%s\n' \
   'firewall.@defaults[0].flow_offloading=1' \
@@ -249,7 +260,9 @@ assert_status applied
   echo "dnsmasq observation log was not prepared before restart" >&2
   exit 1
 }
-adapter verify-management "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
+management_verified=$(adapter verify-management "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision")
+printf '%s\n' "$management_verified" | grep -F 'loopback_api_health=false' >/dev/null
+printf '%s\n' "$management_verified" | grep -F 'loopback_api_required=false' >/dev/null
 assert_status management_verified
 adapter verify-data-plane "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 assert_status data_plane_verified
@@ -429,11 +442,18 @@ adapter snapshot-current "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/
 adapter apply-candidate "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 printf 'lan_management_path=true\nglinet_uhttpd_path=true\n' > "$STATE_DIR/diagnostics/management.env"
 rm -f "$RUNTIME_DIR/management-proofs/$revision-$txid.json"
-management_unverified=$(adapter verify-management "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision")
+set +e
+management_unverified=$(adapter verify-management "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" 2>&1)
+management_unverified_rc=$?
+set -e
+[ "$management_unverified_rc" -eq 4 ] || {
+  echo "missing management proof was not fail-closed: rc=$management_unverified_rc output=$management_unverified" >&2
+  exit 1
+}
 printf '%s\n' "$management_unverified" | grep -F 'lan_management_path=false' >/dev/null
 printf '%s\n' "$management_unverified" | grep -F 'proof_valid=false' >/dev/null
 printf '%s\n' "$management_unverified" | grep -F 'legacy_management_env_present=true' >/dev/null
-printf '%s\n' "$management_unverified" | grep -F 'verification_status=UNVERIFIED' >/dev/null
+printf '%s\n' "$management_unverified" | grep -F 'verification_status=ERROR' >/dev/null
 "$TMP/bin/management-proof-fixture$EXE" --state "$STATE_DIR" --runtime "$RUNTIME_DIR" --boot-id "$ROUTER_POLICY_BOOT_ID_PATH" --transaction "$txid" --revision "$revision"
 MOCK_MANAGEMENT_INTERFACE=guest
 set +e

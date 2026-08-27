@@ -59,6 +59,7 @@ jobs:
         uses: ludeeus/action-shellcheck@master
         with:
           scandir: './'
+          ignore_paths: node_modules
           severity: warning
 
       - name: Installer, adapter and recovery fixtures
@@ -80,7 +81,7 @@ jobs:
       - name: Zapret ownership and cleanup fixtures
         run: |
           sh tests/zapret-calibration-runtime.sh
-          sh tests/zapret-quick-contract.sh
+          sudo sh tests/zapret-quick-contract.sh
 
       - name: Linux namespace nft transition gate
         run: sudo sh tests/nft-transition-namespace.sh

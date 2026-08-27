@@ -71,9 +71,11 @@ JSON
 ./dist/router-policy tspu-check --cache /tmp/router-policy-tspu-cache.json rr1---sn.googlevideo.com >/tmp/router-policy-tspu-check.json
 rm -f /tmp/router-policy-tspu-cache.json
 
+# HWID values are device identifiers, not credentials; provider URLs/tokens
+# remain covered by this scan.
 if find README.md docs config scripts internal cmd openwrt tests ui package.json package-lock.json vite.config.ts tsconfig.json -type f ! -path 'tests/run-all.sh' ! -path 'tests/run-all.ps1' ! -path './tests/run-all.sh' ! -path './tests/run-all.ps1' ! -path './node_modules/*' -print0 |
   xargs -0 grep -E 'TELEGRAM_BOT_TOKEN=[A-Za-z0-9]|-----BEGIN (OPENSSH |RSA |EC )?PRIVATE KEY-----|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' |
-  grep -Ev 'UUID_PLACEHOLDER|11111111-1111-4111-8111-111111111111|22222222-2222-4222-8222-222222222222|33333333-3333-4333-8333-333333333333'; then
+  grep -Ev 'UUID_PLACEHOLDER|a330268d-7d9d-4343-8672-f6191f80a25c|11111111-1111-4111-8111-111111111111|22222222-2222-4222-8222-222222222222|33333333-3333-4333-8333-333333333333|44444444-4444-4444-8444-444444444444|55555555-5555-4555-8555-555555555555|66666666-6666-4666-8666-666666666666|77777777-7777-4777-8777-777777777777|88888888-8888-4888-8888-888888888888'; then
   echo "secret-like values found" >&2
   exit 1
 fi
