@@ -114,6 +114,12 @@ if ($LASTEXITCODE -ne 0) {
   throw "installer disk preflight test failed"
 }
 
+Write-Host "== installer durability =="
+& $gitSh tests/installer-durability.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "installer durability test failed"
+}
+
 Write-Host "== OpenWrt package =="
 & $gitSh tests/package-openwrt.sh
 if ($LASTEXITCODE -ne 0) {

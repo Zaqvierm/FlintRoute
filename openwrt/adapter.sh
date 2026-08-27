@@ -246,7 +246,7 @@ install_boot_guard() {
     echo 'table inet router_policy_boot_guard {'
     echo '  comment "router-policy owner=flintroute"'
     echo '  chain forward {'
-    # A mark-only guard is fail-open after reboot: new flows have mark=0.
+    # A mark-only guard would be fail-open after reboot: new flows have mark=0.
     # Drop all transit traffic until the exact committed generation is proven.
     # Run before the generated classifier (priority -5) and normal fw4 filter
     # chains.  A later accept must never be able to bypass the boot fence.

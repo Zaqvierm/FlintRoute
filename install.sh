@@ -1111,7 +1111,15 @@ atomic_copy() {
   # boundary.  Avoid flushing the host filesystem for every copied file; real
   # OpenWrt installs keep the durable sync below.
   if [ -z "$SYSTEM_ROOT" ]; then
-    sync -f "$(dirname "$target")" 2>/dev/null || true
+    if ! sync -f "$(dirname "$target")" 2>/dev/null; then
+      # BusyBox implementations may not support sync -f.  A global sync is a
+      # valid fallback, but a failed fallback is a durability failure, not a
+      # warning we can hide: the caller must abort before reporting success.
+      if ! sync 2>/dev/null; then
+        echo "install failed: unable to durably sync target directory: $target" >&2
+        return 1
+      fi
+    fi
   fi
 }
 
