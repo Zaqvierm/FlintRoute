@@ -5,7 +5,7 @@
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `caf775c4f17f7efae139891375215c13d4d7b81e`.
+- Текущий проверяемый code HEAD: `6af275416daf74554bedecaa5d2d3ba4a871b73b`.
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -78,6 +78,7 @@
 | Неизвестная latency не считается нулём | `TestSelectBestDoesNotTreatUnknownLatencyAsZero` | PASS | local |
 | ShellCheck | `.tools/shellcheck-v0.11.0/shellcheck.exe -x <tracked shell>` | PASS | local |
 | Полный локальный runner | `tests/run-all.ps1` | PASS, `all_tests_ok=true`; включает 47 Vitest и 26 Playwright tests | Windows; Linux части NOT RUN LOCALLY |
+| Clean-clone POSIX runner | `sh tests/run-all.sh` в отдельном clone `6af2754` | PASS, `all_tests_ok=true`; shellcheck отсутствовал, Linux-only части `NOT RUN LOCALLY` | clean clone + externally pinned Go |
 | `git diff --check` | `git diff --check` | PASS | local |
 
 ### Installer health parser boundary
@@ -89,7 +90,7 @@ rejects symlinks/non-regular files and malformed/trailing JSON, and supports
 both the API `data` envelope and a bare fixture. A missing parser or malformed
 response fails the installer health gate closed.
 
-## Запуски CI на текущей ветке
+## Запуски CI и clean-clone evidence
 
 Для исторического code head `b43d56a45ba26fb93ee3609c5eb190ef60bac29a` после push прошли:
 
@@ -98,8 +99,17 @@ response fails the installer health gate closed.
 - UI browser/responsive: [32615235578](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235578).
 
 Эти три run ID относятся к историческому code SHA и не являются evidence для
-текущего `4e9d45f`. Для текущего HEAD обязательный Linux CI ещё не запускался;
-до его выполнения строки выше остаются `STALE FOR CURRENT SHA`.
+текущего `6af275416daf74554bedecaa5d2d3ba4a871b73b`. Для текущего HEAD
+обязательный Linux CI ещё не запускался; до его выполнения строки выше остаются
+`STALE FOR CURRENT SHA`.
+
+Локальный clean-clone прогон текущего SHA выполнен в
+`H:\LAN\tmp\flintroute-clean-clone-6af2754-20260828-0400` после `npm ci` и
+установки Chromium. `sh tests/run-all.sh` завершился `all_tests_ok=true`;
+внешний Go toolchain был явно передан через `GO`, поэтому это воспроизводимое
+доказательство исходного дерева, но не hermetic toolchain proof. ShellCheck в
+этой среде отсутствовал, а Linux process-group и nft namespace проверки честно
+помечены `NOT RUN LOCALLY`.
 
 Исторические запуски для старых code/docs SHA сохранены ниже только для
 археологии и не считаются доказательством текущего кода:
