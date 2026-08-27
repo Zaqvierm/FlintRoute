@@ -33,7 +33,17 @@ if command -v cygpath >/dev/null 2>&1; then
   ROOT_NATIVE=$(cygpath -m "$ROOT")
   EXE=.exe
   GO="${GO:-$ROOT_NATIVE/.tools/go1.26.5/go/bin/go.exe}"
-  ROUTER_POLICY_BIN="${ROUTER_POLICY_BIN:-$ROOT_NATIVE/dist/router-policy.exe}"
+  # `go build -o dist/router-policy` keeps the exact output name under
+  # MSYS/Windows (it does not append .exe automatically).  Prefer an
+  # explicitly provided binary, then accept either convention so a clean
+  # clone does not depend on an untracked dist/router-policy.exe.
+  if [ -z "${ROUTER_POLICY_BIN:-}" ]; then
+    if [ -f "$ROOT_NATIVE/dist/router-policy.exe" ]; then
+      ROUTER_POLICY_BIN="$ROOT_NATIVE/dist/router-policy.exe"
+    else
+      ROUTER_POLICY_BIN="$ROOT_NATIVE/dist/router-policy"
+    fi
+  fi
 else
   TMP_NATIVE="$TMP"
   ROOT_NATIVE="$ROOT"
