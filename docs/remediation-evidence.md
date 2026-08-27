@@ -5,13 +5,15 @@
 
 ## Область проверки
 
+- Текущий проверяемый HEAD: `10c85a084a3ee7aeaac872546fa8e0f3af6fe135`.
+- Текущая ветка: `integration/discovery-smartdns-local-dod`.
+- Этот документ не наследует hardware evidence от старых SHA.
+
 - Базовый SHA аудита: `d45a779dfa9dc024b426cef358d3df4d32478897`.
 - Ветка: `remediation/transaction-and-privilege-boundaries-consolidated`.
 - Проверенный code baseline до текущего onboarding delta: `f7a36e63542ef92047c17cca0d5be90987cdd1a4`.
-- Текущий commit добавляет durable onboarding write fence; локальная regression-проверка
-  привязана к этому commit через историю и команду в acceptance matrix. CI run IDs в
-  следующем разделе относятся к более раннему code head и не выдаются за evidence
-  нового delta до повторного запуска.
+- Software/CI claims ниже относятся только к указанному текущему HEAD; старые
+  строки и run IDs, привязанные к другим code heads, считаются историческими.
 - Документация обновляется в отдельном содержательном commit после code push;
   code evidence ниже привязано именно к SHA выше.
 - Предыдущий docs-head `501d27518dadc829175534a4d8eaf7a1d11699a8` сохранён как
@@ -37,6 +39,7 @@
 | Linux Zapret process-group и Quick contract | PASS | CI run [32615235591](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235591) |
 | Linux-only harness на Windows | NOT RUN LOCALLY | namespace/procfs/mode требуют Linux |
 | Root-helper privilege split | PARTIAL | helper есть, но production controller ещё root |
+| Route-only assignment dataplane | PARTIAL | revision-bound decision cache и post-probe есть; nft/dnsmasq runtime consumer не доказан |
 | Flint 2 hardware | NOT RUN / STALE | hardware не трогалось |
 
 ## Acceptance matrix

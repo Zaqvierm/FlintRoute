@@ -149,6 +149,21 @@ func TestValidateBoundsRouteCheckFanout(t *testing.T) {
 	}
 }
 
+func TestValidateUnknownDomainFirstPathIsExplicit(t *testing.T) {
+	for _, mode := range []string{"", "direct", "balanced", "vless", "privacy_first", "drop", "fail_closed"} {
+		cfg := validConfig()
+		cfg.Policy.UnknownDomainFirstPath = mode
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("unknown-domain mode %q was rejected: %v", mode, err)
+		}
+	}
+	cfg := validConfig()
+	cfg.Policy.UnknownDomainFirstPath = "proxy_everything"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "unknown_domain_first_path") {
+		t.Fatalf("invalid unknown-domain mode was accepted: %v", err)
+	}
+}
+
 func TestValidateRejectsPathThatIsAllowedAndForbidden(t *testing.T) {
 	cfg := validConfig()
 	service := cfg.Services["site"]

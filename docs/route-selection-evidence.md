@@ -67,7 +67,12 @@ Unknown-domain decisions are cached by normalized eTLD+1, active revision,
 TSPU state, and a hash of the eligible route inventory. Inventory or revision
 changes invalidate the cached decision; ordinary repeated DNS queries do not
 rerun the flowchart. The initial unknown policy is explicit (`balanced`,
-`privacy_first`, or `fail_closed`) and describes only the first connection
+`privacy_first`, or `fail_closed`; `direct`, `vless`, and `drop` are accepted
+compatibility aliases). The planner enforces the constraint in its candidate
+set: balanced may include the unmarked system-default baseline, privacy-first
+excludes Direct, and fail-closed exposes only DROP. This is still a
+decision-layer constraint; a production dataplane consumer must enforce the
+same mode before the first packet. The policy describes the first connection
 while the passive observer classifies the domain.
 
 ## Route-only assignment

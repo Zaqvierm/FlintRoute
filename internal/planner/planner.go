@@ -482,12 +482,33 @@ func buildCandidates(cfg *config.Config, profile serviceProfile, opts Options) C
 		}
 	}
 	eligibleTypes := eligibleRouteTypesForService(profile.service.Category, tspuStatus, cfg.Policy.TSPUStalePolicy)
+	unknownMode := "balanced"
+	if profile.unknown {
+		unknownMode = initialUnknownPolicy(cfg.Policy)
+		switch unknownMode {
+		case "privacy_first":
+			// Privacy-first is a real candidate constraint, not a UI label: an
+			// unknown domain must not be selected onto Direct while it is being
+			// classified. Keep only already configured non-Direct paths and DROP.
+			filtered := eligibleTypes[:0]
+			for _, routeType := range eligibleTypes {
+				if routeType != "direct" {
+					filtered = append(filtered, routeType)
+				}
+			}
+			eligibleTypes = filtered
+		case "fail_closed":
+			// Fail-closed unknown policy has no network candidate. DROP is the
+			// only honest terminal outcome until an explicit rule is applied.
+			eligibleTypes = []string{"drop"}
+		}
+	}
 	var candidates []config.Route
 	seen := map[string]bool{}
 	// Unknown traffic is still owned by OpenWrt until a FlintRoute policy is
 	// committed. Probe that real system path first instead of pretending the
 	// managed Direct mark/table already exists on a clean baseline.
-	if profile.unknown && !tspuStartsWithZapret(tspuStatus, cfg.Policy.TSPUStalePolicy) {
+	if profile.unknown && unknownMode == "balanced" && !tspuStartsWithZapret(tspuStatus, cfg.Policy.TSPUStalePolicy) {
 		for _, route := range cfg.RoutesByType("direct") {
 			if route.Enabled() && route.RequiresAdapter {
 				candidates = append(candidates, config.Route{
@@ -863,9 +884,9 @@ func hashCandidateInventory(candidates []config.Route, service config.Service, p
 // route winner and must not trigger a topology/apply operation.
 func initialUnknownPolicy(policy config.Policy) string {
 	switch strings.ToLower(strings.TrimSpace(policy.UnknownDomainFirstPath)) {
-	case "vless":
+	case "vless", "privacy_first":
 		return "privacy_first"
-	case "drop":
+	case "drop", "fail_closed":
 		return "fail_closed"
 	default:
 		return "balanced"

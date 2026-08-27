@@ -321,6 +321,67 @@ func TestUnknownBaselineUsesSystemDefaultBeforeManagedDirect(t *testing.T) {
 	}
 }
 
+func TestPrivacyFirstUnknownCandidatesExcludeDirect(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cfg.Policy.UnknownDomainFirstPath = "vless"
+	plan, err := BuildCandidates(cfg, "new.example", "", Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Candidates) == 0 {
+		t.Fatal("privacy-first plan has no candidates")
+	}
+	for _, route := range plan.Candidates {
+		if route.Type == "direct" {
+			t.Fatalf("privacy-first unknown plan exposed Direct candidate: %+v", plan.Candidates)
+		}
+	}
+}
+
+func TestFailClosedUnknownCandidatesContainOnlyDrop(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cfg.Policy.UnknownDomainFirstPath = "drop"
+	plan, err := BuildCandidates(cfg, "new.example", "", Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Candidates) != 1 || plan.Candidates[0].Type != "drop" {
+		t.Fatalf("fail-closed unknown plan was not DROP-only: %+v", plan.Candidates)
+	}
+}
+
+func TestPrivacyFirstUnknownDecisionCannotSelectDirect(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cfg.Policy.UnknownDomainFirstPath = "privacy_first"
+	prober := &scriptedProber{results: map[string]probe.RouteResult{
+		"smart-one": successfulResult("smart-one", "smart_dns", "rev-active"),
+		"vless-one": successfulResult("vless-one", "vless", "rev-active"),
+		"drop":      successfulResult("drop", "drop", "rev-active"),
+	}}
+	check, err := CheckDomain(context.Background(), cfg, "unknown.example", "", Options{RouteProber: prober, ActiveRevision: "rev-active"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.InitialUnknownPolicy != "privacy_first" || check.Selected == nil || check.Selected.RouteType == "direct" {
+		t.Fatalf("privacy-first selected an unsafe initial path: %+v", check)
+	}
+}
+
+func TestFailClosedUnknownDecisionSelectsDropOnly(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cfg.Policy.UnknownDomainFirstPath = "fail_closed"
+	prober := &scriptedProber{results: map[string]probe.RouteResult{
+		"drop": successfulResult("drop", "drop", "rev-active"),
+	}}
+	check, err := CheckDomain(context.Background(), cfg, "unknown.example", "", Options{RouteProber: prober, ActiveRevision: "rev-active"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.InitialUnknownPolicy != "fail_closed" || check.Selected == nil || check.Selected.RouteType != "drop" {
+		t.Fatalf("fail-closed selected a non-DROP path: %+v", check)
+	}
+}
+
 func TestUnknownTSPUMatchDoesNotProbeSystemDefault(t *testing.T) {
 	cfg := discoveryConfig(t)
 	cfg.Routes[0].RequiresAdapter = true

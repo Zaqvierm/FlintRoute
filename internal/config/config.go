@@ -649,6 +649,13 @@ func (c *Config) Validate() error {
 	if c.Policy.DomainDecisionTTLSeconds < 0 {
 		return fmt.Errorf("domain_decision_ttl_seconds cannot be negative")
 	}
+	switch strings.ToLower(strings.TrimSpace(c.Policy.UnknownDomainFirstPath)) {
+	case "", "direct", "balanced", "vless", "privacy_first", "drop", "fail_closed":
+		// Keep the user's spelling for compatibility; the planner canonicalizes
+		// these aliases to one of three bounded modes.
+	default:
+		return fmt.Errorf("invalid unknown_domain_first_path")
+	}
 	if c.Storage.MaxAutoDomains < 0 || c.Storage.MaxAutoDomains > 100000 {
 		return fmt.Errorf("max_auto_domains must be between 0 and 100000")
 	}
