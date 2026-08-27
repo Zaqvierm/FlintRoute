@@ -152,6 +152,7 @@ blockcheck_pid=""
 blockcheck_pgid=""
 calibration_pgid=""
 calibration_run_id="calibration-$$"
+failure_root="$RUNTIME_DIR/zapret-calibration-failures"
 
 proc_start_time() {
   pid="$1"
@@ -312,6 +313,49 @@ verify_calibration_network_cleanup() {
   return 0
 }
 
+write_failure_bundle() {
+  failure_status="$1"
+  mkdir -p "$failure_root" || return 1
+  chmod 700 "$failure_root" || return 1
+  failure_stamp=$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null) || return 1
+  failure_bundle="$failure_root/failure.${failure_stamp}.$$"
+  mkdir "$failure_bundle" 2>/dev/null || {
+    # A repeated invocation in the same second must not overwrite evidence.
+    failure_bundle="$failure_root/failure.${failure_stamp}.$$.retry"
+    mkdir "$failure_bundle" 2>/dev/null || return 1
+  }
+  chmod 700 "$failure_bundle" || return 1
+  printf 'status=%s\nrun_id=%s\n' "$failure_status" "$calibration_run_id" > "$failure_bundle/status.env" || return 1
+  chmod 600 "$failure_bundle/status.env" || return 1
+  if [ -f "$report" ]; then
+    tail -n 64 "$report" | tr '\r\n\t' '   ' | cut -c1-4096 > "$failure_bundle/report.tail" || return 1
+    chmod 600 "$failure_bundle/report.tail" || return 1
+  fi
+  for evidence in nfqws.before nfqws.after nfqws.remaining routes.before routes.after rules.before rules.after processes.txt; do
+    if [ -f "$run_dir/$evidence" ]; then
+      cp "$run_dir/$evidence" "$failure_bundle/$evidence" || return 1
+      chmod 600 "$failure_bundle/$evidence" || return 1
+    fi
+  done
+  # Retain at most three bounded bundles.  Names are generated above and the
+  # prefix check prevents pruning an unrelated runtime path.
+  candidate_list="$run_dir/failure-candidates"
+  find "$failure_root" -mindepth 1 -maxdepth 1 -type d -name 'failure.*' -print | sort -r > "$candidate_list" || return 1
+  bundle_count=0
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    case "$candidate" in
+      "$failure_root"/failure.*) ;;
+      *) continue ;;
+    esac
+    [ -d "$candidate" ] || continue
+    bundle_count=$((bundle_count + 1))
+    if [ "$bundle_count" -gt 3 ]; then
+      rm -rf "$candidate" || return 1
+    fi
+  done < "$candidate_list"
+}
+
 list_nfqwss > "$nfqws_baseline"
 if command -v ip >/dev/null 2>&1; then
   ip -o route show table all 2>/dev/null > "$routes_baseline" || exit 1
@@ -361,6 +405,9 @@ cleanup() {
   fi
   if [ "$maintenance_started" = "1" ]; then
     ROUTER_POLICY_CONFIG="$CONFIG" "$TIMEOUT_BIN" 15 "$ROUTER_POLICY_BIN" maintenance end >/dev/null 2>&1 || status=1
+  fi
+  if [ "$status" -ne 0 ]; then
+    write_failure_bundle "$status" || status=1
   fi
   rm -rf "$run_dir"
   rmdir "$lock_dir" 2>/dev/null || true

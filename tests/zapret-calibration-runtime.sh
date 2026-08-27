@@ -120,6 +120,13 @@ fi
 grep -F 'bounded diagnostic tail follows' "$TMP/failed.log" >/dev/null
 grep -F 'provider probe failed at TLS check' "$TMP/failed.log" >/dev/null
 [ ! -e "$RUNTIME/zapret-calibration.lock" ]
+[ -d "$RUNTIME/zapret-calibration-failures" ]
+failed_bundle=$(find "$RUNTIME/zapret-calibration-failures" -mindepth 1 -maxdepth 1 -type d -name 'failure.*' | head -n 1)
+[ -n "$failed_bundle" ]
+[ -s "$failed_bundle/status.env" ]
+grep -Fx 'status=7' "$failed_bundle/status.env" >/dev/null
+[ -s "$failed_bundle/report.tail" ]
+grep -F 'provider probe failed at TLS check' "$failed_bundle/report.tail" >/dev/null
 
 cat >"$TMP/blockcheck-route-leak.sh" <<'SH'
 #!/bin/sh
@@ -175,6 +182,7 @@ fi
 grep -F 'upstream blockcheck timed out after 30s' "$TMP/timeout.log" >/dev/null
 grep -F 'last bounded strategy' "$TMP/timeout.log" >/dev/null
 [ ! -e "$RUNTIME/zapret-calibration.lock" ]
+[ "$(find "$RUNTIME/zapret-calibration-failures" -mindepth 1 -maxdepth 1 -type d -name 'failure.*' | wc -l | tr -d ' ')" -le 3 ]
 
 # The explicit exhaustive mode selects upstream force scanning and a separate
 # long-running budget without executing the scan in this fixture.
