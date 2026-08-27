@@ -31,7 +31,7 @@ DF_BIN="${DF_BIN:-df}"
 DU_BIN="${DU_BIN:-du}"
 SERVICES="router-policy-helper router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
 ENABLE_SERVICES="router-policy-dns-observer router-policy-boot-guard $SERVICES"
-INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $ROUTER_POLICY_HELPER_BIN $INIT_DIR/router-policy-helper $INIT_DIR/router-policy $INIT_DIR/router-policy-dns-observer $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/config/listener.conf $ETC_DIR/secrets $DNSMASQ_DIR/router-policy.conf $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
+INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $ROUTER_POLICY_HELPER_BIN $INIT_DIR/router-policy-helper $INIT_DIR/router-policy $INIT_DIR/router-policy-dns-observer $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/config/listener.conf $ETC_DIR/helper.env $ETC_DIR/secrets $DNSMASQ_DIR/router-policy.conf $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
 
 PREFIX_SWITCH_MARKER="$STATE_DIR/prefix-switch.env"
 
@@ -163,7 +163,7 @@ preflight_install() {
   refresh_install_targets
   [ -f "$SOURCE_BINARY" ] || { echo "missing $SOURCE_BINARY; run scripts/build-go.sh before install" >&2; return 1; }
   [ -f "$SOURCE_HELPER_BINARY" ] || { echo "missing $SOURCE_HELPER_BINARY; run scripts/build-go.sh before install" >&2; return 1; }
-  for p in "$ROOT/scripts" "$ROOT/openwrt" "$ROOT/config/default.json" "$ROOT/config/schema.json"; do
+  for p in "$ROOT/scripts" "$ROOT/openwrt" "$ROOT/config/default.json" "$ROOT/config/schema.json" "$ROOT/config/router-policy-helper.env"; do
     [ -e "$p" ] || { echo "missing install source: $p" >&2; return 1; }
   done
   if [ -f "$ROOT/SHA256SUMS" ]; then
@@ -1258,6 +1258,11 @@ install_files() {
   if [ ! -f "$ETC_DIR/config/listener.conf" ]; then
     atomic_copy "$ROOT/config/listener.conf" "$ETC_DIR/config/listener.conf" 600
   fi
+  if [ -L "$ETC_DIR/helper.env" ]; then
+    echo "refusing symlink helper environment: $ETC_DIR/helper.env" >&2
+    return 1
+  fi
+  atomic_copy "$ROOT/config/router-policy-helper.env" "$ETC_DIR/helper.env" 600
   if [ ! -f "$ETC_DIR/secrets/vpn-subscription-url" ]; then
     : > "$ETC_DIR/secrets/vpn-subscription-url"
   fi
@@ -1275,6 +1280,40 @@ install_files() {
   atomic_copy "$ROOT/openwrt/init.d/router-policy-zapret" "$INIT_DIR/router-policy-zapret" 755
   atomic_copy "$ROOT/openwrt/hotplug/iface/95-router-policy" "$HOTPLUG_IFACE_DIR/95-router-policy" 755
   atomic_copy "$ROOT/openwrt/hotplug/firewall/95-router-policy" "$HOTPLUG_FIREWALL_DIR/95-router-policy" 755
+}
+
+prepare_controller_identity() {
+  [ -z "$SYSTEM_ROOT" ] || return 0
+  command -v id >/dev/null 2>&1 || { echo "install blocked: id is required for controller identity" >&2; return 1; }
+  controller_uid="$(id -u daemon 2>/dev/null)" || {
+    echo "install blocked: OpenWrt daemon account is unavailable" >&2
+    return 1
+  }
+  controller_gid="$(id -g daemon 2>/dev/null)" || {
+    echo "install blocked: OpenWrt daemon group is unavailable" >&2
+    return 1
+  }
+  [ "$controller_uid" = 1 ] || {
+    echo "install blocked: daemon UID is not the pinned helper peer UID: $controller_uid" >&2
+    return 1
+  }
+  command -v chown >/dev/null 2>&1 || { echo "install blocked: chown is required for non-root controller" >&2; return 1; }
+  # These are FlintRoute-owned state/config paths. Secrets remain private to
+  # the controller account, while the root helper never receives their data.
+  chown -R "$controller_uid:$controller_gid" "$ETC_DIR/config" "$ETC_DIR/secrets" "$STATE_DIR" "$RUNTIME_DIR" || {
+    echo "install blocked: cannot assign controller-owned paths" >&2
+    return 1
+  }
+  chmod 750 "$ETC_DIR/config" "$ETC_DIR/secrets" "$STATE_DIR" "$RUNTIME_DIR"
+  # The staged prefix is immutable code/assets, not controller state. Make
+  # directories traversable and files readable without granting write access;
+  # preserve execute bits on the scripts/binaries already marked executable.
+  chmod -R a+rX "$PREFIX" || {
+    echo "install blocked: cannot make managed prefix readable to controller" >&2
+    return 1
+  }
+  chmod 640 "$ETC_DIR/config/default.json" "$ETC_DIR/config/schema.json" "$ETC_DIR/config/listener.conf" "$ETC_DIR/helper.env"
+  chmod 600 "$ETC_DIR/secrets/vpn-subscription-url"
 }
 
 activate_dns_observer() {
@@ -1336,6 +1375,7 @@ case "$mode" in
     snapshot_state_database
     backup
     install_files
+    prepare_controller_identity
     if [ "$enable_services" = "1" ]; then
       activate_dns_observer
     fi

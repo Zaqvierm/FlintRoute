@@ -167,9 +167,25 @@ func TestSafeListenAddress(t *testing.T) {
 func TestServeRefusesUnsafeBind(t *testing.T) {
 	t.Setenv("ROUTER_POLICY_ALLOW_FIREWALLED_BIND", "")
 	t.Setenv("ROUTER_POLICY_ALLOW_LAN_BIND", "")
+	t.Setenv("ROUTER_POLICY_HELPER_SOCKET", "/var/run/router-policy/helper.sock")
 	err := run([]string{"serve", "--listen", "0.0.0.0:8787"})
 	if err == nil || !strings.Contains(err.Error(), "refusing listen address") {
 		t.Fatalf("expected unsafe bind refusal, got %v", err)
+	}
+}
+
+func TestProductionControllerRequiresNonRootHelperBoundary(t *testing.T) {
+	if err := validateProductionPrivilege(false, true, "/var/run/router-policy/helper.sock"); err == nil {
+		t.Fatal("root production controller was accepted")
+	}
+	if err := validateProductionPrivilege(false, false, ""); err == nil {
+		t.Fatal("production controller without helper socket was accepted")
+	}
+	if err := validateProductionPrivilege(false, false, "/var/run/router-policy/helper.sock"); err != nil {
+		t.Fatalf("non-root production controller with helper was rejected: %v", err)
+	}
+	if err := validateProductionPrivilege(true, true, ""); err != nil {
+		t.Fatalf("development simulation should remain available: %v", err)
 	}
 }
 

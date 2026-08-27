@@ -38,6 +38,7 @@ type Request struct {
 	IPPlan               *IPPlanRequest      `json:"ip_plan,omitempty"`
 	Service              *ServiceRequest     `json:"service,omitempty"`
 	Artifact             *ArtifactRequest    `json:"artifact,omitempty"`
+	Global               *GlobalRequest      `json:"global,omitempty"`
 }
 
 type TransactionRequest struct {
@@ -65,6 +66,13 @@ type ServiceRequest struct {
 type ArtifactRequest struct {
 	Kind      string `json:"kind"`
 	Hash      string `json:"hash"`
+	Operation string `json:"operation"`
+}
+
+// GlobalRequest is deliberately tiny. Global commands carry no path,
+// provider data, or shell fragment; the helper maps the operation to one
+// fixed adapter verb.
+type GlobalRequest struct {
 	Operation string `json:"operation"`
 }
 
@@ -158,6 +166,10 @@ func ValidateRequest(request Request) error {
 		if !requestBound(request) || request.Artifact == nil || !allowlistedArtifact(request.Artifact.Kind) || !safeHash(request.Artifact.Hash) || request.Artifact.Hash != request.ArtifactManifestHash || request.Artifact.Operation != strings.TrimPrefix(request.Command, "artifact.") {
 			return ErrInvalidRequest
 		}
+	case "global.diagnose", "global.status", "global.clear_boot_guard":
+		if request.Global == nil || request.Global.Operation != globalOperation(request.Command) || !globalRequestBound(request) {
+			return ErrInvalidRequest
+		}
 	default:
 		return ErrUnknownCommand
 	}
@@ -170,6 +182,23 @@ func requestBound(request Request) bool {
 
 func recoveryRequestBound(request Request) bool {
 	return safeHash(request.CandidateHash) && safeHash(request.ArtifactManifestHash)
+}
+
+func globalRequestBound(request Request) bool {
+	return request.Generation == "global" && request.RevisionID == "global" && request.TransactionID == "global" && request.RollbackTokenHash == "" && request.CandidateHash == "" && request.ArtifactManifestHash == ""
+}
+
+func globalOperation(command string) string {
+	switch command {
+	case "global.diagnose":
+		return "diagnose"
+	case "global.status":
+		return "status"
+	case "global.clear_boot_guard":
+		return "clear-boot-guard"
+	default:
+		return ""
+	}
 }
 
 func transactionOperation(command string) string {

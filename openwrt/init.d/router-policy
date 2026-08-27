@@ -20,10 +20,14 @@ start_service() {
   # that the address is a private, non-wildcard unicast address; the legacy
   # broad firewalled-bind override is never exported by this service.
   if [ "$allow_lan_bind" = "1" ]; then
-    procd_set_param env ROUTER_POLICY_CONFIG=/etc/router-policy/config/default.json ROUTER_POLICY_ALLOW_LAN_BIND=1
+    procd_set_param env ROUTER_POLICY_CONFIG=/etc/router-policy/config/default.json ROUTER_POLICY_ALLOW_LAN_BIND=1 ROUTER_POLICY_HELPER_SOCKET=/var/run/router-policy/helper.sock
   else
-    procd_set_param env ROUTER_POLICY_CONFIG=/etc/router-policy/config/default.json
+    procd_set_param env ROUTER_POLICY_CONFIG=/etc/router-policy/config/default.json ROUTER_POLICY_HELPER_SOCKET=/var/run/router-policy/helper.sock
   fi
+  # The controller is deliberately unprivileged. All dataplane mutation goes
+  # through the fixed root helper socket; procd is the lifecycle owner.
+  procd_set_param user daemon
+  procd_set_param group daemon
   procd_set_param command /usr/bin/router-policy run --listen "$listen_address"
   procd_set_param respawn 3600 5 0
   procd_set_param stdout 1

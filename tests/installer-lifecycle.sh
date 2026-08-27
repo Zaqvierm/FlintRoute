@@ -84,6 +84,9 @@ run_install "$BACKUP_BASE/first" >/dev/null
 [ -x "$SYSTEM_ROOT/usr/bin/router-policy" ]
 [ -f "$SYSTEM_ROOT/usr/lib/router-policy/openwrt/adapter.sh" ]
 [ -f "$SYSTEM_ROOT/etc/init.d/router-policy" ]
+[ -f "$SYSTEM_ROOT/etc/router-policy/helper.env" ]
+grep -Fx 'peer_uid=1' "$SYSTEM_ROOT/etc/router-policy/helper.env" >/dev/null
+grep -Fx 'socket=/var/run/router-policy/helper.sock' "$SYSTEM_ROOT/etc/router-policy/helper.env" >/dev/null
 [ "$(cat "$SYSTEM_ROOT/etc/router-policy/config/listener.conf")" = "$(cat "$ROOT/config/listener.conf")" ]
 grep -F 'v1:auth setup-token --if-needed' "$FAKE_CALL_LOG" >/dev/null
 auth_line=$(grep -n 'v1:auth setup-token --if-needed' "$FAKE_CALL_LOG" | head -n 1 | cut -d: -f1)

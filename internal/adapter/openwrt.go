@@ -101,7 +101,27 @@ func (a *OpenWrt) runGlobal(ctx context.Context, command string) StepResult {
 	if !allowedGlobalCommand(command) {
 		return failedStep(command, start, fmt.Errorf("command is not allowlisted"))
 	}
+	if a.helperSocket != "" {
+		return a.executeHelperGlobal(ctx, command, start)
+	}
 	return a.execute(ctx, command, start, a.configPath)
+}
+
+func (a *OpenWrt) executeHelperGlobal(ctx context.Context, command string, start time.Time) StepResult {
+	requestID, err := secureRandomHex(8)
+	if err != nil {
+		return failedStep(command, start, err)
+	}
+	request := helper.Request{
+		ProtocolVersion: helper.ProtocolVersion,
+		RequestID:       "req_" + requestID,
+		Command:         "global." + strings.ReplaceAll(command, "-", "_"),
+		Generation:      "global",
+		RevisionID:      "global",
+		TransactionID:   "global",
+		Global:          &helper.GlobalRequest{Operation: command},
+	}
+	return a.executeHelperRequest(ctx, command, start, request)
 }
 
 func (a *OpenWrt) runTransaction(ctx context.Context, command string, tx Transaction) StepResult {

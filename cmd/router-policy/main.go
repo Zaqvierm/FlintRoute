@@ -1511,6 +1511,9 @@ func runWatchdog(healthURL string, interval, startupGrace time.Duration, failure
 }
 
 func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) error {
+	if err := validateProductionPrivilege(development, processIsRoot(), os.Getenv("ROUTER_POLICY_HELPER_SOCKET")); err != nil {
+		return err
+	}
 	if !allowedListenAddress(listen) {
 		return fmt.Errorf("refusing listen address %q; use loopback or explicitly opt in to a private LAN address with listener.conf", listen)
 	}
@@ -1616,6 +1619,19 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 		}
 		return err
 	}
+}
+
+func validateProductionPrivilege(development, isRoot bool, helperSocket string) error {
+	if development {
+		return nil
+	}
+	if isRoot {
+		return errors.New("refusing production controller as root; run it as the dedicated non-root service account")
+	}
+	if strings.TrimSpace(helperSocket) == "" {
+		return errors.New("refusing production controller without the configured root-helper socket")
+	}
+	return nil
 }
 
 func runRescueHTTPProcess(requestedListen string, handler http.Handler) error {

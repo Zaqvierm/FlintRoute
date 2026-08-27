@@ -40,8 +40,48 @@ func (e AdapterExecutor) Execute(ctx context.Context, request Request) Response 
 	if strings.HasPrefix(request.Command, "nft.") || strings.HasPrefix(request.Command, "ip_plan.") || strings.HasPrefix(request.Command, "artifact.") {
 		return e.executeOwned(ctx, request)
 	}
+	if strings.HasPrefix(request.Command, "global.") {
+		return e.executeGlobal(ctx, request)
+	}
 	response.ErrorCode = "unknown_command"
 	response.Error = "helper command is not allowlisted"
+	return response
+}
+
+func (e AdapterExecutor) executeGlobal(ctx context.Context, request Request) Response {
+	response := ResponseFrom(request, false, "", "")
+	verb := globalOperation(request.Command)
+	if verb == "" {
+		response.ErrorCode = "unknown_command"
+		response.Error = "global operation is not allowlisted"
+		return response
+	}
+	command := exec.CommandContext(ctx, e.AdapterPath, verb, e.ConfigPath)
+	raw, err := command.Output()
+	if exitErr := new(exec.ExitError); errors.As(err, &exitErr) {
+		raw = append(raw, exitErr.Stderr...)
+	}
+	if len(raw) > 64<<10 {
+		raw = raw[:64<<10]
+	}
+	response.Evidence = parseEvidence(raw)
+	response.Operation = response.Evidence["operation"]
+	if response.Operation == "" {
+		response.Operation = verb
+	}
+	response.Reason = response.Evidence["reason"]
+	if err != nil {
+		response.ErrorCode = "adapter_exit_nonzero"
+		response.Error = "owned global operation failed"
+		return response
+	}
+	if verb == "clear-boot-guard" && response.Evidence["boot_guard"] != "cleared" {
+		response.ErrorCode = "boot_guard_not_semantically_confirmed"
+		response.Error = "adapter did not prove boot guard removal"
+		return response
+	}
+	response.Accepted = true
+	response.State = "accepted"
 	return response
 }
 

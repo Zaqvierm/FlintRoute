@@ -87,6 +87,35 @@ func TestValidateRequestAllowsBoundRecoveryWithoutRollbackCapability(t *testing.
 	}
 }
 
+func TestValidateRequestAllowsOnlyBoundGlobalOperations(t *testing.T) {
+	request := Request{
+		ProtocolVersion: ProtocolVersion,
+		RequestID:       "req_global",
+		Command:         "global.status",
+		Generation:      "global",
+		RevisionID:      "global",
+		TransactionID:   "global",
+		Global:          &GlobalRequest{Operation: "status"},
+	}
+	if err := ValidateRequest(request); err != nil {
+		t.Fatalf("valid global request rejected: %v", err)
+	}
+	request.Global.Operation = "diagnose"
+	if err := ValidateRequest(request); err == nil {
+		t.Fatal("global command accepted a mismatched operation")
+	}
+	request.Global.Operation = "status"
+	request.Generation = "rev_1"
+	if err := ValidateRequest(request); err == nil {
+		t.Fatal("global command accepted a non-global binding")
+	}
+	request.Generation = "global"
+	request.CandidateHash = "sha256:" + strings.Repeat("a", 64)
+	if err := ValidateRequest(request); err == nil {
+		t.Fatal("global command accepted a transaction hash")
+	}
+}
+
 func TestOwnedVerbMappingIsClosed(t *testing.T) {
 	for command, want := range map[string]string{
 		"nft.replace_owned_table": "replace-owned-nft",

@@ -108,3 +108,47 @@ func TestOpenWrtRecoveryUsesTypedHelperWhenConfigured(t *testing.T) {
 		t.Fatal("recovery did not reach the typed helper")
 	}
 }
+
+func TestOpenWrtGlobalUsesTypedHelperWhenConfigured(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Unix helper boundary is only exercised on Linux")
+	}
+	listener, err := net.Listen("unix", t.TempDir()+"/helper.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	requestSeen := make(chan helper.Request, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		var request helper.Request
+		if decodeErr := json.NewDecoder(connection).Decode(&request); decodeErr != nil {
+			return
+		}
+		requestSeen <- request
+		response := helper.ResponseFrom(request, true, "", "")
+		response.Operation = "status"
+		response.Evidence = map[string]string{"operation": "status", "healthy": "true"}
+		_ = json.NewEncoder(connection).Encode(response)
+	}()
+	a := &OpenWrt{helperSocket: listener.Addr().String()}
+	result := a.Status(context.Background())
+	if !result.OK || result.Status != "OK" {
+		t.Fatalf("helper status was not accepted: %+v", result)
+	}
+	select {
+	case request := <-requestSeen:
+		if request.Command != "global.status" || request.Global == nil || request.Global.Operation != "status" {
+			t.Fatalf("unexpected global helper request: %+v", request)
+		}
+		if request.Generation != "global" || request.CandidateHash != "" {
+			t.Fatalf("global request was not narrowly bound: %+v", request)
+		}
+	default:
+		t.Fatal("status did not reach the typed helper")
+	}
+}

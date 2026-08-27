@@ -16,7 +16,7 @@ second_hash="$(sha256sum "$ARCHIVE" | awk '{print $1}')"
 }
 mkdir -p "$TMP"
 tar -C "$TMP" -xzf "$ARCHIVE"
-for path in install.sh uninstall.sh dist/router-policy-linux-arm64 dist/router-policy-helper-linux-arm64 config/default.json config/router-policy-helper.env.example openwrt/adapter.sh openwrt/init.d/router-policy openwrt/init.d/router-policy-helper SHA256SUMS; do
+for path in install.sh uninstall.sh dist/router-policy-linux-arm64 dist/router-policy-helper-linux-arm64 config/default.json config/router-policy-helper.env config/router-policy-helper.env.example openwrt/adapter.sh openwrt/init.d/router-policy openwrt/init.d/router-policy-helper SHA256SUMS; do
   [ -f "$TMP/$path" ] || { echo "package is missing $path" >&2; exit 1; }
 done
 (
