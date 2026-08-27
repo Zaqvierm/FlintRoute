@@ -5,7 +5,7 @@
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `bd095feff78526fcef6a1f74c63cedb1eb12388e` (installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound).
+- Текущий проверяемый code HEAD: `9009cea33d941852c60f3f3877b4995f881330da` (installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics).
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -59,6 +59,7 @@
 | Export backup synthetic-directory exclusion | `tests/installer-backup.sh` | PASS; archive carries files only, never staging parent modes | mock |
 | Installer post-install rollback fence | `tests/installer-lifecycle.sh` | PASS; rollback is not disarmed before observer/prefix verification, and incomplete verification aborts before backup pruning | mock |
 | DNS observer install rollback ownership | `tests/installer-lifecycle.sh`, `tests/dns-observer-bootstrap.sh` | PASS; configured observer target is included in the exact snapshot and restored after simulated failure | mock |
+| Quick runner machine-output isolation | `tests/zapret-quick-contract.sh`, `scripts/quick-zapret-check.sh` | PASS; nft load diagnostics are stderr-only, preventing BusyBox/nft output from corrupting bounded JSON | mock/static |
 | Typed health response parsing | `go test ./internal/healthjson`, `router-policy internal-health-field` | PASS | local |
 | HTML/portal response rejection | `go test ./internal/vpnsub -run TestFetchSubscriptionRejectsHTML` | PASS | local |
 | Канонические ownership paths | `tests/installer-lifecycle.sh`, `tests/installer-backup.sh` | PASS | mock |
@@ -169,6 +170,9 @@ response fails the installer health gate closed.
 - The DNS observer fragment is an explicit install target. The lifecycle
   fixture mutates it after snapshot and proves automatic rollback restores its
   prior bytes, without touching the dnsmasq parent directory.
+- Quick Zapret keeps stdout reserved for its bounded JSON result. Diagnostics
+  from the temporary nft batch are redirected to stderr, so an nft/BusyBox
+  usage message cannot become `malformed bounded JSON` at the API boundary.
 - `NO_SAFE_ROUTE` — только terminal exhaustion; `VERIFYING` не превращается в
   ложный отказ. `route_latency_ms` отделён от `verification_duration_ms`.
 - DNS watcher отслеживает inode/rotation и никогда не обнуляет live dnsmasq log;
