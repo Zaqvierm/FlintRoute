@@ -5,7 +5,7 @@
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `309dda871b08bf853df4e2fe9c279965ac62048c`.
+- Текущий проверяемый code HEAD: `d549f6b8287ef08784aa7a40b7ed832c202cafd7`.
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -61,6 +61,7 @@
 | Boot guard | `tests/boot-guard-policy.sh`, `tests/boot-guard-service.sh` | PASS | mock |
 | Typed helper boundary | `tests/helper-service.sh`, `go test ./internal/helper` | PASS | local/mock |
 | Helper connection budget | `TestServeUnixBoundsConcurrentHelperWork` | PASS (Linux-only test; Windows skips) | local/Linux semantics |
+| Generation-bound boot-guard clear | `TestAdapterExecutorAcceptsOnlyGenerationBoundBootGuardClear`, `openwrt-adapter-integration.sh` | PASS (local/mock; Linux runtime pending) | local/mock |
 | Чужой helper socket не удаляется | `TestServeUnixDoesNotRemoveForeignSocketPathObject` | PASS | local/mock |
 | Typed recovery reconcile | `go test ./internal/adapter ./internal/helper` | PASS | local; controller status PARTIAL |
 | Atomic nft transition | `tests/nft-transition-namespace.sh` | PASS | Linux CI |
@@ -136,6 +137,10 @@ response fails the installer health gate closed.
   неизвестном status; read-only diagnostics остаются доступны.
 - Helper использует Unix socket `0600`, typed commands и ownership checks; полный
   non-root controller пока не закрыт и честно отмечен `PARTIAL`.
+- Снятие boot guard после commit теперь идёт только через transaction-bound
+  helper command с совпадающими transaction/revision/candidate/artifact hashes;
+  unbound global clear больше не принимается. Старая idempotent shell-команда
+  оставлена только для procd boot-guard stop path.
 - SSRF, raw provider Xray JSON, process ownership и Zapret cleanup покрыты
   отдельными regression/CI проверками.
 - `observe_only` действительно не вызывает active probe/adapter; discovery queue
