@@ -45,7 +45,7 @@ export ROUTER_POLICY_INSTALL_LIB_ONLY SYSTEM_ROOT PREFIX ETC_DIR STATE_DIR RUNTI
 export BIN_DIR INIT_DIR RC_DIR HOTPLUG_IFACE_DIR HOTPLUG_FIREWALL_DIR DNSMASQ_DIR
 export BACKUP_ROOT BACKUP_DIR SOURCE_BINARY SOURCE_HELPER_BINARY
 
-# shellcheck source=../install.sh
+# shellcheck source=install.sh
 . "$ROOT/install.sh"
 
 if atomic_copy "$SOURCE_BINARY" "$TMP/target/file" 600; then

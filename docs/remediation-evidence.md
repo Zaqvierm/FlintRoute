@@ -5,7 +5,7 @@
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `d549f6b8287ef08784aa7a40b7ed832c202cafd7`.
+- Текущий проверяемый code HEAD: `caf775c4f17f7efae139891375215c13d4d7b81e`.
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -55,6 +55,7 @@
 | Гонка recovery/apply | `TestRecoveryTransitionExcludesConcurrentMutation` | PASS | local |
 | Immutable bootstrap | `tests/openwrt-adapter-integration.sh` | PASS | mock |
 | Права родителей installer | `tests/installer-lifecycle.sh` | PASS | mock |
+| Installer durability sync failure | `tests/installer-durability.sh` | PASS; failure is surfaced and install cannot report success | mock |
 | Typed health response parsing | `go test ./internal/healthjson`, `router-policy internal-health-field` | PASS | local |
 | HTML/portal response rejection | `go test ./internal/vpnsub -run TestFetchSubscriptionRejectsHTML` | PASS | local |
 | Канонические ownership paths | `tests/installer-lifecycle.sh`, `tests/installer-backup.sh` | PASS | mock |
