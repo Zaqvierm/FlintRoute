@@ -14,6 +14,8 @@ command -v npm >/dev/null 2>&1 || { echo "npm is missing; install Node.js/npm to
 
 cd "$ROOT"
 npm run typecheck
+npm test
+npm run browser:test
 npm run build
 "$GO" test ./...
 "$GO" test -race ./...

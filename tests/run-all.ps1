@@ -52,6 +52,8 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "== frontend =="
 Invoke-Npm @("run", "typecheck")
+Invoke-Npm @("test")
+Invoke-Npm @("run", "browser:test")
 Invoke-Npm @("run", "build")
 
 Write-Host "== build =="
