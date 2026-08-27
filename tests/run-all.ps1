@@ -124,6 +124,12 @@ if ($LASTEXITCODE -ne 0) {
   throw "installer lifecycle test failed"
 }
 
+Write-Host "== installer prefix switch =="
+& $gitSh tests/installer-prefix-switch.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "installer prefix switch test failed"
+}
+
 Write-Host "== content-aware install =="
 & $gitSh tests/content-aware-install.sh
 if ($LASTEXITCODE -ne 0) {
