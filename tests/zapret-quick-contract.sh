@@ -92,6 +92,9 @@ if grep -F -- '--blockcheck' "$ROOT/scripts/quick-zapret-check.sh"; then
 fi
 grep -F 'profiles="general general-alt general-alt2 general-alt4 general-alt6 general-alt10"' "$ROOT/scripts/quick-zapret-check.sh" >/dev/null
 grep -F 'profile_name()' "$ROOT/scripts/quick-zapret-check.sh" >/dev/null
+# nft diagnostics must not contaminate the machine-readable result stream.
+# shellcheck disable=SC2016
+grep -F '$NFT_BIN -f "$rules" >&2 || return 1' "$ROOT/scripts/quick-zapret-check.sh" >/dev/null
 # The catalog must retain the trailing newline hashed in each strategy file.
 # shellcheck disable=SC2016
 grep -F 'printf "%s", $0; printf "\\n"' "$ROOT/scripts/quick-zapret-check.sh" >/dev/null

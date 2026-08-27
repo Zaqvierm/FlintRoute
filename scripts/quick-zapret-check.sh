@@ -475,7 +475,10 @@ install_probe_table() {
     IFS=$old_ifs
     printf '  }\n}\n'
   } > "$rules"
-  $NFT_BIN -f "$rules" || return 1
+  # stdout is the machine-readable result channel.  nft may print warnings or
+  # BusyBox usage text even when the command fails; route every diagnostic to
+  # stderr so a failed attempt can never corrupt the bounded JSON document.
+  $NFT_BIN -f "$rules" >&2 || return 1
   $NFT_BIN list table inet "$table" >/dev/null 2>&1 || return 1
 }
 
