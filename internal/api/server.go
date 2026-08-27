@@ -69,6 +69,10 @@ type Options struct {
 	SmartDNSValidator      SmartDNSValidator
 	DiscoveryNow           func() time.Time
 	DomainChecker          DomainChecker
+	// RouteAssignmentRuntime is intentionally optional.  Until a production
+	// consumer can atomically materialize a revision-bound domain mapping in
+	// the owned nft/dnsmasq dataplane, discovery must remain suggestion-only.
+	RouteAssignmentRuntime RouteAssignmentRuntime
 }
 
 type SubscriptionPreparer interface {
@@ -100,28 +104,29 @@ type actionLockEntry struct {
 }
 
 type Server struct {
-	cfg                   *config.Config
-	auth                  *auth.Store
-	provider              platform.Provider
-	store                 *state.Store
-	adapter               adapter.Interface
-	subscriptionPreparer  SubscriptionPreparer
-	zapretSetupChecker    zapret.SetupChecker
-	externalSOCKSChecker  externalsocks.Checker
-	telegramNotifier      *telegramnotify.Manager
-	componentManager      ComponentManager
-	zapretCalibration     *zapret.CalibrationManager
-	vlessThroughputTester vpnsub.ThroughputTester
-	probeEngineFactory    func(*config.Config) health.ProbeEngine
-	tspuRefresh           TSPURefreshFunc
-	tspuDelay             tspuDelayFunc
-	healthTracker         *probe.HealthTracker
-	domainDecisions       *domaincache.Manager
-	dnsObservationPath    string
-	development           bool
-	broker                *EventBroker
-	mux                   *http.ServeMux
-	mu                    sync.Mutex
+	cfg                    *config.Config
+	auth                   *auth.Store
+	provider               platform.Provider
+	store                  *state.Store
+	adapter                adapter.Interface
+	subscriptionPreparer   SubscriptionPreparer
+	zapretSetupChecker     zapret.SetupChecker
+	externalSOCKSChecker   externalsocks.Checker
+	telegramNotifier       *telegramnotify.Manager
+	componentManager       ComponentManager
+	routeAssignmentRuntime RouteAssignmentRuntime
+	zapretCalibration      *zapret.CalibrationManager
+	vlessThroughputTester  vpnsub.ThroughputTester
+	probeEngineFactory     func(*config.Config) health.ProbeEngine
+	tspuRefresh            TSPURefreshFunc
+	tspuDelay              tspuDelayFunc
+	healthTracker          *probe.HealthTracker
+	domainDecisions        *domaincache.Manager
+	dnsObservationPath     string
+	development            bool
+	broker                 *EventBroker
+	mux                    *http.ServeMux
+	mu                     sync.Mutex
 	// mutationGate closes the recovery-to-mutation TOCTOU window. Recovery
 	// status transitions take the write side; every write-capable operation
 	// holds the read side for its entire lifetime.
@@ -308,6 +313,7 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		externalSOCKSChecker:   externalSOCKSChecker,
 		telegramNotifier:       telegramNotifier,
 		componentManager:       opts.ComponentManager,
+		routeAssignmentRuntime: opts.RouteAssignmentRuntime,
 		zapretCalibration:      opts.ZapretCalibration,
 		vlessThroughputTester:  opts.VLESSThroughputTester,
 		probeEngineFactory:     probeEngineFactory,
@@ -900,9 +906,6 @@ func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.Domain
 			return automaticCommitResult{Reason: "automatic_route_egress_not_proven_non_ru"}
 		}
 	}
-	// This path deliberately writes only the revision-bound domain decision.
-	// It never calls the adapter and therefore cannot rebuild Xray/Zapret,
-	// marks, nft topology, DNS topology, or managed services.
 	now := s.discoveryNow()
 	expires := check.ExpiresAt
 	if expires.IsZero() || !now.Before(expires) {
@@ -924,6 +927,47 @@ func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.Domain
 	if strings.TrimSpace(revision) == "" {
 		return automaticCommitResult{Reason: "route_assignment_revision_unavailable: active revision is unavailable"}
 	}
+	runtime := s.routeAssignmentRuntime
+	if runtime == nil {
+		// Persisting a decision without a runtime consumer is not an
+		// assignment.  Keep the suggestion available, but fail closed instead
+		// of claiming that production dataplane changed.
+		return automaticCommitResult{Reason: "route_assignment_runtime_unavailable"}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	request := RouteAssignmentRequest{
+		ProtocolVersion:      1,
+		RequestID:            fmt.Sprintf("route-assignment-%d", now.UnixNano()),
+		Generation:           revision,
+		RevisionID:           revision,
+		CandidateHash:        check.Selected.CandidateHash,
+		ArtifactManifestHash: check.Selected.ArtifactManifestHash,
+		Domain:               check.Domain,
+		RouteTag:             route.Tag,
+		RouteType:            route.Type,
+	}
+	receipt, err := runtime.ApplyRouteAssignment(ctx, request)
+	if err != nil {
+		return automaticCommitResult{Reason: "route_assignment_runtime_apply_failed: " + err.Error()}
+	}
+	rollbackRuntime := func(reason string) automaticCommitResult {
+		if err := runtime.RollbackRouteAssignment(ctx, request, receipt); err != nil {
+			return automaticCommitResult{Reason: reason + "; route_assignment_runtime_rollback_failed: " + err.Error()}
+		}
+		return automaticCommitResult{Reason: reason, RolledBack: true}
+	}
+	if !receipt.Applied || !receipt.Verified || receipt.ProtocolVersion != request.ProtocolVersion ||
+		receipt.RequestID != request.RequestID || receipt.Operation != "route_assignment.apply" ||
+		receipt.Generation != request.Generation || receipt.RevisionID != request.RevisionID ||
+		receipt.Domain != request.Domain || receipt.RouteTag != request.RouteTag || receipt.RouteType != request.RouteType ||
+		strings.TrimSpace(receipt.MappingHash) == "" {
+		if receipt.Applied {
+			return rollbackRuntime("route_assignment_runtime_semantic_response_invalid")
+		}
+		return automaticCommitResult{Reason: "route_assignment_runtime_semantic_response_invalid"}
+	}
 	decision := domaincache.Decision{
 		Domain: check.Domain, ETLDPlusOne: check.ETLDPlusOne, Service: service,
 		Category: check.Category, TSPUStatus: check.TSPUStatus, SelectedRoute: route.Tag,
@@ -936,7 +980,7 @@ func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.Domain
 		CheckedAt: now, ExpiresAt: expires, LastUsedAt: now,
 	}
 	if _, err := s.domainDecisions.Save(check.Domain, decision); err != nil {
-		return automaticCommitResult{Reason: "route_assignment_persist_failed: " + err.Error()}
+		return rollbackRuntime("route_assignment_persist_failed: " + err.Error())
 	}
 	// Read back the exact revision-bound decision before reporting success. This
 	// prevents a storage layer that returned a false-success from making the UI
@@ -947,7 +991,7 @@ func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.Domain
 		if lookupErr == nil {
 			lookupErr = errors.New("stored route assignment does not match active revision")
 		}
-		return automaticCommitResult{Reason: "route_assignment_readback_failed: " + lookupErr.Error()}
+		return rollbackRuntime("route_assignment_readback_failed: " + lookupErr.Error())
 	}
 	// Route-only assignment is still a production mutation of the domain map.
 	// Re-probe the exact selected route after the durable write and require the
@@ -955,10 +999,7 @@ func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.Domain
 	// as proof that the new mapping is effective.
 	if s.probeEngineFactory == nil {
 		_ = s.domainDecisions.Discard(check.Domain)
-		return automaticCommitResult{Reason: "route_assignment_post_apply_proof_unavailable", RolledBack: true}
-	}
-	if ctx == nil {
-		ctx = context.Background()
+		return rollbackRuntime("route_assignment_post_apply_proof_unavailable")
 	}
 	post := s.probeEngineFactory(active).ProbeRoute(ctx, active, check.Domain, service, autoService, route)
 	if post.Route != route.Tag || post.RouteType != route.Type || post.AdapterRevision != revision ||
@@ -967,7 +1008,7 @@ func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.Domain
 		(check.Selected.ArtifactManifestHash != "" && post.ArtifactManifestHash != check.Selected.ArtifactManifestHash) ||
 		(autoService.RequireNonRUEgress && route.Type != "drop" && (!post.EgressConsensus || strings.TrimSpace(post.ExternalCountry) == "" || strings.EqualFold(post.ExternalCountry, "RU"))) {
 		_ = s.domainDecisions.Discard(check.Domain)
-		return automaticCommitResult{Reason: "route_assignment_post_apply_proof_failed", RolledBack: true}
+		return rollbackRuntime("route_assignment_post_apply_proof_failed")
 	}
 	s.mu.Lock()
 	if suggestion, exists := s.discoverySuggestionMap[check.Domain]; exists {

@@ -1,11 +1,11 @@
 # Поток домена и трафика
 
-> **Статус на SHA `10c85a0`:** planner и API проверены локально/в CI, но без
-> hardware-run это не доказывает путь каждого LAN-клиента. Route-only решение
-> сейчас сохраняется в revision-bound domain decision cache и проходит
-> post-apply probe в controller. Отдельная запись решения ещё не является
-> доказательством изменения production nft/dnsmasq dataplane; hardware и
-> end-to-end route assignment остаются отдельными gates.
+> **Статус:** planner и API проверены локально/в CI, но без hardware-run это не
+> доказывает путь каждого LAN-клиента. Route-only assignment теперь fenced до
+> регистрации отдельного runtime consumer: один только bbolt decision не
+> считается изменением production nft/dnsmasq dataplane. Consumer обязан
+> вернуть semantic, revision-bound receipt и пройти post-apply probe; hardware
+> и end-to-end assignment остаются отдельными gates.
 
 > Основные реализации: `internal/probe`, `internal/domaincache`,
 > `internal/artifact`, `internal/policy`.
@@ -32,10 +32,11 @@
   режим (`balanced`, `privacy_first`, `fail_closed`), но фактическое enforcement
   первого соединения требует отдельной dataplane-интеграции;
 - в route-only режиме — bounded фоновая проверка direct/zapret/smart_dns/VLESS;
-- после проверки controller сохраняет revision-bound route decision и повторно
-  проверяет выбранный путь; это не даёт права перестраивать topology;
-- до завершения dataplane-backed route assignment автоматический режим нельзя
-  выдавать за фактическое изменение nft/dnsmasq mapping;
+- после проверки route-only runtime consumer должен атомарно применить только
+  exact-owned mapping, вернуть receipt и дождаться повторной проверки пути;
+- без dataplane-backed consumer автоматический режим оставляет suggestion и
+  возвращает `route_assignment_runtime_unavailable`, не выдавая bbolt-запись за
+  фактическое изменение nft/dnsmasq mapping;
 - существующее TCP-соединение не переносится между маршрутами (новое решение
   применяется к новым соединениям; conntrack purge — только для критических
   переключений).

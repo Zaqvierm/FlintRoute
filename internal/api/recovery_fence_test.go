@@ -21,6 +21,38 @@ func fakeAdapterCallCount(fake *fakeAdapter) int {
 
 type routeAssignmentProofEngine struct{ revision string }
 
+type fakeRouteAssignmentRuntime struct {
+	applied    int
+	rolledBack int
+	invalid    bool
+}
+
+func (r *fakeRouteAssignmentRuntime) ApplyRouteAssignment(_ context.Context, request RouteAssignmentRequest) (RouteAssignmentReceipt, error) {
+	r.applied++
+	receipt := RouteAssignmentReceipt{
+		ProtocolVersion: request.ProtocolVersion,
+		RequestID:       request.RequestID,
+		Operation:       "route_assignment.apply",
+		Applied:         true,
+		Verified:        true,
+		Generation:      request.Generation,
+		RevisionID:      request.RevisionID,
+		Domain:          request.Domain,
+		RouteTag:        request.RouteTag,
+		RouteType:       request.RouteType,
+		MappingHash:     "sha256:route-assignment-fixture",
+	}
+	if r.invalid {
+		receipt.Operation = "route_assignment.unknown"
+	}
+	return receipt, nil
+}
+
+func (r *fakeRouteAssignmentRuntime) RollbackRouteAssignment(_ context.Context, _ RouteAssignmentRequest, _ RouteAssignmentReceipt) error {
+	r.rolledBack++
+	return nil
+}
+
 func (e routeAssignmentProofEngine) ProbeRoute(_ context.Context, _ *config.Config, domain, service string, _ config.Service, route config.Route) probe.RouteResult {
 	return probe.RouteResult{
 		Domain: domain, Service: service, Route: route.Tag, RouteType: route.Type,
@@ -227,7 +259,7 @@ func TestAutomaticDomainCommitRespectsRecoveryFence(t *testing.T) {
 	}
 }
 
-func TestAutomaticDomainCommitUsesRouteOnlyWithoutFullApply(t *testing.T) {
+func TestAutomaticDomainCommitRequiresRuntimeConsumer(t *testing.T) {
 	fake := newFakeAdapter()
 	srv, ts, _, _, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
 	defer ts.Close()
@@ -240,14 +272,56 @@ func TestAutomaticDomainCommitUsesRouteOnlyWithoutFullApply(t *testing.T) {
 		Domain: "verified.example", ETLDPlusOne: "verified.example", Category: "GEO_LOCKED", Confidence: 1,
 		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true},
 	})
-	if !result.Applied || result.RolledBack {
-		t.Fatalf("automatic route-only assignment did not commit: %+v", result)
+	if result.Applied || result.Reason != "route_assignment_runtime_unavailable" {
+		t.Fatalf("assignment without runtime consumer was not fenced: %+v", result)
 	}
 	if calls := fakeAdapterCallCount(fake); calls != 0 {
 		t.Fatalf("automatic discovery invoked the adapter despite route-only being unavailable: %d calls", calls)
 	}
+	if _, ok, err := srv.domainDecisions.Lookup("verified.example", srv.activeRevision, time.Now().UTC()); err != nil || ok {
+		t.Fatalf("fenced assignment persisted a decision: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestAutomaticDomainCommitRequiresSemanticRuntimeReceipt(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, ts, _, _, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer ts.Close()
+	defer srv.Close()
+	runtime := &fakeRouteAssignmentRuntime{}
+	srv.routeAssignmentRuntime = runtime
+	srv.probeEngineFactory = func(*config.Config) health.ProbeEngine {
+		return routeAssignmentProofEngine{revision: srv.activeRevision}
+	}
+
+	result := srv.commitAutomaticDomain(context.Background(), planner.DomainCheck{
+		Domain: "verified.example", ETLDPlusOne: "verified.example", Category: "GEO_LOCKED", Confidence: 1,
+		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true},
+	})
+	if !result.Applied || result.RolledBack || runtime.applied != 1 || runtime.rolledBack != 0 {
+		t.Fatalf("verified semantic runtime receipt did not commit: result=%+v runtime=%+v", result, runtime)
+	}
 	if _, ok, err := srv.domainDecisions.Lookup("verified.example", srv.activeRevision, time.Now().UTC()); err != nil || !ok {
-		t.Fatalf("automatic discovery did not persist a revision-bound route decision: ok=%v err=%v", ok, err)
+		t.Fatalf("committed assignment was not persisted: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestAutomaticDomainCommitRollsBackInvalidRuntimeReceipt(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, ts, _, _, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer ts.Close()
+	defer srv.Close()
+	runtime := &fakeRouteAssignmentRuntime{invalid: true}
+	srv.routeAssignmentRuntime = runtime
+	result := srv.commitAutomaticDomain(context.Background(), planner.DomainCheck{
+		Domain: "invalid-receipt.example", ETLDPlusOne: "invalid-receipt.example", Category: "GEO_LOCKED", Confidence: 1,
+		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true},
+	})
+	if result.Applied || !result.RolledBack || runtime.applied != 1 || runtime.rolledBack != 1 {
+		t.Fatalf("invalid runtime receipt was not rolled back: result=%+v runtime=%+v", result, runtime)
+	}
+	if _, ok, err := srv.domainDecisions.Lookup("invalid-receipt.example", srv.activeRevision, time.Now().UTC()); err != nil || ok {
+		t.Fatalf("invalid receipt left a selected decision: ok=%v err=%v", ok, err)
 	}
 }
 

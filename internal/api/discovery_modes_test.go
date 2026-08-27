@@ -272,6 +272,7 @@ func TestDiscoverySuggestionApplyCommitsRevisionBoundRouteAssignment(t *testing.
 	fake := newFakeAdapter()
 	srv, _ := newDiscoveryModeServer(t, "suggest", true, fake)
 	defer srv.Close()
+	srv.routeAssignmentRuntime = &fakeRouteAssignmentRuntime{}
 	srv.saveDiscoverySuggestion(discovery.Observation{Domain: "apply.example", QueryType: "A"}, planner.DomainCheck{
 		Domain: "apply.example", ETLDPlusOne: "apply.example", Category: "GEO_LOCKED", Confidence: 0.99,
 		ClassificationConfidence: 0.95, ClassificationSource: "fixture", ClassificationEvidence: "geo_match",
@@ -296,6 +297,26 @@ func TestDiscoverySuggestionApplyCommitsRevisionBoundRouteAssignment(t *testing.
 	items := srv.discoverySuggestions(10)
 	if len(items) != 1 || items[0].PolicyState != "applied" {
 		t.Fatalf("suggestion was not marked applied: %+v", items)
+	}
+}
+
+func TestDiscoverySuggestionApplyIsFencedWithoutRuntimeConsumer(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, _ := newDiscoveryModeServer(t, "suggest", true, fake)
+	defer srv.Close()
+	srv.saveDiscoverySuggestion(discovery.Observation{Domain: "fenced.example", QueryType: "A"}, planner.DomainCheck{
+		Domain: "fenced.example", ETLDPlusOne: "fenced.example", Category: "GEO_LOCKED", Confidence: 0.99,
+		ClassificationConfidence: 0.95, ClassificationSource: "fixture", ClassificationEvidence: "geo_match",
+		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true, Status: "OK", ExternalCountry: "DE", EgressConsensus: true},
+	})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/discovery/suggestions/fenced.example/apply", strings.NewReader("{}"))
+	srv.handleDiscoverySuggestionAction(recorder, request)
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "route_assignment_runtime_unavailable") {
+		t.Fatalf("missing runtime consumer was not exposed as a safe conflict: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if items := srv.discoverySuggestions(10); len(items) != 1 || items[0].PolicyState != "suggested" {
+		t.Fatalf("fenced suggestion was not retained for later retry: %+v", items)
 	}
 }
 

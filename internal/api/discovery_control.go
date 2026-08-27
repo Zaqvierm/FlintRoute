@@ -529,6 +529,9 @@ func (s *Server) discoveryAutoAllowed(cfg *config.Config, check planner.DomainCh
 	if mode != "auto_apply_verified" {
 		return errors.New("automatic_route_assignment_disabled")
 	}
+	if s.routeAssignmentRuntime == nil {
+		return errors.New("automatic_route_assignment_runtime_unavailable")
+	}
 	if state.PausedReason != "" {
 		return fmt.Errorf("automatic_route_assignment_paused:%s", state.PausedReason)
 	}

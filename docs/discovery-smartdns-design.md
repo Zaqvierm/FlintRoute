@@ -38,16 +38,22 @@ terminal verified candidate or honest exhaustion result.
   subject and stores a verified suggestion. The user can Apply, Change route or
   Ignore it.
 * `auto_apply_verified` is intentionally narrower than a normal ChangeSet. It
-  may persist a revision-bound domain-to-route assignment only when the route
-  already exists, is enabled and healthy, the selected result is
+  may assign a domain only when a route-only runtime consumer is registered,
+  the route already exists, is enabled and healthy, the selected result is
   `PathVerified`, service verification succeeded, classification confidence is
   at least 0.8 and the rate/circuit-breaker/transaction fences allow it.
 
+The controller now fails closed when that runtime consumer is absent. It does
+not persist a selected decision or report `applied=true` merely because bbolt
+accepted a record. A consumer must return a semantic, revision-bound receipt
+(`Applied`, `Verified`, request ID, route identity and mapping hash) before the
+decision is persisted; any later failure calls its idempotent rollback.
+
 Auto-apply never installs components, changes Xray/Zapret configuration,
-changes marks, tables, IP rules, DNS topology or service lifecycle. A mapping
-assignment is persisted against the current active revision and is therefore
-safe to discard or expire independently of a full dataplane ChangeSet. Any
-ambiguous result remains a suggestion.
+changes marks, tables, IP rules, DNS topology or service lifecycle. The
+route-only consumer must mutate only exact owned domain mappings. Until a
+production nft/dnsmasq consumer exists, the mode remains suggestion-only and
+the API exposes `route_assignment_runtime_unavailable`.
 
 The suggestion Apply action uses the same route-only path. It is one bounded
 backend operation for the user; it does not expose validate/apply/confirm
@@ -64,12 +70,15 @@ while preserving the original Host and TLS SNI, and complete the configured
 HTTP/TLS/content/region checks. Only that candidate then receives
 `PathVerified=true` and may be selected.
 
-The planner orders candidates by category:
+The planner enumerates eligible candidates by category; this list is not a
+winner order. Every terminal candidate is scored from comparable evidence and
+the selector chooses the best hard-filtered result, subject to hysteresis and
+cooldown:
 
-* GEO locked: Smart DNS, then VLESS, then Drop;
-* TSPU restricted: Zapret, then Smart DNS, then VLESS, then Drop;
-* unknown/direct-preferred: Direct, then Zapret, Smart DNS, VLESS, Drop;
-* direct-only: Direct, then Drop.
+* GEO locked: Smart DNS, VLESS and Drop;
+* TSPU restricted: Zapret, Smart DNS, VLESS and Drop;
+* unknown/direct-preferred: Direct, Zapret, Smart DNS, VLESS and Drop;
+* direct-only: Direct and Drop.
 
 Transport reachability alone is never enough to call Smart DNS usable. A
 resolver can be reachable while its returned address or content path is
