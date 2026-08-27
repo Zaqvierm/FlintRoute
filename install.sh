@@ -853,7 +853,18 @@ service_was_running() {
 health_json_field() {
   field="$1"
   file="$2"
-  tr '{},' '\n' < "$file" | sed -n "s/^[[:space:]]*\"$field\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\"[[:space:]]*$/\1/p" | head -n 1
+  health_parser_bin="$ROUTER_POLICY_BIN"
+  # Parse with the candidate binary when available.  This keeps upgrades from
+  # depending on an older controller that predates the typed parser, while
+  # still failing closed if neither side can provide the command.
+  if [ -x "$SOURCE_BINARY" ]; then
+    health_parser_bin="$SOURCE_BINARY"
+  fi
+  [ -x "$health_parser_bin" ] || {
+    echo "install blocked: typed health parser is unavailable: $ROUTER_POLICY_BIN" >&2
+    return 1
+  }
+  run_bounded "$health_parser_bin" internal-health-field --path "$file" --field "$field"
 }
 
 resolve_control_health_url() {

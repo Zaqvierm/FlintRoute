@@ -34,6 +34,7 @@ import (
 	"router-policy/internal/domaincache"
 	"router-policy/internal/evidence"
 	"router-policy/internal/geoip"
+	"router-policy/internal/healthjson"
 	"router-policy/internal/lifecycle"
 	"router-policy/internal/managementproof"
 	"router-policy/internal/manualimport"
@@ -68,6 +69,22 @@ func run(args []string) error {
 	}
 
 	switch args[0] {
+	case "internal-health-field":
+		fs := flag.NewFlagSet("internal-health-field", flag.ContinueOnError)
+		path := fs.String("path", "", "health response JSON path")
+		field := fs.String("field", "", "allowlisted health field")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 || strings.TrimSpace(*path) == "" || strings.TrimSpace(*field) == "" {
+			return errors.New("usage: router-policy internal-health-field --path HEALTH_JSON --field FIELD")
+		}
+		value, err := healthjson.ReadField(*path, *field)
+		if err != nil {
+			return err
+		}
+		fmt.Println(value)
+		return nil
 	case "run":
 		fs := flag.NewFlagSet("run", flag.ContinueOnError)
 		listen := fs.String("listen", "127.0.0.1:8787", "listen address")
@@ -1399,6 +1416,7 @@ func run(args []string) error {
 func usage() {
 	fmt.Println(`router-policy:
   run [--listen 127.0.0.1:8787]
+  internal-health-field --path HEALTH_JSON --field FIELD
   serve [--listen 127.0.0.1:8787]
   serve-dev [--listen 127.0.0.1:8787]
   auth setup-token [--if-needed]

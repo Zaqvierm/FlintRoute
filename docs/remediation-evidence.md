@@ -55,6 +55,7 @@
 | Гонка recovery/apply | `TestRecoveryTransitionExcludesConcurrentMutation` | PASS | local |
 | Immutable bootstrap | `tests/openwrt-adapter-integration.sh` | PASS | mock |
 | Права родителей installer | `tests/installer-lifecycle.sh` | PASS | mock |
+| Typed health response parsing | `go test ./internal/healthjson`, `router-policy internal-health-field` | PASS | local |
 | Канонические ownership paths | `tests/installer-lifecycle.sh`, `tests/installer-backup.sh` | PASS | mock |
 | Boot guard | `tests/boot-guard-policy.sh`, `tests/boot-guard-service.sh` | PASS | mock |
 | Typed helper boundary | `tests/helper-service.sh`, `go test ./internal/helper` | PASS | local/mock |
@@ -74,6 +75,15 @@
 | ShellCheck | `.tools/shellcheck-v0.11.0/shellcheck.exe -x <tracked shell>` | PASS | local |
 | Полный локальный runner | `tests/run-all.ps1` | PASS, `all_tests_ok=true`, 303.3 s | Windows; Linux части NOT RUN LOCALLY |
 | `git diff --check` | `git diff --check` | PASS | local |
+
+### Installer health parser boundary
+
+`install.sh` no longer extracts health fields with `tr`/`sed` heuristics. It
+delegates to the typed `router-policy internal-health-field` command, which
+accepts only the allowlisted health fields, bounds the response to 1 MiB,
+rejects symlinks/non-regular files and malformed/trailing JSON, and supports
+both the API `data` envelope and a bare fixture. A missing parser or malformed
+response fails the installer health gate closed.
 
 ## Запуски CI на текущей ветке
 
