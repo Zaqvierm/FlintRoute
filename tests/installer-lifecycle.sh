@@ -38,17 +38,18 @@ case "\${1:-}" in
   backup) exit 0 ;;
   internal-verify-state-backup) exit 0 ;;
   internal-health-field)
+    shift
     field=""
     file=""
-    while [ "$#" -gt 0 ]; do
-      case "$1" in
-        --field) field="$2"; shift 2 ;;
-        --path) file="$2"; shift 2 ;;
+    while [ "\$#" -gt 0 ]; do
+      case "\$1" in
+        --field) field="\$2"; shift 2 ;;
+        --path) file="\$2"; shift 2 ;;
         *) exit 2 ;;
       esac
     done
-    [ -n "$field" ] && [ -f "$file" ] || exit 2
-    tr '{},' '\n' < "$file" | sed -n "s/^[[:space:]]*\"$field\"[[:space:]]*:[[:space:]]*\"\([^"]*\)\"[[:space:]]*$/\1/p" | head -n 1
+    [ -n "\$field" ] && [ -f "\$file" ] || exit 2
+    tr '{},' '\n' < "\$file" | sed -n "s/^[[:space:]]*\"\$field\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\"[[:space:]]*$/\1/p" | head -n 1
     ;;
   *) exit 2 ;;
 esac
