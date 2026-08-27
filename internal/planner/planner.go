@@ -95,6 +95,12 @@ func BuildCandidates(cfg *config.Config, domain, serviceName string, opts Option
 }
 
 func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName string, opts Options) (DomainCheck, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if cfg == nil {
+		return DomainCheck{}, errors.New("config is required")
+	}
 	profile, err := resolveService(cfg, domain, serviceName)
 	if err != nil {
 		return DomainCheck{}, err
@@ -383,7 +389,7 @@ func selectionEvidence(result probe.RouteResult) bool {
 		// outcome; a generic HTTP OK must never masquerade as DROP evidence.
 		return strings.EqualFold(result.Status, "DROP") || strings.EqualFold(result.ApplicationStatus, "DROP")
 	}
-	if !strings.EqualFold(result.Status, "OK") || !result.PathVerified || !result.ServiceOK || result.RegionalBlock || result.Status == "REGION_BLOCK" {
+	if !strings.EqualFold(result.Status, "OK") || !result.PathVerified || !result.ServiceOK || result.RegionalBlock || strings.EqualFold(result.Status, "REGION_BLOCK") {
 		return false
 	}
 	// DROP is a verified terminal safety outcome, not a network path. Unknown

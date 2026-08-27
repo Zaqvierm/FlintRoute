@@ -15,6 +15,20 @@ import (
 	"router-policy/internal/tspu"
 )
 
+func TestCheckDomainRejectsNilConfigAndAcceptsNilContextSafely(t *testing.T) {
+	if _, err := CheckDomain(nil, nil, "example.com", "", Options{}); err == nil || err.Error() != "config is required" {
+		t.Fatalf("nil config should fail closed with a stable diagnostic, got %v", err)
+	}
+
+	cfg := discoveryConfig(t)
+	prober := &scriptedProber{results: map[string]probe.RouteResult{
+		"direct": successfulResult("direct", "direct", "rev-active"),
+	}}
+	if check, err := CheckDomain(nil, cfg, "example.com", "", Options{RouteProber: prober, ActiveRevision: "rev-active"}); err != nil || check.Status == "" {
+		t.Fatalf("nil context should be normalized instead of panicking: check=%+v err=%v", check, err)
+	}
+}
+
 func TestGeoLockedCandidatesExcludeDirectAndZapret(t *testing.T) {
 	cfg := &config.Config{
 		Version: 2,
