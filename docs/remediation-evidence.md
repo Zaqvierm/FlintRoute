@@ -34,9 +34,9 @@
 |---|---|---|
 | Go unit/integration, race, vet, форматирование | PASS (локально на текущем HEAD, 2026-08-28) | `go test ./...`, `go test -race ./...`, `go vet ./...`, `gofmt` |
 | Frontend unit/typecheck/build | PASS | 47 Vitest-тестов, `npm run typecheck`, `npm run build` |
-| Browser/responsive UI | PASS | CI run [32615235578](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235578) |
-| Linux nft transition | STALE FOR CURRENT SHA | CI run [32615235570](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235570) |
-| Linux Zapret process-group и Quick contract | STALE FOR CURRENT SHA | CI run [32615235591](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235591) |
+| Browser/responsive UI | PASS | exact-SHA CI run [33123851781](https://github.com/Zaqvierm/FlintRoute/actions/runs/33123851781) |
+| Linux nft transition | PASS | exact-SHA CI run [33123851772](https://github.com/Zaqvierm/FlintRoute/actions/runs/33123851772) |
+| Linux Zapret process-group и Quick contract | PASS | exact-SHA CI run [33123851867](https://github.com/Zaqvierm/FlintRoute/actions/runs/33123851867) |
 | Linux-only harness на Windows | NOT RUN LOCALLY | namespace/procfs/mode требуют Linux |
 | Root-helper privilege split | PASS (service contract; runtime proof pending) | production init запускает controller как `daemon`, root startup и отсутствие helper socket отвергаются; typed helper покрывает global/transaction paths и ограничивает concurrent connections |
 | Route-only assignment dataplane | PARTIAL | revision-bound decision cache и post-probe есть; nft/dnsmasq runtime consumer не доказан |
@@ -101,24 +101,24 @@ response fails the installer health gate closed.
 
 ## Запуски CI и clean-clone evidence
 
-Для исторического code head `b43d56a45ba26fb93ee3609c5eb190ef60bac29a` после push прошли:
+Для текущего code head `1118e6594476fc05f8b52ad4c800327a916cb110` после push прошли:
 
-- nft transition: [32615235570](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235570);
-- Zapret process-group и Quick contract: [32615235591](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235591);
-- UI browser/responsive: [32615235578](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235578).
+- exact-SHA full safety gate: [33123851786](https://github.com/Zaqvierm/FlintRoute/actions/runs/33123851786);
+- nft transition: [33123851772](https://github.com/Zaqvierm/FlintRoute/actions/runs/33123851772);
+- Zapret process-group и Quick contract: [33123851867](https://github.com/Zaqvierm/FlintRoute/actions/runs/33123851867);
+- UI browser/responsive: [33123851781](https://github.com/Zaqvierm/FlintRoute/actions/runs/33123851781).
 
-Эти три run ID относятся к историческому code SHA и не являются evidence для
-текущего `6af275416daf74554bedecaa5d2d3ba4a871b73b`. Для текущего HEAD
-обязательный Linux CI ещё не запускался; до его выполнения строки выше остаются
-`STALE FOR CURRENT SHA`.
+Эти run ID привязаны к exact code SHA `1118e6594476fc05f8b52ad4c800327a916cb110`.
+Документационный HEAD может отличаться от code HEAD, но не меняет исходный
+результат тестов; при изменении кода evidence снова становится stale.
 
 Локальный clean-clone прогон текущего SHA выполнен в
-`H:\LAN\tmp\flintroute-clean-clone-6af2754-20260828-0400` после `npm ci` и
-установки Chromium. `sh tests/run-all.sh` завершился `all_tests_ok=true`;
-внешний Go toolchain был явно передан через `GO`, поэтому это воспроизводимое
-доказательство исходного дерева, но не hermetic toolchain proof. ShellCheck в
-этой среде отсутствовал, а Linux process-group и nft namespace проверки честно
-помечены `NOT RUN LOCALLY`.
+`H:\LAN\Scratch\flintroute-clean-clone-20260828-055346` после `npm ci` и
+установки Chromium. Полный `tests/run-all.ps1` с явно указанными внешними
+`GO_BINARY`, `SHELLCHECK_BINARY` и `GIT_BASH` завершился `all_tests_ok=true`;
+это воспроизводимое доказательство исходного дерева, но не hermetic toolchain
+proof. Linux process-group и nft namespace проверки на Windows честно помечены
+`NOT RUN LOCALLY`; их PASS получен отдельными exact-SHA Linux CI runs выше.
 
 Исторические запуски для старых code/docs SHA сохранены ниже только для
 археологии и не считаются доказательством текущего кода:
@@ -217,9 +217,11 @@ UI не выдумывает это число.
   ограниченное число concurrent connections и закрывает новые соединения при
   насыщении. Runtime Linux/OpenWrt и hardware proof ещё не выполнены. LAN
   exposure остаётся явным opt-in.
-- Automatic route-only assignment разрешён только в явном
-  `auto_apply_verified` режиме и только для уже enabled route с доказанным
-  `PathVerified`; topology/component apply из discovery запрещён.
+- Automatic route-only assignment сейчас gated: controller сохраняет
+  revision-bound decision и делает post-probe, но production nft/dnsmasq
+  consumer, который материализует mapping, не доказан. Поэтому API не должен
+  выдавать это за фактически применённое dataplane assignment; topology/component
+  apply из discovery запрещён.
 - CPU/FD/socket idle, реальное восстановление после power loss и пользовательский
   hardware flow требуют отдельного read-only gate и не наследуются от CI.
 
