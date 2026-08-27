@@ -52,6 +52,11 @@ jobs:
           npm test -- --run
           npm run build
 
+      - name: Browser interaction and responsive tests
+        run: |
+          npx playwright install --with-deps chromium
+          npm run browser:test
+
       - name: Build reproducible OpenWrt artifacts
         run: sh scripts/build-go.sh
 
