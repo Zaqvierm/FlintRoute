@@ -5,7 +5,7 @@
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `184ac5699eab830fc67e77e8e2e88e55bfbb120c`.
+- Текущий проверяемый code HEAD: `9fe4391be1908a0104326303f344b7080c992144` (installer rollback lease remains armed through post-install checks).
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -57,6 +57,7 @@
 | Права родителей installer | `tests/installer-lifecycle.sh` | PASS | mock |
 | Installer durability sync failure | `tests/installer-durability.sh` | PASS; failure is surfaced and install cannot report success | mock |
 | Export backup synthetic-directory exclusion | `tests/installer-backup.sh` | PASS; archive carries files only, never staging parent modes | mock |
+| Installer post-install rollback fence | `tests/installer-lifecycle.sh` | PASS; rollback is not disarmed before observer/prefix verification, and incomplete verification aborts before backup pruning | mock |
 | Typed health response parsing | `go test ./internal/healthjson`, `router-policy internal-health-field` | PASS | local |
 | HTML/portal response rejection | `go test ./internal/vpnsub -run TestFetchSubscriptionRejectsHTML` | PASS | local |
 | Канонические ownership paths | `tests/installer-lifecycle.sh`, `tests/installer-backup.sh` | PASS | mock |
@@ -160,6 +161,10 @@ response fails the installer health gate closed.
 - Export backup archives omit synthetic staging directories, so even an
   accidental future restore cannot replay installer umask modes onto system
   parents; `tests/installer-backup.sh` asserts the exact file-only member set.
+- Installer rollback remains armed through observer reload and prefix
+  finalization. If either post-install check fails, the install exits through
+  the automatic rollback trap and retention pruning is skipped; the lifecycle
+  fixture asserts the ordering.
 - `NO_SAFE_ROUTE` — только terminal exhaustion; `VERIFYING` не превращается в
   ложный отказ. `route_latency_ms` отделён от `verification_duration_ms`.
 - DNS watcher отслеживает inode/rotation и никогда не обнуляет live dnsmasq log;
