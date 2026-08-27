@@ -603,7 +603,7 @@ printf '%s\n' "$corrupted_output" | grep -F 'snapshot hash mismatch' >/dev/null
 # critical directories all start at 0755.
 PERM_ROOT="$TMP/permission-root"
 PERM_BACKUP="$TMP/permission-backup"
-mkdir -p "$PERM_ROOT/etc/init.d" "$PERM_ROOT/etc/hotplug.d" "$PERM_ROOT/usr/bin" "$PERM_ROOT/usr/lib/router-policy"
+mkdir -p "$PERM_ROOT/etc/init.d" "$PERM_ROOT/etc/hotplug.d" "$PERM_ROOT/usr/bin" "$PERM_ROOT/usr/lib/router-policy" "$PERM_ROOT/tmp/dnsmasq.d"
 for directory in "$PERM_ROOT" "$PERM_ROOT/etc" "$PERM_ROOT/usr" "$PERM_ROOT/usr/bin" "$PERM_ROOT/usr/lib" "$PERM_ROOT/etc/init.d" "$PERM_ROOT/etc/hotplug.d"; do
   chmod 755 "$directory"
 done
@@ -615,12 +615,15 @@ ETC_DIR="$PERM_ROOT/etc/router-policy"
 STATE_DIR="$ETC_DIR/state"
 BACKUP_ROOT="$TMP"
 BACKUP_DIR="$PERM_BACKUP"
+DNSMASQ_DIR="$PERM_ROOT/tmp/dnsmasq.d"
 INSTALL_TARGETS="$PREFIX"
 ENABLE_SERVICES="router-policy"
 CRITICAL_SYSTEM_DIRS="$PERM_ROOT $PERM_ROOT/etc $PERM_ROOT/usr $PERM_ROOT/usr/bin $PERM_ROOT/usr/lib $PERM_ROOT/etc/init.d $PERM_ROOT/etc/hotplug.d"
+printf 'observer-before\n' > "$DNSMASQ_DIR/router-policy.conf"
 snapshot_installation
 printf 'new-runtime\n' > "$PERM_ROOT/usr/lib/router-policy/runtime.txt"
 chmod 700 "$PERM_ROOT/usr/lib/router-policy/runtime.txt"
+printf 'observer-after\n' > "$DNSMASQ_DIR/router-policy.conf"
 # Exercise the same automatic rollback entry point used by a failed install,
 # rather than only calling the restore helper directly.
 set +e
@@ -629,6 +632,7 @@ rollback_status=$?
 set -e
 [ "$rollback_status" -eq 1 ]
 [ "$(cat "$PERM_ROOT/usr/lib/router-policy/runtime.txt")" = "old-runtime" ]
+[ "$(cat "$DNSMASQ_DIR/router-policy.conf")" = "observer-before" ]
 for directory in "$PERM_ROOT" "$PERM_ROOT/etc" "$PERM_ROOT/usr" "$PERM_ROOT/usr/bin" "$PERM_ROOT/usr/lib" "$PERM_ROOT/etc/init.d" "$PERM_ROOT/etc/hotplug.d"; do
   (umask 022; [ "$(stat -c '%a' "$directory")" = "755" ]) || { echo "rollback changed critical parent mode: $directory" >&2; exit 1; }
 done
