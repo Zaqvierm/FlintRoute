@@ -5,7 +5,7 @@
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `932b01ea13dc145e824723773554c63a72e79421` (installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics).
+- Текущий проверяемый code HEAD: `6ce48f0e08273a93adb638c1d9320042589f22c8` (installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools).
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -73,6 +73,8 @@
 | Hotplug boundedness | `tests/hotplug-bounded.sh` | PASS | mock |
 | Cleanup Zapret process group | `tests/zapret-calibration-runtime.sh` | PASS | Linux CI |
 | SSRF и decompression limits | `go test ./internal/remotefetch ./internal/vpnsub ./internal/tspu ./internal/geoip` | PASS | local |
+| HTTP transport/socket cleanup | `go test ./internal/remotefetch -run TestNewClientCloseIdleConnectionsClosesPinnedDialTransport` | PASS; `CloseIdleConnections` closes both wrapper and pinned dial pools; one-shot management/watchdog clients close their idle pools | local |
+| HTTP transport/socket cleanup | `go test ./internal/remotefetch -run TestNewClientCloseIdleConnectionsClosesPinnedDialTransport` | PASS; `CloseIdleConnections` now closes both the request wrapper and its pinned dial transport; management/watchdog one-shot clients also close idle pools | local |
 | Typed Xray input | `go test ./internal/vpnsub` | PASS | local |
 | Resource budget | `go test ./internal/api ./internal/probe` | PASS | local |
 | Запрет unvalidated probe fan-out | `go test ./internal/probe -run TestProbeRouteRejectsUnvalidatedProbeURLFanout` и race-вариант | PASS | local |
