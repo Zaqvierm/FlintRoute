@@ -5,7 +5,7 @@
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `9fe4391be1908a0104326303f344b7080c992144` (installer rollback lease remains armed through post-install checks).
+- Текущий проверяемый code HEAD: `bd095feff78526fcef6a1f74c63cedb1eb12388e` (installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound).
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -58,6 +58,7 @@
 | Installer durability sync failure | `tests/installer-durability.sh` | PASS; failure is surfaced and install cannot report success | mock |
 | Export backup synthetic-directory exclusion | `tests/installer-backup.sh` | PASS; archive carries files only, never staging parent modes | mock |
 | Installer post-install rollback fence | `tests/installer-lifecycle.sh` | PASS; rollback is not disarmed before observer/prefix verification, and incomplete verification aborts before backup pruning | mock |
+| DNS observer install rollback ownership | `tests/installer-lifecycle.sh`, `tests/dns-observer-bootstrap.sh` | PASS; configured observer target is included in the exact snapshot and restored after simulated failure | mock |
 | Typed health response parsing | `go test ./internal/healthjson`, `router-policy internal-health-field` | PASS | local |
 | HTML/portal response rejection | `go test ./internal/vpnsub -run TestFetchSubscriptionRejectsHTML` | PASS | local |
 | Канонические ownership paths | `tests/installer-lifecycle.sh`, `tests/installer-backup.sh` | PASS | mock |
@@ -165,6 +166,9 @@ response fails the installer health gate closed.
   finalization. If either post-install check fails, the install exits through
   the automatic rollback trap and retention pruning is skipped; the lifecycle
   fixture asserts the ordering.
+- The DNS observer fragment is an explicit install target. The lifecycle
+  fixture mutates it after snapshot and proves automatic rollback restores its
+  prior bytes, without touching the dnsmasq parent directory.
 - `NO_SAFE_ROUTE` — только terminal exhaustion; `VERIFYING` не превращается в
   ложный отказ. `route_latency_ms` отделён от `verification_duration_ms`.
 - DNS watcher отслеживает inode/rotation и никогда не обнуляет live dnsmasq log;
