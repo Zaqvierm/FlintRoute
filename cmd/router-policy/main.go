@@ -2116,6 +2116,13 @@ func allowedListenAddress(addr string) bool {
 		return true
 	}
 	if os.Getenv("ROUTER_POLICY_ALLOW_LAN_BIND") == "1" {
+		// The production controller is still root until the non-root/helper
+		// split is complete. A private address is not a privilege boundary:
+		// refuse every non-loopback bind from a root controller, even when an
+		// old init environment carries the legacy LAN opt-in.
+		if processIsRoot() {
+			return false
+		}
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
 			return false
@@ -2132,6 +2139,9 @@ func allowedListenAddress(addr string) bool {
 		return ip != nil && ip.IsPrivate() && !ip.IsUnspecified() && !ip.IsLoopback() && !ip.IsMulticast() && !ip.IsLinkLocalUnicast()
 	}
 	if os.Getenv("ROUTER_POLICY_ALLOW_FIREWALLED_BIND") != "1" {
+		return false
+	}
+	if processIsRoot() {
 		return false
 	}
 	host, port, err := net.SplitHostPort(addr)

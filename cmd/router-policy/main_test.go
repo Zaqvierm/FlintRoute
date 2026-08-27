@@ -223,8 +223,12 @@ func TestLanBindRequiresExplicitOptIn(t *testing.T) {
 
 	t.Setenv("ROUTER_POLICY_ALLOW_LAN_BIND", "1")
 	for _, addr := range []string{"192.168.0.1:8787", "10.0.0.1:8787", "[fd00::1]:8787"} {
-		if !allowedListenAddress(addr) {
-			t.Fatalf("expected private LAN bind %s to be allowed", addr)
+		if processIsRoot() {
+			if allowedListenAddress(addr) {
+				t.Fatalf("root controller must not bind private LAN address %s", addr)
+			}
+		} else if !allowedListenAddress(addr) {
+			t.Fatalf("expected private LAN bind %s to be allowed for non-root controller", addr)
 		}
 	}
 	for _, addr := range []string{"0.0.0.0:8787", "[::]:8787", "169.254.1.1:8787", "203.0.113.1:8787", ":8787"} {
@@ -240,8 +244,12 @@ func TestLanBindRequiresExplicitOptIn(t *testing.T) {
 func TestFirewalledBindRequiresExplicitOptIn(t *testing.T) {
 	t.Setenv("ROUTER_POLICY_ALLOW_FIREWALLED_BIND", "1")
 	for _, addr := range []string{"0.0.0.0:8787", "192.168.8.1:8787", "[::]:8787"} {
-		if !allowedListenAddress(addr) {
-			t.Fatalf("expected explicit firewalled bind %s to be allowed", addr)
+		if processIsRoot() {
+			if allowedListenAddress(addr) {
+				t.Fatalf("root controller must reject firewalled bind %s", addr)
+			}
+		} else if !allowedListenAddress(addr) {
+			t.Fatalf("expected explicit firewalled bind %s to be allowed for non-root controller", addr)
 		}
 	}
 	for _, addr := range []string{":8787", "0.0.0.0:0", "0.0.0.0:bad", "bad"} {
