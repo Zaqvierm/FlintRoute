@@ -5,7 +5,7 @@
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `4f3307605e50cf70db932e50fb89023d27d4264b` (installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools; prefix renames flush their containing directory; corrupt-state rescue artifacts are synced and atomically renamed with unique names).
+- Текущий проверяемый code HEAD: `1118e6594476fc05f8b52ad4c800327a916cb110` (installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools; prefix renames flush their containing directory; corrupt-state rescue artifacts are synced and atomically renamed with unique names; failed Zapret calibration retains at most three private bounded forensic bundles after cleanup).
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -59,6 +59,7 @@
 | Export backup synthetic-directory exclusion | `tests/installer-backup.sh` | PASS; archive carries files only, never staging parent modes | mock |
 | Durable prefix renames | `tests/installer-prefix-switch.sh` | PASS; each prefix rename calls the containing-directory sync helper; ambiguous crash layouts remain fenced | mock/static |
 | Durable corrupt-state forensic artifact | `go test ./internal/state -run TestOpenPreservesUnreadableDatabaseForRescue` | PASS; artifact content is preserved through a synced temporary file and atomic rename; partial temp files are removed | local |
+| Bounded Zapret failure evidence | `tests/zapret-calibration-runtime.sh`, `scripts/calibrate-zapret.sh` | TEST ADDED; Windows runner reports `NOT RUN LOCALLY`; Linux CI must prove failed runs retain status, bounded report tail and process/network baselines in at most three 0700 bundles while success removes staging | Linux CI pending / local shell syntax |
 | Installer post-install rollback fence | `tests/installer-lifecycle.sh` | PASS; rollback is not disarmed before observer/prefix verification, and incomplete verification aborts before backup pruning | mock |
 | DNS observer install rollback ownership | `tests/installer-lifecycle.sh`, `tests/dns-observer-bootstrap.sh` | PASS; configured observer target is included in the exact snapshot and restored after simulated failure | mock |
 | Quick runner machine-output isolation | `tests/zapret-quick-contract.sh`, `scripts/quick-zapret-check.sh` | PASS; nft load diagnostics are stderr-only, preventing BusyBox/nft output from corrupting bounded JSON | mock/static |
