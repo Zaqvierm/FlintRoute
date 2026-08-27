@@ -111,6 +111,7 @@ export type DecisionCard = {
   fallbackPath: string[];
   verified: boolean;
   classificationState: string;
+  classificationReason: string;
   probeState: string;
   policyState: string;
   status: string;
@@ -120,6 +121,9 @@ export type DecisionCard = {
   probeLatencyMS?: number;
   routeLatencyMS?: number;
   routeLatencyAvailable: boolean;
+  endToEndLatencyMS?: number;
+  endToEndLatencyAvailable: boolean;
+  selectionScore?: number;
   verificationDurationMS?: number;
   candidates: unknown[];
   timeline: unknown[];
@@ -127,7 +131,7 @@ export type DecisionCard = {
   raw: EventItem;
 };
 
-export type VerificationPresentation = 'verified' | 'checking' | 'no_safe_route' | 'observed' | 'not_checked' | 'unverified';
+export type VerificationPresentation = 'verified' | 'checking' | 'no_safe_route' | 'blocked' | 'observed' | 'not_checked' | 'unverified';
 
 const decisionTypes = new Set([
   'route.decision',
@@ -300,6 +304,7 @@ export function toDecisionCard(event: EventItem): DecisionCard {
     fallbackPath,
     verified: bool(details, ['path_verified', 'verified', 'data_plane_verified']),
     classificationState: first(details, ['classification_state'], 'unresolved'),
+    classificationReason: first(details, ['classification_reason'], ''),
     probeState: first(details, ['probe_state'], 'unverified'),
     policyState: first(details, ['policy_state'], 'observed'),
     status: humanStatus(status),
@@ -309,6 +314,9 @@ export function toDecisionCard(event: EventItem): DecisionCard {
     probeLatencyMS: Number.isFinite(probeLatency) ? probeLatency : undefined,
     routeLatencyMS: Number.isFinite(probeLatency) ? probeLatency : undefined,
     routeLatencyAvailable,
+    endToEndLatencyMS: Number.isFinite(Number(details.end_to_end_latency_ms)) && bool(details, ['end_to_end_latency_available']) ? Number(details.end_to_end_latency_ms) : undefined,
+    endToEndLatencyAvailable: Number.isFinite(Number(details.end_to_end_latency_ms)) && bool(details, ['end_to_end_latency_available']),
+    selectionScore: Number.isFinite(Number(details.selection_score)) ? Number(details.selection_score) : undefined,
     verificationDurationMS: Number.isFinite(verificationDuration) ? verificationDuration : undefined,
     candidates: asArray(details.candidates),
     timeline: asArray(details.timeline ?? details.evidence_timeline),
@@ -327,6 +335,7 @@ export function decisionVerificationPresentation(decision: Pick<DecisionCard, 'v
   const probeState = textValue(decision.probeState, '').toLowerCase().replace(/[._-]+/g, ' ');
   const verificationState = textValue(decision.details.verification_state, '').toLowerCase().replace(/[._-]+/g, ' ');
   if (['verifying', 'in progress', 'waiting for verification', 'waiting'].includes(probeState) || verificationState === 'in progress') return 'checking';
+  if (probeState === 'drop enforced' || verificationState === 'drop enforced') return 'blocked';
   // NO_SAFE_ROUTE is terminal only with an explicit planner terminal state.
   // A status string or a malformed probe_state alone is not exhaustion
   // evidence; keep it visibly in verification rather than lying to the user.
@@ -339,6 +348,7 @@ export function decisionVerificationPresentation(decision: Pick<DecisionCard, 'v
 }
 
 export function verificationPresentationLabel(presentation: VerificationPresentation): string {
+  if (presentation === 'blocked') return 'Traffic blocked (fail-closed)';
   switch (presentation) {
     case 'verified': return 'Путь подтверждён';
     case 'checking': return 'Проверяется…';

@@ -2,7 +2,8 @@
   "version": 1,
   "services": {
     "openai": {
-      "category": "GEO_LOCKED",
+      "category": "DIRECT_PREFERRED",
+      "classification_seed": "GEO_LOCKED",
       "domains": [
         "chatgpt.com",
         "openai.com",
@@ -12,12 +13,26 @@
         "oaiusercontent.com"
       ],
       "probe_urls": [
-        "https://chatgpt.com/",
-        "https://api.openai.com/v1/models"
+        {
+          "name": "chatgpt-landing",
+          "url": "https://chatgpt.com/",
+          "required": true,
+          "expected_codes": [200, 204, 301, 302, 303, 307, 308],
+          "body_mode": "optional"
+        },
+        {
+          "name": "openai-backend",
+          "url": "https://api.openai.com/v1/models",
+          "required": true,
+          "expected_codes": [200, 401],
+          "body_mode": "optional",
+          "allow_unauthenticated": true,
+          "regional_block_markers": ["unsupported country", "not available in your country"]
+        }
       ],
-      "allowed_paths": ["smart_dns", "vless", "drop"],
-      "forbidden_paths": ["direct", "zapret"],
-      "require_non_ru_egress": true
+      "allowed_paths": ["direct", "zapret", "smart_dns", "vless", "drop"],
+      "forbidden_paths": [],
+      "require_non_ru_egress": false
     },
     "youtube": {
       "category": "TSPU_RESTRICTED",
@@ -81,4 +96,3 @@
     }
   }
 }
-

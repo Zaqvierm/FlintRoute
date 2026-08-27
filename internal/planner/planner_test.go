@@ -44,14 +44,14 @@ func TestGeoLockedCandidatesExcludeDirectAndZapret(t *testing.T) {
 	}
 }
 
-func TestSelectBestPrefersRoutePriorityOverSmallLatencyWin(t *testing.T) {
+func TestSelectBestUsesMeasuredEndToEndLatencyOverRoutePriority(t *testing.T) {
 	results := []probe.RouteResult{
-		{Route: "zapret", RouteType: "zapret", RoutePriority: 20, Status: "OK", PathVerified: true, ServiceOK: true, LatencyMS: 100},
-		{Route: "vless-frankfurt", RouteType: "vless", RoutePriority: 50, Status: "OK", PathVerified: true, ServiceOK: true, LatencyMS: 70},
+		{Route: "zapret", RouteType: "zapret", RoutePriority: 20, Status: "OK", PathVerified: true, ServiceOK: true, EndToEndLatencyMS: 100, EndToEndLatencyAvailable: true},
+		{Route: "vless-frankfurt", RouteType: "vless", RoutePriority: 50, Status: "OK", PathVerified: true, ServiceOK: true, EndToEndLatencyMS: 70, EndToEndLatencyAvailable: true},
 	}
 	selected := SelectBest(results)
-	if selected == nil || selected.Route != "zapret" {
-		t.Fatalf("expected zapret to win by priority, got %+v", selected)
+	if selected == nil || selected.Route != "vless-frankfurt" {
+		t.Fatalf("expected lower end-to-end latency to win, got %+v", selected)
 	}
 }
 
@@ -151,15 +151,15 @@ func TestUnknownDomainDirectSuccessIsCachedAndReused(t *testing.T) {
 	if first.Service != "UNKNOWN:example.com" || first.Selected == nil || first.Selected.Route != "direct" || first.Cached {
 		t.Fatalf("unexpected discovery result: %+v", first)
 	}
-	if got := prober.calls; len(got) != 1 || got[0] != "direct" {
-		t.Fatalf("direct success should stop fallback queue: %v", got)
+	if got := prober.calls; !reflect.DeepEqual(got, []string{"direct", "smart-one", "vless-one", "drop"}) {
+		t.Fatalf("all eligible candidates should reach terminal evidence: %v", got)
 	}
 
 	second, err := CheckDomain(context.Background(), cfg, "api.example.com", "", opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !second.Cached || second.Selected == nil || second.Selected.Route != "direct" || len(prober.calls) != 1 {
+	if !second.Cached || second.Selected == nil || second.Selected.Route != "direct" || len(prober.calls) != 4 {
 		t.Fatalf("cached decision was not reused: %+v calls=%v", second, prober.calls)
 	}
 	if first.VerificationDurationMS <= 0 || second.VerificationDurationMS != first.VerificationDurationMS {
@@ -295,7 +295,7 @@ func TestCachedDecisionRetainsClassificationMetadata(t *testing.T) {
 	if first.ClassificationConfidence != match.Confidence || second.ClassificationConfidence != match.Confidence || second.ClassificationSource != match.Source || second.ClassificationEvidence != match.Evidence {
 		t.Fatalf("classification metadata was not persisted independently: first=%+v second=%+v", first, second)
 	}
-	if second.Confidence != 1 || len(prober.calls) != 1 {
+	if second.Confidence != 1 || len(prober.calls) != 4 {
 		t.Fatalf("cached route decision was not reused independently: second=%+v calls=%v", second, prober.calls)
 	}
 }
@@ -380,8 +380,8 @@ func TestCachedNoMatchDecisionIsInvalidatedByFreshTSPUMatch(t *testing.T) {
 	if result.Cached || result.Selected == nil || result.Selected.Route != "zapret" {
 		t.Fatalf("fresh TSPU signal reused unsafe cached direct route: %+v", result)
 	}
-	if len(prober.calls) != 2 || prober.calls[1] != "zapret" {
-		t.Fatalf("expected a fresh Zapret probe, calls=%v", prober.calls)
+	if !reflect.DeepEqual(prober.calls, []string{"direct", "smart-one", "vless-one", "drop", "zapret", "smart-one", "vless-one", "drop"}) {
+		t.Fatalf("expected a fresh TSPU candidate set, calls=%v", prober.calls)
 	}
 }
 
@@ -429,7 +429,7 @@ func TestDirectTSPUSymptomFallsBackToZapret(t *testing.T) {
 	if result.Selected == nil || result.Selected.Route != "zapret" {
 		t.Fatalf("zapret fallback not selected: %+v", result)
 	}
-	if got := prober.calls; len(got) != 2 || got[0] != "direct" || got[1] != "zapret" {
+	if got := prober.calls; !reflect.DeepEqual(got, []string{"direct", "zapret", "smart-one", "vless-one", "drop"}) {
 		t.Fatalf("wrong fallback order: %v", got)
 	}
 }
@@ -447,8 +447,8 @@ func TestOrdinaryDirectFailureSkipsZapretAndTriesSmartDNS(t *testing.T) {
 	if result.Selected == nil || result.Selected.Route != "smart-one" {
 		t.Fatalf("Smart DNS fallback not selected: %+v", result)
 	}
-	if got := prober.calls; len(got) != 2 || got[0] != "direct" || got[1] != "smart-one" {
-		t.Fatalf("ordinary failure must not invoke Zapret: %v", got)
+	if got := prober.calls; !reflect.DeepEqual(got, []string{"direct", "smart-one", "vless-one", "drop"}) {
+		t.Fatalf("ordinary failure must not invoke Zapret, but alternatives must finish: %v", got)
 	}
 }
 
@@ -464,13 +464,13 @@ func TestFreshTSPUMatchStartsWithZapret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Selected == nil || result.Selected.Route != "zapret" || len(prober.calls) != 1 || prober.calls[0] != "zapret" {
+	if result.Selected == nil || result.Selected.Route != "zapret" || !reflect.DeepEqual(prober.calls, []string{"zapret", "smart-one", "vless-one", "drop"}) {
 		t.Fatalf("fresh TSPU match did not start with Zapret: %+v calls=%v", result, prober.calls)
 	}
 }
 
 func TestTSPUFallbackOrderUsesZapretThenSmartDNSThenVLESSThenDrop(t *testing.T) {
-	got := orderForService("TSPU_RESTRICTED", "MATCH", "zapret_first")
+	got := eligibleRouteTypesForService("TSPU_RESTRICTED", "MATCH", "zapret_first")
 	want := []string{"zapret", "smart_dns", "vless", "drop"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("TSPU fallback order = %v, want %v", got, want)
@@ -494,7 +494,7 @@ func TestTSPUCheckFallsBackFromZapretToSmartDNSBeforeVLESS(t *testing.T) {
 	if result.Selected == nil || result.Selected.Route != "smart-one" {
 		t.Fatalf("Smart DNS was not selected after Zapret failed: %+v", result)
 	}
-	want := []string{"zapret", "smart-one"}
+	want := []string{"zapret", "smart-one", "vless-one", "drop"}
 	if !reflect.DeepEqual(prober.calls, want) {
 		t.Fatalf("unexpected TSPU fallback calls=%v", prober.calls)
 	}
@@ -516,8 +516,8 @@ func TestRegionalBlockRemovesDirectAndZapretFromRemainingQueue(t *testing.T) {
 	if result.Category != "GEO_LOCKED" || result.Selected == nil || result.Selected.Route != "smart-one" {
 		t.Fatalf("regional fallback failed: %+v", result)
 	}
-	if got := prober.calls; len(got) != 2 || got[0] != "direct" || got[1] != "smart-one" {
-		t.Fatalf("Zapret was not excluded after regional block: %v", got)
+	if got := prober.calls; !reflect.DeepEqual(got, []string{"direct", "smart-one", "vless-one", "drop"}) {
+		t.Fatalf("regional block must exclude Zapret but finish safe candidates: %v", got)
 	}
 	if len(prober.services) < 2 || !prober.services[1].RequireNonRUEgress || prober.services[1].Category != "GEO_LOCKED" {
 		t.Fatalf("GEO_LOCKED evidence requirements not applied to fallback: %+v", prober.services)
@@ -634,10 +634,19 @@ func (p *scriptedProber) ProbeRoute(_ context.Context, _ *config.Config, domain,
 }
 
 func successfulResult(tag, routeType, revision string) probe.RouteResult {
-	return probe.RouteResult{
+	result := probe.RouteResult{
 		Route: tag, RouteType: routeType, Status: "OK", ApplicationStatus: "OK",
 		PathVerified: true, ServiceOK: true, AdapterRevision: revision,
+		EndToEndLatencyMS: 50, EndToEndLatencyAvailable: true,
 	}
+	if routeType == "drop" {
+		result.ApplicationStatus = "DROP"
+	}
+	if routeType == "smart_dns" || routeType == "vless" {
+		result.ExternalCountry = "DE"
+		result.EgressConsensus = true
+	}
+	return result
 }
 
 func failedResult(tag, routeType, reason string) probe.RouteResult {

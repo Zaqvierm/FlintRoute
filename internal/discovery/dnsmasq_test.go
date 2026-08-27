@@ -365,6 +365,22 @@ func TestWatcherDrainsPathologicalLineBeyondPassBudget(t *testing.T) {
 	}
 }
 
+func TestWatcherDoesNotLoopOnUnterminatedOversizedLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dns.log")
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", 9<<20)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	watcher := Watcher{Path: path, MaxBytes: 1 << 20, Emit: func(context.Context, Observation) {}}
+	first, _, err := watcher.readFrom(context.Background(), 0, watcher.MaxBytes)
+	if err != nil || first <= 0 {
+		t.Fatalf("unterminated oversized line made no bounded progress: offset=%d err=%v", first, err)
+	}
+	second, _, err := watcher.readFrom(context.Background(), first, watcher.MaxBytes)
+	if err != nil || second <= first {
+		t.Fatalf("discarded malformed tail was rewound or pinned: first=%d second=%d err=%v", first, second, err)
+	}
+}
+
 func TestWatcherDoesNotDuplicateStableTail(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dns.log")
 	if err := os.WriteFile(path, []byte("dnsmasq: query[A] stable.example from 192.0.2.10\n"), 0o600); err != nil {

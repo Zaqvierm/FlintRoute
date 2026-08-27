@@ -239,7 +239,7 @@ func servicesForZapretTest(active *config.Config, domain string) (map[string]con
 		services[owner] = config.Service{
 			Category: "TSPU_RESTRICTED", Domains: []string{domain},
 			AllowedPaths: []string{"zapret", "smart_dns", "vless", "drop"}, SelectedRouteTag: "zapret",
-			ProbeURLs: []config.ProbeCheck{{Name: "managed-zapret", URL: "https://" + domain + "/", Required: true, ExpectedCodes: []int{200, 204, 301, 302, 307, 308, 401, 403}, BodyMode: "optional"}},
+			ProbeURLs: []config.ProbeCheck{{Name: "managed-zapret", URL: "https://" + domain + "/", Required: true, ExpectedCodes: []int{200, 204, 301, 302, 303, 307, 308}, BodyMode: "optional"}},
 		}
 		return services, nil
 	}

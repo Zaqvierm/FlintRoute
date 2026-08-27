@@ -73,7 +73,12 @@ type Storage struct {
 }
 
 type Policy struct {
-	UnknownDomainFirstPath           string `json:"unknown_domain_first_path"`
+	UnknownDomainFirstPath string `json:"unknown_domain_first_path"`
+	// RouteSelectionStrategy controls scoring after the hard evidence filter.
+	// It never changes route eligibility or safety constraints.
+	RouteSelectionStrategy           string `json:"route_selection_strategy,omitempty"`
+	RouteSelectionHysteresisPercent  int    `json:"route_selection_hysteresis_percent,omitempty"`
+	RouteSelectionCooldownSeconds    int    `json:"route_selection_cooldown_seconds,omitempty"`
 	UnknownDomainBackgroundCheck     bool   `json:"unknown_domain_background_check"`
 	RouteHoldSeconds                 int    `json:"route_hold_seconds"`
 	FailAfterConsecutiveErrors       int    `json:"fail_after_consecutive_errors"`
@@ -196,6 +201,7 @@ type Route struct {
 
 type Service struct {
 	Category           string       `json:"category"`
+	ClassificationSeed string       `json:"classification_seed,omitempty"`
 	Domains            []string     `json:"domains"`
 	AllowedPaths       []string     `json:"allowed_paths"`
 	ForbiddenPaths     []string     `json:"forbidden_paths"`
@@ -224,6 +230,7 @@ type ProbeCheck struct {
 	SuccessMarkers       []string `json:"success_markers"`
 	RegionalBlockMarkers []string `json:"regional_block_markers"`
 	BlockMarkers         []string `json:"block_markers"`
+	AllowUnauthenticated bool     `json:"allow_unauthenticated,omitempty"`
 }
 
 func (p *ProbeCheck) UnmarshalJSON(data []byte) error {
@@ -654,6 +661,17 @@ func (c *Config) Validate() error {
 	case "observe_only", "suggest", "auto_apply_verified", "locked":
 	default:
 		return fmt.Errorf("invalid discovery_mode")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Policy.RouteSelectionStrategy)) {
+	case "", "balanced", "fastest", "privacy_first", "fail_closed":
+	default:
+		return fmt.Errorf("invalid route_selection_strategy")
+	}
+	if c.Policy.RouteSelectionHysteresisPercent < 0 || c.Policy.RouteSelectionHysteresisPercent > 90 {
+		return fmt.Errorf("route_selection_hysteresis_percent must be between 0 and 90")
+	}
+	if c.Policy.RouteSelectionCooldownSeconds < 0 || c.Policy.RouteSelectionCooldownSeconds > 86400 {
+		return fmt.Errorf("route_selection_cooldown_seconds must be between 0 and 86400")
 	}
 	if c.Policy.DiscoveryMaxNewRulesPerHour < 0 || c.Policy.DiscoveryMaxNewRulesPerHour > 1000 {
 		return fmt.Errorf("discovery_max_new_rules_per_hour must be between 0 and 1000")

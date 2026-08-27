@@ -14,6 +14,7 @@ import (
 
 	"router-policy/internal/config"
 	"router-policy/internal/discovery"
+	"router-policy/internal/health"
 	"router-policy/internal/planner"
 	"router-policy/internal/platform"
 	"router-policy/internal/probe"
@@ -32,12 +33,15 @@ func newDiscoveryModeServer(t *testing.T, mode string, verified bool, fake *fake
 		calls++
 		return planner.DomainCheck{
 			Domain: domain, ETLDPlusOne: domain, Category: "GEO_LOCKED", Status: "OK", Confidence: 0.99,
-			Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", ApplicationStatus: "OK", PathVerified: verified, ServiceOK: true},
+			Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", ApplicationStatus: "OK", PathVerified: verified, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true},
 		}, nil
 	}
 	srv, err := NewServerWithOptions(cfg, Options{Provider: platform.DevelopmentMockProvider{}, ProductionAdapter: fake, Development: true, DomainChecker: checker})
 	if err != nil {
 		t.Fatal(err)
+	}
+	srv.probeEngineFactory = func(*config.Config) health.ProbeEngine {
+		return routeAssignmentProofEngine{revision: srv.activeRevision}
 	}
 	return srv, &calls
 }
@@ -131,6 +135,9 @@ func TestPlannerProbeStateNeverTreatsVerificationAsNoSafeRoute(t *testing.T) {
 	}
 	if got := plannerProbeState(planner.DomainCheck{Status: "SELECTED", VerificationState: "verified", Selected: &probe.RouteResult{PathVerified: false}}); got != "verifying" {
 		t.Fatalf("unverified candidate mapped to %q", got)
+	}
+	if got := plannerProbeState(planner.DomainCheck{Status: "DROP", VerificationState: "verified", Selected: &probe.RouteResult{RouteType: "drop", Status: "DROP"}}); got != "drop_enforced" {
+		t.Fatalf("terminal DROP mapped to %q", got)
 	}
 }
 
@@ -256,7 +263,7 @@ func TestDiscoverySuggestKeepsBoundedSuggestionWithoutApply(t *testing.T) {
 	if len(items) != 1 || items[0].Domain != "suggest.example" || !items[0].PathVerified || len(fake.calls) != 0 {
 		t.Fatalf("suggest mode result=%+v adapter=%v", items, fake.calls)
 	}
-	if items[0].ClassificationState != "classified" || items[0].ProbeState != "verified_candidate" || items[0].PolicyState != "suggested" {
+	if items[0].ClassificationState != "UNKNOWN" || items[0].ProbeState != "verified_candidate" || items[0].PolicyState != "suggested" {
 		t.Fatalf("suggest mode mixed classification, probe and policy states: %+v", items[0])
 	}
 }
@@ -268,7 +275,7 @@ func TestDiscoverySuggestionApplyCommitsRevisionBoundRouteAssignment(t *testing.
 	srv.saveDiscoverySuggestion(discovery.Observation{Domain: "apply.example", QueryType: "A"}, planner.DomainCheck{
 		Domain: "apply.example", ETLDPlusOne: "apply.example", Category: "GEO_LOCKED", Confidence: 0.99,
 		ClassificationConfidence: 0.95, ClassificationSource: "fixture", ClassificationEvidence: "geo_match",
-		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true, Status: "OK"},
+		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true, Status: "OK", ExternalCountry: "DE", EgressConsensus: true},
 	})
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/discovery/suggestions/apply.example/apply", strings.NewReader("{}"))
@@ -350,6 +357,20 @@ func TestDiscoverySuggestionSeparatesClassificationAndDecisionConfidence(t *test
 	item := items[0]
 	if item.DecisionConfidence != 1 || item.ClassificationConfidence != 0.42 || item.ClassificationSource != "fixture" || item.ClassificationEvidence != "curated_match" {
 		t.Fatalf("confidence fields were mixed or dropped: %+v", item)
+	}
+}
+
+func TestDiscoverySuggestionDoesNotPersistDropAsUsableRoute(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, _ := newDiscoveryModeServer(t, "suggest", true, fake)
+	defer srv.Close()
+	srv.saveDiscoverySuggestion(discovery.Observation{Domain: "blocked.example", QueryType: "A"}, planner.DomainCheck{
+		Domain: "blocked.example", Category: "GEO_LOCKED", Status: "DROP", VerificationState: "verified",
+		Selected: &probe.RouteResult{Route: "drop", RouteType: "drop", Status: "OK", ApplicationStatus: "DROP"},
+	})
+	items := srv.discoverySuggestions(10)
+	if len(items) != 1 || items[0].Route != "" || items[0].PathVerified || items[0].ProbeState != "drop_enforced" {
+		t.Fatalf("DROP was persisted as a usable suggestion: %+v", items)
 	}
 }
 

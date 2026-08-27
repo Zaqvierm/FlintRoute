@@ -223,6 +223,8 @@ export type ZapretCalibrationAttempt = {
   nfqueue_counter_delta?: number;
   latency_ms?: number;
   verification_duration_ms?: number;
+  classification_state?: string;
+  classification_reason?: string;
   http_status?: number;
   error_code?: string;
   error?: string;
@@ -449,6 +451,8 @@ export type ServiceVerification = {
   domain: string;
   status: string;
   verification_state: string;
+  classification_state?: string;
+  classification_reason?: string;
   reason?: string;
   error_code?: string;
   error?: string;
@@ -458,6 +462,10 @@ export type ServiceVerification = {
   selected_route_type?: string;
   path_verified: boolean;
   route_latency_ms?: number;
+  route_latency_available?: boolean;
+  end_to_end_latency_ms?: number;
+  end_to_end_latency_available?: boolean;
+  selection_score?: number;
   evidence_persisted: number;
   candidates: unknown[];
 };

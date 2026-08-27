@@ -2,6 +2,9 @@ package planner
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -32,15 +35,16 @@ type Options struct {
 }
 
 type CandidatePlan struct {
-	Domain       string         `json:"domain"`
-	ETLDPlusOne  string         `json:"etld_plus_one"`
-	Service      string         `json:"service"`
-	Category     string         `json:"category"`
-	Unknown      bool           `json:"unknown"`
-	TSPUStatus   string         `json:"tspu_status"`
-	PolicySource string         `json:"policy_source,omitempty"`
-	OverrideID   string         `json:"override_id,omitempty"`
-	Candidates   []config.Route `json:"candidates"`
+	Domain        string         `json:"domain"`
+	ETLDPlusOne   string         `json:"etld_plus_one"`
+	Service       string         `json:"service"`
+	Category      string         `json:"category"`
+	Unknown       bool           `json:"unknown"`
+	TSPUStatus    string         `json:"tspu_status"`
+	PolicySource  string         `json:"policy_source,omitempty"`
+	OverrideID    string         `json:"override_id,omitempty"`
+	InventoryHash string         `json:"candidate_inventory_hash,omitempty"`
+	Candidates    []config.Route `json:"candidates"`
 }
 
 type DomainCheck struct {
@@ -58,6 +62,10 @@ type DomainCheck struct {
 	ClassificationConfidence float64             `json:"classification_confidence"`
 	ClassificationSource     string              `json:"classification_source,omitempty"`
 	ClassificationEvidence   string              `json:"classification_evidence,omitempty"`
+	ClassificationState      string              `json:"classification_state"`
+	ClassificationReason     string              `json:"classification_reason,omitempty"`
+	InitialUnknownPolicy     string              `json:"initial_unknown_policy,omitempty"`
+	CandidateInventoryHash   string              `json:"candidate_inventory_hash,omitempty"`
 	VerificationState        string              `json:"verification_state"`
 	VerificationDurationMS   int64               `json:"verification_duration_ms,omitempty"`
 	Results                  []probe.RouteResult `json:"results"`
@@ -118,7 +126,10 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 	out := DomainCheck{
 		Domain: profile.domain, ETLDPlusOne: profile.base, Service: profile.name,
 		Category: profile.service.Category, TSPUStatus: plan.TSPUStatus, Status: "VERIFYING",
-		VerificationState: "in_progress", CheckedAt: now,
+		VerificationState: "in_progress", CandidateInventoryHash: plan.InventoryHash, CheckedAt: now,
+	}
+	if profile.unknown {
+		out.InitialUnknownPolicy = initialUnknownPolicy(cfg.Policy)
 	}
 	out.ClassificationConfidence, out.ClassificationSource, out.ClassificationEvidence = classificationMetadata(profile, opts.TSPUResult)
 	if profile.override != nil {
@@ -175,7 +186,10 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 			directAttempted = true
 			directLookedLikeTSPU = looksLikeTSPU(result)
 		}
-		if result.RegionalBlock || result.Status == "REGION_BLOCK" {
+		// A regional denial is only a classification signal when it came from
+		// the direct baseline.  A failed alternate route must not by itself
+		// rewrite the service policy or make every other route ineligible.
+		if route.Type == "direct" && (result.RegionalBlock || result.Status == "REGION_BLOCK") {
 			regionalBlock = true
 			service.Category = "GEO_LOCKED"
 			service.RequireNonRUEgress = true
@@ -183,16 +197,10 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 			service.ForbiddenPaths = []string{"direct", "zapret"}
 			out.Category = "GEO_LOCKED"
 		}
-		if verifiedSuccess(result) {
-			selected := result
-			out.Selected = &selected
-			out.Status = "SELECTED"
-			if route.Type == "drop" {
-				out.Status = "DROP"
-				out.Reason = "no_safe_route_drop_enforced"
-			} else {
-				out.Reason = "best_verified_policy_allowed_route"
-			}
+		// An exact user override is an explicit policy decision. Keep the
+		// verified override route and retain DROP only as its failure fallback;
+		// do not benchmark unrelated routes against a forced choice.
+		if profile.override != nil && selectionEvidence(result) {
 			break
 		}
 	}
@@ -205,6 +213,42 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 		out.VerificationDurationMS = time.Since(verificationStarted).Milliseconds()
 		return out, nil
 	}
+	// Score is computed only after all terminal evidence has been collected.
+	// Expose the same score that drives selection so the UI cannot invent a
+	// ranking from route order or verification duration.
+	for i := range out.Results {
+		route, ok := routeForResult(cfg, out.Results[i])
+		if ok && config.PathAllowed(service, route, cfg.Policy) && selectionEvidence(out.Results[i]) {
+			out.Results[i].SelectionScore = selectionScore(out.Results[i], cfg.Policy, opts.HealthTracker)
+		}
+	}
+	allowedResults := make([]probe.RouteResult, 0, len(out.Results))
+	for _, result := range out.Results {
+		route, ok := routeForResult(cfg, result)
+		if !ok || !config.PathAllowed(service, route, cfg.Policy) || !selectionEvidence(result) {
+			continue
+		}
+		if service.RequireNonRUEgress && route.Type != "drop" {
+			country := strings.ToUpper(strings.TrimSpace(result.ExternalCountry))
+			if !result.EgressConsensus || country == "" || country == "RU" {
+				continue
+			}
+		}
+		allowedResults = append(allowedResults, result)
+	}
+	currentRoute := service.SelectedRouteTag
+	if currentRoute == "" {
+		currentRoute = currentHealthyRoute(opts.HealthTracker)
+	}
+	if selected := SelectBestWithPolicy(allowedResults, cfg.Policy, currentRoute, opts.HealthTracker); selected != nil {
+		out.Selected = selected
+		out.Status = "SELECTED"
+		out.Reason = "best_verified_policy_allowed_route"
+		if selected.RouteType == "drop" {
+			out.Status = "DROP"
+			out.Reason = "no_safe_route_drop_enforced"
+		}
+	}
 	if out.Selected == nil {
 		out.Status = "NO_SAFE_ROUTE"
 		out.VerificationState = "terminal_no_safe_route"
@@ -212,6 +256,7 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 	} else {
 		out.VerificationState = "verified"
 	}
+	out.ClassificationState, out.ClassificationReason = classifyEvidence(profile, out.Results, plan.TSPUStatus)
 
 	out.CheckedAt = optionNow(opts)
 	out.VerificationDurationMS = time.Since(verificationStarted).Milliseconds()
@@ -225,7 +270,9 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 	if profile.unknown && profile.override == nil && opts.DecisionCache != nil && opts.ActiveRevision != "" && out.Selected != nil {
 		decision := domaincache.Decision{
 			Service: profile.name, Category: out.Category, TSPUStatus: out.TSPUStatus,
-			Status: out.Status, Reason: out.Reason, AdapterRevision: opts.ActiveRevision,
+			ClassificationState: out.ClassificationState, ClassificationReason: out.ClassificationReason,
+			CandidateInventoryHash: plan.InventoryHash,
+			Status:                 out.Status, Reason: out.Reason, AdapterRevision: opts.ActiveRevision,
 			Confidence: out.Confidence, ClassificationConfidence: out.ClassificationConfidence,
 			ClassificationSource: out.ClassificationSource, ClassificationEvidence: out.ClassificationEvidence,
 			VerificationDurationMS: out.VerificationDurationMS, Results: out.Results, CheckedAt: out.CheckedAt,
@@ -240,10 +287,39 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 	return out, nil
 }
 
+func routeForResult(cfg *config.Config, result probe.RouteResult) (config.Route, bool) {
+	if result.Route == "system-default" && result.RouteType == "direct" {
+		// Unknown-domain observation may probe OpenWrt's already-existing
+		// default path before FlintRoute owns a managed Direct route. Keep this
+		// synthetic candidate eligible for scoring without inventing an owned
+		// dataplane object or making it auto-assignable.
+		return config.Route{Type: "direct", Tag: "system-default", AdapterMode: "system_default"}, true
+	}
+	if cfg == nil {
+		return config.Route{}, false
+	}
+	return cfg.RouteByTag(result.Route)
+}
+
 func SelectBest(results []probe.RouteResult) *probe.RouteResult {
+	return SelectBestWithPolicy(results, config.Policy{}, "", nil)
+}
+
+// ScoreRouteResult exposes the same policy-aware score used by SelectBest for
+// callers that need to render or rank a pre-apply candidate without inventing
+// a second ordering model.
+func ScoreRouteResult(result probe.RouteResult, policy config.Policy, health *probe.HealthTracker) float64 {
+	return selectionScore(result, policy, health)
+}
+
+// SelectBestWithPolicy ranks only candidates that passed the complete safety
+// contract. Policy order is used to build the candidate set, never as a
+// winner. Hysteresis keeps a healthy current route when a new probe is only a
+// negligible improvement.
+func SelectBestWithPolicy(results []probe.RouteResult, policy config.Policy, currentRoute string, health *probe.HealthTracker) *probe.RouteResult {
 	var ok []probe.RouteResult
 	for _, result := range results {
-		if verifiedSuccess(result) {
+		if selectionEvidence(result) {
 			ok = append(ok, result)
 		}
 	}
@@ -251,25 +327,101 @@ func SelectBest(results []probe.RouteResult) *probe.RouteResult {
 		return nil
 	}
 	sort.SliceStable(ok, func(i, j int) bool {
-		return resultRank(ok[i]) < resultRank(ok[j])
+		left, right := selectionScore(ok[i], policy, health), selectionScore(ok[j], policy, health)
+		if left != right {
+			return left < right
+		}
+		return ok[i].Route < ok[j].Route
 	})
-	return &ok[0]
+	best := ok[0]
+	if currentRoute == "" || best.Route == currentRoute {
+		return &best
+	}
+	var current *probe.RouteResult
+	for i := range ok {
+		if ok[i].Route == currentRoute {
+			candidate := ok[i]
+			current = &candidate
+			break
+		}
+	}
+	if current == nil {
+		return &best
+	}
+	// A failed current route is never protected by hysteresis. A current
+	// route with a valid result is held unless the new candidate is materially
+	// better. Defaults intentionally require a 15% improvement.
+	hysteresis := policy.RouteSelectionHysteresisPercent
+	if hysteresis <= 0 {
+		hysteresis = 15
+	}
+	currentScore := selectionScore(*current, policy, health)
+	bestScore := selectionScore(best, policy, health)
+	if health != nil {
+		if h, found := health.Get(current.Route); found && h.State == "unhealthy" {
+			return &best
+		}
+		if cooldown := time.Duration(policy.RouteSelectionCooldownSeconds) * time.Second; cooldown > 0 {
+			if h, found := health.Get(current.Route); found && h.Role == "selected" && !h.LastSuccessAt.IsZero() && time.Since(h.LastSuccessAt) < cooldown {
+				return current
+			}
+		}
+		if h, found := health.Get(best.Route); found && h.ConsecutiveSuccesses > 0 && h.ConsecutiveSuccesses < 2 {
+			return current
+		}
+	}
+	if bestScore >= currentScore*(1-float64(hysteresis)/100) {
+		return current
+	}
+	return &best
 }
 
-func resultRank(result probe.RouteResult) int64 {
-	priority := result.RoutePriority
-	if priority <= 0 {
-		priority = 500
+func selectionEvidence(result probe.RouteResult) bool {
+	if result.RouteType == "drop" {
+		// A successful drop probe may report Status=OK after path proof, but
+		// ApplicationStatus remains DROP. Accept only that explicit safety
+		// outcome; a generic HTTP OK must never masquerade as DROP evidence.
+		return strings.EqualFold(result.Status, "DROP") || strings.EqualFold(result.ApplicationStatus, "DROP")
 	}
-	latency := result.RouteLatencyMS
-	latencyKnown := result.RouteLatencyAvailable
-	if !latencyKnown || latency <= 0 {
-		// Unknown latency must never beat a measured path. Do not fall back to
-		// the legacy LatencyMS field: older evidence used that field for the
-		// whole verification job duration, which is not a network-path metric.
-		latency = 1_000_000_000
+	if !strings.EqualFold(result.Status, "OK") || !result.PathVerified || !result.ServiceOK || result.RegionalBlock || result.Status == "REGION_BLOCK" {
+		return false
 	}
-	return int64(priority)*1_000_000 + latency
+	// DROP is a verified terminal safety outcome, not a network path. Unknown
+	// latency is still valid evidence (it simply ranks after measured paths),
+	// because a route may be proven safe without exposing a timing sample.
+	return true
+}
+
+func selectionLatency(result probe.RouteResult) (int64, bool) {
+	if result.EndToEndLatencyAvailable && result.EndToEndLatencyMS > 0 {
+		return result.EndToEndLatencyMS, true
+	}
+	if result.RouteLatencyAvailable && result.RouteLatencyMS > 0 {
+		return result.RouteLatencyMS, true
+	}
+	return 0, false
+}
+
+func selectionScore(result probe.RouteResult, policy config.Policy, health *probe.HealthTracker) float64 {
+	latency, known := selectionLatency(result)
+	if !known {
+		return 1e15
+	}
+	score := float64(latency)
+	if strings.EqualFold(policy.RouteSelectionStrategy, "privacy_first") && result.RouteType == "direct" {
+		score *= 1.25
+	}
+	if health != nil {
+		if h, ok := health.Get(result.Route); ok {
+			if h.AvailabilityEWMA > 0 && h.AvailabilityEWMA < 1 {
+				score *= 1 + (1-h.AvailabilityEWMA)*0.25
+			}
+			if h.ConsecutiveErrors > 0 {
+				score *= 1 + float64(h.ConsecutiveErrors)*0.1
+			}
+		}
+	}
+	return score
 }
 
 func resolveService(cfg *config.Config, domain, serviceName string) (serviceProfile, error) {
@@ -325,10 +477,11 @@ func buildCandidates(cfg *config.Config, profile serviceProfile, opts Options) C
 		return CandidatePlan{
 			Domain: profile.domain, ETLDPlusOne: profile.base, Service: profile.name,
 			Category: profile.service.Category, Unknown: profile.unknown, TSPUStatus: tspuStatus,
-			PolicySource: profile.override.Source, OverrideID: profile.override.Override.ID, Candidates: candidates,
+			PolicySource: profile.override.Source, OverrideID: profile.override.Override.ID,
+			InventoryHash: hashCandidateInventory(candidates, profile.service, cfg.Policy, tspuStatus, opts.HealthTracker), Candidates: candidates,
 		}
 	}
-	order := orderForService(profile.service.Category, tspuStatus, cfg.Policy.TSPUStalePolicy)
+	eligibleTypes := eligibleRouteTypesForService(profile.service.Category, tspuStatus, cfg.Policy.TSPUStalePolicy)
 	var candidates []config.Route
 	seen := map[string]bool{}
 	// Unknown traffic is still owned by OpenWrt until a FlintRoute policy is
@@ -352,7 +505,7 @@ func buildCandidates(cfg *config.Config, profile serviceProfile, opts Options) C
 			selectedRouteOK = false
 		}
 	}
-	for _, routeType := range order {
+	for _, routeType := range eligibleTypes {
 		routes := cfg.RoutesByType(routeType)
 		if routeType == "drop" && len(routes) == 0 {
 			routes = []config.Route{{Type: "drop", Tag: "drop", Priority: 1000}}
@@ -378,7 +531,7 @@ func buildCandidates(cfg *config.Config, profile serviceProfile, opts Options) C
 	return CandidatePlan{
 		Domain: profile.domain, ETLDPlusOne: profile.base, Service: profile.name,
 		Category: profile.service.Category, Unknown: profile.unknown,
-		TSPUStatus: tspuStatus, Candidates: candidates,
+		TSPUStatus: tspuStatus, InventoryHash: hashCandidateInventory(candidates, profile.service, cfg.Policy, tspuStatus, opts.HealthTracker), Candidates: candidates,
 	}
 }
 
@@ -416,7 +569,10 @@ func firstEnabledRoute(routes []config.Route) (config.Route, bool) {
 	return config.Route{}, false
 }
 
-func orderForService(category, tspuStatus, stalePolicy string) []string {
+// eligibleRouteTypesForService returns policy eligibility only. Its order is a
+// bounded collection order and is never used as the route winner; all returned
+// candidates are probed and later ranked by evidence.
+func eligibleRouteTypesForService(category, tspuStatus, stalePolicy string) []string {
 	switch category {
 	case "DIRECT_ONLY":
 		return []string{"direct"}
@@ -482,16 +638,12 @@ func bindResultToCandidate(result probe.RouteResult, route config.Route, activeR
 	return result
 }
 
-func verifiedSuccess(result probe.RouteResult) bool {
-	return result.Status == "OK" && result.PathVerified && result.ServiceOK
-}
-
 func probeResultTerminal(result probe.RouteResult) bool {
 	switch strings.ToUpper(strings.TrimSpace(result.Status)) {
 	case "", "VERIFYING", "PROBING", "WAITING", "WAITING_FOR_VERIFICATION", "IN_PROGRESS":
 		return false
 	case "FAIL", "OK", "DEGRADED", "NOT_CONFIGURED", "NOT_APPLICABLE", "UNVERIFIED",
-		"RU_EXIT", "REGION_BLOCK", "SUSPECTED_TSPU", "DROP", "TIMEOUT", "ERROR":
+		"RU_EXIT", "REGION_BLOCK", "SUSPECTED_TSPU", "AUTH_REQUIRED", "WAF_OR_RATE_LIMIT", "DROP", "TIMEOUT", "ERROR":
 		return true
 	default:
 		// Unknown evidence is malformed, not proof that the candidate reached
@@ -518,12 +670,17 @@ func cachedCheck(decision domaincache.Decision, plan CandidatePlan, profile serv
 	if decision.AdapterRevision != activeRevision || decision.Service != profile.name || decision.TSPUStatus != plan.TSPUStatus {
 		return DomainCheck{}, false
 	}
+	if decision.CandidateInventoryHash == "" || decision.CandidateInventoryHash != plan.InventoryHash {
+		return DomainCheck{}, false
+	}
 	out := DomainCheck{
 		Domain: profile.domain, ETLDPlusOne: profile.base, Service: decision.Service,
 		Category: decision.Category, TSPUStatus: decision.TSPUStatus, Cached: true,
 		Status: decision.Status, Reason: decision.Reason, Confidence: decision.Confidence,
 		VerificationState: "verified", VerificationDurationMS: decision.VerificationDurationMS,
-		Results: decision.Results, CheckedAt: decision.CheckedAt, ExpiresAt: decision.ExpiresAt,
+		ClassificationState: decision.ClassificationState, ClassificationReason: decision.ClassificationReason,
+		CandidateInventoryHash: decision.CandidateInventoryHash,
+		Results:                decision.Results, CheckedAt: decision.CheckedAt, ExpiresAt: decision.ExpiresAt,
 	}
 	out.ClassificationConfidence, out.ClassificationSource, out.ClassificationEvidence = classificationMetadata(profile, tspu.Match{Status: plan.TSPUStatus})
 	// Persisted classification evidence is independent from route-decision
@@ -548,7 +705,7 @@ func cachedCheck(decision domaincache.Decision, plan CandidatePlan, profile serv
 	}
 	for i := range out.Results {
 		result := out.Results[i]
-		if result.Route == decision.SelectedRoute && result.RouteType == decision.SelectedType && result.AdapterRevision == activeRevision && verifiedSuccess(result) {
+		if result.Route == decision.SelectedRoute && result.RouteType == decision.SelectedType && result.AdapterRevision == activeRevision && selectionEvidence(result) {
 			selected := result
 			out.Selected = &selected
 			return out, true
@@ -580,6 +737,9 @@ func classificationMetadata(profile serviceProfile, match tspu.Match) (float64, 
 		return 1, "explicit_override", "user policy override"
 	}
 	if !profile.unknown {
+		if seed := strings.TrimSpace(profile.service.ClassificationSeed); seed != "" {
+			return 0, "configured_seed", strings.ToLower(seed)
+		}
 		return 1, "configured_service", "configured service classification"
 	}
 	confidence := match.Confidence
@@ -600,10 +760,122 @@ func classificationMetadata(profile serviceProfile, match tspu.Match) (float64, 
 	return confidence, source, evidence
 }
 
+// classifyEvidence keeps service classification separate from route-decision
+// confidence.  A configured seed is only a hint; a live regional marker is
+// confirmed only when an alternate route demonstrates the same service.
+func classifyEvidence(profile serviceProfile, results []probe.RouteResult, tspuStatus string) (string, string) {
+	directRegional := false
+	directTSPU := false
+	alternateFunctional := false
+	for _, result := range results {
+		if result.RouteType == "direct" {
+			directRegional = directRegional || result.RegionalBlock || result.Status == "REGION_BLOCK"
+			directTSPU = directTSPU || result.SuspectedTSPU || result.Status == "SUSPECTED_TSPU"
+			continue
+		}
+		if selectionEvidence(result) && result.RouteType != "drop" {
+			// A differential GEO proof needs a path whose egress is independently
+			// known to be outside the denied region. A merely successful HTTP
+			// response through an RU/unknown egress is not an alternate proof.
+			country := strings.ToUpper(strings.TrimSpace(result.ExternalCountry))
+			if result.EgressConsensus && country != "" && country != "RU" {
+				alternateFunctional = true
+			}
+		}
+	}
+	if directRegional && alternateFunctional {
+		return "CONFIRMED_GEO_LOCKED", "direct regional denial plus functional alternate path"
+	}
+	if directRegional {
+		return "SUSPECTED_GEO_LOCKED", "direct regional denial requires differential verification"
+	}
+	if directTSPU || tspuStatus == "MATCH" || tspuStatus == "STALE_MATCH" {
+		if tspuStatus == "MATCH" {
+			return "CONFIRMED_TSPU", "fresh TSPU evidence"
+		}
+		return "SUSPECTED_TSPU", "TSPU/block evidence without regional confirmation"
+	}
+	if profile.service.ClassificationSeed != "" {
+		return "SEEDED_" + strings.ToUpper(strings.TrimSpace(profile.service.ClassificationSeed)), "configured classification seed is not live proof"
+	}
+	return "UNKNOWN", "no service-specific classification evidence"
+}
+
+func currentHealthyRoute(health *probe.HealthTracker) string {
+	if health == nil {
+		return ""
+	}
+	for _, route := range health.Snapshot() {
+		if route.State == "healthy" && route.Role == "active" {
+			return route.RouteTag
+		}
+	}
+	return ""
+}
+
+func hashCandidateInventory(candidates []config.Route, service config.Service, policy config.Policy, tspuStatus string, health *probe.HealthTracker) string {
+	// Hash the candidate inventory and the service probe/policy contract. This
+	// prevents a cached decision from surviving a manifest or eligibility
+	// change, while sorting a copy keeps health-derived ordering out of the key.
+	copyRoutes := append([]config.Route(nil), candidates...)
+	sort.Slice(copyRoutes, func(i, j int) bool {
+		if copyRoutes[i].Type != copyRoutes[j].Type {
+			return copyRoutes[i].Type < copyRoutes[j].Type
+		}
+		return copyRoutes[i].Tag < copyRoutes[j].Tag
+	})
+	// Include only coarse health fields that affect eligibility/scoring.
+	// Timestamps, counters and EWMA samples are deliberately excluded so a
+	// healthy cache is not invalidated by every successful probe, while a
+	// degraded/unhealthy transition cannot leave a stale route decision active.
+	type healthKey struct {
+		RouteTag   string `json:"route_tag"`
+		State      string `json:"state"`
+		Role       string `json:"role"`
+		LastStatus string `json:"last_status,omitempty"`
+	}
+	var healthKeys []healthKey
+	if health != nil {
+		for _, item := range health.Snapshot() {
+			healthKeys = append(healthKeys, healthKey{
+				RouteTag: item.RouteTag, State: item.State, Role: item.Role,
+				LastStatus: item.LastStatus,
+			})
+		}
+		sort.Slice(healthKeys, func(i, j int) bool { return healthKeys[i].RouteTag < healthKeys[j].RouteTag })
+	}
+	raw, err := json.Marshal(struct {
+		Routes     []config.Route `json:"routes"`
+		Service    config.Service `json:"service"`
+		Policy     config.Policy  `json:"policy"`
+		TSPUStatus string         `json:"tspu_status"`
+		Health     []healthKey    `json:"health,omitempty"`
+	}{Routes: copyRoutes, Service: service, Policy: policy, TSPUStatus: tspuStatus, Health: healthKeys})
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+// initialUnknownPolicy describes only the bounded treatment of the first
+// connection while a passive DNS observation is being classified. It is not a
+// route winner and must not trigger a topology/apply operation.
+func initialUnknownPolicy(policy config.Policy) string {
+	switch strings.ToLower(strings.TrimSpace(policy.UnknownDomainFirstPath)) {
+	case "vless":
+		return "privacy_first"
+	case "drop":
+		return "fail_closed"
+	default:
+		return "balanced"
+	}
+}
+
 func unknownExpectedCodes() []int {
-	codes := make([]int, 0, 205)
+	codes := make([]int, 0, 200)
 	for code := 200; code < 400; code++ {
 		codes = append(codes, code)
 	}
-	return append(codes, 401, 403, 404, 405)
+	return codes
 }

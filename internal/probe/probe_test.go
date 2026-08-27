@@ -103,6 +103,21 @@ func TestProbeHTTP200WithMarker(t *testing.T) {
 	}
 }
 
+func TestProbe403IsTypedAsWAFOrRateLimitNotRegionalBlock(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	result := ProbeRoute(context.Background(), testConfig(), "example.test", "svc", serviceWithProbe(srv.URL, []int{http.StatusOK}, "optional", nil), config.Route{Type: "direct", Tag: "direct"})
+	if result.Status != "WAF_OR_RATE_LIMIT" || result.RegionalBlock || result.ServiceOK {
+		t.Fatalf("403 was misclassified as a service success/geo block: %+v", result)
+	}
+	if len(result.Checks) != 1 || !result.Checks[0].WAFOrRateLimit {
+		t.Fatalf("typed 403 evidence missing: %+v", result)
+	}
+}
+
 type fixedProofVerifier struct {
 	proof evidence.RouteResult
 }
@@ -157,7 +172,7 @@ func TestProbeUnexpected403Fails(t *testing.T) {
 	}
 }
 
-func TestProbeExpected401CanPass(t *testing.T) {
+func TestProbeExpected401IsAuthenticationRequiredNotServiceSuccess(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(401)
 		_, _ = w.Write([]byte("missing api key"))
@@ -165,8 +180,23 @@ func TestProbeExpected401CanPass(t *testing.T) {
 	defer srv.Close()
 
 	result := ProbeRoute(context.Background(), testConfig(), "example.test", "svc", serviceWithProbe(srv.URL, []int{401}, "required", nil), config.Route{Type: "direct", Tag: "direct"})
-	if result.Status != "UNVERIFIED" || result.ApplicationStatus != "OK" {
-		t.Fatalf("expected configured 401 to pass application checks only, got %+v", result)
+	if result.Status != "AUTH_REQUIRED" || result.ApplicationStatus != "AUTH_REQUIRED" || result.ServiceOK {
+		t.Fatalf("401 must remain an authentication result, not service success: %+v", result)
+	}
+}
+
+func TestProbeAllowsExplicitUnauthenticated401(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(401)
+		_, _ = w.Write([]byte("public endpoint requires a token"))
+	}))
+	defer srv.Close()
+
+	check := serviceWithProbe(srv.URL, []int{401}, "optional", nil)
+	check.ProbeURLs[0].AllowUnauthenticated = true
+	result := ProbeRoute(context.Background(), testConfig(), "example.test", "svc", check, config.Route{Type: "direct", Tag: "direct"})
+	if result.ApplicationStatus != "OK" || !result.ServiceOK || result.AuthenticationRequired || len(result.Checks) != 1 || result.Checks[0].Status != "OK" {
+		t.Fatalf("explicit unauthenticated 401 should be a valid service check: %+v", result)
 	}
 }
 
@@ -235,7 +265,7 @@ func TestSmartDNSConnectsToResolvedIP(t *testing.T) {
 	}
 }
 
-func TestSmartDNSGEOPathDoesNotRequireProxyEgressConsensus(t *testing.T) {
+func TestSmartDNSGEOPathRequiresEgressConsensus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("regional content"))
@@ -255,11 +285,11 @@ func TestSmartDNSGEOPathDoesNotRequireProxyEgressConsensus(t *testing.T) {
 	result := ProbeRoute(context.Background(), testConfig(), "smart.test", "geo", service, config.Route{
 		Type: "smart_dns", Tag: "smart", DNSServer: dnsAddr, ConnectToResolvedIP: true,
 	})
-	if result.ApplicationStatus != "OK" || !result.ServiceOK || result.Status != "UNVERIFIED" {
-		t.Fatalf("verified Smart DNS content was rejected as proxy egress failure: %+v", result)
+	if result.ServiceOK || result.Status == "OK" {
+		t.Fatalf("Smart DNS GEO path without egress evidence was accepted: %+v", result)
 	}
-	if result.EgressReason != "" || result.ExternalCountry != "" {
-		t.Fatalf("Smart DNS GEO probe unexpectedly required external-IP consensus: %+v", result)
+	if result.EgressReason == "" {
+		t.Fatalf("missing egress evidence did not produce a diagnostic: %+v", result)
 	}
 }
 

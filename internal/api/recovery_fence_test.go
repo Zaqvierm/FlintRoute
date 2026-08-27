@@ -19,6 +19,17 @@ func fakeAdapterCallCount(fake *fakeAdapter) int {
 	return len(fake.calls)
 }
 
+type routeAssignmentProofEngine struct{ revision string }
+
+func (e routeAssignmentProofEngine) ProbeRoute(_ context.Context, _ *config.Config, domain, service string, _ config.Service, route config.Route) probe.RouteResult {
+	return probe.RouteResult{
+		Domain: domain, Service: service, Route: route.Tag, RouteType: route.Type,
+		Status: "OK", ApplicationStatus: "OK", PathVerified: true, ServiceOK: true,
+		DNSOK: true, TransportOK: true, TLSOK: true, HTTPOK: true, ContentOK: true,
+		ExternalCountry: "DE", EgressConsensus: true, AdapterRevision: e.revision,
+	}
+}
+
 func TestRecoveryMutationFenceBlocksEveryUnsafeStatus(t *testing.T) {
 	for _, status := range []string{"starting", "error", "recovery_required", ""} {
 		t.Run("status_"+status, func(t *testing.T) {
@@ -98,7 +109,6 @@ func TestRecoveryMutationFenceRejectsUnprovenNotRequiredIdentity(t *testing.T) {
 	srv, ts, _, _, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
 	defer ts.Close()
 	defer srv.Close()
-
 	if err := srv.setRecoveryStatus(recoveryStatus{Status: "not_required", RevisionID: "rev_fake", CandidateHash: "sha256:fake"}); err != nil {
 		t.Fatalf("set recovery status: %v", err)
 	}
@@ -205,7 +215,7 @@ func TestAutomaticDomainCommitRespectsRecoveryFence(t *testing.T) {
 			}
 			result := srv.commitAutomaticDomain(nil, planner.DomainCheck{
 				Domain: "blocked.example", Category: "GEO_LOCKED", Confidence: 1,
-				Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true},
+				Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true},
 			})
 			if result.Reason == "" {
 				t.Fatalf("status %q returned an empty blocked reason: %+v", status, result)
@@ -222,10 +232,13 @@ func TestAutomaticDomainCommitUsesRouteOnlyWithoutFullApply(t *testing.T) {
 	srv, ts, _, _, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
 	defer ts.Close()
 	defer srv.Close()
+	srv.probeEngineFactory = func(*config.Config) health.ProbeEngine {
+		return routeAssignmentProofEngine{revision: srv.activeRevision}
+	}
 
 	result := srv.commitAutomaticDomain(context.Background(), planner.DomainCheck{
 		Domain: "verified.example", ETLDPlusOne: "verified.example", Category: "GEO_LOCKED", Confidence: 1,
-		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true},
+		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true},
 	})
 	if !result.Applied || result.RolledBack {
 		t.Fatalf("automatic route-only assignment did not commit: %+v", result)

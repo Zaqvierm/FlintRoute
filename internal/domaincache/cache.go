@@ -26,18 +26,21 @@ type Store interface {
 }
 
 type Decision struct {
-	Key             string `json:"key"`
-	Scope           string `json:"scope"`
-	Domain          string `json:"domain"`
-	ETLDPlusOne     string `json:"etld_plus_one"`
-	Service         string `json:"service"`
-	Category        string `json:"category"`
-	TSPUStatus      string `json:"tspu_status,omitempty"`
-	SelectedRoute   string `json:"selected_route,omitempty"`
-	SelectedType    string `json:"selected_type,omitempty"`
-	Status          string `json:"status"`
-	Reason          string `json:"reason,omitempty"`
-	AdapterRevision string `json:"adapter_revision"`
+	Key                    string `json:"key"`
+	Scope                  string `json:"scope"`
+	Domain                 string `json:"domain"`
+	ETLDPlusOne            string `json:"etld_plus_one"`
+	Service                string `json:"service"`
+	Category               string `json:"category"`
+	ClassificationState    string `json:"classification_state,omitempty"`
+	ClassificationReason   string `json:"classification_reason,omitempty"`
+	TSPUStatus             string `json:"tspu_status,omitempty"`
+	CandidateInventoryHash string `json:"candidate_inventory_hash,omitempty"`
+	SelectedRoute          string `json:"selected_route,omitempty"`
+	SelectedType           string `json:"selected_type,omitempty"`
+	Status                 string `json:"status"`
+	Reason                 string `json:"reason,omitempty"`
+	AdapterRevision        string `json:"adapter_revision"`
 	// Confidence is route-decision confidence. Classification evidence is
 	// persisted separately so cache hits cannot merge the two meanings.
 	Confidence               float64 `json:"confidence"`

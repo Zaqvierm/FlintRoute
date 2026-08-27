@@ -80,15 +80,23 @@ func discoveryCandidateDetails(results []probe.RouteResult) []map[string]any {
 		item := map[string]any{
 			"route": result.Route, "route_type": result.RouteType, "status": result.Status,
 			"path_verified": result.PathVerified, "service_ok": result.ServiceOK,
-			"reason":                   result.ReasonCode,
-			"route_latency_available":  result.RouteLatencyAvailable,
-			"verification_duration_ms": result.VerificationDurationMS,
-			"dns_resolver":             result.DNSResolver, "resolved_ip": result.ResolvedIP,
+			"reason":                       result.ReasonCode,
+			"selection_score":              result.SelectionScore,
+			"regional_block":               result.RegionalBlock,
+			"authentication_required":      result.AuthenticationRequired,
+			"waf_or_rate_limit":            result.WAFOrRateLimit,
+			"route_latency_available":      result.RouteLatencyAvailable,
+			"end_to_end_latency_available": result.EndToEndLatencyAvailable,
+			"verification_duration_ms":     result.VerificationDurationMS,
+			"dns_resolver":                 result.DNSResolver, "resolved_ip": result.ResolvedIP,
 			"connected_ip": result.ConnectedIP, "interface": result.Interface,
 		}
 		if result.RouteLatencyAvailable {
 			item["latency_ms"] = result.RouteLatencyMS
 			item["route_latency_ms"] = result.RouteLatencyMS
+		}
+		if result.EndToEndLatencyAvailable {
+			item["end_to_end_latency_ms"] = result.EndToEndLatencyMS
 		}
 		items = append(items, item)
 	}
@@ -159,13 +167,19 @@ type discoveryControlState struct {
 }
 
 type discoverySuggestion struct {
-	Domain                 string           `json:"domain"`
-	Category               string           `json:"category"`
-	Route                  string           `json:"route,omitempty"`
-	RouteType              string           `json:"route_type,omitempty"`
-	PathVerified           bool             `json:"path_verified"`
-	Candidates             []map[string]any `json:"candidates,omitempty"`
-	VerificationDurationMS int64            `json:"verification_duration_ms,omitempty"`
+	Domain                   string           `json:"domain"`
+	Category                 string           `json:"category"`
+	Route                    string           `json:"route,omitempty"`
+	RouteType                string           `json:"route_type,omitempty"`
+	PathVerified             bool             `json:"path_verified"`
+	ExternalCountry          string           `json:"external_country,omitempty"`
+	EgressConsensus          bool             `json:"egress_consensus"`
+	EndToEndLatencyMS        int64            `json:"end_to_end_latency_ms,omitempty"`
+	EndToEndLatencyAvailable bool             `json:"end_to_end_latency_available"`
+	SelectionScore           float64          `json:"selection_score,omitempty"`
+	CandidateInventoryHash   string           `json:"candidate_inventory_hash,omitempty"`
+	Candidates               []map[string]any `json:"candidates,omitempty"`
+	VerificationDurationMS   int64            `json:"verification_duration_ms,omitempty"`
 	// Confidence is retained as a compatibility alias for route-decision
 	// confidence. New clients must use the explicit fields below.
 	Confidence               float64   `json:"confidence"`
@@ -197,6 +211,10 @@ func plannerProbeState(check planner.DomainCheck) string {
 		case "in_progress":
 			return "verifying"
 		case "verified":
+			if check.Selected != nil && check.Selected.RouteType == "drop" &&
+				(strings.EqualFold(check.Status, "DROP") || strings.EqualFold(check.Selected.Status, "DROP") || strings.EqualFold(check.Selected.ApplicationStatus, "DROP")) {
+				return "drop_enforced"
+			}
 			if check.Selected != nil && check.Selected.PathVerified {
 				return "verified_candidate"
 			}
@@ -206,9 +224,18 @@ func plannerProbeState(check planner.DomainCheck) string {
 		}
 	}
 	switch check.Status {
-	case "SELECTED", "DROP":
+	case "SELECTED":
 		if check.Selected != nil && check.Selected.PathVerified {
 			return "verified_candidate"
+		}
+		return "verifying"
+	case "DROP":
+		// DROP is a terminal, fail-closed safety decision. It is not a
+		// network path and therefore cannot carry PathVerified=true, but it
+		// must not be rendered as an in-progress probe either.
+		if check.Selected != nil && check.Selected.RouteType == "drop" &&
+			(strings.EqualFold(check.Status, "DROP") || strings.EqualFold(check.Selected.Status, "DROP") || strings.EqualFold(check.Selected.ApplicationStatus, "DROP")) {
+			return "drop_enforced"
 		}
 		return "verifying"
 	case "NO_SAFE_ROUTE":
@@ -306,8 +333,12 @@ func (s *Server) handleDiscoverySuggestionAction(w http.ResponseWriter, r *http.
 		Category: suggestion.Category, Confidence: suggestion.DecisionConfidence,
 		ClassificationConfidence: suggestion.ClassificationConfidence,
 		ClassificationSource:     suggestion.ClassificationSource, ClassificationEvidence: suggestion.ClassificationEvidence,
-		Status: "SELECTED", VerificationState: "verified", Selected: &probe.RouteResult{
+		CandidateInventoryHash: suggestion.CandidateInventoryHash,
+		Status:                 "SELECTED", VerificationState: "verified", Selected: &probe.RouteResult{
 			Route: suggestion.Route, RouteType: suggestion.RouteType, PathVerified: true, Status: "OK", ServiceOK: true,
+			ExternalCountry: suggestion.ExternalCountry, EgressConsensus: suggestion.EgressConsensus,
+			EndToEndLatencyMS: suggestion.EndToEndLatencyMS, EndToEndLatencyAvailable: suggestion.EndToEndLatencyAvailable,
+			SelectionScore: suggestion.SelectionScore,
 		},
 	}
 	result := s.commitAutomaticDomain(r.Context(), check)
@@ -318,9 +349,8 @@ func (s *Server) handleDiscoverySuggestionAction(w http.ResponseWriter, r *http.
 	s.recordDiscoveryAutoResult(result)
 	writeData(w, r, map[string]any{
 		"applied": true, "domain": domain, "route": suggestion.Route, "route_type": suggestion.RouteType,
-		// Route-only assignment does not rerun the network probe.  The proof is
-		// the PathVerified evidence already bound to the current active revision
-		// plus the successful durable assignment write.
+		// Route-only assignment is followed by a fresh route/path proof before
+		// the handler reports success; the response is not a cached UI claim.
 		"post_apply_proof": true, "post_apply_proof_kind": "revision_bound_path_evidence",
 	})
 }
@@ -390,13 +420,6 @@ func (s *Server) discoveryObservationStatus() map[string]any {
 		return base
 	}
 	status := "listening"
-	if info.Size() > 0 {
-		status = "stale"
-		if time.Since(info.ModTime()) <= 5*time.Minute {
-			status = "receiving"
-		}
-	}
-	base["status"] = status
 	base["enabled"] = true
 	base["bytes"] = info.Size()
 	base["last_updated"] = info.ModTime().UTC()
@@ -406,11 +429,25 @@ func (s *Server) discoveryObservationStatus() map[string]any {
 	base["emitted"] = s.discoveryEmitted
 	base["dropped"] = s.discoveryDropped
 	emitted := s.discoveryEmitted
+	lastProgress := s.discoveryLastProgress
+	lastEmission := s.discoveryLastEmission
 	s.mu.Unlock()
-	if status == "receiving" && emitted == 0 {
-		base["status"] = "listening"
-		base["status_reason"] = "file_changed_but_no_record_emitted"
+	now := s.discoveryNow()
+	if !lastEmission.IsZero() && now.Sub(lastEmission) <= 5*time.Minute && emitted > 0 {
+		status = "receiving"
+	} else if info.Size() > 0 && now.Sub(info.ModTime()) > 5*time.Minute && lastProgress.IsZero() {
+		// mtime may identify a stale file, but it is deliberately never used
+		// to claim that the observer is receiving. Receiving requires actual
+		// cursor/emission progress from the reader.
+		status = "stale"
+		base["status_reason"] = "cursor_progress_not_observed"
+	} else if !lastProgress.IsZero() && now.Sub(lastProgress) > 5*time.Minute {
+		status = "stale"
+		base["status_reason"] = "cursor_progress_stale"
+	} else if !lastProgress.IsZero() && emitted == 0 {
+		base["status_reason"] = "cursor_progress_without_domain_observation"
 	}
+	base["status"] = status
 	return base
 }
 
@@ -600,26 +637,45 @@ func (s *Server) saveDiscoverySuggestionState(observation discovery.Observation,
 		DecisionConfidence: check.Confidence, ClassificationConfidence: check.ClassificationConfidence,
 		ClassificationSource: check.ClassificationSource, ClassificationEvidence: check.ClassificationEvidence,
 		QueryType: observation.QueryType, ObservedAt: s.discoveryNow(), Reason: "verification is still in progress",
-		ClassificationState: "unresolved", ProbeState: probeState, PolicyState: "suggested",
+		ClassificationState: check.ClassificationState, ProbeState: probeState, PolicyState: "suggested",
 		Candidates: discoveryCandidateDetails(check.Results), VerificationDurationMS: check.VerificationDurationMS,
+		CandidateInventoryHash: check.CandidateInventoryHash,
 	}
-	if probeState == "no_safe_route" {
+	if probeState == "no_safe_route" || probeState == "drop_enforced" {
 		suggestion.Reason = "no verified route selected"
 	}
-	if check.ClassificationConfidence > 0 || (check.ClassificationEvidence != "" && check.ClassificationEvidence != "none" && check.ClassificationEvidence != "unavailable") || check.Category == "GEO_LOCKED" || check.Category == "TSPU_RESTRICTED" {
-		suggestion.ClassificationState = "classified"
+	if suggestion.ClassificationState == "" {
+		suggestion.ClassificationState = "UNKNOWN"
 	}
 	if check.Selected != nil {
-		suggestion.Route = check.Selected.Route
-		suggestion.RouteType = check.Selected.RouteType
-		suggestion.PathVerified = check.Selected.PathVerified
-		suggestion.ProbeState = "verified_candidate"
-		suggestion.Reason = check.Selected.ReasonCode
-		if suggestion.Reason == "" && check.Selected.Reason != nil {
-			suggestion.Reason = *check.Selected.Reason
+		selectedIsDrop := check.Selected.RouteType == "drop" || check.Status == "DROP"
+		if !selectedIsDrop {
+			suggestion.Route = check.Selected.Route
+			suggestion.RouteType = check.Selected.RouteType
+			suggestion.PathVerified = check.Selected.PathVerified
+			suggestion.ProbeState = "verified_candidate"
+		} else {
+			// DROP proves the fail-closed safety outcome, not a usable route.
+			// Keep it in candidate evidence but never persist it as an applied
+			// route that the suggestion action could commit.
+			suggestion.RouteType = "drop"
+			suggestion.PathVerified = false
+			suggestion.ProbeState = "drop_enforced"
+			suggestion.Reason = "no_safe_route_drop_enforced"
 		}
-		if suggestion.Reason == "" {
-			suggestion.Reason = "route selected by verified planner evidence"
+		suggestion.ExternalCountry = check.Selected.ExternalCountry
+		suggestion.EgressConsensus = check.Selected.EgressConsensus
+		suggestion.EndToEndLatencyMS = check.Selected.EndToEndLatencyMS
+		suggestion.EndToEndLatencyAvailable = check.Selected.EndToEndLatencyAvailable
+		suggestion.SelectionScore = check.Selected.SelectionScore
+		if !selectedIsDrop {
+			suggestion.Reason = check.Selected.ReasonCode
+			if suggestion.Reason == "" && check.Selected.Reason != nil {
+				suggestion.Reason = *check.Selected.Reason
+			}
+			if suggestion.Reason == "" {
+				suggestion.Reason = "route selected by verified planner evidence"
+			}
 		}
 	}
 	suggestion.Client = strings.TrimSpace(observation.Client)

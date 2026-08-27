@@ -1,7 +1,6 @@
 package discovery
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -21,6 +20,11 @@ const MaxObservationLogBytes int64 = 1 << 20
 // once their terminating newline is seen.
 const maxObservationLineBytes = 128 << 10
 
+// A malformed line is drained only up to this bounded amount. Once the cap is
+// reached the tail is discarded and the cursor advances, so a writer that
+// never emits a newline cannot pin the watcher forever.
+const maxObservationDrainBytes = 8 << 20
+
 type Observation struct {
 	Domain    string `json:"domain"`
 	QueryType string `json:"query_type"`
@@ -39,6 +43,11 @@ type Watcher struct {
 	// Progress is called after each bounded pass with the durable cursor and
 	// number of emitted records. It is intentionally observational only.
 	Progress func(cursor int64, emitted uint64)
+	// Runtime-only state for an oversized unterminated record that was
+	// explicitly discarded. This prevents boundary validation from rewinding
+	// the same malformed tail on every poll.
+	discardedUntil    int64
+	discardedIdentity string
 }
 
 func ParseDNSMasqLine(line string) (Observation, bool) {
@@ -60,7 +69,7 @@ func ParseDNSMasqLine(line string) (Observation, bool) {
 	return Observation{}, false
 }
 
-func (w Watcher) Run(ctx context.Context) error {
+func (w *Watcher) Run(ctx context.Context) error {
 	if w.Path == "" || w.Emit == nil {
 		return errors.New("DNS observation path and callback are required")
 	}
@@ -107,12 +116,12 @@ func (w Watcher) Run(ctx context.Context) error {
 	}
 }
 
-func (w Watcher) readFrom(ctx context.Context, offset, maxBytes int64) (int64, bool, error) {
+func (w *Watcher) readFrom(ctx context.Context, offset, maxBytes int64) (int64, bool, error) {
 	next, reset, _, err := w.readFromWithIdentity(ctx, offset, maxBytes, "")
 	return next, reset, err
 }
 
-func (w Watcher) readFromWithIdentity(ctx context.Context, offset, maxBytes int64, previousIdentity string) (int64, bool, string, error) {
+func (w *Watcher) readFromWithIdentity(ctx context.Context, offset, maxBytes int64, previousIdentity string) (int64, bool, string, error) {
 	info, err := os.Lstat(w.Path)
 	if err != nil {
 		return offset, false, previousIdentity, err
@@ -124,12 +133,15 @@ func (w Watcher) readFromWithIdentity(ctx context.Context, offset, maxBytes int6
 	reset := (identity != "" && previousIdentity != "" && identity != previousIdentity) || info.Size() < offset
 	if reset {
 		offset = 0
+		w.discardedUntil = 0
+		w.discardedIdentity = ""
 	}
 	file, err := os.Open(w.Path)
 	if err != nil {
 		return offset, false, identity, err
 	}
-	if offset > 0 {
+	allowDiscardedBoundary := offset > 0 && w.discardedIdentity == identity && offset == w.discardedUntil
+	if offset > 0 && !allowDiscardedBoundary {
 		var boundary [1]byte
 		if _, err := file.ReadAt(boundary[:], offset-1); err != nil || boundary[0] != '\n' {
 			offset = 0
@@ -142,90 +154,103 @@ func (w Watcher) readFromWithIdentity(ctx context.Context, offset, maxBytes int6
 	if maxBytes <= 0 {
 		maxBytes = MaxObservationLogBytes
 	}
-	// Cap normal work at maxBytes. A pathological line can be larger than one
-	// bounded pass, so once it is known to be oversized we replace this limited
-	// reader with a direct fixed-size reader and drain only that line to its
-	// newline. This keeps memory bounded while allowing the cursor to advance
-	// only after a complete record.
-	limited := &io.LimitedReader{R: file, N: maxBytes}
-	reader := bufio.NewReaderSize(limited, 64<<10)
+	// Read with a fixed-size buffer. The pass budget applies to ordinary
+	// records; an oversized record is drained past that budget only until its
+	// newline (or a bounded drain cap) so its cursor can never remain pinned.
+	buffer := make([]byte, 64<<10)
 	var consumed int64
+	var completePosition int64
 	var emitted uint64
 	var lineBytes int64
 	var line []byte
 	overlong := false
-	for consumed < maxBytes || overlong {
-		fragment, readErr := reader.ReadSlice('\n')
-		consumed += int64(len(fragment))
-		lineBytes += int64(len(fragment))
-		if len(line)+len(fragment) <= maxObservationLineBytes {
-			line = append(line, fragment...)
-		} else {
-			overlong = true
+	for {
+		if !overlong && consumed >= maxBytes {
+			break
 		}
-		complete := len(fragment) > 0 && fragment[len(fragment)-1] == '\n'
-		if complete {
-			if !overlong {
-				if observation, ok := ParseDNSMasqLine(strings.TrimSuffix(string(line), "\n")); ok {
-					w.Emit(ctx, observation)
-					emitted++
+		want := int64(len(buffer))
+		if !overlong && maxBytes-consumed < want {
+			want = maxBytes - consumed
+		}
+		if want <= 0 {
+			break
+		}
+		n, readErr := file.Read(buffer[:want])
+		if n > 0 {
+			chunkStart := consumed
+			consumed += int64(n)
+			for index, b := range buffer[:n] {
+				if b == '\n' {
+					if !overlong {
+						if observation, ok := ParseDNSMasqLine(string(line)); ok {
+							w.Emit(ctx, observation)
+							emitted++
+						}
+					}
+					line = line[:0]
+					lineBytes = 0
+					completePosition = chunkStart + int64(index) + 1
+					if overlong {
+						overlong = false
+						// A line that required draining beyond the normal budget is
+						// the end of this bounded pass; the next pass starts after it.
+						if consumed > maxBytes {
+							break
+						}
+					}
+					continue
+				}
+				lineBytes++
+				if !overlong {
+					if len(line) < maxObservationLineBytes {
+						line = append(line, b)
+					} else {
+						overlong = true
+						line = line[:0]
+					}
 				}
 			}
-			line = line[:0]
-			lineBytes = 0
-			overlong = false
+			if overlong && lineBytes >= maxObservationDrainBytes {
+				// No newline within the drain cap: discard this malformed tail
+				// rather than re-reading it forever on every poll.
+				completePosition = consumed
+				w.discardedUntil = offset + completePosition
+				w.discardedIdentity = identity
+				break
+			}
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
-				if overlong && !complete && consumed >= maxBytes {
-					// The pass budget ended in the middle of an oversized line.
-					// Continue from the same file position without retaining the
-					// line in memory; the next ReadSlice will find its newline.
-					reader = bufio.NewReaderSize(file, 64<<10)
-					continue
+				if overlong {
+					// An unterminated oversized record is malformed; discard the
+					// consumed tail and make progress to EOF.
+					completePosition = consumed
+					w.discardedUntil = offset + completePosition
+					w.discardedIdentity = identity
 				}
 				break
 			}
-			if errors.Is(readErr, bufio.ErrBufferFull) {
-				if consumed >= maxBytes {
-					if overlong {
-						reader = bufio.NewReaderSize(file, 64<<10)
-						continue
-					}
-					break
-				}
-				continue
-			}
 			_ = file.Close()
 			return offset, reset, identity, readErr
-		}
-		if !complete {
-			if overlong && consumed >= maxBytes {
-				// Keep draining an oversized record beyond the normal pass budget;
-				// otherwise its newline can never be observed and the cursor would
-				// remain pinned at the same offset on every poll.
-				continue
-			}
-			// EOF or the bounded pass ended in the middle of a line. Do not
-			// advance the durable cursor: the next pass will reread this
-			// partial line together with its continuation.
-			break
 		}
 	}
 	closeErr := file.Close()
 	if closeErr != nil {
 		return offset, reset, identity, closeErr
 	}
-	// Only complete newline-terminated records advance the cursor. If the
-	// bounded pass ended inside a line, consumed includes that partial fragment
-	// but it must not be persisted or the next pass would either duplicate or
-	// skip data. A complete record is allowed to end exactly at maxBytes.
-	position := offset + consumed
-	if lineBytes > 0 {
-		position -= lineBytes
+	// Only complete records advance the cursor. Oversized malformed tails are
+	// explicitly discarded, while an ordinary partial line remains pinned until
+	// its continuation arrives.
+	position := offset + completePosition
+	if completePosition == 0 && consumed == 0 {
+		position = offset
 	}
 	if w.Progress != nil {
 		w.Progress(position, emitted)
+	}
+	if w.discardedIdentity == identity && position > w.discardedUntil {
+		w.discardedUntil = 0
+		w.discardedIdentity = ""
 	}
 	return position, reset, identity, nil
 }
