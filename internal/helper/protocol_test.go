@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -289,5 +290,85 @@ func TestServeUnixDoesNotRemoveLiveSocket(t *testing.T) {
 	}
 	if _, err := net.Dial("unix", socket); err != nil {
 		t.Fatalf("live helper socket was removed or stopped: %v", err)
+	}
+}
+
+type blockingExecutor struct {
+	active    atomic.Int32
+	maxActive atomic.Int32
+	release   chan struct{}
+}
+
+func (e *blockingExecutor) Execute(_ context.Context, request Request) Response {
+	active := e.active.Add(1)
+	for {
+		previous := e.maxActive.Load()
+		if active <= previous || e.maxActive.CompareAndSwap(previous, active) {
+			break
+		}
+	}
+	<-e.release
+	e.active.Add(-1)
+	return ResponseFrom(request, true, "", "")
+}
+
+func TestServeUnixBoundsConcurrentHelperWork(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("SO_PEERCRED is only available on Linux")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("test peer must be a non-root controller")
+	}
+	socket := filepath.Join(t.TempDir(), "helper.sock")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	executor := &blockingExecutor{release: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		done <- ServeUnix(ctx, ServerOptions{SocketPath: socket, PeerUID: os.Getuid(), Executor: executor, MaxConnections: 4})
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(socket); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("helper socket was not created")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	connections := make([]net.Conn, 0, 12)
+	for index := 0; index < 12; index++ {
+		connection, err := net.Dial("unix", socket)
+		if err != nil {
+			continue
+		}
+		request := validRequest("transaction.rollback")
+		request.RequestID = "req_bound_" + string(rune('a'+index))
+		request.Transaction = &TransactionRequest{Operation: "rollback"}
+		if err := json.NewEncoder(connection).Encode(request); err == nil {
+			connections = append(connections, connection)
+		} else {
+			_ = connection.Close()
+		}
+	}
+	defer func() {
+		for _, connection := range connections {
+			_ = connection.Close()
+		}
+	}()
+	deadline = time.Now().Add(2 * time.Second)
+	for executor.maxActive.Load() < 4 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := executor.maxActive.Load(); got != 4 {
+		t.Fatalf("helper admitted %d concurrent operations, want bounded 4", got)
+	}
+	close(executor.release)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("helper server did not stop after context cancellation")
 	}
 }

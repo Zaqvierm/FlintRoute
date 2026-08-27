@@ -292,7 +292,12 @@ type ServerOptions struct {
 	SocketPath string
 	Executor   Executor
 	PeerUID    int
+	// MaxConnections bounds helper work under a local connection flood. A
+	// zero/negative value uses the conservative production default.
+	MaxConnections int
 }
+
+const defaultMaxConnections = 16
 
 func ServeUnix(ctx context.Context, options ServerOptions) error {
 	if options.SocketPath == "" {
@@ -315,6 +320,11 @@ func ServeUnix(ctx context.Context, options ServerOptions) error {
 	if err := os.Chmod(options.SocketPath, 0o600); err != nil {
 		return err
 	}
+	maxConnections := options.MaxConnections
+	if maxConnections <= 0 {
+		maxConnections = defaultMaxConnections
+	}
+	connectionSlots := make(chan struct{}, maxConnections)
 	closed := make(chan struct{})
 	defer close(closed)
 	go func() {
@@ -334,7 +344,18 @@ func ServeUnix(ctx context.Context, options ServerOptions) error {
 				return err
 			}
 		}
-		go serveConnection(ctx, connection, options.Executor, options.PeerUID)
+		select {
+		case connectionSlots <- struct{}{}:
+			go func() {
+				defer func() { <-connectionSlots }()
+				serveConnection(ctx, connection, options.Executor, options.PeerUID)
+			}()
+		default:
+			// Do not let an unbounded number of idle local clients pin helper
+			// goroutines or file descriptors. The controller retries bounded
+			// requests; a saturated helper is a backpressure signal.
+			_ = connection.Close()
+		}
 	}
 }
 
