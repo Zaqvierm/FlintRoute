@@ -24,6 +24,12 @@
    компонентов `.` и `..`. Пути с `..`, двойными разделителями и завершающим
    разделителем отклоняются до любого рекурсивного удаления/копирования/restore.
 
+Атомарность nft не равна атомарности всего dataplane: owned nft table
+заменяется одним `nft` batch, но конфиги, listeners, IP plan и dnsmasq
+обновляются отдельными шагами. На время этой последовательности включён
+fail-closed transition guard; при любой ошибке операция отклоняется/откатывается,
+а не объявляется атомарной.
+
 ## Машина состояний транзакции
 
 Durable journal и adapter проходят состояния в таком порядке:
@@ -75,11 +81,13 @@ generation/revision/token. Allowlist покрывает transaction verbs, пр�
 артефактов. У helper нет HTTP-клиента, remote fetch, parser подписок/provider
 JSON или произвольного command/path input.
 
-Текущий root-controller включает helper только при явно заданном socket. Поэтому
-эта ветка не заявляет, что весь controller уже non-root. При настроенном socket
-recovery reconciliation теперь тоже идёт через typed `transaction.reconcile`, а
-не через прямую shell mutation. Read-only `status` и `diagnose` остаются вне этой
-mutation boundary. Перенос самого controller — отдельный follow-up.
+Production entrypoint требует non-root peer и настроенный helper socket:
+`validateProductionPrivilege` отвергает root и запуск без socket, а OpenWrt
+procd init задаёт `daemon:daemon`. При настроенном socket recovery reconciliation
+идёт через typed `transaction.reconcile`, а не через прямую shell mutation.
+Read-only `status` и `diagnose` остаются вне этой mutation boundary. Runtime
+проверка UID/peer credentials и hardware proof ещё не выполнены, поэтому
+acceptance остаётся `PARTIAL`, хотя production startup contract уже fail-closed.
 
 Lifecycle socket также проверяет ownership: regular file, symlink или живой
 listener в `helper.sock` считается чужим и не удаляется. Перед bind можно убрать
@@ -143,12 +151,12 @@ fault-injection тестами. Полная reboot/fault matrix и hardware evi
 ## Текущий статус privilege boundary
 
 `router-policy-helper` — упакованный typed helper с фиксированным путём и Unix
-socket; его контракт протестирован. Production-controller `router-policy` в этой
-ветке всё ещё запускается от root, поэтому разделение привилегий **PARTIAL**, а
-не завершено. Helper path — предпочтительный allowlisted путь; прямой shell
-adapter оставлен только как legacy/development путь. Пока controller root, LAN
-exposure по умолчанию запрещён. Для закрытия finding нужно запустить controller
-non-root и удалить его прямой privileged execution path.
+socket; его контракт протестирован. Production-controller запускается через
+procd как `daemon`, а root и запуск без helper отвергаются. Разделение
+привилегий всё ещё **PARTIAL** до Linux runtime/peer-credential и hardware
+evidence; helper path — единственный production mutation path, прямой shell
+adapter оставлен только legacy/development режимом. LAN exposure по умолчанию
+запрещён.
 
 ## Порядок remediation
 
