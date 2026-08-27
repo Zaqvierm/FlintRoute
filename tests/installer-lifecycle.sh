@@ -9,6 +9,16 @@ PROJECT_ROOT="$ROOT"
 TMP="${TMPDIR:-/tmp}/router-policy-installer-lifecycle-$$"
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
+# The rollback lease must remain armed through observer reload and prefix
+# finalization.  A source-order assertion protects this safety boundary from
+# being moved above the post-install verification block during refactors.
+post_install_line=$(grep -n '^    post_install_ok=1$' "$ROOT/install.sh" | cut -d: -f1)
+disarm_line=$(grep -n '^    INSTALL_ROLLBACK_ARMED=0$' "$ROOT/install.sh" | cut -d: -f1)
+[ -n "$post_install_line" ] && [ -n "$disarm_line" ] && [ "$disarm_line" -gt "$post_install_line" ] || {
+  echo "installer disarmed rollback before post-install verification" >&2
+  exit 1
+}
+
 SYSTEM_ROOT="$TMP/root"
 BACKUP_BASE="$TMP/backups"
 SOURCE_BINARY="$TMP/router-policy-source"

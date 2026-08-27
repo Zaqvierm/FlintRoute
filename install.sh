@@ -1407,27 +1407,40 @@ case "$mode" in
       echo "services_enabled=false"
       echo "enable_services_with=install.sh --install --enable-services"
     fi
-    INSTALL_ROLLBACK_ARMED=0
+    post_install_ok=1
     if [ "$enable_services" = "1" ]; then
       if reload_dns_observer_after_success; then
         echo "dns_observer_reload=ok"
       else
+        post_install_ok=0
         echo "dns_observer_reload=failed" >&2
         echo "dns_observer_action=retry_from_UI_or_restart_dnsmasq"
       fi
     fi
-    finalize_prefix_switch || {
+    if finalize_prefix_switch; then
+      echo "prefix_switch_finalize=ok"
+    else
+      post_install_ok=0
       echo "install warning: previous prefix generation could not be cleaned" >&2
-    }
+    fi
     # Retention pruning is deliberately last.  Until the new generation has
     # passed validation, service recovery and control-plane health checks, the
     # previous backup is part of the rollback contract and must not disappear.
-    if "$ROUTER_POLICY_BIN" backup prune --root "$BACKUP_ROOT" --max 2 --max-bytes 134217728 --apply >/dev/null; then
-      echo "backup_prune=ok"
+    if [ "$post_install_ok" = "1" ]; then
+      if "$ROUTER_POLICY_BIN" backup prune --root "$BACKUP_ROOT" --max 2 --max-bytes 134217728 --apply >/dev/null; then
+        echo "backup_prune=ok"
+      else
+        echo "backup_prune=failed" >&2
+        echo "backup_prune_action=retry_after_install" >&2
+      fi
     else
-      echo "backup_prune=failed" >&2
-      echo "backup_prune_action=retry_after_install" >&2
+      echo "backup_prune=skipped_post_install_verification_incomplete" >&2
     fi
+    if [ "$post_install_ok" != "1" ]; then
+      echo "install failed: post-install verification did not complete; automatic rollback is being attempted" >&2
+      exit 1
+    fi
+    INSTALL_ROLLBACK_ARMED=0
     end_maintenance
     trap - EXIT INT HUP TERM
     echo "installed=true"
