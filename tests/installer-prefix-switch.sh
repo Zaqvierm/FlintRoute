@@ -14,6 +14,29 @@ export SYSTEM_ROOT PREFIX STATE_DIR PREFIX_SWITCH_MARKER ROUTER_POLICY_INSTALL_L
 # shellcheck source=install.sh
 . "$ROOT/install.sh"
 
+# Exercise the real durable-rename helper with a fake sync command. The
+# fixture is not a power-loss proof, but it verifies that every prefix rename
+# requests a containing-directory flush instead of relying on EXIT traps.
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/sync" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >> "${SYNC_LOG:?}"
+SH
+chmod +x "$TMP/bin/sync"
+SYNC_LOG="$TMP/sync.log"
+SYSTEM_ROOT=""
+export PATH="$TMP/bin:$PATH" SYNC_LOG SYSTEM_ROOT
+mkdir -p "$TMP/rename-source"
+printf 'durable\n' > "$TMP/rename-source/value"
+durable_rename "$TMP/rename-source" "$TMP/rename-target"
+[ -f "$TMP/rename-target/value" ] || { echo "durable rename did not move source" >&2; exit 1; }
+grep -F -- "-f $TMP" "$SYNC_LOG" >/dev/null || {
+  echo "durable rename did not flush containing directory" >&2
+  exit 1
+}
+SYSTEM_ROOT="$TMP"
+export SYSTEM_ROOT
+
 reset_fixture() {
   rm -rf "${TMP:?}/usr" "${TMP:?}/etc"
   mkdir -p "$STATE_DIR" "$(dirname "$PREFIX")"
@@ -80,3 +103,4 @@ fi
 
 echo "installer_prefix_switch_recovery=true"
 echo "installer_prefix_switch_ambiguous_state_blocks=true"
+echo "installer_prefix_switch_durable_rename=true"

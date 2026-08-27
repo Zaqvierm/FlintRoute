@@ -1135,6 +1135,16 @@ sync_file_and_parent() {
   fi
 }
 
+durable_rename() {
+  rename_source="$1"
+  rename_target="$2"
+  mv "$rename_source" "$rename_target" || return 1
+  # A successful rename is not durable until the containing directory is
+  # flushed.  This closes the power-loss window between prefix moves; the
+  # durable marker still records the phase for restart recovery.
+  sync_file_and_parent "$(dirname "$rename_target")"
+}
+
 write_prefix_switch_marker() {
   switch_phase="$1"
   switch_staged="$2"
@@ -1177,7 +1187,7 @@ recover_prefix_switch() {
       if [ -e "$PREFIX" ] && [ ! -e "$marker_old" ]; then
         rm -rf "$marker_staged"
       elif [ ! -e "$PREFIX" ] && [ -e "$marker_old" ] && [ -e "$marker_staged" ]; then
-        mv "$marker_staged" "$PREFIX"
+        durable_rename "$marker_staged" "$PREFIX"
       else
         echo "install blocked: prefix switch marker has ambiguous prepared state" >&2
         return 1
@@ -1185,9 +1195,9 @@ recover_prefix_switch() {
       ;;
     old_moved)
       if [ ! -e "$PREFIX" ] && [ -e "$marker_staged" ]; then
-        mv "$marker_staged" "$PREFIX"
+        durable_rename "$marker_staged" "$PREFIX"
       elif [ ! -e "$PREFIX" ] && [ ! -e "$marker_staged" ] && [ -e "$marker_old" ]; then
-        mv "$marker_old" "$PREFIX"
+        durable_rename "$marker_old" "$PREFIX"
       elif [ -e "$PREFIX" ] && [ -e "$marker_staged" ]; then
         rm -rf "$marker_staged"
       else
@@ -1245,13 +1255,13 @@ install_files() {
   fi
   write_prefix_switch_marker prepared "$staged_prefix" "$old_prefix"
   if [ -e "$PREFIX" ]; then
-    mv "$PREFIX" "$old_prefix"
+    durable_rename "$PREFIX" "$old_prefix"
     write_prefix_switch_marker old_moved "$staged_prefix" "$old_prefix"
   fi
   if [ -d "$old_prefix/components" ]; then
-    mv "$old_prefix/components" "$staged_prefix/components"
+    durable_rename "$old_prefix/components" "$staged_prefix/components"
   fi
-  mv "$staged_prefix" "$PREFIX"
+  durable_rename "$staged_prefix" "$PREFIX"
   write_prefix_switch_marker new_active "$staged_prefix" "$old_prefix"
   atomic_copy "$SOURCE_BINARY" "$ROUTER_POLICY_BIN" 755
   atomic_copy "$SOURCE_HELPER_BINARY" "$ROUTER_POLICY_HELPER_BIN" 755
