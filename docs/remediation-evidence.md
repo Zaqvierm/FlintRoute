@@ -5,7 +5,7 @@
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `1118e6594476fc05f8b52ad4c800327a916cb110` (installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools; prefix renames flush their containing directory; corrupt-state rescue artifacts are synced and atomically renamed with unique names; failed Zapret calibration retains at most three private bounded forensic bundles after cleanup).
+- Текущий проверяемый code HEAD: `e6203e3ce746aa50267dcc6c965477902dad359d` (route-only assignment is fenced without a registered runtime consumer; semantic, revision-bound receipts and idempotent rollback are required before persisting an applied mapping; installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools; prefix renames flush their containing directory; corrupt-state rescue artifacts are synced and atomically renamed with unique names; failed Zapret calibration retains at most three private bounded forensic bundles after cleanup).
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -40,6 +40,7 @@
 | Linux-only harness на Windows | NOT RUN LOCALLY | namespace/procfs/mode требуют Linux |
 | Root-helper privilege split | PASS (service contract; runtime proof pending) | production init запускает controller как `daemon`, root startup и отсутствие helper socket отвергаются; typed helper покрывает global/transaction paths и ограничивает concurrent connections |
 | Route-only assignment dataplane | PARTIAL | revision-bound decision cache и post-probe есть; nft/dnsmasq runtime consumer не доказан |
+| Route-only runtime-consumer fence | PASS | `go test ./internal/api -run 'TestAutomaticDomainCommit|TestDiscoverySuggestionApply'`; absent consumer and invalid semantic receipt cannot produce `applied=true` |
 | Flint 2 hardware | NOT RUN / STALE | hardware не трогалось |
 
 ## Acceptance matrix
@@ -101,7 +102,7 @@ response fails the installer health gate closed.
 
 ## Запуски CI и clean-clone evidence
 
-Для текущего code head `1118e6594476fc05f8b52ad4c800327a916cb110` после push прошли:
+Для предыдущего code head `1118e6594476fc05f8b52ad4c800327a916cb110` после push прошли:
 
 - exact-SHA full safety gate: [33123851786](https://github.com/Zaqvierm/FlintRoute/actions/runs/33123851786);
 - nft transition: [33123851772](https://github.com/Zaqvierm/FlintRoute/actions/runs/33123851772);
@@ -111,6 +112,11 @@ response fails the installer health gate closed.
 Эти run ID привязаны к exact code SHA `1118e6594476fc05f8b52ad4c800327a916cb110`.
 Документационный HEAD может отличаться от code HEAD, но не меняет исходный
 результат тестов; при изменении кода evidence снова становится stale.
+
+Кодовый delta `e6203e3` дополнительно прошёл локальные `go test ./...`,
+`go test -race ./...`, `go vet ./...` и `git diff --check`. Exact-SHA Linux
+workflows для этого delta ещё не запускались; старые CI run IDs выше не
+перенаследуются автоматически.
 
 Локальный clean-clone прогон текущего SHA выполнен в
 `H:\LAN\Scratch\flintroute-clean-clone-20260828-055346` после `npm ci` и
@@ -195,6 +201,10 @@ proof. Linux process-group и nft namespace проверки на Windows чес
 - Quick Zapret не может запрашивать restart managed production service; для
   exhaustive режима UI теперь тоже явно отказывается от скрытого restart и
   требует maintenance-safe условия.
+- Route-only assignment не называется применённым без runtime consumer:
+  controller требует typed request и semantic receipt с request ID, revision,
+  route identity и mapping hash; при ошибке после внешнего шага вызывает
+  idempotent rollback, а без consumer оставляет suggestion.
 
 ## Quick Zapret и exhaustive blockcheck
 
