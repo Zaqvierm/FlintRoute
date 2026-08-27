@@ -5,7 +5,7 @@
 
 ## Область проверки
 
-- Текущий проверяемый HEAD: `a1c80961fd340df653495b7ccf7829a4e1a979b4`.
+- Текущий проверяемый HEAD: `4e9d45f`.
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -38,7 +38,7 @@
 | Linux nft transition | STALE FOR CURRENT SHA | CI run [32615235570](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235570) |
 | Linux Zapret process-group и Quick contract | STALE FOR CURRENT SHA | CI run [32615235591](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235591) |
 | Linux-only harness на Windows | NOT RUN LOCALLY | namespace/procfs/mode требуют Linux |
-| Root-helper privilege split | PARTIAL | helper есть, но production controller ещё root |
+| Root-helper privilege split | PASS (service contract; runtime proof pending) | production init запускает controller как `daemon`, root startup и отсутствие helper socket отвергаются; typed helper покрывает global/transaction paths |
 | Route-only assignment dataplane | PARTIAL | revision-bound decision cache и post-probe есть; nft/dnsmasq runtime consumer не доказан |
 | Flint 2 hardware | NOT RUN / STALE | hardware не трогалось |
 
@@ -95,7 +95,7 @@ response fails the installer health gate closed.
 - UI browser/responsive: [32615235578](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235578).
 
 Эти три run ID относятся к историческому code SHA и не являются evidence для
-текущего `a1c8096`. Для текущего HEAD обязательный Linux CI ещё не запускался;
+текущего `4e9d45f`. Для текущего HEAD обязательный Linux CI ещё не запускался;
 до его выполнения строки выше остаются `STALE FOR CURRENT SHA`.
 
 Исторические запуски для старых code/docs SHA сохранены ниже только для
@@ -169,9 +169,9 @@ UI не выдумывает это число.
 
 - Полное отсутствие split-brain не заявляется до reboot/fault matrix и hardware
   evidence; текущая гарантия — fencing подтверждённых ambiguous states.
-- Controller всё ещё запускается root в production; helper socket только делает
-  transaction path предпочтительным и не доказывает полный non-root split.
-  LAN exposure остаётся явным opt-in и не является privilege-boundary proof.
+- Production controller запускается от dedicated `daemon` account и требует
+  fixed helper socket; root/без-helper запуск отвергается. Runtime Linux/OpenWrt
+  и hardware proof ещё не выполнены. LAN exposure остаётся явным opt-in.
 - Automatic route-only assignment разрешён только в явном
   `auto_apply_verified` режиме и только для уже enabled route с доказанным
   `PathVerified`; topology/component apply из discovery запрещён.
