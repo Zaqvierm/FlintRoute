@@ -10,7 +10,7 @@
 
 ## Актуальная граница текущего SHA
 
-Текущий code head — `10c85a084a3ee7aeaac872546fa8e0f3af6fe135` на
+Текущий code head — `9fe4391be1908a0104326303f344b7080c992144` на
 `integration/discovery-smartdns-local-dod`. Проценты и аппаратные формулировки
 в исторических таблицах ниже не являются PASS для этого SHA. Для текущего SHA
 действует правило: software unit/mock, Linux CI и Flint 2 hardware — разные

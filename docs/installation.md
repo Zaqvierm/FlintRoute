@@ -137,8 +137,12 @@ procd не подтверждает остановку, файлы не трог
 `blocked-managed-services-still-running`. Это лучше, чем собирать на живом
 роутере смесь старой базы и нового бинарника.
 
-Временный boot guard блокирует только пакеты с настроенными марками FlintRoute.
-Безусловного drop для всего forwarding и обычного трафика OpenWrt больше нет.
+Временный boot guard до доказанного reconcile применяет fail-closed drop ко
+всему transit-forwarding. Он не опирается на conntrack/meta mark: после
+холодной загрузки новые соединения имеют mark=0, поэтому mark-only guard был
+бы дырой. Management plane (loopback-диагностика и recovery status) не
+блокируется этим transit guard. Снятие guard разрешено только для exact
+committed generation через transaction-bound проверку revision/hash.
 
 ## Обновление
 
