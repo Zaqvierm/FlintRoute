@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -65,6 +66,40 @@ func TestFetchSubscriptionRejectsOversizeBeforeWrite(t *testing.T) {
 	}
 	if _, err := os.Stat(output); !os.IsNotExist(err) {
 		t.Fatal("oversized subscription left an output file")
+	}
+}
+
+func TestFetchSubscriptionRejectsHTMLProviderResponseWithSemanticError(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Some captive portals omit Content-Type; the leading markup must still
+		// be diagnosed before the body can become a candidate artifact.
+		_, _ = w.Write([]byte("<p>login required</p>"))
+	}))
+	defer server.Close()
+	output := filepath.Join(t.TempDir(), "subscription.json")
+	_, err := FetchSubscription(remotefetch.WithLoopbackForTests(context.Background()), server.Client(), server.URL, output, FetchOptions{})
+	if err == nil {
+		t.Fatal("HTML provider response was accepted")
+	}
+	var sourceErr *SourceError
+	if !errors.As(err, &sourceErr) || sourceErr.Code != "provider_response_not_subscription" {
+		t.Fatalf("error=%v, want provider_response_not_subscription", err)
+	}
+	if _, statErr := os.Stat(output); !os.IsNotExist(statErr) {
+		t.Fatalf("HTML response left output file: %v", statErr)
+	}
+}
+
+func TestFetchSubscriptionRejectsHTMLContentTypeEvenWithoutMarkup(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte("login required"))
+	}))
+	defer server.Close()
+	_, err := FetchSubscription(remotefetch.WithLoopbackForTests(context.Background()), server.Client(), server.URL, filepath.Join(t.TempDir(), "subscription.json"), FetchOptions{})
+	var sourceErr *SourceError
+	if !errors.As(err, &sourceErr) || sourceErr.Code != "provider_response_not_subscription" {
+		t.Fatalf("error=%v, want provider_response_not_subscription", err)
 	}
 }
 

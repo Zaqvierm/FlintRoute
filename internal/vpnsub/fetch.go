@@ -1,6 +1,7 @@
 package vpnsub
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -197,6 +198,13 @@ func fetchResolvedSubscription(ctx context.Context, client *http.Client, resolut
 	if len(raw) == 0 {
 		return FetchSummary{}, errors.New("subscription size limit exceeded")
 	}
+	if looksLikeHTMLResponse(raw, resp.Header.Get("Content-Type")) {
+		// A portal/login/error page is not a subscription document. Reject it
+		// before writing the candidate so a failed refresh cannot replace the
+		// last known-good bundle, and expose a useful semantic error instead of
+		// leaking json.Unmarshal's opaque "invalid character '<'" detail.
+		return FetchSummary{}, &SourceError{Code: "provider_response_not_subscription", Message: "subscription provider returned an HTML page instead of a subscription document"}
+	}
 	if err := writeFileAtomic(outputPath, raw, 0o600); err != nil {
 		return FetchSummary{}, err
 	}
@@ -207,6 +215,21 @@ func fetchResolvedSubscription(ctx context.Context, client *http.Client, resolut
 		ResolvedSourceMasked: resolution.ResolvedSourceMasked, ResolvedSource: resolution.ResolvedSource,
 		SourceType: string(resolution.SourceType), CryptoVersion: resolution.CryptoVersion,
 	}, nil
+}
+
+func looksLikeHTMLResponse(raw []byte, contentType string) bool {
+	if strings.Contains(strings.ToLower(contentType), "text/html") {
+		return true
+	}
+	trimmed := bytes.TrimSpace(raw)
+	trimmed = bytes.TrimPrefix(trimmed, []byte{0xef, 0xbb, 0xbf})
+	if len(trimmed) == 0 || trimmed[0] != '<' {
+		return false
+	}
+	// JSON documents cannot begin with '<'. Treat any leading markup as a
+	// portal/login/error document, including pages that omit Content-Type or
+	// use a non-standard tag instead of <html>.
+	return true
 }
 
 func safeProviderName(value string) string {
