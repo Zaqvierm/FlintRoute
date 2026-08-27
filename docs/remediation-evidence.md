@@ -5,7 +5,7 @@
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `7b8c49023ce1d8d1c7d047f274101cae99c7ccac` (installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools; prefix renames flush their containing directory).
+- Текущий проверяемый code HEAD: `4f3307605e50cf70db932e50fb89023d27d4264b` (installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools; prefix renames flush their containing directory; corrupt-state rescue artifacts are synced and atomically renamed with unique names).
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -58,6 +58,7 @@
 | Installer durability sync failure | `tests/installer-durability.sh` | PASS; failure is surfaced and install cannot report success | mock |
 | Export backup synthetic-directory exclusion | `tests/installer-backup.sh` | PASS; archive carries files only, never staging parent modes | mock |
 | Durable prefix renames | `tests/installer-prefix-switch.sh` | PASS; each prefix rename calls the containing-directory sync helper; ambiguous crash layouts remain fenced | mock/static |
+| Durable corrupt-state forensic artifact | `go test ./internal/state -run TestOpenPreservesUnreadableDatabaseForRescue` | PASS; artifact content is preserved through a synced temporary file and atomic rename; partial temp files are removed | local |
 | Installer post-install rollback fence | `tests/installer-lifecycle.sh` | PASS; rollback is not disarmed before observer/prefix verification, and incomplete verification aborts before backup pruning | mock |
 | DNS observer install rollback ownership | `tests/installer-lifecycle.sh`, `tests/dns-observer-bootstrap.sh` | PASS; configured observer target is included in the exact snapshot and restored after simulated failure | mock |
 | Quick runner machine-output isolation | `tests/zapret-quick-contract.sh`, `scripts/quick-zapret-check.sh` | PASS; nft load diagnostics are stderr-only, preventing BusyBox/nft output from corrupting bounded JSON | mock/static |
@@ -173,6 +174,10 @@ response fails the installer health gate closed.
 - The DNS observer fragment is an explicit install target. The lifecycle
   fixture mutates it after snapshot and proves automatic rollback restores its
   prior bytes, without touching the dnsmasq parent directory.
+- Corrupt bbolt rescue evidence is written through a private temporary file,
+  synced before rename, then the containing directory is synced on Unix. A
+  failed copy/close/rename/sync leaves no partial forensic artifact and never
+  modifies the unreadable source.
 - Quick Zapret keeps stdout reserved for its bounded JSON result. Diagnostics
   from the temporary nft batch are redirected to stderr, so an nft/BusyBox
   usage message cannot become `malformed bounded JSON` at the API boundary.
