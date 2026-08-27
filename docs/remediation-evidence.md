@@ -5,7 +5,7 @@
 
 ## Область проверки
 
-- Текущий проверяемый HEAD: `10c85a084a3ee7aeaac872546fa8e0f3af6fe135`.
+- Текущий проверяемый HEAD: `a1c80961fd340df653495b7ccf7829a4e1a979b4`.
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -32,11 +32,11 @@
 
 | Область | Результат | Доказательство |
 |---|---|---|
-| Go unit/integration, race, vet, форматирование | PASS | `tests/run-all.ps1`, `go test -race ./...`, `gofmt` |
+| Go unit/integration, race, vet, форматирование | PASS (локально на текущем HEAD, 2026-08-28) | `go test ./...`, `go test -race ./...`, `go vet ./...`, `gofmt` |
 | Frontend unit/typecheck/build | PASS | 44 Vitest-теста, `npm run typecheck`, `npm run build` |
 | Browser/responsive UI | PASS | CI run [32615235578](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235578) |
-| Linux nft transition | PASS | CI run [32615235570](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235570) |
-| Linux Zapret process-group и Quick contract | PASS | CI run [32615235591](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235591) |
+| Linux nft transition | STALE FOR CURRENT SHA | CI run [32615235570](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235570) |
+| Linux Zapret process-group и Quick contract | STALE FOR CURRENT SHA | CI run [32615235591](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235591) |
 | Linux-only harness на Windows | NOT RUN LOCALLY | namespace/procfs/mode требуют Linux |
 | Root-helper privilege split | PARTIAL | helper есть, но production controller ещё root |
 | Route-only assignment dataplane | PARTIAL | revision-bound decision cache и post-probe есть; nft/dnsmasq runtime consumer не доказан |
@@ -56,6 +56,7 @@
 | Immutable bootstrap | `tests/openwrt-adapter-integration.sh` | PASS | mock |
 | Права родителей installer | `tests/installer-lifecycle.sh` | PASS | mock |
 | Typed health response parsing | `go test ./internal/healthjson`, `router-policy internal-health-field` | PASS | local |
+| HTML/portal response rejection | `go test ./internal/vpnsub -run TestFetchSubscriptionRejectsHTML` | PASS | local |
 | Канонические ownership paths | `tests/installer-lifecycle.sh`, `tests/installer-backup.sh` | PASS | mock |
 | Boot guard | `tests/boot-guard-policy.sh`, `tests/boot-guard-service.sh` | PASS | mock |
 | Typed helper boundary | `tests/helper-service.sh`, `go test ./internal/helper` | PASS | local/mock |
@@ -87,15 +88,15 @@ response fails the installer health gate closed.
 
 ## Запуски CI на текущей ветке
 
-Для code head `b43d56a45ba26fb93ee3609c5eb190ef60bac29a` после push прошли:
+Для исторического code head `b43d56a45ba26fb93ee3609c5eb190ef60bac29a` после push прошли:
 
 - nft transition: [32615235570](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235570);
 - Zapret process-group и Quick contract: [32615235591](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235591);
 - UI browser/responsive: [32615235578](https://github.com/Zaqvierm/FlintRoute/actions/runs/32615235578).
 
-Эти три run ID являются единственным текущим CI evidence для code SHA выше.
-Все следующие docs-only workflow runs не меняют code SHA и не заменяют эту
-привязку.
+Эти три run ID относятся к историческому code SHA и не являются evidence для
+текущего `a1c8096`. Для текущего HEAD обязательный Linux CI ещё не запускался;
+до его выполнения строки выше остаются `STALE FOR CURRENT SHA`.
 
 Исторические запуски для старых code/docs SHA сохранены ниже только для
 археологии и не считаются доказательством текущего кода:
@@ -154,7 +155,8 @@ response fails the installer health gate closed.
 
 ## Quick Zapret и exhaustive blockcheck
 
-`quick` — bounded default с четырьмя встроенными curated profiles. Для PASS
+`quick` — bounded default с шестью встроенными curated profiles (`general`,
+`general-alt`, `general-alt2`, `general-alt4`, `general-alt6`, `general-alt10`). Для PASS
 обязательны owned NFQUEUE counter, target, process group и полный cleanup; один
 успешный curl без path evidence считается `INFRA_ERROR`. Quick не активирует
 production profile молча.
@@ -167,10 +169,12 @@ UI не выдумывает это число.
 
 - Полное отсутствие split-brain не заявляется до reboot/fault matrix и hardware
   evidence; текущая гарантия — fencing подтверждённых ambiguous states.
-- Controller всё ещё root, если helper socket явно не настроен; LAN exposure в
-  этом режиме закрыт по умолчанию.
-- Automatic route-only assignment пока disabled: discovery выдаёт suggestion,
-  а не полный production apply.
+- Controller всё ещё запускается root в production; helper socket только делает
+  transaction path предпочтительным и не доказывает полный non-root split.
+  LAN exposure остаётся явным opt-in и не является privilege-boundary proof.
+- Automatic route-only assignment разрешён только в явном
+  `auto_apply_verified` режиме и только для уже enabled route с доказанным
+  `PathVerified`; topology/component apply из discovery запрещён.
 - CPU/FD/socket idle, реальное восстановление после power loss и пользовательский
   hardware flow требуют отдельного read-only gate и не наследуются от CI.
 
