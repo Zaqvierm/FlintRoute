@@ -115,6 +115,30 @@ func TestValidateRequestAllowsOnlyBoundGlobalOperations(t *testing.T) {
 	if err := ValidateRequest(request); err == nil {
 		t.Fatal("global command accepted a transaction hash")
 	}
+	request = Request{
+		ProtocolVersion: ProtocolVersion,
+		RequestID:       "req_clear",
+		Command:         "global.clear_boot_guard",
+		Generation:      "global",
+		RevisionID:      "global",
+		TransactionID:   "global",
+		Global:          &GlobalRequest{Operation: "clear-boot-guard"},
+	}
+	if err := ValidateRequest(request); err != ErrUnknownCommand {
+		t.Fatalf("unbound global boot-guard clear returned %v", err)
+	}
+}
+
+func TestValidateRequestRequiresBoundBootGuardClear(t *testing.T) {
+	request := validRequest("transaction.clear_boot_guard")
+	request.Transaction = &TransactionRequest{Operation: "clear-boot-guard"}
+	if err := ValidateRequest(request); err != nil {
+		t.Fatalf("bound boot-guard clear rejected: %v", err)
+	}
+	request.Transaction.Operation = "rollback"
+	if err := ValidateRequest(request); err == nil {
+		t.Fatal("boot-guard clear accepted a mismatched operation")
+	}
 }
 
 func TestOwnedVerbMappingIsClosed(t *testing.T) {

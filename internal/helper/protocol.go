@@ -139,7 +139,7 @@ func ValidateRequest(request Request) error {
 		return ErrUnknownCommand
 	}
 	switch request.Command {
-	case "transaction.prepare", "transaction.validate_candidate", "transaction.snapshot_current", "transaction.apply_candidate", "transaction.verify_management", "transaction.verify_data_plane", "transaction.commit_prepared", "transaction.finalize_commit", "transaction.rollback":
+	case "transaction.prepare", "transaction.validate_candidate", "transaction.snapshot_current", "transaction.apply_candidate", "transaction.verify_management", "transaction.verify_data_plane", "transaction.commit_prepared", "transaction.finalize_commit", "transaction.rollback", "transaction.clear_boot_guard":
 		if request.Transaction == nil || request.Transaction.Operation != transactionOperation(request.Command) || !requestBound(request) {
 			return ErrInvalidRequest
 		}
@@ -166,7 +166,7 @@ func ValidateRequest(request Request) error {
 		if !requestBound(request) || request.Artifact == nil || !allowlistedArtifact(request.Artifact.Kind) || !safeHash(request.Artifact.Hash) || request.Artifact.Hash != request.ArtifactManifestHash || request.Artifact.Operation != strings.TrimPrefix(request.Command, "artifact.") {
 			return ErrInvalidRequest
 		}
-	case "global.diagnose", "global.status", "global.clear_boot_guard":
+	case "global.diagnose", "global.status":
 		if request.Global == nil || request.Global.Operation != globalOperation(request.Command) || !globalRequestBound(request) {
 			return ErrInvalidRequest
 		}
@@ -194,8 +194,6 @@ func globalOperation(command string) string {
 		return "diagnose"
 	case "global.status":
 		return "status"
-	case "global.clear_boot_guard":
-		return "clear-boot-guard"
 	default:
 		return ""
 	}
@@ -221,6 +219,8 @@ func transactionOperation(command string) string {
 		return "finalize-commit"
 	case "transaction.rollback":
 		return "rollback"
+	case "transaction.clear_boot_guard":
+		return "clear-boot-guard"
 	case "transaction.reconcile":
 		return "reconcile"
 	default:

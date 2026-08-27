@@ -25,12 +25,13 @@ func TestAdapterExecutorUsesOnlyOwnedOperationExecutor(t *testing.T) {
 
 func TestAdapterExecutorTransactionVerbsAreClosed(t *testing.T) {
 	for command, want := range map[string]string{
-		"transaction.prepare":         "prepare",
-		"transaction.apply_candidate": "apply-candidate",
-		"transaction.commit_prepared": "commit-prepared",
-		"transaction.finalize_commit": "finalize-commit",
-		"transaction.rollback":        "rollback",
-		"transaction.reconcile":       "reconcile",
+		"transaction.prepare":          "prepare",
+		"transaction.apply_candidate":  "apply-candidate",
+		"transaction.commit_prepared":  "commit-prepared",
+		"transaction.finalize_commit":  "finalize-commit",
+		"transaction.clear_boot_guard": "clear-boot-guard-bound",
+		"transaction.rollback":         "rollback",
+		"transaction.reconcile":        "reconcile",
 	} {
 		got, ok := transactionVerb(command)
 		if !ok || got != want {
@@ -71,6 +72,45 @@ func TestAdapterExecutorAcceptsOnlySemanticallyProvenReconcile(t *testing.T) {
 	response := executor.Execute(context.Background(), request)
 	if !response.Accepted || response.ErrorCode != "" {
 		t.Fatalf("semantic reconcile proof was rejected: %+v", response)
+	}
+}
+
+func TestAdapterExecutorAcceptsOnlyGenerationBoundBootGuardClear(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("exec adapter fixture requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	adapterPath := filepath.Join(dir, "adapter.sh")
+	request := validRequest("transaction.clear_boot_guard")
+	request.Transaction = &TransactionRequest{Operation: "clear-boot-guard"}
+	script := "#!/bin/sh\n" + strings.Join([]string{
+		"echo protocol_version=1",
+		"echo operation=clear-boot-guard",
+		"echo boot_guard=cleared",
+		"echo generation=" + request.Generation,
+		"echo transaction_id=" + request.TransactionID,
+		"echo active_transaction=" + request.TransactionID,
+		"echo active_revision=" + request.RevisionID,
+		"echo active_candidate_hash=" + request.CandidateHash,
+		"echo active_artifact_manifest_hash=" + request.ArtifactManifestHash,
+		"echo transaction_state=committed",
+	}, "\n") + "\n"
+	if err := os.WriteFile(adapterPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executor := AdapterExecutor{AdapterPath: adapterPath, ConfigPath: filepath.Join(dir, "default.json"), InitDir: dir}
+	response := executor.Execute(context.Background(), request)
+	if !response.Accepted || response.ErrorCode != "" {
+		t.Fatalf("generation-bound boot guard proof was rejected: %+v", response)
+	}
+
+	badScript := strings.Replace(script, "echo active_revision="+request.RevisionID, "echo active_revision=rev_9_deadbeef0000", 1)
+	if err := os.WriteFile(adapterPath, []byte(badScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	response = executor.Execute(context.Background(), request)
+	if response.Accepted || response.ErrorCode != "boot_guard_binding_mismatch" {
+		t.Fatalf("mismatched boot guard binding was accepted: %+v", response)
 	}
 }
 

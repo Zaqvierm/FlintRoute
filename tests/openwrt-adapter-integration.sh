@@ -322,9 +322,12 @@ assert_order '^pidof router-policy$' '^wget '
 
 # Restart reconciliation is a true no-op while committed artifacts and runtime
 # routing state still match. Read-only checks are allowed; mutations are not.
- # The direct shell fixture has no control-plane bbolt boundary. Mirror the
- # production controller's post-persistence fence clear explicitly; commit
- # itself must keep the transition fence armed.
+ # The direct shell fixture has no control-plane bbolt boundary. Exercise the
+ # generation-bound clear used by the production controller after persistence;
+ # commit itself must keep the transition fence armed.
+bound_clear=$(adapter clear-boot-guard-bound "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" "$candidate_hash" "$artifact_manifest_hash")
+printf '%s\n' "$bound_clear" | grep -F 'operation=clear-boot-guard' >/dev/null
+printf '%s\n' "$bound_clear" | grep -F 'boot_guard=cleared' >/dev/null
 adapter clear-boot-guard "$ROUTER_POLICY_CONFIG_PATH" >/dev/null
 grep -Eq '^nft delete table inet router_policy_boot_guard$' "$TMP/openwrt-calls.log" || {
   echo "explicit post-commit fence clear was not recorded" >&2

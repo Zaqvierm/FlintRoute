@@ -300,6 +300,32 @@ clear_boot_guard() {
   echo "boot_guard=cleared"
 }
 
+clear_boot_guard_bound() {
+  require_transaction_args
+  # The caller supplies the exact committed binding. Reuse the transaction
+  # matcher so a stale generation can never remove the guard for a newer one.
+  candidate_hash="$recovery_candidate_hash"
+  artifact_manifest_hash="$recovery_artifact_manifest_hash"
+  active_matches || {
+    echo "reason=boot_guard_active_binding_mismatch" >&2
+    return 1
+  }
+  [ "$(sed -n 's/^transaction_state=//p' "$active_file" | head -n 1)" = "committed" ] || {
+    echo "reason=boot_guard_active_state_not_committed" >&2
+    return 1
+  }
+  clear_boot_guard
+  echo "operation=clear-boot-guard"
+  echo "generation=$revision"
+  echo "transaction_id=$txid"
+  echo "revision_id=$revision"
+  echo "active_transaction=$txid"
+  echo "active_revision=$revision"
+  echo "active_candidate_hash=$candidate_hash"
+  echo "active_artifact_manifest_hash=$artifact_manifest_hash"
+  echo "transaction_state=committed"
+}
+
 sha_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -2028,7 +2054,7 @@ case "$cmd" in
     [ "$config" = "$known_config" ] || exit 2
     status_tx
     ;;
-  prepare|validate-candidate|snapshot-current|apply-candidate|verify-management|verify-data-plane|commit|commit-prepared|finalize-commit|rollback|replace-owned-nft|apply-ip-plan|rollback-ip-plan|artifact-install|artifact-remove)
+  prepare|validate-candidate|snapshot-current|apply-candidate|verify-management|verify-data-plane|commit|commit-prepared|finalize-commit|rollback|clear-boot-guard-bound|replace-owned-nft|apply-ip-plan|rollback-ip-plan|artifact-install|artifact-remove)
     require_transaction_args
     case "$cmd" in
       prepare) prepare_tx ;;
@@ -2041,6 +2067,7 @@ case "$cmd" in
       commit-prepared) commit_prepared_tx ;;
       finalize-commit) finalize_commit_tx ;;
       rollback) rollback_tx ;;
+      clear-boot-guard-bound) clear_boot_guard_bound ;;
       replace-owned-nft) replace_owned_nft_command ;;
       apply-ip-plan) apply_ip_plan_command ;;
       rollback-ip-plan) rollback_ip_plan_command ;;

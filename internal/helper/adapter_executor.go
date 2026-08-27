@@ -121,6 +121,8 @@ func transactionVerb(command string) (string, bool) {
 		return "finalize-commit", true
 	case "transaction.rollback":
 		return "rollback", true
+	case "transaction.clear_boot_guard":
+		return "clear-boot-guard-bound", true
 	case "transaction.reconcile":
 		return "reconcile", true
 	default:
@@ -165,6 +167,28 @@ func (e AdapterExecutor) executeTransaction(ctx context.Context, request Request
 		response.ErrorCode = "rollback_not_semantically_confirmed"
 		response.Error = "adapter exited successfully without proving rollback"
 		return response
+	}
+	if request.Command == "transaction.clear_boot_guard" {
+		if response.Evidence["boot_guard"] != "cleared" || response.SemanticState != "committed" {
+			response.ErrorCode = "boot_guard_not_semantically_confirmed"
+			response.Error = "adapter did not prove generation-bound boot guard removal"
+			return response
+		}
+		for key, expected := range map[string]string{
+			"operation":                     "clear-boot-guard",
+			"generation":                    request.Generation,
+			"transaction_id":                request.TransactionID,
+			"active_transaction":            request.TransactionID,
+			"active_revision":               request.RevisionID,
+			"active_candidate_hash":         request.CandidateHash,
+			"active_artifact_manifest_hash": request.ArtifactManifestHash,
+		} {
+			if response.Evidence[key] != expected {
+				response.ErrorCode = "boot_guard_binding_mismatch"
+				response.Error = "adapter boot guard evidence did not match the committed transaction"
+				return response
+			}
+		}
 	}
 	if request.Command == "transaction.commit_prepared" && (response.SemanticState != "adapter_activated" || response.Committed || !response.RollbackCapable) {
 		response.ErrorCode = "commit_prepare_not_semantically_confirmed"

@@ -49,6 +49,14 @@ type BootGuardClearer interface {
 	ClearBootGuard(context.Context) StepResult
 }
 
+// BoundBootGuardClearer removes the guard only after proving that the exact
+// committed transaction is still active. Production adapters implement this
+// stronger interface; the legacy interface remains for development fakes and
+// the boot-guard init service's idempotent stop path.
+type BoundBootGuardClearer interface {
+	ClearBootGuardForTransaction(context.Context, Transaction) StepResult
+}
+
 type RecoveryTarget struct {
 	TransactionID        string `json:"transaction_id"`
 	RevisionID           string `json:"revision_id"`

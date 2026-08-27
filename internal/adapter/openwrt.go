@@ -53,6 +53,9 @@ func (a *OpenWrt) Diagnose(ctx context.Context) StepResult { return a.runGlobal(
 func (a *OpenWrt) ClearBootGuard(ctx context.Context) StepResult {
 	return a.runGlobal(ctx, "clear-boot-guard")
 }
+func (a *OpenWrt) ClearBootGuardForTransaction(ctx context.Context, tx Transaction) StepResult {
+	return a.runTransaction(ctx, "clear-boot-guard", tx)
+}
 func (a *OpenWrt) Reconcile(ctx context.Context, target RecoveryTarget) StepResult {
 	start := time.Now().UTC()
 	if err := validateRecoveryTarget(target); err != nil {
@@ -322,7 +325,7 @@ func allowedGlobalCommand(command string) bool {
 
 func allowedTransactionCommand(command string) bool {
 	switch command {
-	case "prepare", "validate-candidate", "snapshot-current", "apply-candidate", "verify-management", "verify-data-plane", "commit", "commit-prepared", "finalize-commit", "rollback":
+	case "prepare", "validate-candidate", "snapshot-current", "apply-candidate", "verify-management", "verify-data-plane", "commit", "commit-prepared", "finalize-commit", "rollback", "clear-boot-guard":
 		return true
 	default:
 		return false

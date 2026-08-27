@@ -554,7 +554,7 @@ func (s *Server) confirmChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet,
 			s.markRecoveryRequired(target, "control_plane_finalize_persist_failed", err.Error(), cs.CommitPhase)
 			return cs, &actionFailure{Status: 503, Code: "recovery_required", Message: "adapter finalized but commit completion persistence is ambiguous"}
 		}
-		if failure := s.clearBootGuard(ctx); failure != nil {
+		if failure := s.clearBootGuard(ctx, tx); failure != nil {
 			s.markRecoveryRequired(target, "boot_guard_clear_failed", failure.Message, cs.CommitPhase)
 			return cs, failure
 		}
@@ -601,7 +601,7 @@ func (s *Server) confirmChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet,
 			s.markRecoveryRequired(target, "legacy_commit_persist_failed", err.Error(), "legacy_committed")
 			return cs, &actionFailure{Status: 503, Code: "recovery_required", Message: "adapter committed but active revision persistence is ambiguous"}
 		}
-		if failure := s.clearBootGuard(ctx); failure != nil {
+		if failure := s.clearBootGuard(ctx, tx); failure != nil {
 			s.markRecoveryRequired(target, "boot_guard_clear_failed", failure.Message, "legacy_committed")
 			return cs, failure
 		}
@@ -627,12 +627,18 @@ func (s *Server) confirmChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet,
 // OpenWrt adapter owns the nft fence; simulation/fake adapters do not.  A
 // production clear failure is never ignored: the committed revision remains
 // fenced and recovery must retry the exact-generation operation.
-func (s *Server) clearBootGuard(ctx context.Context) *actionFailure {
-	clearer, ok := s.adapter.(adapter.BootGuardClearer)
-	if !ok {
+func (s *Server) clearBootGuard(ctx context.Context, tx adapter.Transaction) *actionFailure {
+	var result adapter.StepResult
+	if clearer, ok := s.adapter.(adapter.BoundBootGuardClearer); ok {
+		result = clearer.ClearBootGuardForTransaction(ctx, tx)
+	} else if clearer, ok := s.adapter.(adapter.BootGuardClearer); ok {
+		// Development fakes may only expose the old idempotent operation. The
+		// production OpenWrt adapter implements BoundBootGuardClearer and never
+		// takes this fallback path.
+		result = clearer.ClearBootGuard(ctx)
+	} else {
 		return nil
 	}
-	result := clearer.ClearBootGuard(ctx)
 	if stepOK(result) {
 		return nil
 	}
@@ -1095,7 +1101,7 @@ func (s *Server) finalizeRecoveredCommit(cs *ChangeSet, tx adapter.Transaction) 
 	); err != nil {
 		return err
 	}
-	if failure := s.clearBootGuard(context.Background()); failure != nil {
+	if failure := s.clearBootGuard(context.Background(), tx); failure != nil {
 		return errors.New(failure.Message)
 	}
 	s.mu.Lock()
