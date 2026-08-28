@@ -312,6 +312,81 @@ managed_static_paths() {
     "$HOTPLUG_FIREWALL_DIR/95-router-policy"
 }
 
+prefix_top_entry_allowed() {
+  case "$1" in
+    scripts|openwrt|components|.managed-files.manifest) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_prefix_contents() {
+  [ -e "$PREFIX" ] || return 0
+  [ -d "$PREFIX" ] && [ ! -L "$PREFIX" ] || {
+    echo "uninstall blocked: project prefix is not an owned directory" >&2
+    return 1
+  }
+  command -v find >/dev/null 2>&1 || {
+    echo "uninstall blocked: find is required to validate project prefix" >&2
+    return 1
+  }
+  for entry in "$PREFIX"/* "$PREFIX"/.[!.]* "$PREFIX"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    name="${entry##*/}"
+    prefix_top_entry_allowed "$name" || {
+      echo "uninstall blocked: unowned project-prefix entry: $entry" >&2
+      return 1
+    }
+    case "$name" in
+      .managed-files.manifest)
+        [ -f "$entry" ] && [ ! -L "$entry" ] || {
+          echo "uninstall blocked: project-prefix manifest is not regular" >&2
+          return 1
+        }
+        ;;
+      scripts|openwrt|components)
+        [ -d "$entry" ] && [ ! -L "$entry" ] || {
+          echo "uninstall blocked: project-prefix tree is not a directory: $entry" >&2
+          return 1
+        }
+        nested_unsafe="$(find "$entry" \( -type l -o ! -type f -a ! -type d \) -print -quit 2>/dev/null || true)"
+        [ -z "$nested_unsafe" ] || {
+          echo "uninstall blocked: unsafe project-prefix entry: $nested_unsafe" >&2
+          return 1
+        }
+        ;;
+    esac
+  done
+}
+
+remove_owned_prefix() {
+  [ -e "$PREFIX" ] || return 0
+  validate_prefix_contents || return 1
+  prefix_entries="$BACKUP_DIR/prefix-entries.txt"
+  find "$PREFIX" -depth -print > "$prefix_entries" || {
+    echo "uninstall failed: could not enumerate owned project prefix" >&2
+    return 1
+  }
+  while IFS= read -r entry; do
+    [ "$entry" != "$PREFIX" ] || continue
+    if [ -d "$entry" ] && [ ! -L "$entry" ]; then
+      rmdir "$entry" || {
+        echo "uninstall failed: owned project-prefix directory is not empty: $entry" >&2
+        return 1
+      }
+    else
+      rm -f "$entry" || {
+        echo "uninstall failed: could not remove owned project-prefix file: $entry" >&2
+        return 1
+      }
+    fi
+  done < "$prefix_entries"
+  rmdir "$PREFIX" || {
+    echo "uninstall failed: owned project prefix is not empty" >&2
+    return 1
+  }
+  rm -f "$prefix_entries"
+}
+
 validate_managed_file_manifest() {
   [ -f "$MANAGED_FILE_MANIFEST" ] && [ ! -L "$MANAGED_FILE_MANIFEST" ] || {
     echo "uninstall blocked: managed-file ownership manifest is missing" >&2
@@ -544,6 +619,7 @@ for owned_path in "$PREFIX" "$BIN_DIR/router-policy" "$INIT_DIR/router-policy" \
 done
 validate_runtime_contents || exit 1
 validate_managed_file_manifest || exit 1
+validate_prefix_contents || exit 1
 
 mkdir -p "$BACKUP_DIR"
 manifest="$BACKUP_DIR/manifest.txt"
@@ -612,7 +688,7 @@ done <<EOF
 $(managed_static_paths)
 EOF
 rm -f "$ETC_DIR/firewall/router-policy.nft" "$NFTABLES_DIR/router-policy.nft" "$DNSMASQ_DIR/router-policy.conf"
-rm -rf "$PREFIX"
+remove_owned_prefix || exit 1
 
 if [ -z "$SYSTEM_ROOT" ] && [ -x "$INIT_DIR/dnsmasq" ]; then
   "$INIT_DIR/dnsmasq" restart

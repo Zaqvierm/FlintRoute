@@ -235,9 +235,12 @@ cleanup removes only known files and empty owned directories. Static binaries,
 init scripts and hotplug hooks are additionally bound to the root-owned
 `/usr/lib/router-policy/.managed-files.manifest`; a missing, malformed, or
 content-mismatched manifest blocks before service teardown, so a foreign file
-with a FlintRoute-looking name is not deleted. Zapret profiles are stopped and
-disabled in a first phase, and their files are removed only after every owned
-profile stop succeeds.
+with a FlintRoute-looking name is not deleted. The product prefix itself is
+also enumerated against its top-level allowlist and removed file-by-file with
+`rmdir`; an unknown or unsafe entry blocks before teardown, so uninstall never
+uses recursive deletion for the managed code tree. Zapret profiles are stopped
+and disabled in a first phase, and their files are removed only after every
+owned profile stop succeeds.
 
 Installer path ownership is fail-closed as well. Before `mkdir`/copy and again
 at the mutation boundary, all managed roots are checked for unsafe path

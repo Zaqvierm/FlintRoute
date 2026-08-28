@@ -198,6 +198,23 @@ cp "$SYSTEM_ROOT/usr/lib/router-policy/openwrt/init.d/router-policy-xray" \
   "$SYSTEM_ROOT/etc/init.d/router-policy-xray"
 chmod 755 "$SYSTEM_ROOT/etc/init.d/router-policy-xray"
 
+# A product-prefix-looking directory is not permission to recursively delete
+# arbitrary content.  An unknown top-level entry must fence before teardown.
+printf 'foreign-prefix-file\n' > "$SYSTEM_ROOT/usr/lib/router-policy/foreign-prefix-file"
+if BACKUP_DIR="$BACKUP_BASE/uninstall-foreign-prefix" \
+  ROUTER_POLICY_SYSTEM_ROOT="$SYSTEM_ROOT" \
+  FAKE_CALL_LOG="$FAKE_CALL_LOG" \
+  sh "$ROOT/uninstall.sh" --uninstall >/dev/null 2>&1; then
+  echo "uninstaller accepted foreign project-prefix entry" >&2
+  exit 1
+fi
+grep -F 'foreign-prefix-file' "$SYSTEM_ROOT/usr/lib/router-policy/foreign-prefix-file" >/dev/null
+rm -f "$SYSTEM_ROOT/usr/lib/router-policy/foreign-prefix-file"
+# The failed-upgrade marker is deliberately outside the installer-owned
+# prefix allowlist; it was verified above and must be removed by the fixture
+# before exercising a normal owned uninstall.
+rm -f "$SYSTEM_ROOT/usr/lib/router-policy/local-marker"
+
 BACKUP_DIR="$BACKUP_BASE/uninstall" \
 ROUTER_POLICY_SYSTEM_ROOT="$SYSTEM_ROOT" \
 FAKE_CALL_LOG="$FAKE_CALL_LOG" \
