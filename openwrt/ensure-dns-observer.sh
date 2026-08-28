@@ -20,6 +20,28 @@ case "${1:-}" in
     ;;
 esac
 
+validate_no_symlink_path() {
+  candidate="$1"
+  case "$candidate" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  [ "$candidate" != "/" ] || return 1
+  remainder=${candidate#/}
+  current=""
+  while [ -n "$remainder" ]; do
+    case "$remainder" in
+      */*) component=${remainder%%/*}; remainder=${remainder#*/} ;;
+      *) component=$remainder; remainder= ;;
+    esac
+    case "$component" in
+      ""|.|..) return 1 ;;
+    esac
+    current="$current/$component"
+    [ ! -L "$current" ] || return 1
+  done
+}
+
 [ -n "$confdir" ] || {
   echo "dns_observer=skipped"
   echo "reason=dnsmasq_confdir_unknown"
@@ -29,6 +51,11 @@ esac
   [ "$confdir" = "$system_root/etc/dnsmasq.d" ] || {
   echo "dns_observer=error" >&2
   echo "reason=dnsmasq_confdir_unowned" >&2
+  exit 1
+}
+validate_no_symlink_path "$confdir" || {
+  echo "dns_observer=error" >&2
+  echo "reason=dnsmasq_confdir_symlink" >&2
   exit 1
 }
 [ -f "$bootstrap" ] && [ ! -L "$bootstrap" ] || {

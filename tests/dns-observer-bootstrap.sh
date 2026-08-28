@@ -91,6 +91,19 @@ else
   echo "symlink_test=skipped-filesystem"
 fi
 
+rm -rf "$TMP/root/tmp"
+mkdir -p "$TMP/foreign-parent/dnsmasq.d"
+if ln -s "$TMP/foreign-parent" "$TMP/root/tmp" 2>/dev/null; then
+  set +e
+  parent_symlink_output=$(ROUTER_POLICY_DNSMASQ_CONFDIR="$TMP/root/tmp/dnsmasq.d" sh "$SCRIPT" 2>&1)
+  parent_symlink_rc=$?
+  set -e
+  [ "$parent_symlink_rc" -ne 0 ]
+  printf '%s\n' "$parent_symlink_output" | grep -Fx 'reason=dnsmasq_confdir_symlink' >/dev/null
+else
+  echo "parent_symlink_test=skipped-filesystem"
+fi
+
 set +e
 unowned_output=$(ROUTER_POLICY_DNSMASQ_CONFDIR="$TMP/root/etc/shadow" sh "$SCRIPT" 2>&1)
 unowned_rc=$?
