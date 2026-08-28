@@ -5,7 +5,7 @@
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `f056c73b5772ce89b957ad1023f90e1f9c3867d1` (route-only assignment is fenced without a registered runtime consumer; semantic, revision-bound receipts and idempotent rollback are required before persisting an applied mapping; discovery suggestion/control-state persistence failures are surfaced and block unsafe auto-assignment; installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools; prefix renames flush their containing directory; corrupt-state rescue artifacts are synced and atomically renamed with unique names; failed Zapret calibration retains at most three private bounded forensic bundles after cleanup; end-to-end latency is measured from DNS/network path and never derived from full verification duration; probe terminal statuses are canonicalized case-insensitively; strict JSON decoders reject trailing documents in kernel command and IP state parsers; privileged adapter success now requires an independent operation/generation/transaction/revision/candidate/artifact/rollback-token evidence binding; reconcile receipts expose the same direct binding fields as every other adapter operation).
+- Текущий проверяемый code HEAD: `38a0ad343aa1f4f53ef4f1825815ce1cf2eaff05` (route-only assignment is fenced without a registered runtime consumer; semantic, revision-bound receipts and idempotent rollback are required before persisting an applied mapping; discovery suggestion/control-state persistence failures are surfaced and block unsafe auto-assignment; installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools; prefix renames flush their containing directory; corrupt-state rescue artifacts are synced and atomically renamed with unique names; failed Zapret calibration retains at most three private bounded forensic bundles after cleanup; end-to-end latency is measured from DNS/network path and never derived from full verification duration; probe terminal statuses are canonicalized case-insensitively; strict JSON decoders reject trailing documents in kernel command and IP state parsers; privileged adapter success now requires an independent operation/generation/transaction/revision/candidate/artifact/rollback-token evidence binding; reconcile receipts expose the same direct binding fields as every other adapter operation; candidate_valid=false is rejected even with exit code 0).
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -118,7 +118,7 @@ response fails the installer health gate closed.
 полный runner завершился `all_tests_ok=true`; его exact-SHA CI evidence была
 pending на момент следующего code delta и потому не наследуется текущим SHA.
 
-Для текущего code head `f056c73b5772ce89b957ad1023f90e1f9c3867d1` все обязательные
+Для исторического code head `f056c73b5772ce89b957ad1023f90e1f9c3867d1` все обязательные
 workflows завершились успешно:
 
 - exact-SHA full safety gate: [33140362889](https://github.com/Zaqvierm/FlintRoute/actions/runs/33140362889);
@@ -129,6 +129,17 @@ workflows завершились успешно:
 Full gate включает `go test ./...`, `go test -race ./...`, `go vet ./...`,
 frontend typecheck/unit/build, browser tests, ShellCheck, installer/adapter/
 recovery fixtures, Zapret ownership, Linux nft namespace и secret/diff checks.
+
+Для текущего code head `38a0ad343aa1f4f53ef4f1825815ce1cf2eaff05` все обязательные
+workflows завершились успешно:
+
+- exact-SHA full safety gate: [33140683396](https://github.com/Zaqvierm/FlintRoute/actions/runs/33140683396);
+- nft transition: [33140683434](https://github.com/Zaqvierm/FlintRoute/actions/runs/33140683434);
+- Zapret process-group и Quick contract: [33140683443](https://github.com/Zaqvierm/FlintRoute/actions/runs/33140683443);
+- UI browser/responsive: [33140683401](https://github.com/Zaqvierm/FlintRoute/actions/runs/33140683401).
+
+Этот full gate также покрывает `candidate_valid=false` rejection в typed helper
+и legacy adapter execution tests.
 
 Предыдущие run ID для исторического code head `1118e6594476fc05f8b52ad4c800327a916cb110`
 сохранены ниже как археологическое evidence и не наследуются текущим SHA.
