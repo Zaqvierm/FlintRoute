@@ -90,6 +90,21 @@ if grep -F "$TMP/etc/router-policy/config/foreign.conf" "$CHOWN_LOG" >/dev/null;
   exit 1
 fi
 
+mkdir -p "$TMP/foreign-runtime"
+if ln -s "$TMP/foreign-runtime" "$TMP/runtime-link" 2>/dev/null && [ -L "$TMP/runtime-link" ]; then
+  original_runtime_dir="$RUNTIME_DIR"
+  RUNTIME_DIR="$TMP/runtime-link"
+  set +e
+  runtime_output=$(validate_managed_roots 2>&1)
+  runtime_rc=$?
+  set -e
+  [ "$runtime_rc" -ne 0 ]
+  printf '%s\n' "$runtime_output" | grep -F 'managed path contains a symlink' >/dev/null
+  RUNTIME_DIR="$original_runtime_dir"
+else
+  echo "managed_root_symlink_test=skipped-filesystem"
+fi
+
 rm -f "$TMP/etc/router-policy/secrets/telegram.json"
 if ln -s "$TMP/foreign-secret" "$TMP/etc/router-policy/secrets/telegram.json" 2>/dev/null; then
   set +e

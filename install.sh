@@ -163,6 +163,7 @@ preflight_disk_space() {
 
 preflight_install() {
   refresh_install_targets
+  validate_managed_roots || return 1
   [ -f "$SOURCE_BINARY" ] || { echo "missing $SOURCE_BINARY; run scripts/build-go.sh before install" >&2; return 1; }
   [ -f "$SOURCE_HELPER_BINARY" ] || { echo "missing $SOURCE_HELPER_BINARY; run scripts/build-go.sh before install" >&2; return 1; }
   for p in "$ROOT/scripts" "$ROOT/openwrt" "$ROOT/config/default.json" "$ROOT/config/schema.json" "$ROOT/config/router-policy-helper.env"; do
@@ -260,6 +261,34 @@ validate_no_symlink_path() {
     esac
     current="$current/$component"
     [ ! -L "$current" ] || return 1
+  done
+}
+
+validate_managed_roots() {
+  # mkdir -p follows an existing symlink. Re-check every managed root at the
+  # mutation boundary so an environment override or path replacement cannot
+  # redirect writes into a foreign tree between preflight and install_files.
+  for managed_root in \
+    "$PREFIX" \
+    "$ETC_DIR" \
+    "$ETC_DIR/config" \
+    "$ETC_DIR/secrets" \
+    "$ETC_DIR/xray" \
+    "$ETC_DIR/zapret" \
+    "$ETC_DIR/firewall" \
+    "$STATE_DIR" \
+    "$RUNTIME_DIR" \
+    "$BIN_DIR" \
+    "$INIT_DIR" \
+    "$RC_DIR" \
+    "$HOTPLUG_IFACE_DIR" \
+    "$HOTPLUG_FIREWALL_DIR" \
+    "$DNSMASQ_DIR"; do
+    [ -n "$managed_root" ] || continue
+    validate_no_symlink_path "$managed_root" || {
+      echo "install blocked: managed path contains a symlink or unsafe component: $managed_root" >&2
+      return 1
+    }
   done
 }
 
@@ -1303,6 +1332,7 @@ install_files() {
   # preflight snapshot rejects symlinks too, but this local guard closes the
   # TOCTOU window where a replaced directory could otherwise redirect the
   # first subscription-file write into a foreign tree.
+  validate_managed_roots || return 1
   validate_no_symlink_path "$ETC_DIR/secrets" || {
     echo "install blocked: secrets path contains a symlink" >&2
     return 1
@@ -1466,7 +1496,9 @@ prepare_controller_identity() {
       return 1
     }
   }
-  chown_owned_tree "$ETC_DIR/config" "$STATE_DIR" "$RUNTIME_DIR" || return 1
+  for owned_root in "$ETC_DIR/config" "$STATE_DIR" "$RUNTIME_DIR"; do
+    chown_owned_tree "$owned_root" || return 1
+  done
   validate_managed_secret_paths || return 1
   chown "$controller_uid:$controller_gid" "$ETC_DIR/secrets" || {
     echo "install blocked: cannot assign secrets directory" >&2
