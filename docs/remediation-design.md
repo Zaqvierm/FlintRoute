@@ -89,6 +89,23 @@ Read-only `status` и `diagnose` остаются вне этой mutation bound
 проверка UID/peer credentials и hardware proof ещё не выполнены, поэтому
 acceptance остаётся `PARTIAL`, хотя production startup contract уже fail-closed.
 
+### Ранний boot fence и committed classifier
+
+После cold boot conntrack пуст, поэтому один только match по `meta mark` не
+защищает новый поток. `router-policy-boot-guard` сначала ставит отдельную
+owned-таблицу с `forward policy drop`. Если в
+`state/last-good/active-transaction.env` доказаны `transaction_state=committed`,
+candidate hash, artifact manifest hash и ownership `router_policy`, guard в том
+же атомарном `nft` batch загружает этот committed classifier. В guard разрешаются
+только не-DROP marks, полученные typed-командой
+`internal-print-managed-marks`; нулевые и foreign marks остаются под DROP.
+
+При отсутствующем/повреждённом binding, недоступном parser/helper или конфликте
+чужой `router_policy` classifier не загружается: безопасный fallback — полный
+transit DROP до reconcile. Это fail-closed degraded mode, а не обещание
+доступности WAN. Guard не ставит hook на loopback management plane и снимается
+только generation-bound операцией после полного reconcile.
+
 Lifecycle socket также проверяет ownership: regular file, symlink или живой
 listener в `helper.sock` считается чужим и не удаляется. Перед bind можно убрать
 только stale Unix socket, который не принимает соединения. Тест helper сохраняет

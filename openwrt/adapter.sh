@@ -18,6 +18,7 @@ lock_dir="$runtime/transaction.lock"
 pending_file="$runtime/pending-transaction.env"
 active_file="$runtime/active-transaction.env"
 boot_guard_file="$runtime/boot-guard.nft"
+boot_guard_classifier_file="$runtime/boot-guard-classifier.nft"
 timer_dir="$runtime/rollback-timers"
 known_config="${ROUTER_POLICY_CONFIG_PATH:-/etc/router-policy/config/default.json}"
 router_policy_bin="${ROUTER_POLICY_BIN:-/usr/bin/router-policy}"
@@ -240,17 +241,112 @@ delete_boot_guard_table() {
   return 0
 }
 
+early_committed_classifier_source() {
+  early_binding="$state/last-good/active-transaction.env"
+  early_config="$state/last-good/router-policy-config.json"
+  early_generated="$state/last-good/generated"
+  [ -s "$early_binding" ] && [ -f "$early_config" ] && [ -d "$early_generated" ] || return 1
+  early_txid="$(sed -n 's/^transaction_id=//p' "$early_binding" | head -n 1)"
+  early_revision="$(sed -n 's/^revision_id=//p' "$early_binding" | head -n 1)"
+  early_candidate_hash="$(sed -n 's/^candidate_hash=//p' "$early_binding" | head -n 1)"
+  early_artifact_hash="$(sed -n 's/^artifact_manifest_hash=//p' "$early_binding" | head -n 1)"
+  early_state="$(sed -n 's/^transaction_state=//p' "$early_binding" | head -n 1)"
+  printf '%s\n' "$early_txid" | grep -Eq '^tx_[0-9a-f]{16}$' || return 1
+  printf '%s\n' "$early_revision" | grep -Eq '^rev_[0-9]+_[0-9a-f]{12}$' || return 1
+  printf '%s\n' "$early_candidate_hash" | grep -Eq '^sha256:[0-9a-f]{64}$' || return 1
+  printf '%s\n' "$early_artifact_hash" | grep -Eq '^sha256:[0-9a-f]{64}$' || return 1
+  [ "$early_state" = "committed" ] || return 1
+  # Both the candidate and every generated artifact are checked against the
+  # same durable transaction binding.  A merely present file is not enough.
+  ROUTER_POLICY_CONFIG="$early_config" "$router_policy_bin" internal-verify-candidate \
+    --candidate "$early_config" --candidate-hash "$early_candidate_hash" >/dev/null || return 1
+  "$router_policy_bin" internal-verify-artifacts \
+    --root "$early_generated" --transaction "$early_txid" --revision "$early_revision" \
+    --candidate-hash "$early_candidate_hash" --manifest-hash "$early_artifact_hash" >/dev/null || return 1
+  [ -s "$early_generated/router-policy.nft" ] || return 1
+  early_identity="$(nft_identity "$early_generated/router-policy.nft" 2>/dev/null)" || return 1
+  [ "$early_identity" = "inet router_policy" ] || return 1
+  grep -F 'comment "router-policy owner=flintroute"' "$early_generated/router-policy.nft" >/dev/null || return 1
+  printf '%s\n' "$early_generated/router-policy.nft"
+}
+
+guard_accept_marks() {
+  guard_config="$1"
+  [ -f "$guard_config" ] || return 1
+  guard_output="$(ROUTER_POLICY_CONFIG="$guard_config" "$router_policy_bin" internal-print-managed-marks 2>/dev/null)" || return 1
+  guard_name=""
+  guard_value=""
+  guard_marks=""
+  while IFS= read -r guard_line; do
+    case "$guard_line" in
+      managed_mark=*)
+        guard_value="${guard_line#managed_mark=}"
+        ;;
+      managed_mark_name=*)
+        guard_name="${guard_line#managed_mark_name=}"
+        case "$guard_name" in
+          drop) guard_value="" ;;
+          direct|zapret|xray|xray_tproxy|xray_bypass)
+            printf '%s\n' "${guard_value:-}" | grep -Eq '^(0x[0-9a-fA-F]+|[0-9]+)$' || return 1
+            case " $guard_marks " in
+              *" $guard_value "*) ;;
+              *) guard_marks="$guard_marks $guard_value" ;;
+            esac
+            ;;
+          *) return 1 ;;
+        esac
+        ;;
+      '') ;;
+      *) return 1 ;;
+    esac
+  done <<EOF
+$guard_output
+EOF
+  guard_marks="$(printf '%s\n' "$guard_marks" | sed 's/^ *//')"
+  [ -n "$guard_marks" ] || return 1
+  printf '%s\n' "$guard_marks"
+}
+
+classifier_table_owned_or_absent() {
+  classifier_table="$("$nft_bin" list table inet router_policy 2>/dev/null)" || return 0
+  printf '%s\n' "$classifier_table" | grep -F 'comment "router-policy owner=flintroute"' >/dev/null
+}
+
 install_boot_guard() {
   mkdir -p "$runtime"
+  rm -f "$boot_guard_classifier_file"
+  # On a cold boot the kernel has no conntrack marks and the normal owned
+  # classifier table is not present yet.  If (and only if) the durable
+  # last-good binding and its artifacts verify, stage that exact classifier so
+  # the guard can admit already-protected marks.  Any missing/ambiguous proof
+  # deliberately falls back to the all-forwarding DROP below.
+  if early_classifier_source="$(early_committed_classifier_source 2>/dev/null)" &&
+    early_classifier_marks="$(guard_accept_marks "$state/last-good/router-policy-config.json" 2>/dev/null)" &&
+    classifier_table_owned_or_absent &&
+    [ -s "$early_classifier_source" ] && [ -n "$early_classifier_marks" ]; then
+    cp "$early_classifier_source" "$boot_guard_classifier_file.tmp"
+    mv "$boot_guard_classifier_file.tmp" "$boot_guard_classifier_file"
+  else
+    rm -f "$boot_guard_classifier_file.tmp" "$boot_guard_classifier_file"
+    early_classifier_marks=""
+  fi
   {
     echo 'table inet router_policy_boot_guard {'
     echo '  comment "router-policy owner=flintroute"'
     echo '  chain forward {'
-    # A mark-only guard would be fail-open after reboot: new flows have mark=0.
-    # Drop all transit traffic until the exact committed generation is proven.
-    # Run before the generated classifier (priority -5) and normal fw4 filter
-    # chains.  A later accept must never be able to bypass the boot fence.
     echo '    type filter hook forward priority -300; policy drop;'
+    if [ -n "${early_classifier_marks:-}" ]; then
+      # The classifier is loaded in the same nft transaction and runs before
+      # this chain.  Admit only marks emitted by the verified candidate; all
+      # unmarked/foreign marks remain fenced.  DROP is never admitted here.
+      for guard_mark in $early_classifier_marks; do
+        printf '    meta mark %s counter accept comment "rp boot_guard allow=meta"\n' "$guard_mark"
+        printf '    ct mark %s counter accept comment "rp boot_guard allow=conntrack"\n' "$guard_mark"
+      done
+    fi
+    # A mark-only guard would be fail-open after reboot: new flows have mark=0.
+    # The default policy remains DROP until the exact committed generation is
+    # proven, even when the optional early classifier is admitted above.
     echo '    counter comment "rp boot_guard action=drop_unclassified"'
     echo '  }'
     echo '}'
@@ -280,6 +376,20 @@ replace_boot_guard_table() {
   else
     : > "$transition_batch"
   fi
+  # Cold boot loses nft state.  Restore only the hash-verified, committed
+  # classifier when the owned table is absent.  If an existing table is
+  # present, leave it untouched: redeclaring it would turn a safe guard
+  # refresh into a non-atomic conflict.  A foreign table is never replaced.
+  classifier_table_present=false
+  if classifier_table="$("$nft_bin" list table inet router_policy 2>/dev/null)"; then
+    classifier_table_present=true
+    printf '%s\n' "$classifier_table" | grep -F 'comment "router-policy owner=flintroute"' >/dev/null || {
+      echo "reason=early_classifier_ownership_unproven" >&2
+    }
+  fi
+  if [ "$classifier_table_present" = false ] && [ -s "$boot_guard_classifier_file" ]; then
+    cat "$boot_guard_classifier_file" >> "$transition_batch"
+  fi
   cat "$boot_guard_file" >> "$transition_batch"
   if ! "$nft_bin" -c -f "$transition_batch"; then
     rm -f "$transition_batch"
@@ -296,7 +406,7 @@ replace_boot_guard_table() {
 
 clear_boot_guard() {
   delete_boot_guard_table
-  rm -f "$boot_guard_file"
+  rm -f "$boot_guard_file" "$boot_guard_classifier_file"
   echo "boot_guard=cleared"
 }
 
