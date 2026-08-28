@@ -223,3 +223,8 @@ Installer не активирует маршруты напрямую. Перв�
 через ChangeSet: validate, apply, route proof, commit или rollback. Параметры
 `install.sh --activate` и `install.sh --rollback` намеренно не обходят эту
 транзакцию.
+
+Uninstall backup retention is fail-safe: the fallback backup is registered
+before teardown, but older backups are pruned only after owned services are
+stopped, project resources are removed, and the final dnsmasq readiness check
+passes. A failed uninstall therefore keeps older recovery points.

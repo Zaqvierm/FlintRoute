@@ -19,6 +19,15 @@ disarm_line=$(grep -n '^    INSTALL_ROLLBACK_ARMED=0$' "$ROOT/install.sh" | cut 
   exit 1
 }
 
+# Uninstall backup pruning is the final bookkeeping step.  If service teardown
+# or dnsmasq readiness fails, older fallback backups must remain available.
+uninstall_prune_line=$(grep -n 'backup prune --root' "$ROOT/uninstall.sh" | tail -n 1 | cut -d: -f1)
+uninstall_dns_ready_line=$(grep -n 'wait_dnsmasq_ready ||' "$ROOT/uninstall.sh" | tail -n 1 | cut -d: -f1)
+[ -n "$uninstall_prune_line" ] && [ -n "$uninstall_dns_ready_line" ] && [ "$uninstall_prune_line" -gt "$uninstall_dns_ready_line" ] || {
+  echo "uninstaller pruned fallback backups before final readiness" >&2
+  exit 1
+}
+
 SYSTEM_ROOT="$TMP/root"
 BACKUP_BASE="$TMP/backups"
 SOURCE_BINARY="$TMP/router-policy-source"

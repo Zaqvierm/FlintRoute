@@ -392,7 +392,6 @@ remove_owned_profile_resources
 
 if [ -x "$BIN_DIR/router-policy" ]; then
   "$BIN_DIR/router-policy" backup register --root "$BACKUP_DIR" --operation "$(basename "$BACKUP_DIR")" --version "$ROUTER_POLICY_VERSION" --reason uninstall --retention-class uninstall-fallback >/dev/null
-  "$BIN_DIR/router-policy" backup prune --root "$BACKUP_ROOT" --max 2 --max-bytes 134217728 --apply >/dev/null
 fi
 
 if [ -z "$SYSTEM_ROOT" ]; then
@@ -425,6 +424,13 @@ if [ -z "$SYSTEM_ROOT" ] && [ -x "$INIT_DIR/dnsmasq" ]; then
     echo "uninstall failed: dnsmasq did not become ready" >&2
     exit 1
   }
+fi
+
+# Keep older fallback backups until every teardown and the final dnsmasq
+# readiness check has succeeded.  A failed uninstall must not prune the only
+# recovery points that still describe the previous installation.
+if [ -x "$BIN_DIR/router-policy" ]; then
+  "$BIN_DIR/router-policy" backup prune --root "$BACKUP_ROOT" --max 2 --max-bytes 134217728 --apply >/dev/null
 fi
 
 echo "uninstalled=true"
