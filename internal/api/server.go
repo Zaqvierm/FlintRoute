@@ -1283,6 +1283,12 @@ func (s *Server) runHealthCycle(ctx context.Context) {
 		return
 	}
 	active := s.currentConfig()
+	if active == nil {
+		// A missing active revision is a fenced control-plane state, not an
+		// invitation to dereference a nil config from a background scheduler.
+		s.publishEvent(Event{Type: "route.health", Severity: "warning", ReasonCode: "active_config_unavailable", Details: map[string]any{"probes_started": 0}})
+		return
+	}
 	engine := s.probeEngineFactory(active)
 	now := time.Now().UTC()
 	service := health.Service{

@@ -97,6 +97,24 @@ func TestServerHealthCycleCallsInjectedEnginePersistsAndExposesStatus(t *testing
 	}
 }
 
+func TestServerHealthCycleFailsClosedWhenActiveConfigIsMissing(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	srv.mu.Lock()
+	srv.activeConfig = nil
+	srv.mu.Unlock()
+	srv.probeEngineFactory = func(*config.Config) health.ProbeEngine {
+		t.Fatal("health scheduler constructed a probe engine without active config")
+		return nil
+	}
+
+	srv.runHealthCycle(context.Background())
+	events := srv.broker.Recent(0, 5)
+	if len(events) == 0 || events[len(events)-1].ReasonCode != "active_config_unavailable" {
+		t.Fatalf("missing active config was not reported as a fenced health state: %+v", events)
+	}
+}
+
 func TestTSPURefreshPublishesSuccessAndFailureWithoutDomains(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
