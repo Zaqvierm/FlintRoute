@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +26,7 @@ type fakeRouteAssignmentRuntime struct {
 	applied    int
 	rolledBack int
 	invalid    bool
+	badBinding bool
 }
 
 func (r *fakeRouteAssignmentRuntime) ApplyRouteAssignment(_ context.Context, request RouteAssignmentRequest) (RouteAssignmentReceipt, error) {
@@ -40,10 +42,15 @@ func (r *fakeRouteAssignmentRuntime) ApplyRouteAssignment(_ context.Context, req
 		Domain:          request.Domain,
 		RouteTag:        request.RouteTag,
 		RouteType:       request.RouteType,
-		MappingHash:     "sha256:route-assignment-fixture",
+		RouteSetID:      request.RouteSetID,
+		AssignmentID:    request.AssignmentID,
+		MappingHash:     request.MappingHash,
 	}
 	if r.invalid {
 		receipt.Operation = "route_assignment.unknown"
+	}
+	if r.badBinding {
+		receipt.MappingHash = "sha256:wrong-binding"
 	}
 	return receipt, nil
 }
@@ -322,6 +329,26 @@ func TestAutomaticDomainCommitRollsBackInvalidRuntimeReceipt(t *testing.T) {
 	}
 	if _, ok, err := srv.domainDecisions.Lookup("invalid-receipt.example", srv.activeRevision, time.Now().UTC()); err != nil || ok {
 		t.Fatalf("invalid receipt left a selected decision: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestAutomaticDomainCommitRollsBackMismatchedRouteBinding(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, ts, _, _, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer ts.Close()
+	defer srv.Close()
+	runtime := &fakeRouteAssignmentRuntime{badBinding: true}
+	srv.routeAssignmentRuntime = runtime
+	srv.probeEngineFactory = func(*config.Config) health.ProbeEngine {
+		return routeAssignmentProofEngine{revision: srv.activeRevision}
+	}
+
+	result := srv.commitAutomaticDomain(context.Background(), planner.DomainCheck{
+		Domain: "bound.example", ETLDPlusOne: "bound.example", Category: "GEO_LOCKED", Confidence: 1,
+		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true},
+	})
+	if result.Applied || !result.RolledBack || runtime.applied != 1 || runtime.rolledBack != 1 || !strings.Contains(result.Reason, "semantic") {
+		t.Fatalf("mismatched route binding was not fenced and rolled back: result=%+v runtime=%+v", result, runtime)
 	}
 }
 

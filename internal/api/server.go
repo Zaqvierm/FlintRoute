@@ -950,7 +950,10 @@ func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.Domain
 		Domain:               check.Domain,
 		RouteTag:             route.Tag,
 		RouteType:            route.Type,
+		RouteSetID:           routeAssignmentObjectID("route:", route.Tag),
+		AssignmentID:         routeAssignmentObjectID("assignment:", check.Domain),
 	}
+	request.MappingHash = routeAssignmentMappingHash(request)
 	receipt, err := runtime.ApplyRouteAssignment(ctx, request)
 	if err != nil {
 		return automaticCommitResult{Reason: "route_assignment_runtime_apply_failed: " + err.Error()}
@@ -965,7 +968,8 @@ func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.Domain
 		receipt.RequestID != request.RequestID || receipt.Operation != "route_assignment.apply" ||
 		receipt.Generation != request.Generation || receipt.RevisionID != request.RevisionID ||
 		receipt.Domain != request.Domain || receipt.RouteTag != request.RouteTag || receipt.RouteType != request.RouteType ||
-		strings.TrimSpace(receipt.MappingHash) == "" {
+		receipt.RouteSetID != request.RouteSetID || receipt.AssignmentID != request.AssignmentID ||
+		receipt.MappingHash != request.MappingHash {
 		if receipt.Applied {
 			return rollbackRuntime("route_assignment_runtime_semantic_response_invalid")
 		}
