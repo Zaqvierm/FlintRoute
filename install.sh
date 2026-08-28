@@ -78,8 +78,10 @@ refresh_install_targets() {
     detected_confdir="$($UCI_BIN -q get 'dhcp.@dnsmasq[0].confdir' 2>/dev/null || true)"
   fi
   if [ -n "$detected_confdir" ]; then
+    validate_dnsmasq_confdir "$detected_confdir" || return 1
     DNSMASQ_DIR="$detected_confdir"
   fi
+  validate_dnsmasq_confdir "$DNSMASQ_DIR" || return 1
   observer_target="$DNSMASQ_DIR/router-policy.conf"
   case " $INSTALL_TARGETS " in
     *" $observer_target "*) ;;
@@ -210,6 +212,24 @@ is_critical_system_dir() {
     [ -n "$critical_path" ] && [ "$candidate_path" = "$critical_path" ] && return 0
   done
   return 1
+}
+
+validate_dnsmasq_confdir() {
+  candidate_dir="$1"
+  # The observer owns one exact fragment in a штатный dnsmasq include
+  # directory. Never let a UCI value turn installation into a generic root
+  # file writer; custom directories need a reviewed ownership contract.
+  case "$candidate_dir" in
+    "${SYSTEM_ROOT:-}/tmp/dnsmasq.d"|"${SYSTEM_ROOT:-}/etc/dnsmasq.d") ;;
+    *)
+      echo "install blocked: dnsmasq confdir is outside the owned allowlist: $candidate_dir" >&2
+      return 1
+      ;;
+  esac
+  validate_no_symlink_path "$candidate_dir" || {
+    echo "install blocked: unsafe dnsmasq confdir path: $candidate_dir" >&2
+    return 1
+  }
 }
 
 validate_no_symlink_path() {

@@ -230,6 +230,32 @@ export HEALTH_COUNTER PATH ROUTER_POLICY_INSTALL_LIB_ONLY RUNTIME_DIR ROUTER_POL
 # shellcheck source=install.sh
 . "$ROOT/install.sh"
 
+# A runtime UCI confdir is input, not an ownership grant.  The installer must
+# reject a path such as /etc/shadow before it can add an observer target to the
+# rollback manifest or create a file there.
+UNSAFE_UCI="$TMP/unsafe-uci"
+cat > "$UNSAFE_UCI" <<'SH'
+#!/bin/sh
+printf '/etc/shadow\n'
+SH
+chmod +x "$UNSAFE_UCI"
+saved_system_root="$SYSTEM_ROOT"
+saved_dnsmasq_dir="$DNSMASQ_DIR"
+saved_uci_bin="$UCI_BIN"
+saved_install_targets="$INSTALL_TARGETS"
+SYSTEM_ROOT=""
+DNSMASQ_DIR="/tmp/dnsmasq.d"
+UCI_BIN="$UNSAFE_UCI"
+INSTALL_TARGETS="$PREFIX"
+if refresh_install_targets >/dev/null 2>&1; then
+  echo "installer accepted an unowned dnsmasq confdir" >&2
+  exit 1
+fi
+SYSTEM_ROOT="$saved_system_root"
+DNSMASQ_DIR="$saved_dnsmasq_dir"
+UCI_BIN="$saved_uci_bin"
+INSTALL_TARGETS="$saved_install_targets"
+
 # Installer health must follow the explicitly configured local management
 # listener instead of assuming loopback.  A synthetic SYSTEM_ROOT has no real
 # network namespace, so the resolver accepts its fixture address; production
