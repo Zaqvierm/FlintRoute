@@ -169,6 +169,12 @@ func (e AdapterExecutor) executeTransaction(ctx context.Context, request Request
 			response.Error = message
 			return response
 		}
+		if request.Command == "transaction.validate_candidate" && response.Evidence["candidate_valid"] != "true" {
+			response.ErrorCode = "candidate_not_verified"
+			response.Error = "adapter did not prove that the candidate is deployable"
+			response.Reason = response.Evidence["reason"]
+			return response
+		}
 	}
 	if request.Command == "transaction.rollback" && response.Evidence["rollback"] != "true" {
 		response.ErrorCode = "rollback_not_semantically_confirmed"

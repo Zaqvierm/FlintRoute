@@ -295,6 +295,14 @@ func (a *OpenWrt) execute(ctx context.Context, command string, start time.Time, 
 			res.Reason = "data plane was not verified"
 		}
 	}
+	if command == "validate-candidate" && evidence["candidate_valid"] != true {
+		res.OK = false
+		res.Status = "UNVERIFIED"
+		res.Reason = "candidate is not deployable on the current device"
+		if reason, ok := evidence["reason"].(string); ok && reason != "" {
+			res.Reason = reason
+		}
+	}
 	return res
 }
 

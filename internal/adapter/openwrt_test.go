@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"router-policy/internal/helper"
 )
@@ -38,6 +41,27 @@ func TestValidateRecoveryTarget(t *testing.T) {
 				t.Fatal("invalid recovery target accepted")
 			}
 		})
+	}
+}
+
+func TestOpenWrtLegacyExecutionRejectsUnverifiedCandidate(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("legacy adapter execution fixture requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	adapterPath := filepath.Join(dir, "adapter.sh")
+	script := "#!/bin/sh\n" +
+		"echo transaction_state=candidate_requires_device\n" +
+		"echo candidate_valid=false\n" +
+		"echo verification_status=UNVERIFIED\n" +
+		"echo reason=missing_device_diagnostics\n"
+	if err := os.WriteFile(adapterPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executor := &OpenWrt{helperPath: adapterPath}
+	result := executor.execute(context.Background(), "validate-candidate", time.Now().UTC(), "default.json")
+	if result.OK || result.Status != "UNVERIFIED" || result.Reason != "missing_device_diagnostics" {
+		t.Fatalf("unverified candidate was accepted by legacy execution path: %+v", result)
 	}
 }
 

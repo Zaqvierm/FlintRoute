@@ -121,6 +121,39 @@ func TestAdapterExecutorRejectsSuccessWithoutExactSemanticBinding(t *testing.T) 
 	}
 }
 
+func TestAdapterExecutorRejectsUnverifiedCandidateWithBoundResponse(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("exec adapter fixture requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	adapterPath := filepath.Join(dir, "adapter.sh")
+	request := validRequest("transaction.validate_candidate")
+	request.Generation = request.RevisionID
+	request.Transaction = &TransactionRequest{Operation: "validate-candidate"}
+	script := "#!/bin/sh\n" + strings.Join([]string{
+		"echo protocol_version=1",
+		"echo operation=validate-candidate",
+		"echo generation=" + request.Generation,
+		"echo transaction_id=" + request.TransactionID,
+		"echo revision_id=" + request.RevisionID,
+		"echo candidate_hash=" + request.CandidateHash,
+		"echo artifact_manifest_hash=" + request.ArtifactManifestHash,
+		"echo rollback_token_hash=" + request.RollbackTokenHash,
+		"echo transaction_state=candidate_requires_device",
+		"echo candidate_valid=false",
+		"echo verification_status=UNVERIFIED",
+		"echo reason=missing_device_diagnostics",
+	}, "\n") + "\n"
+	if err := os.WriteFile(adapterPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executor := AdapterExecutor{AdapterPath: adapterPath, ConfigPath: filepath.Join(dir, "default.json"), InitDir: dir}
+	response := executor.Execute(context.Background(), request)
+	if response.Accepted || response.ErrorCode != "candidate_not_verified" {
+		t.Fatalf("unverified candidate was accepted: %+v", response)
+	}
+}
+
 func TestAdapterExecutorAcceptsOnlyGenerationBoundBootGuardClear(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("exec adapter fixture requires a POSIX shell")
