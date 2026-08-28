@@ -50,7 +50,6 @@ export BACKUP_ROOT="$TMP/backups"
 export BACKUP_DIR="$TMP/backups/install"
 export INSTALL_TARGETS="$TMP/managed"
 export ENABLE_SERVICES=dnsmasq
-export DNSMASQ_SERVICE=dnsmasq
 export TIMEOUT_BIN="$TMP/bin/timeout"
 export TAR_BIN=tar
 

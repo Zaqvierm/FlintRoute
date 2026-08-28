@@ -289,7 +289,7 @@ is_managed_service() {
   # by the normal install path.  It is nevertheless recorded as a separate
   # runtime dependency so rollback can restore the state of a dnsmasq restart
   # triggered by observer activation.
-  [ "$candidate_service" = "${DNSMASQ_SERVICE:-dnsmasq}" ] && return 0
+  [ "$candidate_service" = "dnsmasq" ] && return 0
   for allowed_service in $ENABLE_SERVICES; do
     [ "$candidate_service" != "$allowed_service" ] || return 0
   done
@@ -643,14 +643,14 @@ snapshot_installation() {
   # Keep its pre-install enabled/running state in the same integrity-checked
   # service manifest, but do not include it in ENABLE_SERVICES: successful
   # installs must not alter an unrelated service's enablement.
-  dnsmasq_init="$INIT_DIR/${DNSMASQ_SERVICE:-dnsmasq}"
+  dnsmasq_init="$INIT_DIR/dnsmasq"
   dnsmasq_enabled=0
   dnsmasq_running=0
   if [ -z "$SYSTEM_ROOT" ] && [ -x "$dnsmasq_init" ]; then
     run_bounded "$dnsmasq_init" enabled >/dev/null 2>&1 && dnsmasq_enabled=1
     run_bounded "$dnsmasq_init" running >/dev/null 2>&1 && dnsmasq_running=1
   fi
-  echo "${DNSMASQ_SERVICE:-dnsmasq}|$dnsmasq_enabled|$dnsmasq_running" >> "$services"
+  echo "dnsmasq|$dnsmasq_enabled|$dnsmasq_running" >> "$services"
   # Archive only the exact allowlisted targets recorded in the manifest.  Do
   # not feed find(1) the staging tree: synthetic parents such as usr/ and
   # usr/lib/ inherit umask 077 and must never become archive members, even if
@@ -785,7 +785,7 @@ restore_installation() {
     while IFS='|' read -r service enabled running; do
       init="$INIT_DIR/$service"
       if [ ! -x "$init" ]; then
-        [ "$service" = "${DNSMASQ_SERVICE:-dnsmasq}" ] && service_restore_ok=0
+        [ "$service" = "dnsmasq" ] && service_restore_ok=0
         continue
       fi
       if [ "$enabled" = "1" ]; then
@@ -793,7 +793,7 @@ restore_installation() {
       else
         run_bounded "$init" disable >/dev/null 2>&1 || service_restore_ok=0
       fi
-      if [ "$service" = "${DNSMASQ_SERVICE:-dnsmasq}" ]; then
+      if [ "$service" = "dnsmasq" ]; then
         if [ "$running" = "1" ]; then
           run_bounded "$init" start >/dev/null 2>&1 || service_restore_ok=0
           [ "$service_restore_ok" != "1" ] || run_bounded "$init" running >/dev/null 2>&1 || service_restore_ok=0
