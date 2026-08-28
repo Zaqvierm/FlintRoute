@@ -168,7 +168,9 @@ transaction ID, revision ID, creation time. Stale lock удаляется тол
 Snapshots покрывают: active router-policy config, nft include, dnsmasq include,
 Xray активная конфигурация, Zapret активная конфигурация, активные метаданные транзакций, UCI
 flow-offloading state. Manifest SHA-256 + каждый file hash/size проверяются до
-изменения любого target. Restore атомарен. Absent markers удаляют только
+изменения любого target или остановки owned-профиля. Некорректный snapshot
+остаётся read-only ошибкой и не может оставить живой профиль остановленным.
+Restore атомарен. Absent markers удаляют только
 жестко запрограммированные цели, принадлежащие проекту. `last-good` = полный снимок + фиксированный
 метаданные транзакции.
 

@@ -63,6 +63,42 @@ if restore_snapshot "$snapshot" >/dev/null 2>&1; then
 fi
 [ "$(cat "$config")" = "config-new" ] || { echo "restore modified files before hash verification" >&2; exit 1; }
 
+# Snapshot verification must precede stopping any owned Zapret profile.  A
+# corrupt snapshot must be a read-only failure and must not leave the live
+# profile stopped merely because restore was attempted.
+PROFILE_ROOT="$TMP/profile-config"
+PROFILE_INIT_ROOT="$TMP/profile-init"
+PROFILE_STOP_LOG="$TMP/profile-stop.log"
+mkdir -p "$PROFILE_ROOT" "$PROFILE_INIT_ROOT"
+printf 'profile-config\n' > "$PROFILE_ROOT/test-profile.conf"
+cat > "$PROFILE_INIT_ROOT/router-policy-zapret-test-profile" <<'SH'
+#!/bin/sh
+case "${1:-}" in
+  running) exit 0 ;;
+  stop) printf 'stop\n' >> "$PROFILE_STOP_LOG"; exit 0 ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$PROFILE_INIT_ROOT/router-policy-zapret-test-profile"
+export PROFILE_STOP_LOG
+zapret_profile_dir="$PROFILE_ROOT"
+zapret_profile_init_prefix="$PROFILE_INIT_ROOT/router-policy-zapret-"
+active_zapret_profiles="$TMP/profiles.manifest"
+printf 'test-profile|%s|%s|205|\n' \
+  "$PROFILE_ROOT/test-profile.conf" \
+  "$PROFILE_INIT_ROOT/router-policy-zapret-test-profile" > "$active_zapret_profiles"
+profile_snapshot="$TMP/profile-snapshot"
+create_snapshot "$profile_snapshot"
+printf 'corrupt\n' >> "$profile_snapshot/xray-active.json"
+if restore_snapshot "$profile_snapshot" >/dev/null 2>&1; then
+  echo "corrupted profile snapshot was restored" >&2
+  exit 1
+fi
+[ ! -e "$PROFILE_STOP_LOG" ] || { echo "profile service was stopped before snapshot verification" >&2; exit 1; }
+active_zapret_profiles="$TMP/no-profile-manifest"
+zapret_profile_dir="${active_zapret_profiles%/*}/profiles"
+zapret_profile_init_prefix="/etc/init.d/router-policy-zapret-"
+
 printf 'config-old\n' > "$config"
 printf 'dns-old\n' > "$active_dnsmasq"
 printf 'xray-old\n' > "$active_xray"

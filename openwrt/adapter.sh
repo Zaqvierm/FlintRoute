@@ -1754,11 +1754,15 @@ verify_snapshot() {
 restore_snapshot() {
   snapshot_dir="$1"
   restore_bootstrap="${2:-true}"
-  stop_profile_services "$active_zapret_profiles" || return 1
   verify_snapshot "$snapshot_dir" || {
     echo "reason=snapshot_integrity_failed" >&2
     return 1
   }
+  # Integrity must be proven before changing any live owned service.  A
+  # corrupted or foreign snapshot is a read-only failure: stopping profiles
+  # first would leave the active dataplane degraded even though no restore
+  # could safely proceed.
+  stop_profile_services "$active_zapret_profiles" || return 1
   uci_restore_needed=false
   while IFS='|' read -r restore_target restore_state restore_name _restore_bytes _restore_hash restore_owner; do
     known_restore_target "$restore_target" "$restore_owner" || profile_restore_target_allowed "$restore_target" "$restore_owner" || return 1

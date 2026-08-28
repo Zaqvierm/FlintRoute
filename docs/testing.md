@@ -159,7 +159,9 @@ $env:CGO_ENABLED = "1"
 ## Тесты поведения shell
 
 - `tests/adapter-rollback.sh` — corrupted snapshot refusal, pre-restore hash
-  verification, project-owned absent markers, Xray restore, wrong token.
+  verification (including proof that an owned Zapret profile is not stopped
+  before integrity failure), project-owned absent markers, Xray restore, wrong
+  token.
 - `tests/openwrt-adapter-integration.sh` — real shell helper с заменой только
   fw4/nft/dnsmasq/Xray/nfqws/ip/router health. Доказывает generated files/hashes
   через prepare/validate/snapshot/apply/verify/commit, verification-failure
