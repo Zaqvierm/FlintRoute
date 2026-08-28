@@ -118,6 +118,7 @@ cat > "$PROFILE_ROOT/etc/init.d/router-policy-zapret-bad" <<'SH'
 exit 0
 SH
 chmod +x "$PROFILE_ROOT/etc/init.d/router-policy-zapret-ok" "$PROFILE_ROOT/etc/init.d/router-policy-zapret-bad"
+# shellcheck disable=SC2016 # command is intentionally evaluated by child shell
 profile_partial_output=$(env \
   ROUTER_POLICY_UNINSTALL_LIB_ONLY=1 \
   SYSTEM_ROOT="$PROFILE_ROOT" \
@@ -125,7 +126,8 @@ profile_partial_output=$(env \
   INIT_DIR="$PROFILE_ROOT/etc/init.d" \
   ZAPRET_PROFILE_DIR="$PROFILE_ROOT/etc/router-policy/zapret/profiles" \
   ZAPRET_PROFILE_MANIFEST="$PROFILE_ROOT/etc/router-policy/zapret/profiles.manifest" \
-  sh -c '. "$1"; remove_owned_profile_resources' sh "$PROJECT_ROOT/uninstall.sh" 2>&1 || true)
+  PROFILE_UNINSTALL_SCRIPT="$PROJECT_ROOT/uninstall.sh" \
+  sh -c '. "$PROFILE_UNINSTALL_SCRIPT"; remove_owned_profile_resources' 2>&1 || true)
 printf '%s\n' "$profile_partial_output" | grep -F 'could not stop router-policy-zapret-bad' >/dev/null || {
   echo "profile teardown failure was not surfaced" >&2
   exit 1
