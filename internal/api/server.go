@@ -1696,7 +1696,7 @@ func automaticDecisionProbeState(decision domaincache.Decision, selectedRoute, s
 			return "verifying"
 		}
 		for _, result := range decision.Results {
-			if result.Route == selectedRoute && result.RouteType == selectedType && result.Status == "OK" && result.PathVerified && result.ServiceOK {
+			if result.Route == selectedRoute && result.RouteType == selectedType && strings.EqualFold(strings.TrimSpace(result.Status), "OK") && result.PathVerified && result.ServiceOK {
 				return "verified_candidate"
 			}
 		}

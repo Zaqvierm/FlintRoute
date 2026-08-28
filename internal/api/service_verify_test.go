@@ -123,6 +123,20 @@ func TestAutomaticDecisionRouteIDWithoutMatchingProofRemainsVerifying(t *testing
 	}
 }
 
+func TestAutomaticDecisionAcceptsCaseVariantVerifiedEvidence(t *testing.T) {
+	decision := domaincache.Decision{
+		Status:        "selected",
+		SelectedRoute: "vless-de",
+		SelectedType:  "vless",
+		Results: []probe.RouteResult{{
+			Route: "vless-de", RouteType: "vless", Status: "ok", PathVerified: true, ServiceOK: true,
+		}},
+	}
+	if got := automaticDecisionProbeState(decision, decision.SelectedRoute, decision.SelectedType, decision.Status); got != "verified_candidate" {
+		t.Fatalf("case-variant verified evidence was not recognized: %q", got)
+	}
+}
+
 func TestAutomaticDecisionNoSafeRouteRequiresTerminalEvidence(t *testing.T) {
 	decision := domaincache.Decision{Status: "NO_SAFE_ROUTE"}
 	if got := automaticDecisionProbeState(decision, "", "", decision.Status); got != "verifying" {
