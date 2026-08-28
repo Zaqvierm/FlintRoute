@@ -468,3 +468,12 @@ func TestTouchedRulesMirrorsApplyDecision(t *testing.T) {
 		t.Fatalf("legacy touched rules: %+v", got)
 	}
 }
+
+func TestIPStateParsersRejectTrailingJSON(t *testing.T) {
+	if _, err := parseRouteRows([]byte(`[{"dst":"203.0.113.10","dev":"wan","table":100}] {"extra":true}`)); err == nil {
+		t.Fatal("route parser accepted trailing JSON")
+	}
+	if _, err := parseRuleRows([]byte(`[{"priority":10010,"fwmark":"0x41","table":100}] []`)); err == nil {
+		t.Fatal("rule parser accepted trailing JSON")
+	}
+}

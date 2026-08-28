@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -454,8 +455,12 @@ func parseRouteRows(raw []byte) ([]ipRouteRow, error) {
 	if err := dec.Decode(&rows); err != nil {
 		return nil, fmt.Errorf("invalid route json: %w", err)
 	}
-	if dec.More() {
-		return nil, errors.New("trailing route json")
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("trailing route json")
+		}
+		return nil, fmt.Errorf("trailing route json: %w", err)
 	}
 	return rows, nil
 }
@@ -473,8 +478,12 @@ func parseRuleRows(raw []byte) ([]ipRuleRow, error) {
 	if err := dec.Decode(&rows); err != nil {
 		return nil, fmt.Errorf("invalid rule json: %w", err)
 	}
-	if dec.More() {
-		return nil, errors.New("trailing rule json")
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("trailing rule json")
+		}
+		return nil, fmt.Errorf("trailing rule json: %w", err)
 	}
 	return rows, nil
 }
