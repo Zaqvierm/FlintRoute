@@ -683,7 +683,7 @@ func probeResultTerminal(result probe.RouteResult) bool {
 }
 
 func looksLikeTSPU(result probe.RouteResult) bool {
-	if result.SuspectedTSPU || result.Status == "SUSPECTED_TSPU" {
+	if result.SuspectedTSPU || strings.EqualFold(strings.TrimSpace(result.Status), "SUSPECTED_TSPU") {
 		return true
 	}
 	for _, check := range result.Checks {
@@ -798,8 +798,8 @@ func classifyEvidence(profile serviceProfile, results []probe.RouteResult, tspuS
 	alternateFunctional := false
 	for _, result := range results {
 		if result.RouteType == "direct" {
-			directRegional = directRegional || result.RegionalBlock || result.Status == "REGION_BLOCK"
-			directTSPU = directTSPU || result.SuspectedTSPU || result.Status == "SUSPECTED_TSPU"
+			directRegional = directRegional || result.RegionalBlock || strings.EqualFold(strings.TrimSpace(result.Status), "REGION_BLOCK")
+			directTSPU = directTSPU || result.SuspectedTSPU || strings.EqualFold(strings.TrimSpace(result.Status), "SUSPECTED_TSPU")
 			continue
 		}
 		if selectionEvidence(result) && result.RouteType != "drop" {

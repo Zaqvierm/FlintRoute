@@ -50,6 +50,31 @@ func TestCheckDomainTreatsCaseInsensitiveRegionalBlockAsGEO(t *testing.T) {
 	}
 }
 
+func TestClassifyEvidenceTreatsCaseVariantTerminalStatusesAsEvidence(t *testing.T) {
+	profile := serviceProfile{service: config.Service{}}
+	results := []probe.RouteResult{
+		{Route: "direct", RouteType: "direct", Status: "region_block"},
+		{Route: "vless", RouteType: "vless", Status: "suspected_tspu"},
+	}
+	classification, _ := classifyEvidence(profile, results, "no_match")
+	if classification != "SUSPECTED_GEO_LOCKED" {
+		t.Fatalf("case-variant regional evidence was not classified safely: %q", classification)
+	}
+
+	results[0].Status = "suspected_tspu"
+	results[1].Status = "FAIL"
+	classification, _ = classifyEvidence(profile, results, "no_match")
+	if classification != "SUSPECTED_TSPU" {
+		t.Fatalf("case-variant direct TSPU evidence was not classified safely: %q", classification)
+	}
+
+	results[0].Status = "FAIL"
+	classification, _ = classifyEvidence(profile, results, "no_match")
+	if classification != "UNKNOWN" {
+		t.Fatalf("non-direct TSPU evidence must not classify the service: %q", classification)
+	}
+}
+
 func TestGeoLockedCandidatesExcludeDirectAndZapret(t *testing.T) {
 	cfg := &config.Config{
 		Version: 2,
