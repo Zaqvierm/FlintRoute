@@ -5,7 +5,7 @@
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `43d889775e9960383450b23e351a712fbca1a03f` (route-only assignment is fenced without a registered runtime consumer; semantic, revision-bound receipts and idempotent rollback are required before persisting an applied mapping; discovery suggestion/control-state persistence failures are surfaced and block unsafe auto-assignment; installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools; prefix renames flush their containing directory; corrupt-state rescue artifacts are synced and atomically renamed with unique names; failed Zapret calibration retains at most three private bounded forensic bundles after cleanup; end-to-end latency is measured from DNS/network path and never derived from full verification duration; probe terminal statuses are canonicalized case-insensitively; strict JSON decoders reject trailing documents in kernel command and IP state parsers).
+- Текущий проверяемый code HEAD: `dfcdbb41f36c939a63ad7bac05450af0370628dc` (route-only assignment is fenced without a registered runtime consumer; semantic, revision-bound receipts and idempotent rollback are required before persisting an applied mapping; discovery suggestion/control-state persistence failures are surfaced and block unsafe auto-assignment; installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools; prefix renames flush their containing directory; corrupt-state rescue artifacts are synced and atomically renamed with unique names; failed Zapret calibration retains at most three private bounded forensic bundles after cleanup; end-to-end latency is measured from DNS/network path and never derived from full verification duration; probe terminal statuses are canonicalized case-insensitively; strict JSON decoders reject trailing documents in kernel command and IP state parsers; privileged adapter success now requires an independent operation/generation/transaction/revision/candidate/artifact/rollback-token evidence binding).
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -14,8 +14,8 @@
 - Проверенный code baseline до текущего onboarding delta: `f7a36e63542ef92047c17cca0d5be90987cdd1a4`.
 - Software/CI claims ниже относятся только к указанному текущему HEAD; старые
   строки и run IDs, привязанные к другим code heads, считаются историческими.
-- Документация обновляется в отдельном содержательном commit после code push;
-  code evidence ниже привязано именно к SHA выше.
+- Документация по изменённому safety-контракту обновляется в том же
+  содержательном commit; CI evidence привязывается после завершения workflow.
 - Предыдущий docs-head `501d27518dadc829175534a4d8eaf7a1d11699a8` сохранён как
   историческая точка. Этот документ обновляется вместе с текущим docs-аудитом;
   его итоговый commit фиксируется в release handoff, а code evidence не
@@ -47,7 +47,7 @@
 
 | Проверка | Команда/тест | Результат | Уровень |
 |---|---|---|---|
-| Семантический ответ transaction adapter | `go test ./internal/adapter ./internal/helper ./internal/api` | PASS | local |
+| Семантический ответ transaction adapter | `go test ./internal/adapter ./internal/helper ./internal/api`; `TestAdapterExecutorRejectsSuccessWithoutExactSemanticBinding` | PASS | local (Linux execution in CI pending for this SHA) |
 | Fault boundaries transaction | fault-injection в `internal/api/transaction_test.go` | PASS | local |
 | Recovery mutation allowlist | `go test ./internal/api -run 'TestRecovery|TestAutomaticDomainCommit|TestHealthScheduler'` | PASS | local |
 | Onboarding durable write fence | `TestOnboardingMutationRespectsRecoveryFence` | PASS | local |
@@ -103,7 +103,7 @@ response fails the installer health gate closed.
 
 ## Запуски CI и clean-clone evidence
 
-Для текущего code head `43d889775e9960383450b23e351a712fbca1a03f` после push прошли:
+Для предыдущего code head `43d889775e9960383450b23e351a712fbca1a03f` после push прошли:
 
 - exact-SHA full safety gate: [33137838195](https://github.com/Zaqvierm/FlintRoute/actions/runs/33137838195);
 - nft transition: [33137838187](https://github.com/Zaqvierm/FlintRoute/actions/runs/33137838187);
@@ -113,6 +113,11 @@ response fails the installer health gate closed.
 Эти run ID привязаны к exact code SHA `43d889775e9960383450b23e351a712fbca1a03f`.
 Документационный HEAD может отличаться от code HEAD, но не меняет исходный
 результат тестов; при изменении кода evidence снова становится stale.
+
+Для текущего code head `dfcdbb41f36c939a63ad7bac05450af0370628dc` локальный полный
+runner уже завершился `all_tests_ok=true`. После push этого SHA обязательные
+exact-SHA workflows должны быть дождаться и записать сюда их run IDs; до этого
+CI evidence для текущего кода имеет статус `PENDING`, а не PASS.
 
 Предыдущие run ID для исторического code head `1118e6594476fc05f8b52ad4c800327a916cb110`
 сохранены ниже как археологическое evidence и не наследуются текущим SHA.
@@ -157,6 +162,9 @@ proof. Linux process-group и nft namespace проверки на Windows чес
 
 - Commit protocol проверяет semantic response, token/revision/hash и переводит
   неоднозначность в `RECOVERY_REQUIRED`; silent `rolled_back` запрещён.
+- Privileged helper теперь требует, чтобы stdout adapter независимо подтвердил
+  operation, generation, transaction/revision и candidate/artifact/rollback-token
+  hashes; отсутствующее или неверное поле отклоняется даже при exit code 0.
 - Bootstrap отделён от candidate/active artifact; uncommitted candidate не
   используется после рестарта.
 - Boot guard получает marks typed-путём и не снимается по голому timeout.

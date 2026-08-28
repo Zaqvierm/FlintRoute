@@ -63,6 +63,7 @@ func TestAdapterExecutorAcceptsOnlySemanticallyProvenReconcile(t *testing.T) {
 		"echo active_revision=" + request.RevisionID,
 		"echo active_candidate_hash=" + request.CandidateHash,
 		"echo active_artifact_manifest_hash=" + request.ArtifactManifestHash,
+		"echo rollback_token_hash=" + request.RollbackTokenHash,
 		"echo transaction_state=committed",
 	}, "\n") + "\n"
 	if err := os.WriteFile(adapterPath, []byte(script), 0o700); err != nil {
@@ -72,6 +73,47 @@ func TestAdapterExecutorAcceptsOnlySemanticallyProvenReconcile(t *testing.T) {
 	response := executor.Execute(context.Background(), request)
 	if !response.Accepted || response.ErrorCode != "" {
 		t.Fatalf("semantic reconcile proof was rejected: %+v", response)
+	}
+}
+
+func TestAdapterExecutorRejectsSuccessWithoutExactSemanticBinding(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("exec adapter fixture requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	adapterPath := filepath.Join(dir, "adapter.sh")
+	request := validRequest("transaction.prepare")
+	request.Generation = request.RevisionID
+	request.Transaction = &TransactionRequest{Operation: "prepare"}
+	wrongCandidate := "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	script := "#!/bin/sh\n" + strings.Join([]string{
+		"echo protocol_version=1",
+		"echo operation=prepare",
+		"echo generation=" + request.Generation,
+		"echo transaction_id=" + request.TransactionID,
+		"echo revision_id=" + request.RevisionID,
+		"echo candidate_hash=" + wrongCandidate,
+		"echo artifact_manifest_hash=" + request.ArtifactManifestHash,
+		"echo rollback_token_hash=" + request.RollbackTokenHash,
+		"echo transaction_state=prepared",
+		"echo prepared=true",
+	}, "\n") + "\n"
+	if err := os.WriteFile(adapterPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executor := AdapterExecutor{AdapterPath: adapterPath, ConfigPath: filepath.Join(dir, "default.json"), InitDir: dir}
+	response := executor.Execute(context.Background(), request)
+	if response.Accepted || response.ErrorCode != "adapter_response_binding_mismatch" {
+		t.Fatalf("adapter success with mismatched candidate binding was accepted: %+v", response)
+	}
+
+	missing := strings.Replace(script, "echo rollback_token_hash="+request.RollbackTokenHash+"\n", "", 1)
+	if err := os.WriteFile(adapterPath, []byte(missing), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	response = executor.Execute(context.Background(), request)
+	if response.Accepted || response.ErrorCode != "adapter_response_binding_missing" {
+		t.Fatalf("adapter success without token binding was accepted: %+v", response)
 	}
 }
 
@@ -89,6 +131,7 @@ func TestAdapterExecutorAcceptsOnlyGenerationBoundBootGuardClear(t *testing.T) {
 		"echo boot_guard=cleared",
 		"echo generation=" + request.Generation,
 		"echo transaction_id=" + request.TransactionID,
+		"echo rollback_token_hash=" + request.RollbackTokenHash,
 		"echo active_transaction=" + request.TransactionID,
 		"echo active_revision=" + request.RevisionID,
 		"echo active_candidate_hash=" + request.CandidateHash,

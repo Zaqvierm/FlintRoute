@@ -163,6 +163,13 @@ func (e AdapterExecutor) executeTransaction(ctx context.Context, request Request
 		response.Error = "owned adapter operation failed"
 		return response
 	}
+	if request.Command != "transaction.reconcile" || response.Evidence["reconcile"] != "skipped-no-last-good" {
+		if code, message := evidenceBindingError(request, response.Evidence, transactionOperation(request.Command)); code != "" {
+			response.ErrorCode = code
+			response.Error = message
+			return response
+		}
+	}
 	if request.Command == "transaction.rollback" && response.Evidence["rollback"] != "true" {
 		response.ErrorCode = "rollback_not_semantically_confirmed"
 		response.Error = "adapter exited successfully without proving rollback"
@@ -285,14 +292,43 @@ func (e AdapterExecutor) executeOwned(ctx context.Context, request Request) Resp
 		response.Error = "owned adapter operation failed"
 		return response
 	}
-	if response.Evidence["generation"] != "" && response.Evidence["generation"] != request.Generation {
-		response.ErrorCode = "generation_binding_mismatch"
-		response.Error = "adapter returned a different generation"
+	if code, message := evidenceBindingError(request, response.Evidence, request.Command); code != "" {
+		response.ErrorCode = code
+		response.Error = message
 		return response
 	}
 	response.Accepted = true
 	response.State = "accepted"
 	return response
+}
+
+// evidenceBindingError is the semantic second factor for adapter success.
+// ResponseFrom binds the helper envelope, but the adapter's own stdout must
+// independently prove that it executed this operation for the same resource
+// generation. Missing fields are rejected just like mismatched fields; an
+// exit code of zero is never enough.
+func evidenceBindingError(request Request, evidence map[string]string, operation string) (string, string) {
+	expected := map[string]string{
+		"operation":              operation,
+		"generation":             request.Generation,
+		"transaction_id":         request.TransactionID,
+		"revision_id":            request.RevisionID,
+		"candidate_hash":         request.CandidateHash,
+		"artifact_manifest_hash": request.ArtifactManifestHash,
+	}
+	if request.RollbackTokenHash != "" {
+		expected["rollback_token_hash"] = request.RollbackTokenHash
+	}
+	for key, want := range expected {
+		got, present := evidence[key]
+		if !present || strings.TrimSpace(got) == "" {
+			return "adapter_response_binding_missing", "adapter response omitted required " + key + " binding"
+		}
+		if got != want {
+			return "adapter_response_binding_mismatch", "adapter response " + key + " binding did not match the request"
+		}
+	}
+	return "", ""
 }
 
 func (e AdapterExecutor) executeService(ctx context.Context, request Request) Response {

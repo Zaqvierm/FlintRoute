@@ -315,10 +315,7 @@ clear_boot_guard_bound() {
     return 1
   }
   clear_boot_guard
-  echo "operation=clear-boot-guard"
-  echo "generation=$revision"
-  echo "transaction_id=$txid"
-  echo "revision_id=$revision"
+  emit_operation_binding clear-boot-guard
   echo "active_transaction=$txid"
   echo "active_revision=$revision"
   echo "active_candidate_hash=$candidate_hash"
@@ -401,6 +398,37 @@ verify_token() {
   }
 }
 
+# Every successful mutating adapter response carries the binding that the
+# helper must verify.  Exit status alone is not evidence that the requested
+# generation was changed.  The rollback token is emitted as a hash only; the
+# capability itself never leaves the transaction directory.
+emit_operation_binding() {
+  operation_value="$1"
+  state_value="${2:-}"
+  if [ -z "${candidate_hash:-}" ] && [ -f "${binding_file:-}" ]; then
+    candidate_hash="$(sed -n 's/^candidate_hash=//p' "$binding_file" | head -n 1)"
+  fi
+  if [ -z "${artifact_manifest_hash:-}" ] && [ -f "${binding_file:-}" ]; then
+    artifact_manifest_hash="$(sed -n 's/^artifact_manifest_hash=//p' "$binding_file" | head -n 1)"
+  fi
+  if [ -z "${stored_hash:-}" ] && [ -f "${binding_file:-}" ]; then
+    stored_hash="$(sed -n 's/^rollback_token_hash=//p' "$binding_file" | head -n 1)"
+  fi
+  [ -n "${candidate_hash:-}" ] && [ -n "${artifact_manifest_hash:-}" ] && [ -n "${stored_hash:-}" ] || {
+    echo "reason=operation_binding_missing" >&2
+    return 1
+  }
+  echo "protocol_version=1"
+  echo "operation=$operation_value"
+  echo "transaction_id=$txid"
+  echo "revision_id=$revision"
+  echo "candidate_hash=$candidate_hash"
+  echo "artifact_manifest_hash=$artifact_manifest_hash"
+  echo "rollback_token_hash=$stored_hash"
+  echo "generation=$revision"
+  [ -z "$state_value" ] || echo "transaction_state=$state_value"
+}
+
 write_status() {
   status_value="$1"
   mkdir -p "$txdir"
@@ -447,7 +475,9 @@ prepare_tx() {
     echo "reason=generated_artifacts_missing" >&2
     exit 3
   }
+  emit_operation_binding prepare
   write_status "prepared"
+  echo "transaction_state=prepared"
   echo "prepared=true"
   echo "transaction_id=$txid"
   echo "revision_id=$revision"
@@ -771,6 +801,7 @@ snapshot_current() {
     exit 3
   }
   ensure_flow_offload_baseline
+  emit_operation_binding snapshot-current
   create_snapshot "$txdir/snapshot"
   if [ -f "$generated/ip-plan.json" ]; then
     if ROUTER_POLICY_IP_BIN="$ip_bin" "$router_policy_bin" internal-snapshot-ip-state --plan "$generated/ip-plan.json" --transaction "$txid" --revision "$revision" --candidate-hash "$candidate_hash" --out "$txdir/snapshot/ip-state.json" >/dev/null 2>&1; then
@@ -781,6 +812,7 @@ snapshot_current() {
     fi
   fi
   write_status "snapshotted"
+  echo "transaction_state=snapshotted"
   echo "snapshot_ok=true"
 }
 
@@ -788,6 +820,7 @@ validate_candidate() {
   take_lock
   verify_token
   pending_matches || exit 3
+  emit_operation_binding validate-candidate
   [ -s "$candidate" ] || {
     echo "reason=candidate_config_empty" >&2
     exit 3
@@ -835,12 +868,14 @@ EOF
   }
   if printf '%s\n' "$ip_plan_status" | grep -q '^deployment_ready=false$'; then
     write_status "candidate_requires_device"
+    echo "transaction_state=candidate_requires_device"
     echo "candidate_valid=false"
     echo "verification_status=UNVERIFIED"
     return 0
   fi
   if [ "$plan_simulation" = "true" ] && [ "${ROUTER_POLICY_ALLOW_SIMULATED_DIAGNOSTICS:-0}" != "1" ]; then
     write_status "candidate_requires_device"
+    echo "transaction_state=candidate_requires_device"
     echo "candidate_valid=false"
     echo "verification_status=UNVERIFIED"
     echo "reason=simulated_diagnostics_refused"
@@ -892,6 +927,7 @@ EOF
     exit 3
   fi
   write_status "candidate_validated"
+  echo "transaction_state=candidate_validated"
   echo "candidate_valid=true"
   echo "candidate_hash=$candidate_hash"
   echo "artifact_manifest_hash=$artifact_manifest_hash"
@@ -1100,14 +1136,10 @@ replace_owned_nft_command() {
   take_lock
   verify_token
   pending_matches || { echo "reason=transaction_not_pending" >&2; exit 3; }
+  [ -s "$generated/router-policy.nft" ] || { echo "reason=owned_nft_source_missing" >&2; exit 3; }
   replace_owned_nft_table "$generated/router-policy.nft"
-  echo "operation=nft.replace_owned_table"
-  echo "generation=$revision"
+  emit_operation_binding nft.replace_owned_table
   echo "transaction_state=nft_replaced"
-  echo "transaction_id=$txid"
-  echo "revision_id=$revision"
-  echo "candidate_hash=$candidate_hash"
-  echo "artifact_manifest_hash=$artifact_manifest_hash"
 }
 
 apply_ip_plan_command() {
@@ -1116,13 +1148,8 @@ apply_ip_plan_command() {
   pending_matches || { echo "reason=transaction_not_pending" >&2; exit 3; }
   [ -f "$generated/ip-plan.json" ] || { echo "reason=ip_plan_missing" >&2; exit 3; }
   ROUTER_POLICY_IP_BIN="$ip_bin" ROUTER_POLICY_UCI_BIN="$uci_bin" "$router_policy_bin" internal-apply-ip-plan --plan "$generated/ip-plan.json" --transaction "$txid" --revision "$revision" --candidate-hash "$candidate_hash" >/dev/null
-  echo "operation=ip_plan.apply"
-  echo "generation=$revision"
+  emit_operation_binding ip_plan.apply
   echo "transaction_state=ip_plan_applied"
-  echo "transaction_id=$txid"
-  echo "revision_id=$revision"
-  echo "candidate_hash=$candidate_hash"
-  echo "artifact_manifest_hash=$artifact_manifest_hash"
 }
 
 rollback_ip_plan_command() {
@@ -1131,13 +1158,8 @@ rollback_ip_plan_command() {
   pending_matches || { echo "reason=transaction_not_pending" >&2; exit 3; }
   [ -f "$generated/ip-plan.json" ] && [ -f "$txdir/snapshot/ip-state.json" ] || { echo "reason=ip_plan_snapshot_missing" >&2; exit 3; }
   ROUTER_POLICY_IP_BIN="$ip_bin" "$router_policy_bin" internal-rollback-ip-state --plan "$generated/ip-plan.json" --transaction "$txid" --revision "$revision" --candidate-hash "$candidate_hash" --pre-state "$txdir/snapshot/ip-state.json" >/dev/null
-  echo "operation=ip_plan.rollback"
-  echo "generation=$revision"
+  emit_operation_binding ip_plan.rollback
   echo "transaction_state=ip_plan_rolled_back"
-  echo "transaction_id=$txid"
-  echo "revision_id=$revision"
-  echo "candidate_hash=$candidate_hash"
-  echo "artifact_manifest_hash=$artifact_manifest_hash"
 }
 
 artifact_paths() {
@@ -1164,14 +1186,9 @@ install_artifact_command() {
   else
     atomic_install "$artifact_source" "$artifact_target"
   fi
-  echo "operation=artifact.install"
-  echo "generation=$revision"
+  emit_operation_binding artifact.install
   echo "transaction_state=artifact_installed"
   echo "artifact_kind=${7:-}"
-  echo "transaction_id=$txid"
-  echo "revision_id=$revision"
-  echo "candidate_hash=$candidate_hash"
-  echo "artifact_manifest_hash=$artifact_manifest_hash"
 }
 
 remove_artifact_command() {
@@ -1181,14 +1198,9 @@ remove_artifact_command() {
   artifact_paths "${7:-}" || exit 2
   [ "${7:-}" != "nft_table" ] || { echo "reason=nft_table_requires_owned_transition" >&2; exit 3; }
   rm -f "$artifact_target"
-  echo "operation=artifact.remove"
-  echo "generation=$revision"
+  emit_operation_binding artifact.remove
   echo "transaction_state=artifact_removed"
   echo "artifact_kind=${7:-}"
-  echo "transaction_id=$txid"
-  echo "revision_id=$revision"
-  echo "candidate_hash=$candidate_hash"
-  echo "artifact_manifest_hash=$artifact_manifest_hash"
 }
 
 wait_dnsmasq_ready() {
@@ -1349,6 +1361,7 @@ apply_candidate() {
   } > "$active_file.tmp"
   mv "$active_file.tmp" "$active_file"
   write_status "applied"
+  emit_operation_binding apply-candidate
   echo "applied=true"
   echo "active_transaction=$txid"
   echo "active_revision=$revision"
@@ -1370,6 +1383,7 @@ active_matches() {
 verify_management() {
   verify_token
   active_matches || exit 4
+  emit_operation_binding verify-management verifying
   process_health=false
   loopback_api_health=false
   loopback_api_required=true
@@ -1443,12 +1457,14 @@ verify_management() {
   echo "dns_availability=$dns_availability"
   if [ "$process_health" != "true" ] || { [ "$loopback_api_required" = "true" ] && [ "$loopback_api_health" != "true" ]; }; then
     write_status "management_failed"
+    echo "transaction_state=management_failed"
     echo "management_ok=false"
     echo "verification_status=ERROR"
     exit 4
   fi
   if [ "$proof_valid" != "true" ]; then
     write_status "management_unverified"
+    echo "transaction_state=management_unverified"
     echo "management_ok=false"
     echo "verification_status=UNVERIFIED"
     echo "reason=management_proof_missing_or_invalid"
@@ -1457,10 +1473,12 @@ verify_management() {
   fi
   if [ "$lan_management_path" = "true" ] && [ "$admin_http_path" = "true" ]; then
     write_status "management_verified"
+    echo "transaction_state=management_verified"
     echo "management_ok=true"
     echo "verification_status=OK"
   else
     write_status "management_failed"
+    echo "transaction_state=management_failed"
     echo "management_ok=false"
     echo "verification_status=ERROR"
     echo "reason=management_path_lost_after_apply"
@@ -1471,6 +1489,7 @@ verify_management() {
 verify_data_plane() {
   verify_token
   active_matches || exit 5
+  emit_operation_binding verify-data-plane verifying
   evidence_file="$txdir/data-plane-evidence.json"
 	flow_plan_status="$("$router_policy_bin" internal-validate-ip-plan --plan "$generated/ip-plan.json" --transaction "$txid" --revision "$revision" --candidate-hash "$candidate_hash")"
 	flow_required="$(printf '%s\n' "$flow_plan_status" | sed -n 's/^flow_offloading_required=//p' | head -n 1)"
@@ -1480,6 +1499,7 @@ verify_data_plane() {
 		flow_hw_value="$("$uci_bin" -q get "$flow_offload_hw_uci_key" 2>/dev/null || true)"
 		if [ "$flow_value" != "0" ] || [ "$flow_hw_value" != "0" ]; then
 			write_status "data_plane_failed"
+			echo "transaction_state=data_plane_failed"
 			echo "data_plane_ok=false"
 			echo "verification_status=ERROR"
 			echo "reason=flow_offloading_not_disabled"
@@ -1492,6 +1512,7 @@ verify_data_plane() {
 			if ! ROUTER_POLICY_CONFIG="$candidate" "$router_policy_bin" internal-collect-data-plane-evidence --plan "$generated/verification-plan.json" --out "$evidence_file" --transaction "$txid" --revision "$revision" --candidate-hash "$candidate_hash" --manifest-hash "$artifact_manifest_hash" >/dev/null 2>"$collection_error_file"; then
 				collection_error="$(head -c 512 "$collection_error_file" | tr '\r\n' '  ' | sed 's/[^A-Za-z0-9_.: =\/-]/_/g')"
 				write_status "data_plane_unverified"
+				echo "transaction_state=data_plane_unverified"
 				echo "data_plane_ok=false"
 				echo "verification_status=UNVERIFIED"
 				echo "reason=data_plane_evidence_collection_failed"
@@ -1501,6 +1522,7 @@ verify_data_plane() {
 			rm -f "$collection_error_file"
 		else
 			write_status "data_plane_unverified"
+			echo "transaction_state=data_plane_unverified"
 			echo "data_plane_ok=false"
 			echo "verification_status=UNVERIFIED"
 			echo "reason=data_plane_evidence_missing"
@@ -1509,6 +1531,7 @@ verify_data_plane() {
   fi
   if "$router_policy_bin" internal-verify-data-plane --plan "$generated/verification-plan.json" --evidence "$evidence_file" --transaction "$txid" --revision "$revision" --candidate-hash "$candidate_hash" --manifest-hash "$artifact_manifest_hash" >/dev/null; then
     write_status "data_plane_verified"
+    echo "transaction_state=data_plane_verified"
     echo "data_plane_ok=true"
     echo "verification_status=OK"
     echo "transaction_id=$txid"
@@ -1517,6 +1540,7 @@ verify_data_plane() {
     echo "artifact_manifest_hash=$artifact_manifest_hash"
   else
     write_status "data_plane_failed"
+    echo "transaction_state=data_plane_failed"
     echo "data_plane_ok=false"
     echo "verification_status=ERROR"
     exit 5
@@ -1533,6 +1557,9 @@ emit_commit_binding() {
   if [ -z "${artifact_manifest_hash:-}" ] && [ -f "$binding_file" ]; then
     artifact_manifest_hash="$(sed -n 's/^artifact_manifest_hash=//p' "$binding_file" | head -n 1)"
   fi
+  if [ -z "${stored_hash:-}" ] && [ -f "$binding_file" ]; then
+    stored_hash="$(sed -n 's/^rollback_token_hash=//p' "$binding_file" | head -n 1)"
+  fi
   [ -n "${candidate_hash:-}" ] && [ -n "${artifact_manifest_hash:-}" ] || {
     echo "reason=commit_binding_hashes_missing" >&2
     return 1
@@ -1544,6 +1571,7 @@ emit_commit_binding() {
   echo "revision_id=$revision"
   echo "candidate_hash=$candidate_hash"
   echo "artifact_manifest_hash=$artifact_manifest_hash"
+  [ -z "${stored_hash:-}" ] || echo "rollback_token_hash=$stored_hash"
   echo "transaction_state=$commit_state"
   echo "committed=$commit_value"
   echo "rollback_capable=$rollback_value"
@@ -1867,6 +1895,7 @@ reload_restored_state() {
 rollback_tx() {
   current_status="$(sed -n 's/^status=//p' "$txdir/status.env" 2>/dev/null | head -n 1)"
   if [ "$current_status" = "rolled_back" ]; then
+    emit_operation_binding rollback rolled_back
     echo "rollback=true"
     echo "already_rolled_back=true"
     return 0
@@ -1893,6 +1922,7 @@ rollback_tx() {
           echo "reason=timer_cancellation_failed" >&2
           exit 3
         fi
+        emit_operation_binding rollback rollback_ignored
         echo "rollback=false"
         echo "stale_timer_ignored=true"
         echo "reason=active_revision_changed"
@@ -1928,16 +1958,11 @@ rollback_tx() {
   # restore step failed, set -e leaves the fence armed for recovery.
   clear_boot_guard
   write_status "rolled_back"
-  echo "protocol_version=1"
-  echo "operation=rollback"
+  emit_operation_binding rollback rolled_back
   echo "rollback=true"
   echo "committed=false"
   echo "rollback_capable=false"
   echo "transaction_state=rolled_back"
-  echo "transaction_id=$txid"
-  echo "revision_id=$revision"
-  echo "candidate_hash=$candidate_hash"
-  echo "artifact_manifest_hash=$artifact_manifest_hash"
 }
 
 reconcile_tx() {
