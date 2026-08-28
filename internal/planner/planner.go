@@ -195,7 +195,7 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 		// A regional denial is only a classification signal when it came from
 		// the direct baseline.  A failed alternate route must not by itself
 		// rewrite the service policy or make every other route ineligible.
-		if route.Type == "direct" && (result.RegionalBlock || result.Status == "REGION_BLOCK") {
+		if route.Type == "direct" && (result.RegionalBlock || strings.EqualFold(result.Status, "REGION_BLOCK")) {
 			regionalBlock = true
 			service.Category = "GEO_LOCKED"
 			service.RequireNonRUEgress = true

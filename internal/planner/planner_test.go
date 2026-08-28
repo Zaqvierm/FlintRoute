@@ -29,6 +29,27 @@ func TestCheckDomainRejectsNilConfigAndAcceptsNilContextSafely(t *testing.T) {
 	}
 }
 
+func TestCheckDomainTreatsCaseInsensitiveRegionalBlockAsGEO(t *testing.T) {
+	cfg := discoveryConfig(t)
+	prober := &scriptedProber{results: map[string]probe.RouteResult{
+		"direct": failedResult("direct", "direct", "rev-active"),
+		"vless":  successfulResult("vless", "vless", "rev-active"),
+	}}
+	result := failedResult("direct", "direct", "rev-active")
+	result.Status = "region_block"
+	result.PathVerified = true
+	result.ServiceOK = false
+	result.AdapterRevision = "rev-active"
+	prober.results["direct"] = result
+	check, err := CheckDomain(context.Background(), cfg, "example.com", "", Options{RouteProber: prober, ActiveRevision: "rev-active"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.Category != "GEO_LOCKED" {
+		t.Fatalf("case-insensitive regional block was not classified as GEO_LOCKED: %+v", check)
+	}
+}
+
 func TestGeoLockedCandidatesExcludeDirectAndZapret(t *testing.T) {
 	cfg := &config.Config{
 		Version: 2,
