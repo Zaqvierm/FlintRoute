@@ -135,6 +135,18 @@ func TestCycleNeverExceedsProcessWideFourJobBudget(t *testing.T) {
 	}
 }
 
+func TestBoundedParallelismClampsWorkersToSharedBudget(t *testing.T) {
+	if got := boundedParallelism(16, 4, 12, make(chan struct{}, 4)); got != 4 {
+		t.Fatalf("worker count=%d want shared budget 4", got)
+	}
+	if got := boundedParallelism(16, 4, 2, make(chan struct{}, 4)); got != 2 {
+		t.Fatalf("worker count=%d want available jobs 2", got)
+	}
+	if got := boundedParallelism(0, 0, 12, nil); got != 4 {
+		t.Fatalf("default worker count=%d want 4", got)
+	}
+}
+
 func TestCycleRejectsMixedRevisionEvidence(t *testing.T) {
 	cfg := healthConfig()
 	cfg.Routes = cfg.Routes[:1]

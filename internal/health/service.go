@@ -73,19 +73,7 @@ func (s *Service) RunCycle(ctx context.Context, cfg *config.Config, engine Probe
 		return cycle, nil
 	}
 
-	parallelism := s.Parallelism
-	if parallelism <= 0 {
-		parallelism = cfg.Policy.ParallelServerChecks
-	}
-	if parallelism <= 0 {
-		parallelism = 4
-	}
-	if parallelism > 16 {
-		parallelism = 16
-	}
-	if parallelism > len(routes) {
-		parallelism = len(routes)
-	}
+	parallelism := boundedParallelism(s.Parallelism, cfg.Policy.ParallelServerChecks, len(routes), s.ProbeBudget)
 	controlLimit := s.MaxControlServices
 	if controlLimit <= 0 {
 		controlLimit = 3
@@ -183,6 +171,37 @@ func (s *Service) RunCycle(ctx context.Context, cfg *config.Config, engine Probe
 	}
 	cycle.CompletedAt = time.Now().UTC()
 	return cycle, errors.Join(persistErrors...)
+}
+
+// boundedParallelism keeps the number of workers itself within the shared
+// probe budget. The semaphore still protects the whole process when multiple
+// subsystems run together, but spawning sixteen workers that immediately
+// block on a four-token budget needlessly inflates the idle goroutine/thread
+// footprint on the router.
+func boundedParallelism(configured, fallback, jobs int, budget chan struct{}) int {
+	if jobs <= 0 {
+		return 0
+	}
+	parallelism := configured
+	if parallelism <= 0 {
+		parallelism = fallback
+	}
+	if parallelism <= 0 {
+		parallelism = 4
+	}
+	if parallelism > 16 {
+		parallelism = 16
+	}
+	if budget != nil && cap(budget) > 0 && parallelism > cap(budget) {
+		parallelism = cap(budget)
+	}
+	if parallelism > jobs {
+		parallelism = jobs
+	}
+	if parallelism < 1 {
+		return 1
+	}
+	return parallelism
 }
 
 func checkRoute(ctx context.Context, cfg *config.Config, engine ProbeEngine, route config.Route, controlLimit int, now time.Time) checkedRoute {

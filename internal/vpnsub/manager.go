@@ -198,13 +198,6 @@ func applySpeedMeasurement(server *ServerStatus, measurement SpeedMeasurement) {
 }
 
 func (m *Manager) checkSupported(ctx context.Context, servers []ServerStatus) []OutboundCheck {
-	parallelism := m.Parallelism
-	if parallelism <= 0 {
-		parallelism = 4
-	}
-	if parallelism > 16 {
-		parallelism = 16
-	}
 	type job struct {
 		index  int
 		server ServerStatus
@@ -219,6 +212,7 @@ func (m *Manager) checkSupported(ctx context.Context, servers []ServerStatus) []
 			jobsList = append(jobsList, job{index: len(jobsList), server: server})
 		}
 	}
+	parallelism := boundedParallelism(m.Parallelism, len(jobsList), m.ProbeBudget)
 	jobs := make(chan job)
 	results := make(chan checked, len(jobsList))
 	var workers sync.WaitGroup
@@ -260,6 +254,33 @@ func (m *Manager) checkSupported(ctx context.Context, servers []ServerStatus) []
 		ordered[result.index] = result.value
 	}
 	return ordered
+}
+
+// boundedParallelism prevents a subscription refresh from creating more
+// workers than the shared process-wide probe budget. This keeps goroutine
+// count bounded instead of relying on excess workers to block on the token
+// channel.
+func boundedParallelism(configured, jobs int, budget chan struct{}) int {
+	if jobs <= 0 {
+		return 0
+	}
+	parallelism := configured
+	if parallelism <= 0 {
+		parallelism = 4
+	}
+	if parallelism > 16 {
+		parallelism = 16
+	}
+	if budget != nil && cap(budget) > 0 && parallelism > cap(budget) {
+		parallelism = cap(budget)
+	}
+	if parallelism > jobs {
+		parallelism = jobs
+	}
+	if parallelism < 1 {
+		return 1
+	}
+	return parallelism
 }
 
 func (m *Manager) checkWithRetry(ctx context.Context, tag, socks5 string) OutboundCheck {

@@ -82,7 +82,7 @@
 | SSRF и decompression limits | `go test ./internal/remotefetch ./internal/vpnsub ./internal/tspu ./internal/geoip` | PASS | local |
 | HTTP transport/socket cleanup | `go test ./internal/remotefetch -run TestNewClientCloseIdleConnectionsClosesPinnedDialTransport` | PASS; `CloseIdleConnections` closes both wrapper and pinned dial pools; one-shot management/watchdog clients close their idle pools | local |
 | Typed Xray input | `go test ./internal/vpnsub` | PASS | local |
-| Resource budget | `go test ./internal/api ./internal/probe` | PASS | local |
+| Resource budget | `go test ./internal/api ./internal/probe`; `go test ./internal/health ./internal/vpnsub -run 'Bounded|Budget'` | PASS; discovery queue is capped at 32, shared route jobs at 4, and health/subscription worker counts are clamped to the shared budget | local + exact-SHA CI |
 | Запрет unvalidated probe fan-out | `go test ./internal/probe -run TestProbeRouteRejectsUnvalidatedProbeURLFanout` и race-вариант | PASS | local |
 | `NO_SAFE_ROUTE` terminal semantics | planner cancellation/exhaustion и API probe-state tests | PASS | local |
 | Classification/route confidence разделены | `TestClassificationConfidenceIsIndependentFromRouteConfidence` | PASS | local |
@@ -237,6 +237,10 @@ proof. Linux process-group и nft namespace проверки на Windows чес
   отдельными regression/CI проверками.
 - `observe_only` действительно не вызывает active probe/adapter; discovery queue
   ограничена 32, общий route-probe budget — четыре concurrent jobs.
+- Один логический route-check имеет дополнительные hard bounds: не более 4
+  service probe checks, 4 address targets на check и 2 GeoIP источников. Эти
+  пределы проверяются до сетевого fan-out; они не являются доказательством
+  hardware CPU/FD/socket поведения.
 - Export backup archives omit synthetic staging directories, so even an
   accidental future restore cannot replay installer umask modes onto system
   parents; `tests/installer-backup.sh` asserts the exact file-only member set.

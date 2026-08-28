@@ -94,6 +94,15 @@ func TestManagerRespectsSharedProbeBudget(t *testing.T) {
 	}
 }
 
+func TestManagerWorkerCountClampsToSharedProbeBudget(t *testing.T) {
+	if got := boundedParallelism(16, 12, make(chan struct{}, 2)); got != 2 {
+		t.Fatalf("worker count=%d want shared budget 2", got)
+	}
+	if got := boundedParallelism(0, 12, nil); got != 4 {
+		t.Fatalf("default worker count=%d want 4", got)
+	}
+}
+
 func (c *sequenceChecker) Check(_ context.Context, tag, _ string) OutboundCheck {
 	if c.index >= len(c.checks) {
 		return OutboundCheck{Tag: tag, Status: "FAIL", Reason: "unexpected_extra_check"}
