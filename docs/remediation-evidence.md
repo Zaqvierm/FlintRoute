@@ -5,7 +5,7 @@
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `ef1ffe14351794b56377a3f214fd29c5f1c6a10b` on `integration/discovery-smartdns-local-dod` (route-only assignment remains fenced without a registered runtime consumer; the current tree also includes fail-closed calibration signal handling, managed-root ownership fencing, static installer-file ownership manifests, non-recursive project-prefix teardown, and fail-closed ownership-walk errors). Historical rows in this document remain useful only as evidence for their named SHA and are stale for the current tree.
+- Текущий проверяемый code HEAD: `65192686301d0224b851402b8055e38af347762c` on `integration/discovery-smartdns-local-dod` (route-only assignment remains fenced without a registered runtime consumer; the current tree also includes fail-closed calibration signal handling, managed-root ownership fencing, static installer-file ownership manifests, non-recursive project-prefix teardown, fail-closed ownership-walk errors, and bounded prefix-switch cleanup). Historical rows in this document remain useful only as evidence for their named SHA and are stale for the current tree.
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -26,8 +26,8 @@
   Нижний уровень не превращается в верхний.
 - На текущем HEAD локальный Windows `tests/run-all.ps1` завершился
   `all_tests_ok=true`. Exact-SHA CI для этого HEAD: full safety
-  `33198099291`, UI `33198099216`, Zapret process-group `33198099361`, nft
-  transition `33198099342`. Linux-only checks PASS только в CI; локально они
+  `33199990532`, UI `33199990442`, Zapret process-group `33199990452`, nft
+  transition `33199990424`. Linux-only checks PASS только в CI; локально они
   остаются `NOT RUN LOCALLY`. Hardware не использовалось.
 - Старые hardware-записи, включая `docs/flint2-hardware-report.md` и
   `H:\LAN\Versions\FlintRoute 0.2.0-alpha.1\hardware\summary.txt`, имеют статус
@@ -97,7 +97,7 @@
 | HWID persistence ordering | `go test ./internal/api -run TestSubscriptionHWIDFailedFingerprintPreservesPreviousSettings` | PASS; fingerprint resolution/preview is completed before writing settings, and a failed generated source preserves the prior preset | local + exact-SHA CI [33159908174](https://github.com/Zaqvierm/FlintRoute/actions/runs/33159908174) |
 | Канонические ownership paths | `tests/installer-lifecycle.sh`, `tests/installer-backup.sh` | PASS | mock |
 | Static installer-file ownership on uninstall | `install.sh`, `uninstall.sh`, `tests/installer-lifecycle.sh` | PASS (local fixture + exact-SHA full gate [33191636975](https://github.com/Zaqvierm/FlintRoute/actions/runs/33191636975)); install writes a root-owned, mode-0600 hash manifest for controller binary/helper/init/hotplug files; uninstall validates every present target before teardown and fences modified/foreign content | local/mock + exact-SHA CI; Linux/OpenWrt runtime pending |
-| Project-prefix ownership on uninstall | `uninstall.sh`, `tests/installer-lifecycle.sh` | PASS (focused local fixture + exact-SHA full gate [33198099291](https://github.com/Zaqvierm/FlintRoute/actions/runs/33198099291)); prefix top-level entries are allowlisted, nested symlinks/special files fence before teardown, ownership-walk errors are fatal, and removal uses enumerated files plus `rmdir` instead of recursive deletion | local/mock + exact-SHA CI; Linux/OpenWrt runtime pending |
+| Project-prefix ownership on uninstall | `uninstall.sh`, `tests/installer-lifecycle.sh` | PASS (focused local fixture + exact-SHA full gate [33199990532](https://github.com/Zaqvierm/FlintRoute/actions/runs/33199990532)); prefix top-level entries are allowlisted, nested symlinks/special files fence before teardown, ownership-walk errors are fatal, and removal uses enumerated files plus `rmdir` instead of recursive deletion | local/mock + exact-SHA CI; Linux/OpenWrt runtime pending |
 | Boot guard | `tests/boot-guard-policy.sh`, `tests/boot-guard-service.sh` | PASS | mock |
 | Baseline boot-fence release | `tests/boot-guard-baseline.sh`; `TestBaselineRecoveryClearsOnlyThroughBaselineBoundAdapterOperation`; `TestAdapterExecutorAcceptsOnlySemanticallyProvenBaselineBootGuardClear` | PASS; baseline recovery cannot clear the all-transit fence through an unbound command and rejects mismatched semantic evidence | local/mock + exact-SHA CI [33143980734](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143980734) |
 | Typed helper boundary | `tests/helper-service.sh`, `go test ./internal/helper` | PASS | local/mock |
@@ -351,16 +351,17 @@ UI не выдумывает это число.
 
 ## Current exact-SHA CI checkpoint
 
-Для code HEAD `ef1ffe14351794b56377a3f214fd29c5f1c6a10b` все обязательные
+Для code HEAD `65192686301d0224b851402b8055e38af347762c` все обязательные
 software workflows завершились успешно:
 
-- exact-SHA full safety gate: [33198099291](https://github.com/Zaqvierm/FlintRoute/actions/runs/33198099291);
-- UI browser/responsive: [33198099216](https://github.com/Zaqvierm/FlintRoute/actions/runs/33198099216);
-- Zapret process-group: [33198099361](https://github.com/Zaqvierm/FlintRoute/actions/runs/33198099361);
-- nft transition: [33198099342](https://github.com/Zaqvierm/FlintRoute/actions/runs/33198099342).
+- exact-SHA full safety gate: [33199990532](https://github.com/Zaqvierm/FlintRoute/actions/runs/33199990532);
+- UI browser/responsive: [33199990442](https://github.com/Zaqvierm/FlintRoute/actions/runs/33199990442);
+- Zapret process-group: [33199990452](https://github.com/Zaqvierm/FlintRoute/actions/runs/33199990452);
+- nft transition: [33199990424](https://github.com/Zaqvierm/FlintRoute/actions/runs/33199990424).
 
 The full gate includes the installer lifecycle regression that injects a failed
-ownership enumeration and proves the project prefix is preserved. These runs
+ownership enumeration and proves the project prefix is preserved; the prefix
+switch fixture also proves stale cleanup fences unknown top-level entries. These runs
 are software/CI evidence only; Linux-local and Flint 2 hardware evidence remain
 separate and are not implied by this checkpoint.
 
