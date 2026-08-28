@@ -1338,10 +1338,19 @@ prepare_controller_identity() {
     return 1
   }
   command -v chown >/dev/null 2>&1 || { echo "install blocked: chown is required for non-root controller" >&2; return 1; }
-  # These are FlintRoute-owned state/config paths. Secrets remain private to
-  # the controller account, while the root helper never receives their data.
-  chown -R "$controller_uid:$controller_gid" "$ETC_DIR/config" "$ETC_DIR/secrets" "$STATE_DIR" "$RUNTIME_DIR" || {
+  # These are FlintRoute-owned state/config paths. Secrets are intentionally
+  # handled below as an explicit file allowlist: a recursive chown here would
+  # silently take ownership of operator-managed or foreign secret files.
+  chown -R "$controller_uid:$controller_gid" "$ETC_DIR/config" "$STATE_DIR" "$RUNTIME_DIR" || {
     echo "install blocked: cannot assign controller-owned paths" >&2
+    return 1
+  }
+  [ ! -L "$ETC_DIR/secrets" ] || {
+    echo "install blocked: secrets directory is a symlink" >&2
+    return 1
+  }
+  chown "$controller_uid:$controller_gid" "$ETC_DIR/secrets" || {
+    echo "install blocked: cannot assign secrets directory" >&2
     return 1
   }
   chmod 750 "$ETC_DIR/config" "$ETC_DIR/secrets" "$STATE_DIR" "$RUNTIME_DIR"
@@ -1353,7 +1362,22 @@ prepare_controller_identity() {
     return 1
   }
   chmod 640 "$ETC_DIR/config/default.json" "$ETC_DIR/config/schema.json" "$ETC_DIR/config/listener.conf" "$ETC_DIR/helper.env"
-  chmod 600 "$ETC_DIR/secrets/vpn-subscription-url"
+  for secret_file in \
+    "$ETC_DIR/secrets/vpn-subscription-url" \
+    "$ETC_DIR/secrets/happ-crypt4-private-key.pem" \
+    "$ETC_DIR/secrets/telegram.json" \
+    "$ETC_DIR/secrets/webhook.env"; do
+    [ -e "$secret_file" ] || continue
+    [ ! -L "$secret_file" ] || {
+      echo "install blocked: managed secret is a symlink: $secret_file" >&2
+      return 1
+    }
+    chown "$controller_uid:$controller_gid" "$secret_file" || {
+      echo "install blocked: cannot assign managed secret: $secret_file" >&2
+      return 1
+    }
+    chmod 600 "$secret_file"
+  done
 }
 
 activate_dns_observer() {

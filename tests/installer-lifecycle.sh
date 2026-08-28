@@ -190,6 +190,16 @@ if grep -Eq '(^|[[:space:]])fw4[[:space:]]+reload' "$ROOT/uninstall.sh"; then
   echo "uninstaller performs an unscoped global firewall reload" >&2
   exit 1
 fi
+if grep -Eq 'chown[[:space:]]+-R[^\n]*ETC_DIR/secrets' "$ROOT/install.sh"; then
+  echo "installer recursively changes ownership of the whole secrets tree" >&2
+  exit 1
+fi
+for managed_secret in vpn-subscription-url happ-crypt4-private-key.pem telegram.json webhook.env; do
+  grep -F '$ETC_DIR/secrets/'"$managed_secret" "$ROOT/install.sh" >/dev/null || {
+    echo "installer secret allowlist is missing: $managed_secret" >&2
+    exit 1
+  }
+done
 if ROUTER_POLICY_SYSTEM_ROOT="$SYSTEM_ROOT" PREFIX="$SYSTEM_ROOT/usr/lib/not-router-policy" \
   sh "$ROOT/uninstall.sh" --uninstall >/dev/null 2>&1; then
   echo "uninstaller accepted a non-standard recursive project prefix" >&2
