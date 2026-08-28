@@ -65,6 +65,26 @@ if ln -s "$TMP/foreign-secret" "$TMP/etc/router-policy/secrets/telegram.json" 2>
   set -e
   [ "$symlink_rc" -ne 0 ]
   printf '%s\n' "$symlink_output" | grep -F 'managed secret is a symlink' >/dev/null
+
+  # The same rejection must happen at install_files() entry, before the
+  # installer can chmod or truncate the symlink target.
+  export SYSTEM_ROOT="$TMP"
+  export ETC_DIR="$TMP/etc/router-policy"
+  export STATE_DIR="$TMP/etc/router-policy/state"
+  export RUNTIME_DIR="$TMP/tmp/router-policy"
+  export PREFIX="$TMP/usr/lib/router-policy"
+  export BIN_DIR="$TMP/usr/bin"
+  export INIT_DIR="$TMP/etc/init.d"
+  export RC_DIR="$TMP/etc/rc.d"
+  export HOTPLUG_IFACE_DIR="$TMP/etc/hotplug.d/iface"
+  export HOTPLUG_FIREWALL_DIR="$TMP/etc/hotplug.d/firewall"
+  export DNSMASQ_DIR="$TMP/tmp/dnsmasq.d"
+  set +e
+  install_output=$(install_files 2>&1)
+  install_rc=$?
+  set -e
+  [ "$install_rc" -ne 0 ]
+  printf '%s\n' "$install_output" | grep -F 'managed secret is a symlink' >/dev/null
 else
   echo "secret_symlink_test=skipped-filesystem"
 fi

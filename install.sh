@@ -1259,6 +1259,7 @@ install_files() {
     echo "install blocked: secrets path contains a symlink" >&2
     return 1
   }
+  validate_managed_secret_paths || return 1
   mkdir -p "$(dirname "$PREFIX")" "$ETC_DIR/config" "$ETC_DIR/secrets" "$ETC_DIR/xray" "$ETC_DIR/zapret" "$ETC_DIR/firewall" "$STATE_DIR/last-good" "$RUNTIME_DIR" "$BIN_DIR" "$INIT_DIR" "$RC_DIR" "$HOTPLUG_IFACE_DIR" "$HOTPLUG_FIREWALL_DIR" "$DNSMASQ_DIR"
   staged_prefix="$PREFIX.install.$$"
   old_prefix="$PREFIX.old.$$"
@@ -1353,10 +1354,7 @@ prepare_controller_identity() {
     echo "install blocked: cannot assign controller-owned paths" >&2
     return 1
   }
-  [ ! -L "$ETC_DIR/secrets" ] || {
-    echo "install blocked: secrets directory is a symlink" >&2
-    return 1
-  }
+  validate_managed_secret_paths || return 1
   chown "$controller_uid:$controller_gid" "$ETC_DIR/secrets" || {
     echo "install blocked: cannot assign secrets directory" >&2
     return 1
@@ -1376,15 +1374,28 @@ prepare_controller_identity() {
     "$ETC_DIR/secrets/telegram.json" \
     "$ETC_DIR/secrets/webhook.env"; do
     [ -e "$secret_file" ] || continue
-    [ ! -L "$secret_file" ] || {
-      echo "install blocked: managed secret is a symlink: $secret_file" >&2
-      return 1
-    }
     chown "$controller_uid:$controller_gid" "$secret_file" || {
       echo "install blocked: cannot assign managed secret: $secret_file" >&2
       return 1
     }
     chmod 600 "$secret_file"
+  done
+}
+
+validate_managed_secret_paths() {
+  [ ! -L "$ETC_DIR/secrets" ] || {
+    echo "install blocked: secrets directory is a symlink" >&2
+    return 1
+  }
+  for secret_file in \
+    "$ETC_DIR/secrets/vpn-subscription-url" \
+    "$ETC_DIR/secrets/happ-crypt4-private-key.pem" \
+    "$ETC_DIR/secrets/telegram.json" \
+    "$ETC_DIR/secrets/webhook.env"; do
+    [ ! -L "$secret_file" ] || {
+      echo "install blocked: managed secret is a symlink: $secret_file" >&2
+      return 1
+    }
   done
 }
 
