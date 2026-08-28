@@ -2166,6 +2166,10 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	active := s.currentConfig()
+	if active == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "active_config_unavailable", "Smart DNS state is unavailable until a committed config is restored")
+		return
+	}
 	routes := filterRoutes(active, "smart_dns")
 	healthIntervalSeconds := 300
 	if active != nil && active.Policy.HealthCheckIntervalSeconds > 0 {
@@ -2301,6 +2305,10 @@ func (s *Server) handleSmartDNSConfigure(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	active := s.currentConfig()
+	if active == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "active_config_unavailable", "Smart DNS cannot be configured without a committed config")
+		return
+	}
 	routeIndexes := make([]int, 0, 2)
 	for index, route := range active.Routes {
 		if route.Type == "smart_dns" {
@@ -3126,8 +3134,13 @@ func pointerParent(root any, parts []string) (any, error) {
 	return cur, nil
 }
 
-func countRoutes(cfg *config.Config, typ string) int             { return len(filterRoutes(cfg, typ)) }
-func filterRoutes(cfg *config.Config, typ string) []config.Route { return cfg.RoutesByType(typ) }
+func countRoutes(cfg *config.Config, typ string) int { return len(filterRoutes(cfg, typ)) }
+func filterRoutes(cfg *config.Config, typ string) []config.Route {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.RoutesByType(typ)
+}
 
 func (s *Server) activeIdentity() (string, int64) {
 	s.mu.Lock()

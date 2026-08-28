@@ -115,6 +115,25 @@ func TestServerHealthCycleFailsClosedWhenActiveConfigIsMissing(t *testing.T) {
 	}
 }
 
+func TestSmartDNSHandlersFailClosedWhenActiveConfigIsMissing(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	srv.mu.Lock()
+	srv.activeConfig = nil
+	srv.mu.Unlock()
+
+	get := httptest.NewRecorder()
+	srv.handleSmartDNS(get, httptest.NewRequest(http.MethodGet, "/api/v1/smart-dns", nil))
+	if get.Code != http.StatusServiceUnavailable || !strings.Contains(get.Body.String(), "active_config_unavailable") {
+		t.Fatalf("Smart DNS read did not fail closed: status=%d body=%s", get.Code, get.Body.String())
+	}
+	post := httptest.NewRecorder()
+	srv.handleSmartDNSConfigure(post, httptest.NewRequest(http.MethodPost, "/api/v1/smart-dns/configure", strings.NewReader(`{"base_version":1,"test_domain":"example.com","endpoints":["1.1.1.1:53"]}`)))
+	if post.Code != http.StatusServiceUnavailable || !strings.Contains(post.Body.String(), "active_config_unavailable") {
+		t.Fatalf("Smart DNS mutation did not fail closed: status=%d body=%s", post.Code, post.Body.String())
+	}
+}
+
 func TestTSPURefreshPublishesSuccessAndFailureWithoutDomains(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
