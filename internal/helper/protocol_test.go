@@ -3,6 +3,7 @@ package helper
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -249,6 +250,40 @@ func TestCallRejectsSemanticHashMismatch(t *testing.T) {
 	_, err = Call(context.Background(), socket, request)
 	if err == nil || !strings.Contains(err.Error(), "binding mismatch") {
 		t.Fatalf("semantic hash mismatch was accepted: %v", err)
+	}
+}
+
+func TestCallRejectsTrailingResponseDocument(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("unix helper transport is only exercised on Linux")
+	}
+	socket := filepath.Join(t.TempDir(), "helper.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		var request Request
+		if json.NewDecoder(connection).Decode(&request) != nil {
+			return
+		}
+		response := ResponseFrom(request, true, "", "")
+		if json.NewEncoder(connection).Encode(response) != nil {
+			return
+		}
+		_, _ = io.WriteString(connection, "{}\n")
+	}()
+	request := validRequest("transaction.rollback")
+	request.Transaction = &TransactionRequest{Operation: "rollback"}
+	_, err = Call(context.Background(), socket, request)
+	if err == nil || !strings.Contains(err.Error(), "trailing JSON") {
+		t.Fatalf("trailing helper response was accepted: %v", err)
 	}
 }
 

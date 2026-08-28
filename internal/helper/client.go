@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"path/filepath"
 	"time"
@@ -30,9 +31,17 @@ func Call(ctx context.Context, socket string, request Request) (Response, error)
 	if err := json.NewEncoder(connection).Encode(request); err != nil {
 		return Response{}, fmt.Errorf("write helper request: %w", err)
 	}
+	decoder := json.NewDecoder(connection)
 	var response Response
-	if err := json.NewDecoder(connection).Decode(&response); err != nil {
+	if err := decoder.Decode(&response); err != nil {
 		return Response{}, fmt.Errorf("read helper response: %w", err)
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return response, errors.New("helper response contains trailing JSON")
+		}
+		return response, fmt.Errorf("read helper response trailing data: %w", err)
 	}
 	if response.ProtocolVersion != ProtocolVersion || response.RequestID != request.RequestID || response.Command != request.Command || response.Generation != request.Generation || response.RevisionID != request.RevisionID || response.TransactionID != request.TransactionID || response.CandidateHash != request.CandidateHash || response.ArtifactManifestHash != request.ArtifactManifestHash || response.RollbackTokenHash != request.RollbackTokenHash {
 		return response, errors.New("helper response binding mismatch")

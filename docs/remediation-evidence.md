@@ -71,6 +71,7 @@
 | Baseline boot-fence release | `tests/boot-guard-baseline.sh`; `TestBaselineRecoveryClearsOnlyThroughBaselineBoundAdapterOperation`; `TestAdapterExecutorAcceptsOnlySemanticallyProvenBaselineBootGuardClear` | PASS; baseline recovery cannot clear the all-transit fence through an unbound command and rejects mismatched semantic evidence | local/mock + exact-SHA CI [33143035135](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143035135) |
 | Typed helper boundary | `tests/helper-service.sh`, `go test ./internal/helper` | PASS | local/mock |
 | Fixed production helper socket | `go test ./internal/adapter -run TestNewOpenWrtRequiresFixedHelperSocket` | PASS; missing and foreign socket paths are rejected before production adapter construction | local |
+| Strict helper response framing | `go test ./internal/helper -run TestCallRejectsTrailingResponseDocument` | PASS; a valid response followed by another JSON document is rejected before semantic acceptance | local |
 | Helper connection budget | `TestServeUnixBoundsConcurrentHelperWork` | PASS (Linux-only test; Windows skips) | local/Linux semantics |
 | Generation-bound boot-guard clear | `TestAdapterExecutorAcceptsOnlyGenerationBoundBootGuardClear`, `openwrt-adapter-integration.sh` | PASS | local/mock + exact-SHA CI [33140362889](https://github.com/Zaqvierm/FlintRoute/actions/runs/33140362889) |
 | Чужой helper socket не удаляется | `TestServeUnixDoesNotRemoveForeignSocketPathObject` | PASS | local/mock |
