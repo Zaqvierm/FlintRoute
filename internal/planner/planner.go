@@ -645,13 +645,15 @@ func bindResultToCandidate(result probe.RouteResult, route config.Route, activeR
 	if route.AdapterMode == "system_default" && result.PathVerified && result.AdapterRevision == "" {
 		result.AdapterRevision = activeRevision
 	}
+	statusOK := strings.EqualFold(strings.TrimSpace(result.Status), "OK")
+	statusDegraded := strings.EqualFold(strings.TrimSpace(result.Status), "DEGRADED")
 	reason := ""
 	if result.Route != route.Tag || result.RouteType != route.Type {
 		reason = "probe_route_identity_mismatch"
 	} else if activeRevision != "" && result.AdapterRevision != activeRevision &&
-		(result.PathVerified || result.Status == "OK" || result.Status == "DEGRADED") {
+		(result.PathVerified || statusOK || statusDegraded) {
 		reason = "probe_adapter_revision_mismatch"
-	} else if (result.Status == "OK" || result.Status == "DEGRADED") && (!result.PathVerified || !result.ServiceOK) {
+	} else if (statusOK || statusDegraded) && (!result.PathVerified || !result.ServiceOK) {
 		reason = "probe_success_without_complete_evidence"
 	}
 	if reason != "" {

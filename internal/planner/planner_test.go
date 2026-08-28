@@ -655,6 +655,26 @@ func TestWrongRevisionCannotBeSelected(t *testing.T) {
 	}
 }
 
+func TestWrongRevisionCannotBeSelectedForCaseVariantSuccess(t *testing.T) {
+	cfg := discoveryConfig(t)
+	result := successfulResult("direct", "direct", "rev-old")
+	result.Status = "ok"
+	prober := &scriptedProber{results: map[string]probe.RouteResult{
+		"direct":    result,
+		"smart-one": successfulResult("smart-one", "smart_dns", "rev-active"),
+	}}
+	check, err := CheckDomain(context.Background(), cfg, "revision-case.example", "", Options{RouteProber: prober, ActiveRevision: "rev-active"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(check.Results) == 0 || check.Results[0].Status != "UNVERIFIED" || check.Results[0].ReasonCode != "probe_adapter_revision_mismatch" {
+		t.Fatalf("case-variant success bypassed revision binding: %+v", check)
+	}
+	if check.Selected == nil || check.Selected.Route != "smart-one" {
+		t.Fatalf("safe revision-bound route was not selected after rejecting stale evidence: %+v", check)
+	}
+}
+
 func TestFailedProbeKeepsItsRealReasonWhenNoRevisionProofExists(t *testing.T) {
 	reason := "route_nft_counter_did_not_advance"
 	result := bindResultToCandidate(probe.RouteResult{
