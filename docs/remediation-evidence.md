@@ -20,8 +20,16 @@ Local evidence for that code commit:
   explicit checked branches.
 
 Linux network-namespace/nft and Linux process-group/procfs tests remain
-`NOT RUN LOCALLY` on Windows and require exact-SHA CI evidence. Hardware was
-not accessed.
+`NOT RUN LOCALLY` on Windows. Exact-SHA CI for the pushed docs tree
+`fc99c200c1c154081475c3655f53e6954dd16b74` passed: full safety
+[33208651816](https://github.com/Zaqvierm/FlintRoute/actions/runs/33208651816),
+nft transition
+[33208651877](https://github.com/Zaqvierm/FlintRoute/actions/runs/33208651877),
+Zapret process-group
+[33208651828](https://github.com/Zaqvierm/FlintRoute/actions/runs/33208651828),
+and UI browser/responsive
+[33208652024](https://github.com/Zaqvierm/FlintRoute/actions/runs/33208652024).
+These are software/CI evidence only; hardware was not accessed.
 
 Этот документ — текущий источник истины по software/CI-проверкам remediation.
 Каждая запись привязана к точному SHA; evidence другого commit считается stale.
