@@ -212,13 +212,17 @@ func (s *Server) validateChangeSet(cs ChangeSet) (ChangeSet, *actionFailure) {
 		return cs, internalFailure(err)
 	}
 	if err := s.refreshCandidateNetworkDiagnostics(candidate); err != nil {
-		_ = adapter.RetireCapability(tx)
+		if cleanupErr := adapter.RetireCapability(tx); cleanupErr != nil {
+			err = fmt.Errorf("%w; cleanup rollback capability: %v", err, cleanupErr)
+		}
 		return cs, internalFailure(err)
 	}
 	generatedAt := time.Now().UTC()
 	manifest, manifestHash, err := artifact.Generate(candidate, tx.ArtifactRoot, artifact.Binding{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash}, generatedAt)
 	if err != nil {
-		_ = adapter.RetireCapability(tx)
+		if cleanupErr := adapter.RetireCapability(tx); cleanupErr != nil {
+			err = fmt.Errorf("%w; cleanup rollback capability: %v", err, cleanupErr)
+		}
 		return cs, internalFailure(err)
 	}
 	tx.ArtifactManifestHash = manifestHash
@@ -226,12 +230,16 @@ func (s *Server) validateChangeSet(cs ChangeSet) (ChangeSet, *actionFailure) {
 	tx.ArtifactBlockReason = manifest.BlockReason
 	tx.ArtifactsSimulation = manifest.Simulation
 	if err := bindAdaptiveCandidate(&tx, candidate); err != nil {
-		_ = adapter.RetireCapability(tx)
+		if cleanupErr := adapter.RetireCapability(tx); cleanupErr != nil {
+			err = fmt.Errorf("%w; cleanup rollback capability: %v", err, cleanupErr)
+		}
 		return cs, &actionFailure{Status: 422, Code: "adaptive_candidate_invalid", Message: err.Error()}
 	}
 	manifestHash = tx.ArtifactManifestHash
 	if err := adapter.PersistBinding(tx); err != nil {
-		_ = adapter.RetireCapability(tx)
+		if cleanupErr := adapter.RetireCapability(tx); cleanupErr != nil {
+			err = fmt.Errorf("%w; cleanup rollback capability: %v", err, cleanupErr)
+		}
 		return cs, internalFailure(err)
 	}
 	record := candidateRecord{ChangeID: cs.ID, BaseVersion: cs.BaseVersion, CandidateVersion: candidateVersion, Hash: tx.CandidateHash, ArtifactManifestHash: manifestHash, ArtifactsReady: manifest.DeploymentReady, ArtifactBlockReason: manifest.BlockReason, ArtifactsSimulation: manifest.Simulation, Config: *candidate, Canonical: canonical, CreatedAt: generatedAt}
@@ -534,7 +542,9 @@ func (s *Server) confirmChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet,
 		cs.AdapterStatus = finalized.Status
 		if err := adapter.ValidateFinalizedCommit(finalized, tx); err != nil {
 			cs.CommitPhase = "finalize_ambiguous"
-			_ = s.store.SaveJSON("transactions", tx.ID, transactionRecord{Transaction: tx, State: "control_plane_committed", CommitPhase: cs.CommitPhase, Steps: cs.Steps, UpdatedAt: time.Now().UTC()})
+			if persistErr := s.store.SaveJSON("transactions", tx.ID, transactionRecord{Transaction: tx, State: "control_plane_committed", CommitPhase: cs.CommitPhase, Steps: cs.Steps, UpdatedAt: time.Now().UTC()}); persistErr != nil {
+				err = fmt.Errorf("%w; persist finalize_ambiguous state: %v", err, persistErr)
+			}
 			s.markRecoveryRequired(target, "adapter_finalize_ambiguous", err.Error(), cs.CommitPhase)
 			return cs, &actionFailure{Status: 503, Code: "recovery_required", Message: err.Error()}
 		}
@@ -614,10 +624,6 @@ func (s *Server) confirmChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet,
 	s.changes[cs.ID] = cs
 	s.cancelExpiryLocked(cs.ID)
 	s.mu.Unlock()
-	_ = adapter.RetireCapability(tx)
-	if s.managementProofs != nil {
-		_ = s.managementProofs.Remove(proofBinding(tx))
-	}
 	s.cleanupCommittedResources(tx, previousRevision)
 	s.publishChangeEvent(cs, "adapter_commit_succeeded")
 	return cs, nil
@@ -652,6 +658,14 @@ func (s *Server) clearBootGuard(ctx context.Context, tx adapter.Transaction) *ac
 func (s *Server) cleanupCommittedResources(tx adapter.Transaction, previous revisionRecord) {
 	result := map[string]any{"transaction_id": tx.ID, "revision_id": tx.RevisionID, "status": "complete", "cleaned_at": time.Now().UTC()}
 	var failures []string
+	if err := adapter.RetireCapability(tx); err != nil {
+		failures = append(failures, "rollback capability: "+err.Error())
+	}
+	if s.managementProofs != nil {
+		if err := s.managementProofs.Remove(proofBinding(tx)); err != nil {
+			failures = append(failures, "management proof: "+err.Error())
+		}
+	}
 	if err := adapter.CleanupCommitted(s.cfg, tx); err != nil {
 		failures = append(failures, "current transaction: "+err.Error())
 	}
@@ -665,7 +679,9 @@ func (s *Server) cleanupCommittedResources(tx adapter.Transaction, previous revi
 		result["errors"] = failures
 		s.publishEvent(Event{Type: "storage.cleanup_failed", Severity: "warning", ReasonCode: "committed_transaction_cleanup_partial", Details: map[string]any{"revision_id": tx.RevisionID}})
 	}
-	_ = s.store.SaveJSON("meta", "last_cleanup_result", result)
+	if err := saveCleanupStatus(s.store, result); err != nil {
+		s.publishEvent(Event{Type: "storage.cleanup_failed", Severity: "error", ReasonCode: "cleanup_status_persist_failed", Details: map[string]any{"revision_id": tx.RevisionID, "error": err.Error()}})
+	}
 }
 
 func (s *Server) rollbackChangeSet(ctx context.Context, cs ChangeSet, expired bool) (ChangeSet, *actionFailure) {
@@ -710,7 +726,9 @@ func (s *Server) rollbackLocked(ctx context.Context, cs ChangeSet, tx adapter.Tr
 	cs.AdapterStatus = result.Status
 	if result.Operation != "" || result.ProtocolVersion != 0 {
 		if err := adapter.ValidateRollback(result, tx); err != nil {
-			_ = s.saveProgress(&cs, tx, "rollback_failed")
+			if progressErr := s.saveProgress(&cs, tx, "rollback_failed"); progressErr != nil {
+				err = fmt.Errorf("%w; persist rollback_failed state: %v", err, progressErr)
+			}
 			s.markRecoveryRequired(adapter.RecoveryTarget{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash, ArtifactManifestHash: tx.ArtifactManifestHash}, "adapter_rollback_ambiguous", err.Error(), cs.CommitPhase)
 			return cs, &actionFailure{Status: 503, Code: "recovery_required", Message: err.Error()}
 		}
@@ -731,18 +749,36 @@ func (s *Server) rollbackLocked(ctx context.Context, cs ChangeSet, tx adapter.Tr
 	s.mu.Lock()
 	s.cancelExpiryLocked(cs.ID)
 	s.mu.Unlock()
-	_ = adapter.RetireCapability(tx)
+	cleanupFailures := make([]string, 0, 3)
+	if err := adapter.RetireCapability(tx); err != nil {
+		cleanupFailures = append(cleanupFailures, "rollback capability: "+err.Error())
+	}
 	if s.managementProofs != nil {
-		_ = s.managementProofs.Remove(proofBinding(tx))
+		if err := s.managementProofs.Remove(proofBinding(tx)); err != nil {
+			cleanupFailures = append(cleanupFailures, "management proof: "+err.Error())
+		}
 	}
 	cleanupStatus := map[string]any{"transaction_id": tx.ID, "revision_id": tx.RevisionID, "status": "complete", "cleaned_at": time.Now().UTC()}
 	if err := adapter.CleanupObsoleteTransaction(s.cfg, tx.RevisionID, tx.ID); err != nil {
+		cleanupFailures = append(cleanupFailures, "transaction artifacts: "+err.Error())
+	}
+	if len(cleanupFailures) > 0 {
 		cleanupStatus["status"] = "partial"
-		cleanupStatus["error"] = err.Error()
+		cleanupStatus["errors"] = cleanupFailures
 		s.publishEvent(Event{Type: "storage.cleanup_failed", Severity: "warning", ReasonCode: "rollback_transaction_cleanup_partial", Details: map[string]any{"revision_id": tx.RevisionID}})
 	}
-	_ = s.store.SaveJSON("meta", "last_cleanup_result", cleanupStatus)
+	if err := saveCleanupStatus(s.store, cleanupStatus); err != nil {
+		s.publishEvent(Event{Type: "storage.cleanup_failed", Severity: "error", ReasonCode: "cleanup_status_persist_failed", Details: map[string]any{"revision_id": tx.RevisionID, "error": err.Error()}})
+	}
 	return cs, nil
+}
+
+type cleanupStatusStore interface {
+	SaveJSON(bucket, key string, value any) error
+}
+
+func saveCleanupStatus(store cleanupStatusStore, result map[string]any) error {
+	return store.SaveJSON("meta", "last_cleanup_result", result)
 }
 
 func (s *Server) saveProgress(cs *ChangeSet, tx adapter.Transaction, nextState string) error {
@@ -1111,7 +1147,6 @@ func (s *Server) finalizeRecoveredCommit(cs *ChangeSet, tx adapter.Transaction) 
 	s.changes[cs.ID] = *cs
 	s.cancelExpiryLocked(cs.ID)
 	s.mu.Unlock()
-	_ = adapter.RetireCapability(tx)
 	s.cleanupCommittedResources(tx, previousRevision)
 	return nil
 }
