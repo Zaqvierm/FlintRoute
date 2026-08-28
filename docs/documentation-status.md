@@ -1,10 +1,10 @@
 # Актуальность документации
 
-Проверено: `2026-08-23`, база production-кода
-`f7a36e63542ef92047c17cca0d5be90987cdd1a4` плюс текущий onboarding-fence delta.
+Проверено: `2026-08-28`, база production-кода
+`09397c83a4bd756dcbbad1ab02295bd2acc73c2f` плюс текущий локальный safety delta.
 Документационный commit фиксирует этот code SHA; hardware claims для него не
 наследуются.
-Ветка: `remediation/transaction-and-privilege-boundaries-consolidated`.
+Ветка: `integration/discovery-smartdns-local-dod`.
 
 Это не декоративная таблица процентов. Статус означает, можно ли использовать
 документ как описание текущего software-кода. Исторические аппаратные PASS не
@@ -45,8 +45,8 @@
 | `network-platform-audit.md` | АКТУАЛЕН | Hardcode/GL.iNet audit; generic OpenWrt поддерживаемым не объявлен. |
 | `probe-route.md` | АКТУАЛЕН software | Единый route proof и раздельные latency/duration; hardware proof отсутствует. |
 | `README.md` | АКТУАЛЕН | Навигация по контрактам, evidence и ограничениям. |
-| `remediation-design.md` | АКТУАЛЕН | Safety design и privilege model; root-helper split остаётся PARTIAL. |
-| `remediation-evidence.md` | АКТУАЛЕН | Текущий SHA, локальные gates и CI run IDs; старое evidence помечено STALE. |
+| `remediation-design.md` | АКТУАЛЕН | Safety design и privilege model; code-level root-helper contract закрыт, runtime/hardware acceptance остаётся PARTIAL. |
+| `remediation-evidence.md` | АКТУАЛЕН | Текущий SHA, локальные gates и CI run IDs; исторические строки помечены STALE. |
 | `soak-test.md` | ПЛАН | 72-часовой прогон не выполнен на текущем SHA. |
 | `status-matrix.md` | ИСТОРИЯ | Старая фазовая матрица; использовать только вместе с текущим evidence. |
 | `storage-lifecycle.md` | АКТУАЛЕН software | Ownership, retention и write budget сверены; hardware не заявляется. |
@@ -68,7 +68,7 @@
    а match используется как evidence перед `ProbeRoute`.
 3. `tspu-cache.md` и `tspu-sources.md` явно отделяют старый Flint 2 report от
    текущего software/CI evidence.
-4. `remediation-evidence.md` привязан к baseline `f7a36e6` и отдельно отмечает текущий onboarding-fence delta.
+4. `remediation-evidence.md` привязан к текущему code HEAD `09397c8` и отдельно отмечает исторические SHA.
    и содержит свежие CI run IDs.
 5. DNS rotation, stale freshness, bounded login pressure, route-fetch SSRF
    fallback и Quick maintenance restart policy отражены в evidence matrix.

@@ -5,13 +5,13 @@
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `d7077a657f63e3372ef6d05882bb46dbdecac4cf` (route-only assignment is fenced without a registered runtime consumer; semantic, revision-bound receipts and idempotent rollback are required before persisting an applied mapping; discovery suggestion/control-state persistence failures are surfaced and block unsafe auto-assignment; installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound and its UCI confdir is restricted to the owned `/tmp/dnsmasq.d` or `/etc/dnsmasq.d` paths; the root observer bootstrap enforces the same allowlist, rejects unowned confdirs, and rejects symlink traversal in every parent component; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools; prefix renames flush their containing directory and recover deterministically across the final rename boundary; corrupt-state rescue artifacts are synced and atomically renamed with unique names; failed Zapret calibration retains at most three private bounded forensic bundles after cleanup; end-to-end latency is measured from DNS/network path and never derived from full verification duration; probe terminal statuses are canonicalized case-insensitively; strict JSON decoders reject trailing documents in kernel command and IP state parsers; privileged adapter success now requires an independent operation/generation/transaction/revision/candidate/artifact/rollback-token evidence binding; reconcile receipts expose the same direct binding fields as every other adapter operation; candidate_valid=false is rejected even with exit code 0; baseline recovery clears the all-transit boot fence only through a typed revision/candidate-bound operation with semantic evidence; production adapter accepts only the fixed root-helper socket; helper responses reject unknown fields and trailing JSON; subscription refresh/prepare/speed operations use a non-blocking single-operation gate so a slow provider cannot strand additional HTTP handlers; transaction cleanup now records capability/proof/artifact failures and surfaces cleanup-status persistence errors instead of discarding them; durable event persistence failures now produce an explicit in-memory diagnostic instead of being silently ignored; installer secret ownership is now an explicit four-file allowlist and refuses symlinked managed secrets without recursively changing foreign files; HWID settings are resolved and previewed before persistence, so an unavailable fingerprint cannot replace the last known-good setting).
+- Текущий проверяемый code HEAD: `09397c83a4bd756dcbbad1ab02295bd2acc73c2f` on `integration/discovery-smartdns-local-dod` (route-only assignment remains fenced without a registered runtime consumer; the current tree also includes fail-closed calibration signal handling, managed-root ownership fencing, and exact-SHA CI evidence below). Historical rows in this document remain useful only as evidence for their named SHA and are stale for the current tree.
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
 - Базовый SHA аудита: `d45a779dfa9dc024b426cef358d3df4d32478897`.
 - Историческая ветка remediation: `remediation/transaction-and-privilege-boundaries-consolidated`.
-- Проверенный code baseline до текущего onboarding delta: `f7a36e63542ef92047c17cca0d5be90987cdd1a4`.
+- Проверенный code baseline до текущего onboarding delta: `f7a36e63542ef92047c17cca0d5be90987cdd1a4` (historical).
 - Software/CI claims ниже относятся только к указанному текущему HEAD; старые
   строки и run IDs, привязанные к другим code heads, считаются историческими.
 - Документация по изменённому safety-контракту обновляется в том же
@@ -24,6 +24,11 @@
   изменения runtime.
 - Уровни evidence независимы: local unit/mock, Linux namespace/CI и hardware.
   Нижний уровень не превращается в верхний.
+- На текущем HEAD локальный Windows `tests/run-all.ps1` завершился
+  `all_tests_ok=true`. Exact-SHA CI для этого HEAD: full safety
+  `33182637512`, UI `33182637993`, Zapret process-group `33182637577`, nft
+  transition `33182637497`. Linux-only checks PASS только в CI; локально они
+  остаются `NOT RUN LOCALLY`. Hardware не использовалось.
 - Старые hardware-записи, включая `docs/flint2-hardware-report.md` и
   `H:\LAN\Versions\FlintRoute 0.2.0-alpha.1\hardware\summary.txt`, имеют статус
   `STALE FOR CURRENT SHA`, пока не будет нового прогона на текущем коде.
@@ -60,7 +65,7 @@
 | Exact-SHA Zapret process-group for deterministic prefix recovery and HWID persistence | PASS | run [33159908055](https://github.com/Zaqvierm/FlintRoute/actions/runs/33159908055) |
 | Exact-SHA browser/responsive for deterministic prefix recovery and HWID persistence | PASS | run [33159908069](https://github.com/Zaqvierm/FlintRoute/actions/runs/33159908069) |
 | Linux-only harness на Windows | NOT RUN LOCALLY | namespace/procfs/mode требуют Linux |
-| Root-helper privilege split | PARTIAL (production contract; runtime peer proof pending) | production init запускает controller как `daemon`, root startup и отсутствие helper socket отвергаются; production adapter принимает только фиксированный `/var/run/router-policy/helper.sock`; typed helper покрывает global/transaction paths и ограничивает concurrent connections; Linux peer-credential/runtime evidence ещё не получено |
+| Root-helper privilege split | PARTIAL (code contract; runtime peer proof pending) | production init запускает controller как `daemon`, root startup и отсутствие helper socket отвергаются; production adapter принимает только фиксированный `/var/run/router-policy/helper.sock`; typed helper покрывает global/transaction/owned paths, проверяет peer UID и ограничивает concurrent connections; Linux peer-credential/runtime evidence ещё не получено |
 | Route-only assignment dataplane | PARTIAL | revision-bound decision cache и post-probe есть; nft/dnsmasq runtime consumer не доказан |
 | Route-only runtime-consumer fence | PASS | `go test ./internal/api -run 'TestAutomaticDomainCommit|TestDiscoverySuggestionApply'`; absent consumer and invalid semantic receipt cannot produce `applied=true` |
 | Flint 2 hardware | NOT RUN / STALE | hardware не трогалось |
