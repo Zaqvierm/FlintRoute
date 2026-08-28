@@ -59,6 +59,9 @@ func TestMalformedCommandJSONIsRejected(t *testing.T) {
 	if _, err := parseRouteGet([]byte(`{"dev":"wan"}`)); err == nil {
 		t.Fatal("non-array route output was accepted")
 	}
+	if _, err := parseRouteGet([]byte(`[{"dst":"203.0.113.10","dev":"wan","table":100}] {"extra":true}`)); err == nil {
+		t.Fatal("trailing JSON value was accepted")
+	}
 	if _, err := parseNFTPolicy([]byte(`{"nftables":`), "direct"); err == nil {
 		t.Fatal("truncated nft output was accepted")
 	}

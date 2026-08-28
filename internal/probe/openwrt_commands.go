@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -293,8 +294,12 @@ func decodeStrictJSON(raw []byte, target any) error {
 	if err := decoder.Decode(target); err != nil {
 		return fmt.Errorf("invalid command JSON: %w", err)
 	}
-	if decoder.More() {
-		return errors.New("trailing command JSON")
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("trailing command JSON")
+		}
+		return fmt.Errorf("trailing command JSON: %w", err)
 	}
 	return nil
 }
