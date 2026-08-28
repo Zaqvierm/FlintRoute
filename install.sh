@@ -1251,6 +1251,14 @@ finalize_prefix_switch() {
 
 install_files() {
   recover_prefix_switch
+  # Re-check the secrets path immediately before mkdir/copy operations.  The
+  # preflight snapshot rejects symlinks too, but this local guard closes the
+  # TOCTOU window where a replaced directory could otherwise redirect the
+  # first subscription-file write into a foreign tree.
+  validate_no_symlink_path "$ETC_DIR/secrets" || {
+    echo "install blocked: secrets path contains a symlink" >&2
+    return 1
+  }
   mkdir -p "$(dirname "$PREFIX")" "$ETC_DIR/config" "$ETC_DIR/secrets" "$ETC_DIR/xray" "$ETC_DIR/zapret" "$ETC_DIR/firewall" "$STATE_DIR/last-good" "$RUNTIME_DIR" "$BIN_DIR" "$INIT_DIR" "$RC_DIR" "$HOTPLUG_IFACE_DIR" "$HOTPLUG_FIREWALL_DIR" "$DNSMASQ_DIR"
   staged_prefix="$PREFIX.install.$$"
   old_prefix="$PREFIX.old.$$"
