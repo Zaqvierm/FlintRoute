@@ -32,6 +32,11 @@ func Call(ctx context.Context, socket string, request Request) (Response, error)
 		return Response{}, fmt.Errorf("write helper request: %w", err)
 	}
 	decoder := json.NewDecoder(connection)
+	// The privileged side is a closed protocol.  Do not accept a response
+	// carrying fields this client does not understand: an apparently valid
+	// prefix must not hide an out-of-contract operation or security-relevant
+	// state added by a mismatched helper binary.
+	decoder.DisallowUnknownFields()
 	var response Response
 	if err := decoder.Decode(&response); err != nil {
 		return Response{}, fmt.Errorf("read helper response: %w", err)

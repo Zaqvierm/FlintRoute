@@ -3,6 +3,7 @@ package helper
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -284,6 +285,38 @@ func TestCallRejectsTrailingResponseDocument(t *testing.T) {
 	_, err = Call(context.Background(), socket, request)
 	if err == nil || !strings.Contains(err.Error(), "trailing JSON") {
 		t.Fatalf("trailing helper response was accepted: %v", err)
+	}
+}
+
+func TestCallRejectsUnknownResponseField(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("unix helper transport is only exercised on Linux")
+	}
+	socket := filepath.Join(t.TempDir(), "helper.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		var request Request
+		if json.NewDecoder(connection).Decode(&request) != nil {
+			return
+		}
+		response := ResponseFrom(request, true, "", "")
+		payload, _ := json.Marshal(response)
+		_, _ = fmt.Fprintf(connection, "%s\n", strings.TrimSuffix(string(payload), "}")+`,"unexpected":true}`)
+	}()
+	request := validRequest("transaction.rollback")
+	request.Transaction = &TransactionRequest{Operation: "rollback"}
+	_, err = Call(context.Background(), socket, request)
+	if err == nil || !strings.Contains(err.Error(), "read helper response") {
+		t.Fatalf("unknown helper response field was accepted: %v", err)
 	}
 }
 
