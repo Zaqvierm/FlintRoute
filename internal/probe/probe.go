@@ -375,6 +375,7 @@ func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check
 		}
 	}
 
+	networkPathStarted := time.Now()
 	ips, resolver, protocol, err := resolveForRoute(ctx, cfg, route, host)
 	if err != nil {
 		res.Reason = "dns_failed:" + err.Error()
@@ -442,6 +443,12 @@ func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check
 		res.SuspectedTSPU = attempt.SuspectedTSPU
 		res.AuthenticationRequired = attempt.AuthenticationRequired
 		res.WAFOrRateLimit = attempt.WAFOrRateLimit
+		if attempt.ResponseReceived {
+			if e2e, ok := measuredRouteLatency(networkPathStarted); ok && (!res.EndToEndLatencyAvailable || e2e < res.EndToEndLatencyMS) {
+				res.EndToEndLatencyMS = e2e
+				res.EndToEndLatencyAvailable = true
+			}
+		}
 		if attempt.RouteLatencyAvailable && (!res.RouteLatencyAvailable || attempt.RouteLatencyMS < res.RouteLatencyMS) {
 			res.RouteLatencyMS = attempt.RouteLatencyMS
 			res.RouteLatencyAvailable = true
@@ -463,13 +470,9 @@ func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check
 
 func finalizeCheckResult(res CheckResult, startedAt time.Time) CheckResult {
 	res.VerificationDurationMS = elapsedMilliseconds(startedAt)
-	// End-to-end latency is the bounded functional check from DNS resolution
-	// through the network response. It is intentionally distinct from the
-	// orchestration/verification duration and from route proof metadata.
-	if strings.EqualFold(strings.TrimSpace(res.Status), "OK") && res.RouteLatencyAvailable {
-		res.EndToEndLatencyMS = res.VerificationDurationMS
-		res.EndToEndLatencyAvailable = true
-	}
+	// End-to-end latency is recorded by probeOne from the DNS/network path
+	// timer. Never derive it from VerificationDurationMS: that timer includes
+	// orchestration, retries, proof and cleanup and is not a network metric.
 	return res
 }
 
@@ -832,6 +835,7 @@ type attemptResult struct {
 	SuspectedTSPU          bool
 	AuthenticationRequired bool
 	WAFOrRateLimit         bool
+	ResponseReceived       bool
 	Reason                 string
 	RouteLatencyMS         int64
 	RouteLatencyAvailable  bool
@@ -982,6 +986,7 @@ func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route,
 		SuspectedTSPU:          tspu,
 		AuthenticationRequired: authRequired,
 		WAFOrRateLimit:         wafOrRateLimit,
+		ResponseReceived:       true,
 		Reason:                 reason,
 		RouteLatencyMS:         routeLatencyMS,
 		RouteLatencyAvailable:  routeLatencyAvailable,

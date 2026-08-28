@@ -101,6 +101,9 @@ func TestProbeHTTP200WithMarker(t *testing.T) {
 	if result.VerificationDurationMS < result.RouteLatencyMS {
 		t.Fatalf("verification duration %dms is shorter than route latency %dms: %+v", result.VerificationDurationMS, result.RouteLatencyMS, result)
 	}
+	if len(result.Checks) != 1 || !result.Checks[0].EndToEndLatencyAvailable || result.Checks[0].EndToEndLatencyMS <= 0 {
+		t.Fatalf("successful HTTP check did not record end-to-end network evidence: %+v", result)
+	}
 }
 
 func TestProbe403IsTypedAsWAFOrRateLimitNotRegionalBlock(t *testing.T) {
@@ -158,12 +161,25 @@ func TestPathProofFailureNormalizesCaseVariantSuccessStatus(t *testing.T) {
 	}
 }
 
-func TestFinalizeCheckResultAcceptsCaseVariantSuccessStatus(t *testing.T) {
+func TestFinalizeCheckResultDoesNotDeriveE2EFromVerificationDuration(t *testing.T) {
 	result := finalizeCheckResult(CheckResult{
 		Status: "ok", RouteLatencyMS: 12, RouteLatencyAvailable: true,
 	}, time.Now().Add(-20*time.Millisecond))
-	if !result.EndToEndLatencyAvailable || result.EndToEndLatencyMS <= 0 {
-		t.Fatalf("case-variant success did not retain end-to-end evidence: %+v", result)
+	if result.EndToEndLatencyAvailable || result.EndToEndLatencyMS != 0 {
+		t.Fatalf("verification duration was incorrectly exposed as end-to-end latency: %+v", result)
+	}
+	if result.VerificationDurationMS <= 0 {
+		t.Fatalf("verification duration was not recorded: %+v", result)
+	}
+}
+
+func TestFinalizeCheckResultPreservesMeasuredE2E(t *testing.T) {
+	result := finalizeCheckResult(CheckResult{
+		Status: "ok", RouteLatencyMS: 12, RouteLatencyAvailable: true,
+		EndToEndLatencyMS: 37, EndToEndLatencyAvailable: true,
+	}, time.Now().Add(-20*time.Millisecond))
+	if !result.EndToEndLatencyAvailable || result.EndToEndLatencyMS != 37 {
+		t.Fatalf("measured end-to-end evidence was overwritten: %+v", result)
 	}
 }
 
