@@ -413,7 +413,10 @@ func (s *Server) handleXraySubscriptionPrepare(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	s.subscriptionMu.Lock()
+	if !s.tryLockSubscription() {
+		writeError(w, r, http.StatusConflict, "subscription_operation_busy", "Another subscription operation is still running")
+		return
+	}
 	defer s.subscriptionMu.Unlock()
 	s.mu.Lock()
 	currentVersion := s.configVersion

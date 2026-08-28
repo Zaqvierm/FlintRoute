@@ -47,6 +47,24 @@ func (e *apiHealthEngine) ProbeRoute(_ context.Context, _ *config.Config, domain
 	}
 }
 
+func TestSubscriptionOperationLockIsNonBlocking(t *testing.T) {
+	srv := &Server{}
+	srv.subscriptionMu.Lock()
+	started := time.Now()
+	if srv.tryLockSubscription() {
+		srv.subscriptionMu.Unlock()
+		t.Fatal("tryLockSubscription acquired an already-held lock")
+	}
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("busy subscription operation blocked for %s", elapsed)
+	}
+	srv.subscriptionMu.Unlock()
+	if !srv.tryLockSubscription() {
+		t.Fatal("tryLockSubscription did not acquire an available lock")
+	}
+	srv.subscriptionMu.Unlock()
+}
+
 func TestServerHealthCycleCallsInjectedEnginePersistsAndExposesStatus(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()

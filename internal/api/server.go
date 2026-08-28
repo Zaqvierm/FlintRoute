@@ -180,6 +180,14 @@ type Server struct {
 	closeErr               error
 }
 
+// tryLockSubscription prevents a slow provider or speed measurement from
+// turning a second scheduler/HTTP request into a blocked handler.  The
+// operation lock still serializes the actual work; callers must report the
+// busy condition and let the next bounded scheduling interval retry.
+func (s *Server) tryLockSubscription() bool {
+	return s.subscriptionMu.TryLock()
+}
+
 func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 	if opts.ProductionAdapter == nil {
 		return nil, fmt.Errorf("ProductionAdapter dependency is required")
@@ -509,7 +517,10 @@ func (s *Server) startSubscriptionScheduler(ctx context.Context) {
 				s.publishEvent(Event{Type: "subscription.refresh", Severity: "warning", ReasonCode: "mutation_fenced", Details: map[string]any{"code": failure.Code}})
 				continue
 			}
-			s.subscriptionMu.Lock()
+			if !s.tryLockSubscription() {
+				s.publishEvent(Event{Type: "subscription.refresh", Severity: "info", ReasonCode: "subscription_refresh_busy"})
+				continue
+			}
 			active := s.currentConfig()
 			refreshCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 			_, err := s.subscriptionPreparer.Prepare(refreshCtx, active)
