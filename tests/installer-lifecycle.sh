@@ -23,7 +23,7 @@ disarm_line=$(grep -n '^    INSTALL_ROLLBACK_ARMED=0$' "$ROOT/install.sh" | cut 
 # or dnsmasq readiness fails, older fallback backups must remain available.
 uninstall_prune_line=$(grep -n 'backup prune --root' "$ROOT/uninstall.sh" | tail -n 1 | cut -d: -f1)
 uninstall_dns_ready_line=$(grep -n 'wait_dnsmasq_ready ||' "$ROOT/uninstall.sh" | tail -n 1 | cut -d: -f1)
-uninstall_remove_binary_line=$(grep -n '^rm -f "\$BIN_DIR/router-policy"$' "$ROOT/uninstall.sh" | tail -n 1 | cut -d: -f1)
+uninstall_remove_binary_line=$(grep -n 'rm -f .*BIN_DIR/router-policy' "$ROOT/uninstall.sh" | tail -n 1 | cut -d: -f1)
 [ -n "$uninstall_prune_line" ] && [ -n "$uninstall_dns_ready_line" ] && [ -n "$uninstall_remove_binary_line" ] && \
   [ "$uninstall_prune_line" -gt "$uninstall_dns_ready_line" ] && \
   [ "$uninstall_prune_line" -lt "$uninstall_remove_binary_line" ] || {
