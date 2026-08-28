@@ -5,7 +5,7 @@
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `4fec55d41adae0cf907b8e56aa80f91c776a974c` (route-only assignment is fenced without a registered runtime consumer; semantic, revision-bound receipts and idempotent rollback are required before persisting an applied mapping; discovery suggestion/control-state persistence failures are surfaced and block unsafe auto-assignment; installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools; prefix renames flush their containing directory; corrupt-state rescue artifacts are synced and atomically renamed with unique names; failed Zapret calibration retains at most three private bounded forensic bundles after cleanup; end-to-end latency is measured from DNS/network path and never derived from full verification duration; probe terminal statuses are canonicalized case-insensitively; strict JSON decoders reject trailing documents in kernel command and IP state parsers; privileged adapter success now requires an independent operation/generation/transaction/revision/candidate/artifact/rollback-token evidence binding; reconcile receipts expose the same direct binding fields as every other adapter operation; candidate_valid=false is rejected even with exit code 0; baseline recovery clears the all-transit boot fence only through a typed revision/candidate-bound operation with semantic evidence; production adapter accepts only the fixed root-helper socket; helper responses reject unknown fields and trailing JSON).
+- Текущий проверяемый code HEAD: `6d71518049a935ad5c2901d6b869a19ff6e95721` (route-only assignment is fenced without a registered runtime consumer; semantic, revision-bound receipts and idempotent rollback are required before persisting an applied mapping; discovery suggestion/control-state persistence failures are surfaced and block unsafe auto-assignment; installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools; prefix renames flush their containing directory; corrupt-state rescue artifacts are synced and atomically renamed with unique names; failed Zapret calibration retains at most three private bounded forensic bundles after cleanup; end-to-end latency is measured from DNS/network path and never derived from full verification duration; probe terminal statuses are canonicalized case-insensitively; strict JSON decoders reject trailing documents in kernel command and IP state parsers; privileged adapter success now requires an independent operation/generation/transaction/revision/candidate/artifact/rollback-token evidence binding; reconcile receipts expose the same direct binding fields as every other adapter operation; candidate_valid=false is rejected even with exit code 0; baseline recovery clears the all-transit boot fence only through a typed revision/candidate-bound operation with semantic evidence; production adapter accepts only the fixed root-helper socket; helper responses reject unknown fields and trailing JSON).
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -34,9 +34,9 @@
 |---|---|---|
 | Go unit/integration, race, vet, форматирование | PASS (локально на текущем HEAD, 2026-08-28) | `go test ./...`, `go test -race ./...`, `go vet ./...`, `gofmt` |
 | Frontend unit/typecheck/build | PASS | 47 Vitest-тестов, `npm run typecheck`, `npm run build` |
-| Browser/responsive UI | PASS | exact-SHA CI run [33145350784](https://github.com/Zaqvierm/FlintRoute/actions/runs/33145350784) |
-| Linux nft transition | PASS | exact-SHA CI run [33145350768](https://github.com/Zaqvierm/FlintRoute/actions/runs/33145350768) |
-| Linux Zapret process-group и Quick contract | PASS | exact-SHA CI run [33145350760](https://github.com/Zaqvierm/FlintRoute/actions/runs/33145350760) |
+| Browser/responsive UI | PASS | exact-SHA CI run [33146835401](https://github.com/Zaqvierm/FlintRoute/actions/runs/33146835401) |
+| Linux nft transition | PASS | exact-SHA CI run [33146835429](https://github.com/Zaqvierm/FlintRoute/actions/runs/33146835429) |
+| Linux Zapret process-group и Quick contract | PASS | exact-SHA CI run [33146835444](https://github.com/Zaqvierm/FlintRoute/actions/runs/33146835444) |
 | Linux-only harness на Windows | NOT RUN LOCALLY | namespace/procfs/mode требуют Linux |
 | Root-helper privilege split | PARTIAL (production contract; runtime peer proof pending) | production init запускает controller как `daemon`, root startup и отсутствие helper socket отвергаются; production adapter принимает только фиксированный `/var/run/router-policy/helper.sock`; typed helper покрывает global/transaction paths и ограничивает concurrent connections; Linux peer-credential/runtime evidence ещё не получено |
 | Route-only assignment dataplane | PARTIAL | revision-bound decision cache и post-probe есть; nft/dnsmasq runtime consumer не доказан |
@@ -82,7 +82,7 @@
 | SSRF и decompression limits | `go test ./internal/remotefetch ./internal/vpnsub ./internal/tspu ./internal/geoip` | PASS | local |
 | HTTP transport/socket cleanup | `go test ./internal/remotefetch -run TestNewClientCloseIdleConnectionsClosesPinnedDialTransport` | PASS; `CloseIdleConnections` closes both wrapper and pinned dial pools; one-shot management/watchdog clients close their idle pools | local |
 | Typed Xray input | `go test ./internal/vpnsub` | PASS | local |
-| Resource budget | `go test ./internal/api ./internal/probe`; `go test ./internal/health ./internal/vpnsub -run 'Bounded|Budget'` | PASS; discovery queue is capped at 32, shared route jobs at 4, and health/subscription worker counts are clamped to the shared budget | local + exact-SHA CI |
+| Resource budget | `go test ./internal/api ./internal/probe`; `go test ./internal/health ./internal/vpnsub -run 'Bounded|Budget'` | PASS; discovery queue is capped at 32, shared route jobs at 4, and health/subscription worker counts are clamped to the shared budget | local + exact-SHA CI [33146835417](https://github.com/Zaqvierm/FlintRoute/actions/runs/33146835417) |
 | Запрет unvalidated probe fan-out | `go test ./internal/probe -run TestProbeRouteRejectsUnvalidatedProbeURLFanout` и race-вариант | PASS | local |
 | `NO_SAFE_ROUTE` terminal semantics | planner cancellation/exhaustion и API probe-state tests | PASS | local |
 | Classification/route confidence разделены | `TestClassificationConfidenceIsIndependentFromRouteConfidence` | PASS | local |
@@ -117,7 +117,7 @@ response fails the installer health gate closed.
 Документационный HEAD может отличаться от code HEAD, но не меняет исходный
 результат тестов; при изменении кода evidence снова становится stale.
 
-Для текущего code head `4fec55d41adae0cf907b8e56aa80f91c776a974c`
+Для предыдущего code head `4fec55d41adae0cf907b8e56aa80f91c776a974c`
 после docs-only push `c932cf69b742215ee0a34bbbcb52c4b0ffcb102a` также прошли
 все PR workflows:
 
@@ -125,6 +125,16 @@ response fails the installer health gate closed.
 - nft transition: [33145350768](https://github.com/Zaqvierm/FlintRoute/actions/runs/33145350768);
 - Zapret process-group и Quick contract: [33145350760](https://github.com/Zaqvierm/FlintRoute/actions/runs/33145350760);
 - UI browser/responsive: [33145350784](https://github.com/Zaqvierm/FlintRoute/actions/runs/33145350784).
+
+Это software/CI evidence. Она не заменяет Linux-local запуск и hardware proof.
+
+Для текущего code head `6d71518049a935ad5c2901d6b869a19ff6e95721` обязательные
+PR workflows также завершились успешно:
+
+- exact-SHA full safety gate: [33146835417](https://github.com/Zaqvierm/FlintRoute/actions/runs/33146835417);
+- nft transition: [33146835429](https://github.com/Zaqvierm/FlintRoute/actions/runs/33146835429);
+- Zapret process-group и Quick contract: [33146835444](https://github.com/Zaqvierm/FlintRoute/actions/runs/33146835444);
+- UI browser/responsive: [33146835401](https://github.com/Zaqvierm/FlintRoute/actions/runs/33146835401).
 
 Это software/CI evidence. Она не заменяет Linux-local запуск и hardware proof.
 
