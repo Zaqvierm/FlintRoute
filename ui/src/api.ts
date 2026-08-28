@@ -271,6 +271,10 @@ export type SmartDNSValidation = {
 };
 export type DiscoveryStatus = {
   mode: 'observe_only' | 'suggest' | 'auto_apply_verified' | 'locked';
+  configured_mode?: 'observe_only' | 'suggest' | 'auto_apply_verified' | 'locked';
+  effective_mode?: 'observe_only' | 'suggest' | 'auto_apply_verified' | 'locked';
+  auto_apply_available?: boolean;
+  auto_apply_reason?: string;
   max_new_rules_per_hour: number;
   max_consecutive_rollbacks: number;
   consecutive_rollbacks: number;

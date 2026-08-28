@@ -1687,6 +1687,8 @@ function Discovery({ data, configVersion, role, mutationLocked, refresh }: { dat
     }
   }
   if (!data) return <Generic title="Discovery" text="Загружаю состояние…" />;
+  const autoApplyBlocked = data.mode === 'auto_apply_verified' && data.auto_apply_available === false;
+  const effectiveMode = data.effective_mode ?? data.mode;
   return <section class="grid">
     <Card title="Наблюдение за доменами">
       <div class="row"><b>{data.observation_source?.status === 'disabled' ? 'Discovery выключен' : data.observation_source?.status === 'receiving' ? 'Вижу DNS-запросы' : data.observation_source?.status === 'stale' ? 'Последние DNS-записи устарели' : data.observation_source?.status === 'listening' ? 'Жду новые запросы' : data.observation_source?.status === 'waiting' ? 'Журнал DNS ещё не создан' : 'Источник DNS недоступен'}</b><span>{humanStatus(data.observation_source?.status)}</span><small>{data.observation_source?.last_updated ? `последний запрос: ${formatDateTime(data.observation_source.last_updated)}` : textValue(data.observation_source?.reason, 'Источник ещё не создал журнал')}</small></div>
@@ -1694,7 +1696,8 @@ function Discovery({ data, configVersion, role, mutationLocked, refresh }: { dat
       <p>{data.observation_source?.status === 'disabled' ? 'Discovery не включён и не читает журнал dnsmasq. Включи наблюдение ниже, затем открой новый домен с устройства в LAN или Wi-Fi.' : data.observation_source?.status === 'waiting' || data.observation_source?.status === 'unavailable' ? 'Discovery включён, но журнал DNS ещё не создан или недоступен. Это не означает, что весь DNS сломан: проверь, что клиент использует DNS роутера и что dnsmasq запущен.' : data.observation_source?.status === 'stale' ? 'Журнал dnsmasq есть, но новых записей не было больше пяти минут. Discovery наблюдает DNS-запросы, а не все пакеты. Проверь DNS клиента и открой новый домен.' : 'Discovery видит DNS-наблюдения, а не отдельные пакеты. Открывай сайты с устройства в LAN или Wi-Fi — новые домены появятся в Потоке решений.'}</p>
     </Card>
     <Card title="Режим discovery">
-      <div class="row"><b>{textValue(data.mode, 'неизвестный режим')}</b><span>{data.paused ? `остановлен: ${textValue(data.paused_reason, 'причина не указана')}` : 'активен'}</span><small>{textValue(data.applied_last_hour, '0')} правил за последний час</small></div>
+      <div class="row"><b>{textValue(data.mode, 'неизвестный режим')}</b><span>{autoApplyBlocked ? `только предложения (${textValue(effectiveMode, 'suggest')})` : data.paused ? `остановлен: ${textValue(data.paused_reason, 'причина не указана')}` : 'активен'}</span><small>{textValue(data.applied_last_hour, '0')} правил за последний час</small></div>
+      {autoApplyBlocked && <p class="action-status">Автоназначение недоступно: {textValue(data.auto_apply_reason, 'route-assignment runtime не подключён')}. Discovery оставляет проверенные результаты как предложения и не меняет dataplane.</p>}
       <p>observe_only только журналирует; suggest добавляет предложения; auto_apply_verified применяет лишь PathVerified; locked не запускает проверки.</p>
       {role === 'administrator' && <div class="smart-dns-editor">
         <label><span>Режим</span><select value={mode} onChange={(event) => setMode((event.target as HTMLSelectElement).value as DiscoveryStatus['mode'])}>

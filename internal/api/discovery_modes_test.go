@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -192,6 +193,55 @@ func TestDiscoveryObservationStatusReportsStaleLog(t *testing.T) {
 	status := srv.discoveryObservationStatus()
 	if status["status"] != "stale" || status["enabled"] != true {
 		t.Fatalf("stale observation log was not reported explicitly: %#v", status)
+	}
+}
+
+func TestDiscoveryStatusReportsAutoApplyUnavailableWithoutRuntimeConsumer(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, _ := newDiscoveryModeServer(t, "auto_apply_verified", true, fake)
+	defer srv.Close()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/discovery", nil)
+	srv.handleDiscovery(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("discovery status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			Mode               string `json:"mode"`
+			ConfiguredMode     string `json:"configured_mode"`
+			EffectiveMode      string `json:"effective_mode"`
+			AutoApplyAvailable bool   `json:"auto_apply_available"`
+			AutoApplyReason    string `json:"auto_apply_reason"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	got := envelope.Data
+	if got.Mode != "auto_apply_verified" || got.ConfiguredMode != "auto_apply_verified" {
+		t.Fatalf("configured mode was not preserved for diagnosis: %+v", got)
+	}
+	if got.EffectiveMode != "suggest" || got.AutoApplyAvailable || got.AutoApplyReason != "route_assignment_runtime_unavailable" {
+		t.Fatalf("unavailable auto-apply was not reported truthfully: %+v", got)
+	}
+}
+
+func TestDiscoveryStatusReportsAutoApplyReadyWithRuntimeConsumer(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, _ := newDiscoveryModeServer(t, "auto_apply_verified", true, fake)
+	defer srv.Close()
+	srv.routeAssignmentRuntime = &fakeRouteAssignmentRuntime{}
+
+	recorder := httptest.NewRecorder()
+	srv.handleDiscovery(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/discovery", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("discovery status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"effective_mode":"auto_apply_verified"`) ||
+		!strings.Contains(recorder.Body.String(), `"auto_apply_available":true`) {
+		t.Fatalf("ready auto-apply status was not reported: %s", recorder.Body.String())
 	}
 }
 

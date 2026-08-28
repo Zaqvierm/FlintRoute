@@ -362,6 +362,7 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := s.currentConfig()
 	mode, maxRules, maxRollbacks, state := s.effectiveDiscoverySettings(cfg)
+	effectiveMode, autoApplyAvailable, autoApplyReason := s.discoveryRuntimeMode(mode, state)
 	queueDepth, queueCapacity, activeProbes := 0, 0, 0
 	if s.discoveryQueue != nil {
 		queueDepth, queueCapacity = len(s.discoveryQueue), cap(s.discoveryQueue)
@@ -371,6 +372,10 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	}
 	writeData(w, r, map[string]any{
 		"mode":                      mode,
+		"configured_mode":           mode,
+		"effective_mode":            effectiveMode,
+		"auto_apply_available":      autoApplyAvailable,
+		"auto_apply_reason":         autoApplyReason,
 		"max_new_rules_per_hour":    maxRules,
 		"max_consecutive_rollbacks": maxRollbacks,
 		"consecutive_rollbacks":     state.ConsecutiveRollbacks,
@@ -385,6 +390,26 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 		"active_probe_jobs":  activeProbes,
 		"observation_source": s.discoveryObservationStatus(),
 	})
+}
+
+// discoveryRuntimeMode keeps the API truthful when the configured policy asks
+// for automatic route assignment but the bounded route-only runtime is not
+// installed or the mutation fence is active.  The configured mode remains
+// visible for diagnosis; effective_mode tells clients what can actually run.
+func (s *Server) discoveryRuntimeMode(mode string, state discoveryControlState) (string, bool, string) {
+	if mode != "auto_apply_verified" {
+		return mode, false, ""
+	}
+	if s.routeAssignmentRuntime == nil {
+		return "suggest", false, "route_assignment_runtime_unavailable"
+	}
+	if failure := s.mutationFailureNow(); failure != nil {
+		return "suggest", false, failure.Code
+	}
+	if state.PausedReason != "" {
+		return "suggest", false, "automatic_route_assignment_paused"
+	}
+	return mode, true, ""
 }
 
 func (s *Server) discoveryObservationStatus() map[string]any {
@@ -497,9 +522,12 @@ func (s *Server) handleDiscoveryConfigure(w http.ResponseWriter, r *http.Request
 		return
 	}
 	s.publishEvent(Event{Type: "discovery.settings.updated", Severity: "info", ReasonCode: "discovery_runtime_policy_updated", Details: map[string]any{"mode": request.Mode, "max_new_rules_per_hour": request.MaxNewRulesPerHour, "max_consecutive_rollbacks": request.MaxConsecutiveRollbacks}})
+	effectiveMode, autoApplyAvailable, autoApplyReason := s.discoveryRuntimeMode(request.Mode, state)
 	writeData(w, r, map[string]any{
 		"applied": true, "dataplane_changed": false, "config_version": currentVersion,
-		"mode": request.Mode, "max_new_rules_per_hour": request.MaxNewRulesPerHour,
+		"mode": request.Mode, "configured_mode": request.Mode, "effective_mode": effectiveMode,
+		"auto_apply_available": autoApplyAvailable, "auto_apply_reason": autoApplyReason,
+		"max_new_rules_per_hour":    request.MaxNewRulesPerHour,
 		"max_consecutive_rollbacks": request.MaxConsecutiveRollbacks,
 		"paused":                    state.PausedReason != "", "paused_reason": state.PausedReason,
 	})
