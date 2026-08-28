@@ -145,7 +145,8 @@ func TestAdapterExecutorRequiresManagedServicePostcondition(t *testing.T) {
 		t.Fatalf("running postcondition was not accepted: %+v", response)
 	}
 
-	if err := os.WriteFile(servicePath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+	badScript := "#!/bin/sh\nif [ \"$1\" = \"running\" ]; then exit 1; fi\nexit 0\n"
+	if err := os.WriteFile(servicePath, []byte(badScript), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	response = executor.Execute(context.Background(), request)
