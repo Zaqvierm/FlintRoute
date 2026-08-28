@@ -209,6 +209,26 @@ if BACKUP_DIR="$BACKUP_BASE/uninstall-foreign-prefix" \
   exit 1
 fi
 grep -F 'foreign-prefix-file' "$SYSTEM_ROOT/usr/lib/router-policy/foreign-prefix-file" >/dev/null
+# A failed ownership walk must fence before teardown.  Do not turn a find
+# error into an empty result and then delete an unverified prefix.
+mkdir -p "$TMP/fake-bin"
+cat > "$TMP/fake-bin/find" <<'SH'
+#!/bin/sh
+exit 1
+SH
+chmod +x "$TMP/fake-bin/find"
+if PATH="$TMP/fake-bin:$PATH" BACKUP_DIR="$BACKUP_BASE/uninstall-find-error" \
+  ROUTER_POLICY_SYSTEM_ROOT="$SYSTEM_ROOT" \
+  FAKE_CALL_LOG="$FAKE_CALL_LOG" \
+  sh "$ROOT/uninstall.sh" --uninstall >/dev/null 2>&1; then
+  echo "uninstaller ignored project-prefix enumeration failure" >&2
+  exit 1
+fi
+[ -d "$SYSTEM_ROOT/usr/lib/router-policy" ] || {
+  echo "uninstaller removed prefix after project-prefix enumeration failure" >&2
+  exit 1
+}
+rm -f "$TMP/fake-bin/find"
 rm -f "$SYSTEM_ROOT/usr/lib/router-policy/foreign-prefix-file"
 # The failed-upgrade marker is deliberately outside the installer-owned
 # prefix allowlist; it was verified above and must be removed by the fixture

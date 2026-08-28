@@ -237,8 +237,9 @@ init scripts and hotplug hooks are additionally bound to the root-owned
 content-mismatched manifest blocks before service teardown, so a foreign file
 with a FlintRoute-looking name is not deleted. The product prefix itself is
 also enumerated against its top-level allowlist and removed file-by-file with
-`rmdir`; an unknown or unsafe entry blocks before teardown, so uninstall never
-uses recursive deletion for the managed code tree. Zapret profiles are stopped
+`rmdir`; an unknown or unsafe entry blocks before teardown, and an ownership
+enumeration error is also fatal, so uninstall never uses recursive deletion for
+the managed code tree. Zapret profiles are stopped
 and disabled in a first phase, and their files are removed only after every
 owned profile stop succeeds.
 

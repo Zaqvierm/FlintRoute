@@ -348,7 +348,10 @@ validate_prefix_contents() {
           echo "uninstall blocked: project-prefix tree is not a directory: $entry" >&2
           return 1
         }
-        nested_unsafe="$(find "$entry" \( -type l -o ! -type f -a ! -type d \) -print -quit 2>/dev/null || true)"
+        if ! nested_unsafe="$(find "$entry" \( -type l -o ! -type f -a ! -type d \) -print -quit 2>/dev/null)"; then
+          echo "uninstall blocked: could not validate project-prefix entry: $entry" >&2
+          return 1
+        fi
         [ -z "$nested_unsafe" ] || {
           echo "uninstall blocked: unsafe project-prefix entry: $nested_unsafe" >&2
           return 1
