@@ -98,6 +98,43 @@ printf '%s\n' "$foreign_runtime_output" | grep -F 'unowned runtime entry' >/dev/
 [ -f "$FOREIGN_RUNTIME_ROOT/tmp/router-policy/foreign.bin" ]
 echo "uninstaller_blocks_unowned_runtime=true"
 
+# Profile teardown is two-phase: a later stop failure must not delete files
+# belonging to profiles that were already stopped successfully.
+PROFILE_ROOT="$TMP/uninstall-profile-partial"
+mkdir -p "$PROFILE_ROOT/etc/router-policy/zapret/profiles" "$PROFILE_ROOT/etc/init.d"
+cat > "$PROFILE_ROOT/etc/router-policy/zapret/profiles.manifest" <<EOF
+ok|$PROFILE_ROOT/etc/router-policy/zapret/profiles/ok.conf|$PROFILE_ROOT/etc/init.d/router-policy-zapret-ok|200|
+bad|$PROFILE_ROOT/etc/router-policy/zapret/profiles/bad.conf|$PROFILE_ROOT/etc/init.d/router-policy-zapret-bad|201|
+EOF
+printf 'ok\n' > "$PROFILE_ROOT/etc/router-policy/zapret/profiles/ok.conf"
+printf 'bad\n' > "$PROFILE_ROOT/etc/router-policy/zapret/profiles/bad.conf"
+cat > "$PROFILE_ROOT/etc/init.d/router-policy-zapret-ok" <<'SH'
+#!/bin/sh
+exit 0
+SH
+cat > "$PROFILE_ROOT/etc/init.d/router-policy-zapret-bad" <<'SH'
+#!/bin/sh
+[ "${1:-}" = stop ] && exit 1
+exit 0
+SH
+chmod +x "$PROFILE_ROOT/etc/init.d/router-policy-zapret-ok" "$PROFILE_ROOT/etc/init.d/router-policy-zapret-bad"
+profile_partial_output=$(env \
+  ROUTER_POLICY_UNINSTALL_LIB_ONLY=1 \
+  SYSTEM_ROOT="$PROFILE_ROOT" \
+  ETC_DIR="$PROFILE_ROOT/etc/router-policy" \
+  INIT_DIR="$PROFILE_ROOT/etc/init.d" \
+  ZAPRET_PROFILE_DIR="$PROFILE_ROOT/etc/router-policy/zapret/profiles" \
+  ZAPRET_PROFILE_MANIFEST="$PROFILE_ROOT/etc/router-policy/zapret/profiles.manifest" \
+  sh -c '. "$1"; remove_owned_profile_resources' sh "$PROJECT_ROOT/uninstall.sh" 2>&1 || true)
+printf '%s\n' "$profile_partial_output" | grep -F 'could not stop router-policy-zapret-bad' >/dev/null || {
+  echo "profile teardown failure was not surfaced" >&2
+  exit 1
+}
+[ -f "$PROFILE_ROOT/etc/router-policy/zapret/profiles/ok.conf" ] &&
+[ -f "$PROFILE_ROOT/etc/init.d/router-policy-zapret-ok" ] &&
+[ -f "$PROFILE_ROOT/etc/router-policy/zapret/profiles.manifest" ]
+echo "uninstaller_preserves_profile_manifest_on_partial_stop=true"
+
 # The uninstaller must reject environment-derived paths that resolve through
 # a parent or use ambiguous separator spelling before it reaches tar/rm.
 unsafe_root="$TMP/uninstall-root/.."

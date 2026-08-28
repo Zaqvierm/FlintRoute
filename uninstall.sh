@@ -362,6 +362,9 @@ profile_id_valid() {
 profile_manifest_validate() {
   manifest="$1"
   [ -f "$manifest" ] && [ ! -L "$manifest" ] || return 1
+  # Stop and disable every owned profile first. Do not remove the first
+  # profile's files while a later profile can still fail to stop; otherwise a
+  # partial teardown would destroy metadata needed to recover it.
   while IFS='|' read -r profile_id profile_config profile_init profile_queue extra; do
     [ -z "${profile_id:-}" ] && continue
     [ -z "${extra:-}" ] || return 1
@@ -405,6 +408,9 @@ remove_owned_profile_resources() {
         return 1
       }
     fi
+  done < "$ZAPRET_PROFILE_MANIFEST"
+  while IFS='|' read -r profile_id profile_config profile_init profile_queue extra; do
+    [ -z "${profile_id:-}" ] && continue
     rm -f "$profile_config" "$profile_init"
   done < "$ZAPRET_PROFILE_MANIFEST"
   rm -f "$ZAPRET_PROFILE_MANIFEST"

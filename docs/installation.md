@@ -228,3 +228,9 @@ Uninstall backup retention is fail-safe: the fallback backup is registered
 before teardown, but older backups are pruned only after owned services are
 stopped, project resources are removed, and the final dnsmasq readiness check
 passes. A failed uninstall therefore keeps older recovery points.
+
+Uninstaller ownership is fail-closed. The fixed runtime root is enumerated and
+unknown files, symlinks, or unrecognized transaction children block teardown;
+cleanup removes only known files and empty owned directories. Zapret profiles
+are stopped and disabled in a first phase, and their files are removed only
+after every owned profile stop succeeds.
