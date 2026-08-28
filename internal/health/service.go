@@ -55,6 +55,8 @@ type checkedRoute struct {
 	aggregate probe.RouteResult
 }
 
+const maxControlServicesPerRoute = 8
+
 func (s *Service) RunCycle(ctx context.Context, cfg *config.Config, engine ProbeEngine, now time.Time) (CycleResult, error) {
 	cycle := CycleResult{Status: "UNVERIFIED", StartedAt: now.UTC()}
 	if cfg == nil || engine == nil || s == nil || s.Tracker == nil || s.Store == nil {
@@ -78,8 +80,8 @@ func (s *Service) RunCycle(ctx context.Context, cfg *config.Config, engine Probe
 	if controlLimit <= 0 {
 		controlLimit = 3
 	}
-	if controlLimit > 8 {
-		controlLimit = 8
+	if controlLimit > maxControlServicesPerRoute {
+		controlLimit = maxControlServicesPerRoute
 	}
 
 	jobs := make(chan config.Route)
@@ -219,25 +221,44 @@ func checkRoute(ctx context.Context, cfg *config.Config, engine ProbeEngine, rou
 }
 
 func controlServices(cfg *config.Config, route config.Route, limit int) []namedService {
-	controls := make([]namedService, 0, len(cfg.Services))
+	if cfg == nil || limit <= 0 {
+		return nil
+	}
+	// Keep the defensive path bounded even when a caller bypasses RunCycle.
+	// The active configuration validator bounds every probe URL, but the
+	// number of named services is user-controlled.  Do not materialize and
+	// sort the entire service map just to retain the first few controls.
+	if limit > maxControlServicesPerRoute {
+		limit = maxControlServicesPerRoute
+	}
+	controls := make([]namedService, 0, limit)
 	for name, service := range cfg.Services {
 		if len(service.Domains) == 0 || len(service.ProbeURLs) == 0 || !config.PathAllowed(service, route, cfg.Policy) {
 			continue
 		}
-		controls = append(controls, namedService{name: name, service: service})
-	}
-	sort.Slice(controls, func(i, j int) bool {
-		left := controlCategoryRank(controls[i].service.Category)
-		right := controlCategoryRank(controls[j].service.Category)
-		if left != right {
-			return left < right
+		candidate := namedService{name: name, service: service}
+		insertAt := sort.Search(len(controls), func(i int) bool {
+			return namedServiceLess(candidate, controls[i])
+		})
+		if len(controls) < limit {
+			controls = append(controls, namedService{})
 		}
-		return controls[i].name < controls[j].name
-	})
-	if len(controls) > limit {
-		controls = controls[:limit]
+		if insertAt >= limit {
+			continue
+		}
+		copy(controls[insertAt+1:], controls[insertAt:len(controls)-1])
+		controls[insertAt] = candidate
 	}
 	return controls
+}
+
+func namedServiceLess(left, right namedService) bool {
+	leftRank := controlCategoryRank(left.service.Category)
+	rightRank := controlCategoryRank(right.service.Category)
+	if leftRank != rightRank {
+		return leftRank < rightRank
+	}
+	return left.name < right.name
 }
 
 func controlCategoryRank(category string) int {

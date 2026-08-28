@@ -147,6 +147,26 @@ func TestBoundedParallelismClampsWorkersToSharedBudget(t *testing.T) {
 	}
 }
 
+func TestControlServicesKeepsSelectionBoundedForLargeServiceMaps(t *testing.T) {
+	cfg := healthConfig()
+	for i := 0; i < 10000; i++ {
+		cfg.Services[fmt.Sprintf("unknown-%05d", i)] = controlService("FUTURE_CATEGORY", fmt.Sprintf("future-%d.example", i))
+	}
+	controls := controlServices(cfg, cfg.Routes[0], 3)
+	if len(controls) != 3 {
+		t.Fatalf("control selection length=%d want 3", len(controls))
+	}
+	// The bounded selector must preserve the same deterministic category/name
+	// ordering as the old full sort while retaining only the controls that can
+	// actually be probed.
+	want := []string{"control-a", "control-b", "control-c"}
+	for i, name := range want {
+		if controls[i].name != name {
+			t.Fatalf("control %d=%q want %q", i, controls[i].name, name)
+		}
+	}
+}
+
 func TestCycleRejectsMixedRevisionEvidence(t *testing.T) {
 	cfg := healthConfig()
 	cfg.Routes = cfg.Routes[:1]
