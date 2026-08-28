@@ -895,6 +895,9 @@ func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.Domain
 		return automaticCommitResult{Reason: "automatic_route_assignment_requires_verified_evidence"}
 	}
 	active := s.currentConfig()
+	if active == nil {
+		return automaticCommitResult{Reason: "route_assignment_active_config_unavailable"}
+	}
 	route, ok := active.RouteByTag(check.Selected.Route)
 	autoService, _, autoOK := automaticServiceForDecision(check)
 	if !ok || !autoOK || !route.Enabled() || !config.PathAllowed(autoService, route, active.Policy) {
