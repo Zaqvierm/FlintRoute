@@ -138,6 +138,12 @@ if ($LASTEXITCODE -ne 0) {
   throw "installer secret ownership test failed"
 }
 
+Write-Host "== installer dnsmasq runtime rollback =="
+& $gitSh tests/installer-dnsmasq-rollback.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "installer dnsmasq runtime rollback test failed"
+}
+
 Write-Host "== installer prefix switch =="
 & $gitSh tests/installer-prefix-switch.sh
 if ($LASTEXITCODE -ne 0) {
