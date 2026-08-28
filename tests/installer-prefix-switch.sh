@@ -93,13 +93,27 @@ recover_prefix_switch
 [ "$(cat "$PREFIX/value")" = new ] && [ ! -e "$PREFIX.install.fixture" ] && [ ! -e "$PREFIX_SWITCH_MARKER" ]
 
 reset_fixture
-mkdir -p "$PREFIX" "$PREFIX.old.fixture"
+mkdir -p "$PREFIX" "$PREFIX.old.fixture" "$PREFIX.install.fixture"
 write_marker old_moved
 if recover_prefix_switch >/dev/null 2>&1; then
   echo "ambiguous prefix state was accepted" >&2
   exit 1
 fi
 [ -f "$PREFIX_SWITCH_MARKER" ]
+
+reset_fixture
+mkdir -p "$PREFIX.old.fixture" "$PREFIX.install.fixture"
+printf 'staged\n' > "$PREFIX.install.fixture/value"
+write_marker ready_to_activate
+recover_prefix_switch
+[ "$(cat "$PREFIX/value")" = staged ] && [ -e "$PREFIX.old.fixture" ] && [ ! -e "$PREFIX_SWITCH_MARKER" ]
+
+reset_fixture
+mkdir -p "$PREFIX" "$PREFIX.old.fixture"
+printf 'new\n' > "$PREFIX/value"
+write_marker ready_to_activate
+recover_prefix_switch
+[ "$(cat "$PREFIX/value")" = new ] && [ -e "$PREFIX.old.fixture" ] && [ ! -e "$PREFIX_SWITCH_MARKER" ]
 
 echo "installer_prefix_switch_recovery=true"
 echo "installer_prefix_switch_ambiguous_state_blocks=true"

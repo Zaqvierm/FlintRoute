@@ -1247,10 +1247,29 @@ recover_prefix_switch() {
         durable_rename "$marker_staged" "$PREFIX"
       elif [ ! -e "$PREFIX" ] && [ ! -e "$marker_staged" ] && [ -e "$marker_old" ]; then
         durable_rename "$marker_old" "$PREFIX"
-      elif [ -e "$PREFIX" ] && [ -e "$marker_staged" ]; then
-        rm -rf "$marker_staged"
+      elif [ -e "$PREFIX" ] && [ ! -e "$marker_staged" ] && [ -e "$marker_old" ]; then
+        # Legacy v1 marker: an older installer could persist old_moved and
+        # lose power immediately after the final staged->prefix rename. The
+        # atomic directory rename leaves the new prefix and old backup; keep
+        # the active prefix and continue recovery instead of fencing a safe
+        # completed switch.
+        :
       else
         echo "install blocked: prefix switch marker has ambiguous old_moved state" >&2
+        return 1
+      fi
+      ;;
+    ready_to_activate)
+      # This phase is persisted before the final rename. Therefore a restart
+      # can distinguish both sides of the rename without guessing: either the
+      # staged tree is still present (perform the rename), or the active tree
+      # is present and the rename already committed.
+      if [ ! -e "$PREFIX" ] && [ -e "$marker_staged" ] && [ -e "$marker_old" ]; then
+        durable_rename "$marker_staged" "$PREFIX"
+      elif [ -e "$PREFIX" ] && [ ! -e "$marker_staged" ] && [ -e "$marker_old" ]; then
+        :
+      else
+        echo "install blocked: prefix switch marker has ambiguous ready_to_activate state" >&2
         return 1
       fi
       ;;
@@ -1319,6 +1338,10 @@ install_files() {
   if [ -d "$old_prefix/components" ]; then
     durable_rename "$old_prefix/components" "$staged_prefix/components"
   fi
+  # Persist a phase before the final directory rename. If power is lost after
+  # the rename but before new_active is written, recovery can still identify
+  # the committed side deterministically.
+  write_prefix_switch_marker ready_to_activate "$staged_prefix" "$old_prefix"
   durable_rename "$staged_prefix" "$PREFIX"
   write_prefix_switch_marker new_active "$staged_prefix" "$old_prefix"
   atomic_copy "$SOURCE_BINARY" "$ROUTER_POLICY_BIN" 755
