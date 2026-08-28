@@ -4,6 +4,7 @@ umask 077
 
 SYSTEM_ROOT="${ROUTER_POLICY_SYSTEM_ROOT:-}"
 PREFIX="${PREFIX:-$SYSTEM_ROOT/usr/lib/router-policy}"
+MANAGED_FILE_MANIFEST="$PREFIX/.managed-files.manifest"
 ETC_DIR="${ETC_DIR:-$SYSTEM_ROOT/etc/router-policy}"
 STATE_DIR="${STATE_DIR:-$ETC_DIR/state}"
 BIN_DIR="${BIN_DIR:-$SYSTEM_ROOT/usr/bin}"
@@ -285,6 +286,92 @@ file_owner_id() {
   LC_ALL=C ls -ldn "$target" 2>/dev/null | awk '{print $3}'
 }
 
+hash_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$1" | awk '{print $NF}'
+  else
+    echo "uninstall blocked: neither sha256sum nor openssl is available" >&2
+    return 1
+  fi
+}
+
+managed_static_paths() {
+  printf '%s\n' \
+    "$BIN_DIR/router-policy" \
+    "$BIN_DIR/router-policy-helper" \
+    "$INIT_DIR/router-policy-helper" \
+    "$INIT_DIR/router-policy" \
+    "$INIT_DIR/router-policy-dns-observer" \
+    "$INIT_DIR/router-policy-boot-guard" \
+    "$INIT_DIR/router-policy-watchdog" \
+    "$INIT_DIR/router-policy-xray" \
+    "$INIT_DIR/router-policy-zapret" \
+    "$HOTPLUG_IFACE_DIR/95-router-policy" \
+    "$HOTPLUG_FIREWALL_DIR/95-router-policy"
+}
+
+validate_managed_file_manifest() {
+  [ -f "$MANAGED_FILE_MANIFEST" ] && [ ! -L "$MANAGED_FILE_MANIFEST" ] || {
+    echo "uninstall blocked: managed-file ownership manifest is missing" >&2
+    return 1
+  }
+  [ "$(file_mode_bits "$MANAGED_FILE_MANIFEST")" = 600 ] || {
+    echo "uninstall blocked: managed-file ownership manifest mode is invalid" >&2
+    return 1
+  }
+  if [ -z "$SYSTEM_ROOT" ]; then
+    [ "$(file_owner_id "$MANAGED_FILE_MANIFEST")" = 0 ] || {
+      echo "uninstall blocked: managed-file ownership manifest is not root-owned" >&2
+      return 1
+    }
+  fi
+  while IFS='|' read -r managed_path expected_hash extra; do
+    [ -n "${managed_path:-}" ] || continue
+    [ -z "${extra:-}" ] || {
+      echo "uninstall blocked: malformed managed-file ownership manifest" >&2
+      return 1
+    }
+    printf '%s\n' "$expected_hash" | grep -Eq '^[0-9a-f]{64}$' || {
+      echo "uninstall blocked: malformed managed-file hash" >&2
+      return 1
+    }
+    is_known=0
+    while IFS= read -r known_path; do
+      [ "$managed_path" = "$known_path" ] && is_known=1
+    done <<EOF
+$(managed_static_paths)
+EOF
+    [ "$is_known" = 1 ] || {
+      echo "uninstall blocked: unknown managed-file manifest path: $managed_path" >&2
+      return 1
+    }
+    if [ -e "$managed_path" ] || [ -L "$managed_path" ]; then
+      [ -f "$managed_path" ] && [ ! -L "$managed_path" ] || {
+        echo "uninstall blocked: managed static file is not regular: $managed_path" >&2
+        return 1
+      }
+      actual_hash="$(hash_file "$managed_path")" || return 1
+      [ "$actual_hash" = "$expected_hash" ] || {
+        echo "uninstall blocked: managed static file ownership/content is unproven: $managed_path" >&2
+        return 1
+      }
+    fi
+  done < "$MANAGED_FILE_MANIFEST"
+  while IFS= read -r known_path; do
+    [ -e "$known_path" ] || [ -L "$known_path" ] || continue
+    grep -F -e "$known_path|" "$MANAGED_FILE_MANIFEST" >/dev/null 2>&1 || {
+      # The manifest is the authority for deleting a present static path.  A
+      # missing entry is treated as foreign rather than guessed away.
+      echo "uninstall blocked: present managed path is not in ownership manifest: $known_path" >&2
+      return 1
+    }
+  done <<EOF
+$(managed_static_paths)
+EOF
+}
+
 restore_flow_offloading_baseline() {
   baseline="$STATE_DIR/ownership/flow-offloading.env"
   ownership_dir="$(dirname "$baseline")"
@@ -456,6 +543,7 @@ for owned_path in "$PREFIX" "$BIN_DIR/router-policy" "$INIT_DIR/router-policy" \
   }
 done
 validate_runtime_contents || exit 1
+validate_managed_file_manifest || exit 1
 
 mkdir -p "$BACKUP_DIR"
 manifest="$BACKUP_DIR/manifest.txt"
@@ -514,9 +602,15 @@ if [ -z "$SYSTEM_ROOT" ]; then
   done
 fi
 
-rm -f "$INIT_DIR/router-policy-helper" "$INIT_DIR/router-policy" "$INIT_DIR/router-policy-dns-observer" "$INIT_DIR/router-policy-boot-guard" "$INIT_DIR/router-policy-watchdog" "$INIT_DIR/router-policy-xray" "$INIT_DIR/router-policy-zapret"
-rm -f "$BIN_DIR/router-policy-helper"
-rm -f "$HOTPLUG_IFACE_DIR/95-router-policy" "$HOTPLUG_FIREWALL_DIR/95-router-policy"
+while IFS= read -r managed_path; do
+  [ -n "$managed_path" ] || continue
+  # Keep the controller binary alive until final backup pruning; it is the
+  # executable that performs the pruning operation itself.
+  [ "$managed_path" = "$BIN_DIR/router-policy" ] && continue
+  rm -f "$managed_path"
+done <<EOF
+$(managed_static_paths)
+EOF
 rm -f "$ETC_DIR/firewall/router-policy.nft" "$NFTABLES_DIR/router-policy.nft" "$DNSMASQ_DIR/router-policy.conf"
 rm -rf "$PREFIX"
 

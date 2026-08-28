@@ -34,6 +34,7 @@ ENABLE_SERVICES="router-policy-dns-observer router-policy-boot-guard $SERVICES"
 INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $ROUTER_POLICY_HELPER_BIN $INIT_DIR/router-policy-helper $INIT_DIR/router-policy $INIT_DIR/router-policy-dns-observer $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/config/listener.conf $ETC_DIR/helper.env $ETC_DIR/secrets $DNSMASQ_DIR/router-policy.conf $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
 
 PREFIX_SWITCH_MARKER="$STATE_DIR/prefix-switch.env"
+MANAGED_FILE_MANIFEST="$PREFIX/.managed-files.manifest"
 
 # These directories belong to OpenWrt, not to FlintRoute.  They must never be
 # represented by a rollback archive entry: restoring synthetic staging
@@ -197,6 +198,59 @@ hash_file() {
     echo "neither sha256sum nor openssl is available" >&2
     return 1
   fi
+}
+
+managed_static_paths() {
+  printf '%s\n' \
+    "$ROUTER_POLICY_BIN" \
+    "$ROUTER_POLICY_HELPER_BIN" \
+    "$INIT_DIR/router-policy-helper" \
+    "$INIT_DIR/router-policy" \
+    "$INIT_DIR/router-policy-dns-observer" \
+    "$INIT_DIR/router-policy-boot-guard" \
+    "$INIT_DIR/router-policy-watchdog" \
+    "$INIT_DIR/router-policy-xray" \
+    "$INIT_DIR/router-policy-zapret" \
+    "$HOTPLUG_IFACE_DIR/95-router-policy" \
+    "$HOTPLUG_FIREWALL_DIR/95-router-policy"
+}
+
+write_managed_file_manifest() {
+  [ -d "$PREFIX" ] && [ ! -L "$PREFIX" ] || {
+    echo "install blocked: managed prefix is not a directory" >&2
+    return 1
+  }
+  manifest_tmp="$MANAGED_FILE_MANIFEST.tmp"
+  if [ -e "$manifest_tmp" ] || [ -L "$manifest_tmp" ]; then
+    echo "install blocked: managed-file manifest temp path already exists" >&2
+    return 1
+  fi
+  : > "$manifest_tmp"
+  while IFS= read -r managed_path; do
+    [ -n "$managed_path" ] || continue
+    [ -f "$managed_path" ] && [ ! -L "$managed_path" ] || {
+      echo "install blocked: managed static file is missing or unsafe: $managed_path" >&2
+      rm -f "$manifest_tmp"
+      return 1
+    }
+    managed_hash="$(hash_file "$managed_path")" || {
+      rm -f "$manifest_tmp"
+      return 1
+    }
+    printf '%s|%s\n' "$managed_path" "$managed_hash" >> "$manifest_tmp"
+  done <<EOF
+$(managed_static_paths)
+EOF
+  chmod 600 "$manifest_tmp"
+  if [ -z "$SYSTEM_ROOT" ]; then
+    chown 0:0 "$manifest_tmp" || {
+      rm -f "$manifest_tmp"
+      echo "install blocked: cannot assign managed-file manifest ownership" >&2
+      return 1
+    }
+  fi
+  mv "$manifest_tmp" "$MANAGED_FILE_MANIFEST"
+  sync_file_and_parent "$MANAGED_FILE_MANIFEST"
 }
 
 is_install_target() {
@@ -1411,6 +1465,7 @@ install_files() {
   atomic_copy "$ROOT/openwrt/init.d/router-policy-zapret" "$INIT_DIR/router-policy-zapret" 755
   atomic_copy "$ROOT/openwrt/hotplug/iface/95-router-policy" "$HOTPLUG_IFACE_DIR/95-router-policy" 755
   atomic_copy "$ROOT/openwrt/hotplug/firewall/95-router-policy" "$HOTPLUG_FIREWALL_DIR/95-router-policy" 755
+  write_managed_file_manifest
 }
 
 prepare_controller_identity() {

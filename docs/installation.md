@@ -231,9 +231,13 @@ passes. A failed uninstall therefore keeps older recovery points.
 
 Uninstaller ownership is fail-closed. The fixed runtime root is enumerated and
 unknown files, symlinks, or unrecognized transaction children block teardown;
-cleanup removes only known files and empty owned directories. Zapret profiles
-are stopped and disabled in a first phase, and their files are removed only
-after every owned profile stop succeeds.
+cleanup removes only known files and empty owned directories. Static binaries,
+init scripts and hotplug hooks are additionally bound to the root-owned
+`/usr/lib/router-policy/.managed-files.manifest`; a missing, malformed, or
+content-mismatched manifest blocks before service teardown, so a foreign file
+with a FlintRoute-looking name is not deleted. Zapret profiles are stopped and
+disabled in a first phase, and their files are removed only after every owned
+profile stop succeeds.
 
 Installer path ownership is fail-closed as well. Before `mkdir`/copy and again
 at the mutation boundary, all managed roots are checked for unsafe path
