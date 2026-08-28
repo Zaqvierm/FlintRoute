@@ -79,10 +79,10 @@ if grep -F 'ensure-dns-observer.sh' "$ROOT/openwrt/init.d/router-policy" >/dev/n
   exit 1
 fi
 
-mkdir "$TMP/root/tmp/dnsmasq-symlink"
-if ln -s "$TMP/foreign" "$TMP/root/tmp/dnsmasq-symlink/router-policy.conf" 2>/dev/null; then
+rm -f "$TMP/root/tmp/dnsmasq.d/router-policy.conf"
+if ln -s "$TMP/foreign" "$TMP/root/tmp/dnsmasq.d/router-policy.conf" 2>/dev/null; then
   set +e
-  symlink_output=$(ROUTER_POLICY_DNSMASQ_CONFDIR="$TMP/root/tmp/dnsmasq-symlink" sh "$SCRIPT" 2>&1)
+  symlink_output=$(ROUTER_POLICY_DNSMASQ_CONFDIR="$TMP/root/tmp/dnsmasq.d" sh "$SCRIPT" 2>&1)
   symlink_rc=$?
   set -e
   [ "$symlink_rc" -ne 0 ]
