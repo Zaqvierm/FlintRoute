@@ -5,7 +5,7 @@
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `e6203e3ce746aa50267dcc6c965477902dad359d` (route-only assignment is fenced without a registered runtime consumer; semantic, revision-bound receipts and idempotent rollback are required before persisting an applied mapping; installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools; prefix renames flush their containing directory; corrupt-state rescue artifacts are synced and atomically renamed with unique names; failed Zapret calibration retains at most three private bounded forensic bundles after cleanup).
+- Текущий проверяемый code HEAD: `98a30e069572d7b672605ecccb68f38b5bcea8d9` (route-only assignment is fenced without a registered runtime consumer; semantic, revision-bound receipts and idempotent rollback are required before persisting an applied mapping; installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools; prefix renames flush their containing directory; corrupt-state rescue artifacts are synced and atomically renamed with unique names; failed Zapret calibration retains at most three private bounded forensic bundles after cleanup; end-to-end latency is measured from DNS/network path and never derived from full verification duration; probe terminal statuses are canonicalized case-insensitively).
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -85,6 +85,7 @@
 | `NO_SAFE_ROUTE` terminal semantics | planner cancellation/exhaustion и API probe-state tests | PASS | local |
 | Classification/route confidence разделены | `TestClassificationConfidenceIsIndependentFromRouteConfidence` | PASS | local |
 | Latency/duration разделены | probe/API separation tests | PASS | local |
+| End-to-end latency is not verification duration | `TestFinalizeCheckResultDoesNotDeriveE2EFromVerificationDuration`, `TestProbeHTTP200WithMarker` | PASS | local + exact-SHA CI `33131911565` (full safety), `33131911510` (nft), `33131911534` (UI), `33131911507` (Zapret) |
 | Неизвестная latency не считается нулём | `TestSelectBestDoesNotTreatUnknownLatencyAsZero` | PASS | local |
 | ShellCheck | `.tools/shellcheck-v0.11.0/shellcheck.exe -x <tracked shell>` | PASS | local |
 | Полный локальный runner | `tests/run-all.ps1` | PASS, `all_tests_ok=true`; включает 47 Vitest и 26 Playwright tests | Windows; Linux части NOT RUN LOCALLY |
