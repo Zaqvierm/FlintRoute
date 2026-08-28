@@ -1,5 +1,28 @@
 # Evidence remediation
 
+## 2026-08-29 early committed-classifier delta
+
+The boot-fence implementation for code commit
+`2924b63be7f16610c28e5d47f6aace77254e885d` now verifies the durable committed
+binding, candidate hash, artifact manifest hash, and owned `inet router_policy`
+artifact before staging an early classifier. The classifier and the
+mark-scoped admission guard are applied in one nft batch; missing, ambiguous,
+foreign, or unverifiable state falls back to transit DROP. The typed managed
+mark command is the only source for non-DROP marks admitted by the early guard.
+
+Local evidence for that code commit:
+
+- `tests/boot-guard-policy.sh`: PASS;
+- `tests/openwrt-adapter-integration.sh`: PASS;
+- `tests/run-all.ps1`: PASS (`all_tests_ok=true`);
+- `git diff --check`: PASS;
+- ShellCheck: PASS after replacing negated standalone grep assertions with
+  explicit checked branches.
+
+Linux network-namespace/nft and Linux process-group/procfs tests remain
+`NOT RUN LOCALLY` on Windows and require exact-SHA CI evidence. Hardware was
+not accessed.
+
 Этот документ — текущий источник истины по software/CI-проверкам remediation.
 Каждая запись привязана к точному SHA; evidence другого commit считается stale.
 
