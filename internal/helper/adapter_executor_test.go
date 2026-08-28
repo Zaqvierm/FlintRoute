@@ -114,6 +114,46 @@ func TestAdapterExecutorAcceptsOnlyGenerationBoundBootGuardClear(t *testing.T) {
 	}
 }
 
+func TestAdapterExecutorRequiresManagedServicePostcondition(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("exec service fixture requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "running")
+	servicePath := filepath.Join(dir, "router-policy-zapret-test")
+	script := "#!/bin/sh\n" + strings.Join([]string{
+		"state=" + statePath,
+		"case \"$1\" in",
+		"start|reload) : > \"$state\";;",
+		"stop) rm -f \"$state\";;",
+		"running) test -f \"$state\";;",
+		"*) exit 2;;",
+		"esac",
+	}, "\n") + "\n"
+	if err := os.WriteFile(servicePath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	adapterPath := filepath.Join(dir, "adapter.sh")
+	if err := os.WriteFile(adapterPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executor := AdapterExecutor{AdapterPath: adapterPath, ConfigPath: filepath.Join(dir, "default.json"), InitDir: dir}
+	request := validRequest("service.start")
+	request.Service = &ServiceRequest{Name: filepath.Base(servicePath), Operation: "start"}
+	response := executor.Execute(context.Background(), request)
+	if !response.Accepted || response.SemanticState != "running" || response.ErrorCode != "" {
+		t.Fatalf("running postcondition was not accepted: %+v", response)
+	}
+
+	if err := os.WriteFile(servicePath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	response = executor.Execute(context.Background(), request)
+	if response.Accepted || response.ErrorCode != "service_not_running" {
+		t.Fatalf("false-success service start was accepted: %+v", response)
+	}
+}
+
 func TestParseEvidenceIsBoundedToKeyValueLines(t *testing.T) {
 	evidence := parseEvidence([]byte("transaction_state=adapter_activated\ncommitted=false\nnot evidence\n"))
 	if evidence["transaction_state"] != "adapter_activated" || evidence["committed"] != "false" {

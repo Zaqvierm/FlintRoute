@@ -325,6 +325,27 @@ func (e AdapterExecutor) executeService(ctx context.Context, request Request) Re
 		response.Error = fmt.Sprintf("managed service operation failed: %s", request.Service.Operation)
 		return response
 	}
+	// An init script returning zero only proves that it accepted the request.
+	// The helper must prove the resulting lifecycle state before reporting a
+	// successful privileged operation. OpenWrt procd exposes the fixed
+	// read-only "running" action for managed init scripts.
+	running := exec.CommandContext(ctx, path, "running").Run() == nil
+	switch request.Service.Operation {
+	case "start", "reload":
+		if !running {
+			response.ErrorCode = "service_not_running"
+			response.Error = "managed service did not prove running after operation"
+			return response
+		}
+		response.SemanticState = "running"
+	case "stop":
+		if running {
+			response.ErrorCode = "service_still_running"
+			response.Error = "managed service did not prove stopped after operation"
+			return response
+		}
+		response.SemanticState = "stopped"
+	}
 	response.Accepted = true
 	response.State = "accepted"
 	response.Operation = request.Service.Operation
