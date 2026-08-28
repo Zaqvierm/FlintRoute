@@ -13,6 +13,8 @@ large historical file is drained over multiple polls and a malformed line
 cannot grow memory without limit. Append, truncation, rename and inode
 rotation are treated as normal lifecycle events. The reader never truncates a
 file owned by dnsmasq.
+After a truncate or inode rotation the new tail is consumed once; the watcher
+does not rewind a second time and replay the replacement records on every poll.
 
 Raw observations are a short-lived in-memory ring (maximum 1,000 records and a
 one-hour TTL). They are telemetry, not durable policy. The reader reports

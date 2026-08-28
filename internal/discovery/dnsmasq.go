@@ -98,13 +98,13 @@ func (w *Watcher) Run(ctx context.Context) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
-		next, reset, nextIdentity, err := w.readFromWithIdentity(ctx, offset, maxBytes, identity)
+		next, _, nextIdentity, err := w.readFromWithIdentity(ctx, offset, maxBytes, identity)
 		if err == nil {
 			offset = next
 			identity = nextIdentity
-			if reset {
-				offset = 0
-			}
+			// readFromWithIdentity already rewinds internally when the inode
+			// rotates or the writer truncates the file.  Rewinding again here
+			// would replay the replacement tail on every poll.
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}

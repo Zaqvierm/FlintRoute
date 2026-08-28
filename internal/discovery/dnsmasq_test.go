@@ -68,6 +68,11 @@ func TestWatcherReadsAppendedQueriesAndHandlesTruncate(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("second observation timed out")
 	}
+	select {
+	case duplicate := <-observed:
+		t.Fatalf("replacement tail was replayed after truncate: %q", duplicate)
+	case <-time.After(100 * time.Millisecond):
+	}
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
@@ -186,6 +191,11 @@ func TestWatcherDetectsRecreatedLogByIdentity(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("replacement observation timed out")
+	}
+	select {
+	case duplicate := <-observed:
+		t.Fatalf("replacement tail was replayed after inode rotation: %q", duplicate)
+	case <-time.After(100 * time.Millisecond):
 	}
 	cancel()
 	if err := <-done; err != nil {
