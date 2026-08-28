@@ -80,7 +80,8 @@ if grep -F 'ensure-dns-observer.sh' "$ROOT/openwrt/init.d/router-policy" >/dev/n
 fi
 
 rm -f "$TMP/root/tmp/dnsmasq.d/router-policy.conf"
-if ln -s "$TMP/foreign" "$TMP/root/tmp/dnsmasq.d/router-policy.conf" 2>/dev/null; then
+if ln -s "$TMP/foreign" "$TMP/root/tmp/dnsmasq.d/router-policy.conf" 2>/dev/null &&
+  [ -L "$TMP/root/tmp/dnsmasq.d/router-policy.conf" ]; then
   set +e
   symlink_output=$(ROUTER_POLICY_DNSMASQ_CONFDIR="$TMP/root/tmp/dnsmasq.d" sh "$SCRIPT" 2>&1)
   symlink_rc=$?
@@ -93,7 +94,8 @@ fi
 
 rm -rf "$TMP/root/tmp"
 mkdir -p "$TMP/foreign-parent/dnsmasq.d"
-if ln -s "$TMP/foreign-parent" "$TMP/root/tmp" 2>/dev/null; then
+if ln -s "$TMP/foreign-parent" "$TMP/root/tmp" 2>/dev/null &&
+  [ -L "$TMP/root/tmp" ]; then
   set +e
   parent_symlink_output=$(ROUTER_POLICY_DNSMASQ_CONFDIR="$TMP/root/tmp/dnsmasq.d" sh "$SCRIPT" 2>&1)
   parent_symlink_rc=$?

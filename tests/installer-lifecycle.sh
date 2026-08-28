@@ -195,7 +195,8 @@ if grep -Eq 'chown[[:space:]]+-R[^\n]*ETC_DIR/secrets' "$ROOT/install.sh"; then
   exit 1
 fi
 for managed_secret in vpn-subscription-url happ-crypt4-private-key.pem telegram.json webhook.env; do
-  grep -F '$ETC_DIR/secrets/'"$managed_secret" "$ROOT/install.sh" >/dev/null || {
+  secret_marker="\$ETC_DIR/secrets/$managed_secret"
+  grep -F "$secret_marker" "$ROOT/install.sh" >/dev/null || {
     echo "installer secret allowlist is missing: $managed_secret" >&2
     exit 1
   }
