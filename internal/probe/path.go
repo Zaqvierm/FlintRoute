@@ -272,7 +272,7 @@ func (e *Engine) finishWithPathProof(ctx context.Context, _ *config.Config, rout
 		result.PathVerified = false
 		result.FailureStage = "path_evidence_begin"
 		result.ReasonCode = proofErrorCode(errors.New(session.BeginError), route)
-		if result.Status == "OK" || result.Status == "DEGRADED" || result.ApplicationStatus == "DROP" {
+		if strings.EqualFold(strings.TrimSpace(result.Status), "OK") || strings.EqualFold(strings.TrimSpace(result.Status), "DEGRADED") || strings.EqualFold(strings.TrimSpace(result.ApplicationStatus), "DROP") {
 			result.Status = proofFailureStatus(errors.New(session.BeginError))
 			reason := result.ReasonCode
 			result.Reason = &reason
@@ -285,7 +285,7 @@ func (e *Engine) finishWithPathProof(ctx context.Context, _ *config.Config, rout
 		result.PathVerified = false
 		result.FailureStage = "path_evidence"
 		result.ReasonCode = proofErrorCode(err, route)
-		if result.Status == "OK" || result.Status == "DEGRADED" || result.ApplicationStatus == "DROP" {
+		if strings.EqualFold(strings.TrimSpace(result.Status), "OK") || strings.EqualFold(strings.TrimSpace(result.Status), "DEGRADED") || strings.EqualFold(strings.TrimSpace(result.ApplicationStatus), "DROP") {
 			result.Status = proofFailureStatus(err)
 			reason := result.ReasonCode
 			result.Reason = &reason
@@ -321,7 +321,7 @@ func (e *Engine) finishWithPathProof(ctx context.Context, _ *config.Config, rout
 		result.VerificationDurationMS = proof.VerificationDurationMS
 	}
 	result.ReasonCode = proof.ReasonCode
-	if result.ApplicationStatus == "DROP" {
+	if strings.EqualFold(strings.TrimSpace(result.ApplicationStatus), "DROP") {
 		result.Status = "OK"
 		result.ServiceOK = true
 		reason := "drop_enforced"

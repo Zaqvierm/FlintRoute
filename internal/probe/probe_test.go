@@ -147,6 +147,26 @@ func TestPathVerificationDurationIsNotRouteLatency(t *testing.T) {
 	}
 }
 
+func TestPathProofFailureNormalizesCaseVariantSuccessStatus(t *testing.T) {
+	engine := NewEngine(fixedProofVerifier{})
+	result := engine.finishWithPathProof(context.Background(), testConfig(), config.Route{Type: "direct", Tag: "direct"}, RouteResult{
+		Domain: "example.test", Route: "direct", RouteType: "direct", Status: "ok", ApplicationStatus: "OK",
+		ServiceOK: true, PathVerified: true,
+	}, time.Now(), PathProofSession{BeginError: "missing path evidence"})
+	if result.Status == "ok" || result.PathVerified || result.FailureStage != "path_evidence_begin" {
+		t.Fatalf("case-variant success status survived path-proof failure: %+v", result)
+	}
+}
+
+func TestFinalizeCheckResultAcceptsCaseVariantSuccessStatus(t *testing.T) {
+	result := finalizeCheckResult(CheckResult{
+		Status: "ok", RouteLatencyMS: 12, RouteLatencyAvailable: true,
+	}, time.Now().Add(-20*time.Millisecond))
+	if !result.EndToEndLatencyAvailable || result.EndToEndLatencyMS <= 0 {
+		t.Fatalf("case-variant success did not retain end-to-end evidence: %+v", result)
+	}
+}
+
 func TestProbeHTTP204EmptyBodyIsOK(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(204)

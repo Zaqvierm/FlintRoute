@@ -466,7 +466,7 @@ func finalizeCheckResult(res CheckResult, startedAt time.Time) CheckResult {
 	// End-to-end latency is the bounded functional check from DNS resolution
 	// through the network response. It is intentionally distinct from the
 	// orchestration/verification duration and from route proof metadata.
-	if res.Status == "OK" && res.RouteLatencyAvailable {
+	if strings.EqualFold(strings.TrimSpace(res.Status), "OK") && res.RouteLatencyAvailable {
 		res.EndToEndLatencyMS = res.VerificationDurationMS
 		res.EndToEndLatencyAvailable = true
 	}
