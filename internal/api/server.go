@@ -48,27 +48,28 @@ import (
 var secureRandomHex = secureid.Hex
 
 type Options struct {
-	Auth                   *auth.Store
-	Provider               platform.Provider
-	State                  *state.Store
-	ProductionAdapter      adapter.Interface
-	SubscriptionPreparer   SubscriptionPreparer
-	ZapretSetupChecker     zapret.SetupChecker
-	ExternalSOCKSChecker   externalsocks.Checker
-	TelegramNotifier       *telegramnotify.Manager
-	ComponentManager       ComponentManager
-	ZapretCalibration      *zapret.CalibrationManager
-	VLESSThroughputTester  vpnsub.ThroughputTester
-	ProbeEngineFactory     func(*config.Config) health.ProbeEngine
-	TSPURefresh            TSPURefreshFunc
-	DNSObservationPath     string
-	Development            bool
-	DeferRecovery          bool
-	ManagementProofs       *managementproof.Manager
-	RequireManagementProof bool
-	SmartDNSValidator      SmartDNSValidator
-	DiscoveryNow           func() time.Time
-	DomainChecker          DomainChecker
+	Auth                    *auth.Store
+	Provider                platform.Provider
+	State                   *state.Store
+	ProductionAdapter       adapter.Interface
+	SubscriptionPreparer    SubscriptionPreparer
+	ZapretSetupChecker      zapret.SetupChecker
+	ExternalSOCKSChecker    externalsocks.Checker
+	TelegramNotifier        *telegramnotify.Manager
+	ComponentManager        ComponentManager
+	ZapretCalibration       *zapret.CalibrationManager
+	VLESSThroughputTester   vpnsub.ThroughputTester
+	HWIDFingerprintProvider vpnsub.FingerprintProvider
+	ProbeEngineFactory      func(*config.Config) health.ProbeEngine
+	TSPURefresh             TSPURefreshFunc
+	DNSObservationPath      string
+	Development             bool
+	DeferRecovery           bool
+	ManagementProofs        *managementproof.Manager
+	RequireManagementProof  bool
+	SmartDNSValidator       SmartDNSValidator
+	DiscoveryNow            func() time.Time
+	DomainChecker           DomainChecker
 	// RouteAssignmentRuntime is intentionally optional.  Until a production
 	// consumer can atomically materialize a revision-bound domain mapping in
 	// the owned nft/dnsmasq dataplane, discovery must remain suggestion-only.
@@ -104,29 +105,30 @@ type actionLockEntry struct {
 }
 
 type Server struct {
-	cfg                    *config.Config
-	auth                   *auth.Store
-	provider               platform.Provider
-	store                  *state.Store
-	adapter                adapter.Interface
-	subscriptionPreparer   SubscriptionPreparer
-	zapretSetupChecker     zapret.SetupChecker
-	externalSOCKSChecker   externalsocks.Checker
-	telegramNotifier       *telegramnotify.Manager
-	componentManager       ComponentManager
-	routeAssignmentRuntime RouteAssignmentRuntime
-	zapretCalibration      *zapret.CalibrationManager
-	vlessThroughputTester  vpnsub.ThroughputTester
-	probeEngineFactory     func(*config.Config) health.ProbeEngine
-	tspuRefresh            TSPURefreshFunc
-	tspuDelay              tspuDelayFunc
-	healthTracker          *probe.HealthTracker
-	domainDecisions        *domaincache.Manager
-	dnsObservationPath     string
-	development            bool
-	broker                 *EventBroker
-	mux                    *http.ServeMux
-	mu                     sync.Mutex
+	cfg                     *config.Config
+	auth                    *auth.Store
+	provider                platform.Provider
+	store                   *state.Store
+	adapter                 adapter.Interface
+	subscriptionPreparer    SubscriptionPreparer
+	zapretSetupChecker      zapret.SetupChecker
+	externalSOCKSChecker    externalsocks.Checker
+	telegramNotifier        *telegramnotify.Manager
+	componentManager        ComponentManager
+	routeAssignmentRuntime  RouteAssignmentRuntime
+	zapretCalibration       *zapret.CalibrationManager
+	vlessThroughputTester   vpnsub.ThroughputTester
+	hwidFingerprintProvider vpnsub.FingerprintProvider
+	probeEngineFactory      func(*config.Config) health.ProbeEngine
+	tspuRefresh             TSPURefreshFunc
+	tspuDelay               tspuDelayFunc
+	healthTracker           *probe.HealthTracker
+	domainDecisions         *domaincache.Manager
+	dnsObservationPath      string
+	development             bool
+	broker                  *EventBroker
+	mux                     *http.ServeMux
+	mu                      sync.Mutex
 	// mutationGate closes the recovery-to-mutation TOCTOU window. Recovery
 	// status transitions take the write side; every write-capable operation
 	// holds the read side for its entire lifetime.
@@ -231,6 +233,10 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 	if provider == nil {
 		provider = platform.NewOpenWrtProvider()
 	}
+	hwidFingerprintProvider := opts.HWIDFingerprintProvider
+	if hwidFingerprintProvider == nil {
+		hwidFingerprintProvider = vpnsub.SystemFingerprintProvider{}
+	}
 	stateStore := opts.State
 	if stateStore == nil {
 		stateStore, err = state.Open(cfg)
@@ -311,53 +317,54 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		}
 	}
 	s := &Server{
-		cfg:                    cfg,
-		auth:                   authStore,
-		provider:               provider,
-		store:                  stateStore,
-		adapter:                opts.ProductionAdapter,
-		subscriptionPreparer:   opts.SubscriptionPreparer,
-		zapretSetupChecker:     opts.ZapretSetupChecker,
-		externalSOCKSChecker:   externalSOCKSChecker,
-		telegramNotifier:       telegramNotifier,
-		componentManager:       opts.ComponentManager,
-		routeAssignmentRuntime: opts.RouteAssignmentRuntime,
-		zapretCalibration:      opts.ZapretCalibration,
-		vlessThroughputTester:  opts.VLESSThroughputTester,
-		probeEngineFactory:     probeEngineFactory,
-		tspuRefresh:            tspuRefresh,
-		tspuDelay:              randomTSPUDelay,
-		healthTracker:          probe.NewHealthTracker(persistedHealth),
-		domainDecisions:        domainDecisions,
-		dnsObservationPath:     dnsObservationPath,
-		development:            opts.Development,
-		broker:                 broker,
-		mux:                    http.NewServeMux(),
-		changes:                changes,
-		actionLocks:            map[string]*actionLockEntry{},
-		timers:                 map[string]*time.Timer{},
-		activeConfig:           activeConfig,
-		activeRevision:         activeRevision,
-		configVersion:          configVersion,
-		hideSensitive:          true,
-		managementProofs:       managementProofs,
-		requireManagementProof: requireManagementProof,
-		smartDNSValidator:      smartDNSValidator,
-		discoveryNow:           discoveryNow,
-		domainChecker:          domainChecker,
-		discoverySuggestionMap: map[string]discoverySuggestion{},
-		discoveryObservations:  make([]discoveryObservation, 0, maxDiscoveryObservations),
-		discoveryRecent:        map[string]time.Time{},
-		discoveryInFlight:      map[string]bool{},
-		discoveryQueue:         make(chan discovery.Observation, discoveryQueueLimit),
-		probeBudget:            make(chan struct{}, probeBudgetSize),
-		routeFailureQueue:      make(chan routeFailureReport, 16),
-		routeFailureRecent:     map[string]time.Time{},
-		routeFailureCooldown:   map[string]time.Time{},
-		routeRecoveryNext:      map[string]time.Time{},
-		routeRecoveryBackoff:   map[string]time.Duration{},
-		revalidationNext:       map[string]time.Time{},
-		deferRecovery:          opts.DeferRecovery,
+		cfg:                     cfg,
+		auth:                    authStore,
+		provider:                provider,
+		store:                   stateStore,
+		adapter:                 opts.ProductionAdapter,
+		subscriptionPreparer:    opts.SubscriptionPreparer,
+		zapretSetupChecker:      opts.ZapretSetupChecker,
+		externalSOCKSChecker:    externalSOCKSChecker,
+		telegramNotifier:        telegramNotifier,
+		componentManager:        opts.ComponentManager,
+		routeAssignmentRuntime:  opts.RouteAssignmentRuntime,
+		zapretCalibration:       opts.ZapretCalibration,
+		vlessThroughputTester:   opts.VLESSThroughputTester,
+		hwidFingerprintProvider: hwidFingerprintProvider,
+		probeEngineFactory:      probeEngineFactory,
+		tspuRefresh:             tspuRefresh,
+		tspuDelay:               randomTSPUDelay,
+		healthTracker:           probe.NewHealthTracker(persistedHealth),
+		domainDecisions:         domainDecisions,
+		dnsObservationPath:      dnsObservationPath,
+		development:             opts.Development,
+		broker:                  broker,
+		mux:                     http.NewServeMux(),
+		changes:                 changes,
+		actionLocks:             map[string]*actionLockEntry{},
+		timers:                  map[string]*time.Timer{},
+		activeConfig:            activeConfig,
+		activeRevision:          activeRevision,
+		configVersion:           configVersion,
+		hideSensitive:           true,
+		managementProofs:        managementProofs,
+		requireManagementProof:  requireManagementProof,
+		smartDNSValidator:       smartDNSValidator,
+		discoveryNow:            discoveryNow,
+		domainChecker:           domainChecker,
+		discoverySuggestionMap:  map[string]discoverySuggestion{},
+		discoveryObservations:   make([]discoveryObservation, 0, maxDiscoveryObservations),
+		discoveryRecent:         map[string]time.Time{},
+		discoveryInFlight:       map[string]bool{},
+		discoveryQueue:          make(chan discovery.Observation, discoveryQueueLimit),
+		probeBudget:             make(chan struct{}, probeBudgetSize),
+		routeFailureQueue:       make(chan routeFailureReport, 16),
+		routeFailureRecent:      map[string]time.Time{},
+		routeFailureCooldown:    map[string]time.Time{},
+		routeRecoveryNext:       map[string]time.Time{},
+		routeRecoveryBackoff:    map[string]time.Duration{},
+		revalidationNext:        map[string]time.Time{},
+		deferRecovery:           opts.DeferRecovery,
 	}
 	s.loadPersistedDiscoverySuggestions()
 	if preparer, ok := s.subscriptionPreparer.(ProbeBudgetAware); ok {

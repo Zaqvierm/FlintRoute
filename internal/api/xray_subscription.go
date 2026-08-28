@@ -188,7 +188,7 @@ func (s *Server) handleXraySubscriptionHWID(w http.ResponseWriter, r *http.Reque
 			writeError(w, r, http.StatusInternalServerError, "subscription_hwid_invalid", err.Error())
 			return
 		}
-		payload, err := subscriptionHWIDPayload(r.Context(), settings)
+		payload, err := s.subscriptionHWIDPayload(r.Context(), settings)
 		if err != nil && settings.Mode != vpnsub.HWIDModeDisabled {
 			writeError(w, r, http.StatusInternalServerError, "subscription_hwid_unavailable", err.Error())
 			return
@@ -211,13 +211,16 @@ func (s *Server) handleXraySubscriptionHWID(w http.ResponseWriter, r *http.Reque
 			writeError(w, r, http.StatusBadRequest, "invalid_subscription_hwid", err.Error())
 			return
 		}
-		if err := vpnsub.StoreHWIDSettings(path, settings); err != nil {
-			writeError(w, r, http.StatusInternalServerError, "subscription_hwid_write_failed", err.Error())
-			return
-		}
-		payload, resolveErr := subscriptionHWIDPayload(r.Context(), settings)
+		payload, resolveErr := s.subscriptionHWIDPayload(r.Context(), settings)
 		if resolveErr != nil && settings.Mode != vpnsub.HWIDModeDisabled {
 			writeError(w, r, http.StatusInternalServerError, "subscription_hwid_unavailable", resolveErr.Error())
+			return
+		}
+		// Resolve and validate the effective HWID before persisting settings. A
+		// missing fingerprint source must not replace a previously working
+		// configuration with a value that cannot be used after restart.
+		if err := vpnsub.StoreHWIDSettings(path, settings); err != nil {
+			writeError(w, r, http.StatusInternalServerError, "subscription_hwid_write_failed", err.Error())
 			return
 		}
 		s.publishEvent(Event{Type: "xray.subscription_hwid_updated", Severity: "info", ReasonCode: "subscription_hwid_saved", Durable: true, Details: map[string]any{"mode": settings.Mode, "source": settings.Source}})
@@ -227,13 +230,12 @@ func (s *Server) handleXraySubscriptionHWID(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-func subscriptionHWIDPayload(ctx context.Context, settings vpnsub.HWIDSettings) (map[string]any, error) {
-	provider := vpnsub.SystemFingerprintProvider{}
-	current, err := vpnsub.ResolveHWID(ctx, settings, provider)
+func (s *Server) subscriptionHWIDPayload(ctx context.Context, settings vpnsub.HWIDSettings) (map[string]any, error) {
+	current, err := vpnsub.ResolveHWID(ctx, settings, s.hwidFingerprintProvider)
 	if err != nil && settings.Mode != vpnsub.HWIDModeDisabled {
 		return nil, err
 	}
-	preview, previewErr := vpnsub.PreviewHWIDs(ctx, settings, provider)
+	preview, previewErr := vpnsub.PreviewHWIDs(ctx, settings, s.hwidFingerprintProvider)
 	if previewErr != nil && settings.Mode != vpnsub.HWIDModeDisabled {
 		return nil, previewErr
 	}

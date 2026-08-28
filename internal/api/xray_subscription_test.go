@@ -25,6 +25,12 @@ type fakeSubscriptionPreparer struct {
 	calls  int
 }
 
+type failingHWIDFingerprintProvider struct{}
+
+func (failingHWIDFingerprintProvider) Components(context.Context) (vpnsub.FingerprintComponents, error) {
+	return vpnsub.FingerprintComponents{}, errors.New("fingerprint unavailable")
+}
+
 func (f *fakeSubscriptionPreparer) Prepare(context.Context, *config.Config) (vpnsub.PreparedBundle, error) {
 	f.calls++
 	return f.result, f.err
@@ -389,6 +395,59 @@ func TestSubscriptionHWIDEndpointPersistsDeterministicSettings(t *testing.T) {
 	data, ok := envelope.Data.(map[string]any)
 	if !ok || data["current_hwid"] != "33333333-3333-4333-8333-333333333333" {
 		t.Fatalf("HWID response did not contain the selected preset: %#v", envelope.Data)
+	}
+}
+
+func TestSubscriptionHWIDFailedFingerprintPreservesPreviousSettings(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	secretPath := filepath.Join(srv.cfg.Storage.StateDir, "secrets", "vpn-subscription-url")
+	srv.cfg.Xray.SubscriptionSecretFile = secretPath
+	srv.mu.Lock()
+	srv.activeConfig.Xray.SubscriptionSecretFile = secretPath
+	srv.mu.Unlock()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client, csrf := login(t, ts.URL)
+
+	put := func(body string) *http.Response {
+		t.Helper()
+		request, err := http.NewRequest(http.MethodPut, ts.URL+"/api/v1/xray/subscription/hwid", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-CSRF-Token", csrf)
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+
+	response := put(`{"mode":"preset","preset":"33333333-3333-4333-8333-333333333333"}`)
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("initial HWID update status=%d body=%s", response.StatusCode, body)
+	}
+	response.Body.Close()
+
+	// The injected provider fails deterministically. The old preset must remain
+	// active because resolution failed before persistence.
+	srv.hwidFingerprintProvider = failingHWIDFingerprintProvider{}
+	response = put(`{"mode":"generated","source":"mac"}`)
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusInternalServerError || !strings.Contains(string(body), "subscription_hwid_unavailable") {
+		t.Fatalf("failed fingerprint was not rejected semantically: status=%d body=%s", response.StatusCode, body)
+	}
+	settings, err := vpnsub.LoadHWIDSettings(vpnsub.HWIDSettingsPath(secretPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.Mode != vpnsub.HWIDModePreset || settings.Preset != "33333333-3333-4333-8333-333333333333" {
+		t.Fatalf("failed fingerprint replaced previous settings: %+v", settings)
 	}
 }
 
