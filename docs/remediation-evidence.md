@@ -5,7 +5,7 @@
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `665042a716ee961c912ca87d7c33cb976402a2d8` (route-only assignment is fenced without a registered runtime consumer; semantic, revision-bound receipts and idempotent rollback are required before persisting an applied mapping; discovery suggestion/control-state persistence failures are surfaced and block unsafe auto-assignment; installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools; prefix renames flush their containing directory; corrupt-state rescue artifacts are synced and atomically renamed with unique names; failed Zapret calibration retains at most three private bounded forensic bundles after cleanup; end-to-end latency is measured from DNS/network path and never derived from full verification duration; probe terminal statuses are canonicalized case-insensitively; strict JSON decoders reject trailing documents in kernel command and IP state parsers; privileged adapter success now requires an independent operation/generation/transaction/revision/candidate/artifact/rollback-token evidence binding; reconcile receipts expose the same direct binding fields as every other adapter operation; candidate_valid=false is rejected even with exit code 0; baseline recovery clears the all-transit boot fence only through a typed revision/candidate-bound operation with semantic evidence).
+- Текущий проверяемый code HEAD: `ff8ad247d2f6eed254d461e5c1331b0dca026295` (route-only assignment is fenced without a registered runtime consumer; semantic, revision-bound receipts and idempotent rollback are required before persisting an applied mapping; discovery suggestion/control-state persistence failures are surfaced and block unsafe auto-assignment; installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools; prefix renames flush their containing directory; corrupt-state rescue artifacts are synced and atomically renamed with unique names; failed Zapret calibration retains at most three private bounded forensic bundles after cleanup; end-to-end latency is measured from DNS/network path and never derived from full verification duration; probe terminal statuses are canonicalized case-insensitively; strict JSON decoders reject trailing documents in kernel command and IP state parsers; privileged adapter success now requires an independent operation/generation/transaction/revision/candidate/artifact/rollback-token evidence binding; reconcile receipts expose the same direct binding fields as every other adapter operation; candidate_valid=false is rejected even with exit code 0; baseline recovery clears the all-transit boot fence only through a typed revision/candidate-bound operation with semantic evidence; production adapter accepts only the fixed root-helper socket and helper responses reject trailing JSON).
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -34,9 +34,9 @@
 |---|---|---|
 | Go unit/integration, race, vet, форматирование | PASS (локально на текущем HEAD, 2026-08-28) | `go test ./...`, `go test -race ./...`, `go vet ./...`, `gofmt` |
 | Frontend unit/typecheck/build | PASS | 47 Vitest-тестов, `npm run typecheck`, `npm run build` |
-| Browser/responsive UI | PASS | exact-SHA CI run [33143035044](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143035044) |
-| Linux nft transition | PASS | exact-SHA CI run [33143035040](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143035040) |
-| Linux Zapret process-group и Quick contract | PASS | exact-SHA CI run [33143035041](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143035041) |
+| Browser/responsive UI | PASS | exact-SHA CI run [33143980729](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143980729) |
+| Linux nft transition | PASS | exact-SHA CI run [33143980738](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143980738) |
+| Linux Zapret process-group и Quick contract | PASS | exact-SHA CI run [33143980727](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143980727) |
 | Linux-only harness на Windows | NOT RUN LOCALLY | namespace/procfs/mode требуют Linux |
 | Root-helper privilege split | PARTIAL (production contract; runtime peer proof pending) | production init запускает controller как `daemon`, root startup и отсутствие helper socket отвергаются; production adapter принимает только фиксированный `/var/run/router-policy/helper.sock`; typed helper покрывает global/transaction paths и ограничивает concurrent connections; Linux peer-credential/runtime evidence ещё не получено |
 | Route-only assignment dataplane | PARTIAL | revision-bound decision cache и post-probe есть; nft/dnsmasq runtime consumer не доказан |
@@ -68,7 +68,7 @@
 | HTML/portal response rejection | `go test ./internal/vpnsub -run TestFetchSubscriptionRejectsHTML` | PASS | local |
 | Канонические ownership paths | `tests/installer-lifecycle.sh`, `tests/installer-backup.sh` | PASS | mock |
 | Boot guard | `tests/boot-guard-policy.sh`, `tests/boot-guard-service.sh` | PASS | mock |
-| Baseline boot-fence release | `tests/boot-guard-baseline.sh`; `TestBaselineRecoveryClearsOnlyThroughBaselineBoundAdapterOperation`; `TestAdapterExecutorAcceptsOnlySemanticallyProvenBaselineBootGuardClear` | PASS; baseline recovery cannot clear the all-transit fence through an unbound command and rejects mismatched semantic evidence | local/mock + exact-SHA CI [33143035135](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143035135) |
+| Baseline boot-fence release | `tests/boot-guard-baseline.sh`; `TestBaselineRecoveryClearsOnlyThroughBaselineBoundAdapterOperation`; `TestAdapterExecutorAcceptsOnlySemanticallyProvenBaselineBootGuardClear` | PASS; baseline recovery cannot clear the all-transit fence through an unbound command and rejects mismatched semantic evidence | local/mock + exact-SHA CI [33143980734](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143980734) |
 | Typed helper boundary | `tests/helper-service.sh`, `go test ./internal/helper` | PASS | local/mock |
 | Fixed production helper socket | `go test ./internal/adapter -run TestNewOpenWrtRequiresFixedHelperSocket` | PASS; missing and foreign socket paths are rejected before production adapter construction | local |
 | Strict helper response framing | `go test ./internal/helper -run TestCallRejectsTrailingResponseDocument` | PASS; a valid response followed by another JSON document is rejected before semantic acceptance | local |
@@ -144,13 +144,13 @@ workflows завершились успешно:
 Этот full gate также покрывает `candidate_valid=false` rejection в typed helper
 и legacy adapter execution tests.
 
-Для текущего code head `665042a716ee961c912ca87d7c33cb976402a2d8` после push все
+Для текущего code head `ff8ad247d2f6eed254d461e5c1331b0dca026295` после push все
 обязательные workflows завершились успешно:
 
-- exact-SHA full safety gate: [33143035135](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143035135);
-- nft transition: [33143035040](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143035040);
-- Zapret process-group и Quick contract: [33143035041](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143035041);
-- UI browser/responsive: [33143035044](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143035044).
+- exact-SHA full safety gate: [33143980734](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143980734);
+- nft transition: [33143980738](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143980738);
+- Zapret process-group и Quick contract: [33143980727](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143980727);
+- UI browser/responsive: [33143980729](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143980729).
 
 Этот delta добавляет отдельную baseline-bound операцию снятия boot fence.
 Она проверяет revision/candidate binding и semantic evidence `boot_guard=cleared`
