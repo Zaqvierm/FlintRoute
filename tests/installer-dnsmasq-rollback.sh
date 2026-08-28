@@ -54,7 +54,7 @@ export DNSMASQ_SERVICE=dnsmasq
 export TIMEOUT_BIN="$TMP/bin/timeout"
 export TAR_BIN=tar
 
-# shellcheck source=../install.sh
+# shellcheck disable=SC1091
 . "$ROOT/install.sh"
 
 # install.sh intentionally rebuilds its production allowlists at source time;

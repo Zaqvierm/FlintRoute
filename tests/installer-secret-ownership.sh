@@ -41,7 +41,7 @@ export STATE_DIR="$TMP/etc/router-policy/state"
 export RUNTIME_DIR="$TMP/tmp/router-policy"
 export PREFIX="$TMP/prefix"
 
-# shellcheck source=../install.sh
+# shellcheck disable=SC1091
 . "$ROOT/install.sh"
 prepare_controller_identity
 
