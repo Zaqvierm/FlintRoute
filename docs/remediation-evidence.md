@@ -34,9 +34,9 @@
 |---|---|---|
 | Go unit/integration, race, vet, форматирование | PASS (локально на текущем HEAD, 2026-08-28) | `go test ./...`, `go test -race ./...`, `go vet ./...`, `gofmt` |
 | Frontend unit/typecheck/build | PASS | 47 Vitest-тестов, `npm run typecheck`, `npm run build` |
-| Browser/responsive UI | PASS | exact-SHA CI run [33143980729](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143980729) |
-| Linux nft transition | PASS | exact-SHA CI run [33143980738](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143980738) |
-| Linux Zapret process-group и Quick contract | PASS | exact-SHA CI run [33143980727](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143980727) |
+| Browser/responsive UI | PASS | exact-SHA CI run [33144752991](https://github.com/Zaqvierm/FlintRoute/actions/runs/33144752991) |
+| Linux nft transition | PASS | exact-SHA CI run [33144752992](https://github.com/Zaqvierm/FlintRoute/actions/runs/33144752992) |
+| Linux Zapret process-group и Quick contract | PASS | exact-SHA CI run [33144752931](https://github.com/Zaqvierm/FlintRoute/actions/runs/33144752931) |
 | Linux-only harness на Windows | NOT RUN LOCALLY | namespace/procfs/mode требуют Linux |
 | Root-helper privilege split | PARTIAL (production contract; runtime peer proof pending) | production init запускает controller как `daemon`, root startup и отсутствие helper socket отвергаются; production adapter принимает только фиксированный `/var/run/router-policy/helper.sock`; typed helper покрывает global/transaction paths и ограничивает concurrent connections; Linux peer-credential/runtime evidence ещё не получено |
 | Route-only assignment dataplane | PARTIAL | revision-bound decision cache и post-probe есть; nft/dnsmasq runtime consumer не доказан |
