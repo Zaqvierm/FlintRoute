@@ -5,7 +5,7 @@
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `1c8c964d33b1cddbf4cb9abe8f524bfdae48d4f4` (route-only assignment is fenced without a registered runtime consumer; semantic, revision-bound receipts and idempotent rollback are required before persisting an applied mapping; discovery suggestion/control-state persistence failures are surfaced and block unsafe auto-assignment; installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools; prefix renames flush their containing directory; corrupt-state rescue artifacts are synced and atomically renamed with unique names; failed Zapret calibration retains at most three private bounded forensic bundles after cleanup; end-to-end latency is measured from DNS/network path and never derived from full verification duration; probe terminal statuses are canonicalized case-insensitively).
+- Текущий проверяемый code HEAD: `43d889775e9960383450b23e351a712fbca1a03f` (route-only assignment is fenced without a registered runtime consumer; semantic, revision-bound receipts and idempotent rollback are required before persisting an applied mapping; discovery suggestion/control-state persistence failures are surfaced and block unsafe auto-assignment; installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools; prefix renames flush their containing directory; corrupt-state rescue artifacts are synced and atomically renamed with unique names; failed Zapret calibration retains at most three private bounded forensic bundles after cleanup; end-to-end latency is measured from DNS/network path and never derived from full verification duration; probe terminal statuses are canonicalized case-insensitively; strict JSON decoders reject trailing documents in kernel command and IP state parsers).
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -85,6 +85,7 @@
 | Classification/route confidence разделены | `TestClassificationConfidenceIsIndependentFromRouteConfidence` | PASS | local |
 | Latency/duration разделены | probe/API separation tests | PASS | local |
 | End-to-end latency is not verification duration | `TestFinalizeCheckResultDoesNotDeriveE2EFromVerificationDuration`, `TestProbeHTTP200WithMarker` | PASS | local + exact-SHA CI `33131911565` (full safety), `33131911510` (nft), `33131911534` (UI), `33131911507` (Zapret) |
+| Strict JSON document boundaries | `go test -race ./internal/probe ./internal/dataplane` | PASS; trailing JSON after the first document is rejected in kernel-command and route/rule state parsers | local + exact-SHA CI `33137838195` |
 | Неизвестная latency не считается нулём | `TestSelectBestDoesNotTreatUnknownLatencyAsZero` | PASS | local |
 | ShellCheck | `.tools/shellcheck-v0.11.0/shellcheck.exe -x <tracked shell>` | PASS | local |
 | Полный локальный runner | `tests/run-all.ps1` | PASS, `all_tests_ok=true`; включает 47 Vitest и 26 Playwright tests | Windows; Linux части NOT RUN LOCALLY |
@@ -102,14 +103,14 @@ response fails the installer health gate closed.
 
 ## Запуски CI и clean-clone evidence
 
-Для текущего code head `1c8c964d33b1cddbf4cb9abe8f524bfdae48d4f4` после push прошли:
+Для текущего code head `43d889775e9960383450b23e351a712fbca1a03f` после push прошли:
 
-- exact-SHA full safety gate: [33134781942](https://github.com/Zaqvierm/FlintRoute/actions/runs/33134781942);
-- nft transition: [33134781935](https://github.com/Zaqvierm/FlintRoute/actions/runs/33134781935);
-- Zapret process-group и Quick contract: [33134781937](https://github.com/Zaqvierm/FlintRoute/actions/runs/33134781937);
-- UI browser/responsive: [33134781941](https://github.com/Zaqvierm/FlintRoute/actions/runs/33134781941).
+- exact-SHA full safety gate: [33137838195](https://github.com/Zaqvierm/FlintRoute/actions/runs/33137838195);
+- nft transition: [33137838187](https://github.com/Zaqvierm/FlintRoute/actions/runs/33137838187);
+- Zapret process-group и Quick contract: [33137838154](https://github.com/Zaqvierm/FlintRoute/actions/runs/33137838154);
+- UI browser/responsive: [33137838184](https://github.com/Zaqvierm/FlintRoute/actions/runs/33137838184).
 
-Эти run ID привязаны к exact code SHA `1c8c964d33b1cddbf4cb9abe8f524bfdae48d4f4`.
+Эти run ID привязаны к exact code SHA `43d889775e9960383450b23e351a712fbca1a03f`.
 Документационный HEAD может отличаться от code HEAD, но не меняет исходный
 результат тестов; при изменении кода evidence снова становится stale.
 
