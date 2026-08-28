@@ -76,15 +76,16 @@ func TestNewClientRejectsNonHTTPSAndPrivateRedirectTarget(t *testing.T) {
 
 func TestNewClientCloseIdleConnectionsClosesPinnedDialTransport(t *testing.T) {
 	var closed atomic.Int32
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	}))
-	defer server.Close()
 	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
 		if state == http.StateClosed {
 			closed.Add(1)
 		}
 	}
+	server.StartTLS()
+	defer server.Close()
 
 	ctx := WithLoopbackForTests(context.Background())
 	client, err := NewClient(ctx, server.Client(), server.URL+"/source", Options{})
