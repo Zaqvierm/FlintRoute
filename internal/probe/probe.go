@@ -264,8 +264,9 @@ func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, ser
 	wafOrRateLimit := false
 	var firstReason string
 	for _, c := range result.Checks {
-		authRequired = authRequired || c.AuthenticationRequired || c.Status == "AUTH_REQUIRED"
-		wafOrRateLimit = wafOrRateLimit || c.WAFOrRateLimit || c.Status == "WAF_OR_RATE_LIMIT"
+		checkStatus := strings.ToUpper(strings.TrimSpace(c.Status))
+		authRequired = authRequired || c.AuthenticationRequired || checkStatus == "AUTH_REQUIRED"
+		wafOrRateLimit = wafOrRateLimit || c.WAFOrRateLimit || checkStatus == "WAF_OR_RATE_LIMIT"
 		if c.Required {
 			if c.EndToEndLatencyAvailable {
 				e2eTotal += c.EndToEndLatencyMS
@@ -275,13 +276,13 @@ func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, ser
 		}
 		if c.Required {
 			requiredSeen = true
-			if c.Status != "OK" {
+			if checkStatus != "OK" {
 				requiredOK = false
 				if firstReason == "" {
 					firstReason = c.Reason
 				}
 			}
-		} else if c.Status == "OK" {
+		} else if checkStatus == "OK" {
 			optionalOK = true
 		}
 	}
@@ -455,8 +456,9 @@ func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check
 			res.LatencyMS = attempt.RouteLatencyMS
 		}
 		lastReason = attempt.Reason
-		if attempt.Status == "OK" || attempt.Status == "REGION_BLOCK" || attempt.Status == "SUSPECTED_TSPU" || attempt.Status == "AUTH_REQUIRED" || attempt.Status == "WAF_OR_RATE_LIMIT" {
-			res.Status = attempt.Status
+		attemptStatus := strings.ToUpper(strings.TrimSpace(attempt.Status))
+		if attemptStatus == "OK" || attemptStatus == "REGION_BLOCK" || attemptStatus == "SUSPECTED_TSPU" || attemptStatus == "AUTH_REQUIRED" || attemptStatus == "WAF_OR_RATE_LIMIT" {
+			res.Status = attemptStatus
 			res.Reason = attempt.Reason
 			return finalizeCheckResult(res, start)
 		}
