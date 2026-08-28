@@ -96,7 +96,9 @@ if restore_snapshot "$profile_snapshot" >/dev/null 2>&1; then
 fi
 [ ! -e "$PROFILE_STOP_LOG" ] || { echo "profile service was stopped before snapshot verification" >&2; exit 1; }
 active_zapret_profiles="$TMP/no-profile-manifest"
+# shellcheck disable=SC2034 # consumed by the sourced adapter library
 zapret_profile_dir="${active_zapret_profiles%/*}/profiles"
+# shellcheck disable=SC2034 # consumed by the sourced adapter library
 zapret_profile_init_prefix="/etc/init.d/router-policy-zapret-"
 
 printf 'config-old\n' > "$config"
