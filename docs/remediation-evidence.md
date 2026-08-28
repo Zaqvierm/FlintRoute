@@ -51,6 +51,10 @@
 | Exact-SHA browser/responsive for durable event persistence diagnostics | PASS | run [33150610840](https://github.com/Zaqvierm/FlintRoute/actions/runs/33150610840) |
 | Exact-target dnsmasq observer confdir ownership | `tests/installer-lifecycle.sh`, `tests/dns-observer-bootstrap.sh` | PASS; installer and root bootstrap reject UCI/override `/etc/shadow`, target symlinks, and symlinked parent components before anything can enter the rollback manifest or be written | local/mock + Linux CI |
 | Installer secret ownership allowlist | `tests/installer-secret-ownership.sh`, `tests/installer-lifecycle.sh` | PASS; only the four managed secret files are chowned/chmodded, foreign files are untouched, and symlinked managed secrets are rejected | local/mock + exact-SHA CI |
+| Exact-SHA full safety for installer secret ownership | PASS | docs-bound tree `b0e8e19ead5d247fd09fed25b54db33977bcdb0c`; full run [33156902721](https://github.com/Zaqvierm/FlintRoute/actions/runs/33156902721) |
+| Exact-SHA nft transition for installer secret ownership | PASS | run [33156902712](https://github.com/Zaqvierm/FlintRoute/actions/runs/33156902712) |
+| Exact-SHA Zapret process-group for installer secret ownership | PASS | run [33156902702](https://github.com/Zaqvierm/FlintRoute/actions/runs/33156902702) |
+| Exact-SHA browser/responsive for installer secret ownership | PASS | run [33156902700](https://github.com/Zaqvierm/FlintRoute/actions/runs/33156902700) |
 | Linux-only harness на Windows | NOT RUN LOCALLY | namespace/procfs/mode требуют Linux |
 | Root-helper privilege split | PARTIAL (production contract; runtime peer proof pending) | production init запускает controller как `daemon`, root startup и отсутствие helper socket отвергаются; production adapter принимает только фиксированный `/var/run/router-policy/helper.sock`; typed helper покрывает global/transaction paths и ограничивает concurrent connections; Linux peer-credential/runtime evidence ещё не получено |
 | Route-only assignment dataplane | PARTIAL | revision-bound decision cache и post-probe есть; nft/dnsmasq runtime consumer не доказан |
