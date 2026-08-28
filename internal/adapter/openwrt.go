@@ -46,7 +46,11 @@ func NewOpenWrt(cfg *config.Config, configPath string) (*OpenWrt, error) {
 	if stateDir == "." || !filepath.IsAbs(stateDir) {
 		return nil, fmt.Errorf("production state_dir must be absolute")
 	}
-	return &OpenWrt{helperPath: helper, configPath: cleanConfig, stateDir: stateDir, helperSocket: os.Getenv("ROUTER_POLICY_HELPER_SOCKET")}, nil
+	helperSocket := strings.TrimSpace(os.Getenv("ROUTER_POLICY_HELPER_SOCKET"))
+	if helperSocket != "/var/run/router-policy/helper.sock" {
+		return nil, fmt.Errorf("production helper socket must be /var/run/router-policy/helper.sock")
+	}
+	return &OpenWrt{helperPath: helper, configPath: cleanConfig, stateDir: stateDir, helperSocket: helperSocket}, nil
 }
 
 func (a *OpenWrt) Diagnose(ctx context.Context) StepResult { return a.runGlobal(ctx, "diagnose") }

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"router-policy/internal/config"
 	"router-policy/internal/helper"
 )
 
@@ -39,6 +40,48 @@ func TestValidateRecoveryTarget(t *testing.T) {
 			test.mutate(&target)
 			if err := validateRecoveryTarget(target); err == nil {
 				t.Fatal("invalid recovery target accepted")
+			}
+		})
+	}
+}
+
+func TestNewOpenWrtRequiresFixedHelperSocket(t *testing.T) {
+	adapterPath, err := filepath.Abs(filepath.Join(t.TempDir(), "adapter.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath, err := filepath.Abs(filepath.Join(t.TempDir(), "default.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir, err := filepath.Abs(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		OpenWrt: config.OpenWrt{Adapter: adapterPath},
+		Storage: config.Storage{StateDir: stateDir},
+	}
+	for _, test := range []struct {
+		name   string
+		socket string
+		wantOK bool
+	}{
+		{name: "missing", wantOK: false},
+		{name: "foreign absolute", socket: "/tmp/other-helper.sock", wantOK: false},
+		{name: "fixed production socket", socket: "/var/run/router-policy/helper.sock", wantOK: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("ROUTER_POLICY_HELPER_SOCKET", test.socket)
+			adapter, err := NewOpenWrt(cfg, configPath)
+			if test.wantOK {
+				if err != nil || adapter == nil {
+					t.Fatalf("fixed helper socket rejected: adapter=%v err=%v", adapter, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("unsafe helper socket accepted: %+v", adapter)
 			}
 		})
 	}
