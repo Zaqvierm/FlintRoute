@@ -115,6 +115,103 @@ validate_backup_paths() {
   done
 }
 
+runtime_top_entry_allowed() {
+  case "$1" in
+    active-transaction.env|pending-transaction.env|boot-guard.nft|dns-observations.log|install-health.json|write-events.log|uninstall-empty-ip-state.json)
+      return 0 ;;
+    nft-transition-tx_*.nft|nft-boot-guard-transition-tx_*.nft|management-proof-*.error)
+      printf '%s\n' "$1" | grep -Eq '^(nft-transition|nft-boot-guard-transition)-tx_[0-9a-f]{16}\.nft$|^management-proof-rev_[0-9]+_[0-9a-f]{12}-tx_[0-9a-f]{16}\.error$'
+      ;;
+    transaction.lock|rollback-timers|management-proofs)
+      return 0 ;;
+    *)
+      return 1 ;;
+  esac
+}
+
+validate_runtime_contents() {
+  [ -e "$RUNTIME_DIR" ] || return 0
+  [ -d "$RUNTIME_DIR" ] && [ ! -L "$RUNTIME_DIR" ] || {
+    echo "uninstall blocked: runtime root is not an owned directory" >&2
+    return 1
+  }
+  for entry in "$RUNTIME_DIR"/* "$RUNTIME_DIR"/.[!.]* "$RUNTIME_DIR"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    name="${entry##*/}"
+    runtime_top_entry_allowed "$name" || {
+      echo "uninstall blocked: unowned runtime entry: $entry" >&2
+      return 1
+    }
+    case "$name" in
+      transaction.lock|rollback-timers|management-proofs)
+        [ -d "$entry" ] && [ ! -L "$entry" ] || {
+          echo "uninstall blocked: owned runtime directory is invalid: $entry" >&2
+          return 1
+        }
+        for nested in "$entry"/* "$entry"/.[!.]* "$entry"/..?*; do
+          [ -e "$nested" ] || [ -L "$nested" ] || continue
+          [ -f "$nested" ] && [ ! -L "$nested" ] || {
+            echo "uninstall blocked: unowned runtime child: $nested" >&2
+            return 1
+          }
+          nested_name="${nested##*/}"
+          case "$name:$nested_name" in
+            transaction.lock:metadata.env)
+              ;;
+            rollback-timers:*)
+              printf '%s\n' "$nested_name" | grep -Eq '^rev_[0-9]+_[0-9a-f]{12}-tx_[0-9a-f]{16}\.env(\.bootstrap(\.tmp)?)?$' || {
+                echo "uninstall blocked: unowned rollback timer: $nested" >&2
+                return 1
+              }
+              ;;
+            management-proofs:*)
+              printf '%s\n' "$nested_name" | grep -Eq '^rev_[0-9]+_[0-9a-f]{12}-tx_[0-9a-f]{16}\.json$' || {
+                echo "uninstall blocked: unowned management proof: $nested" >&2
+                return 1
+              }
+              ;;
+            *)
+              echo "uninstall blocked: unowned runtime child: $nested" >&2
+              return 1
+              ;;
+          esac
+        done
+        ;;
+      *)
+        [ -f "$entry" ] && [ ! -L "$entry" ] || {
+          echo "uninstall blocked: owned runtime file is invalid: $entry" >&2
+          return 1
+        }
+        ;;
+    esac
+  done
+}
+
+remove_owned_runtime() {
+  validate_runtime_contents || return 1
+  [ -e "$RUNTIME_DIR" ] || return 0
+  for entry in "$RUNTIME_DIR"/* "$RUNTIME_DIR"/.[!.]* "$RUNTIME_DIR"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    name="${entry##*/}"
+    case "$name" in
+      transaction.lock|rollback-timers|management-proofs)
+        for nested in "$entry"/* "$entry"/.[!.]* "$entry"/..?*; do
+          [ -e "$nested" ] || [ -L "$nested" ] || continue
+          rm -f "$nested"
+        done
+        rmdir "$entry" || return 1
+        ;;
+      *)
+        rm -f "$entry"
+        ;;
+    esac
+  done
+  rmdir "$RUNTIME_DIR" || {
+    echo "uninstall failed: owned runtime directory is not empty" >&2
+    return 1
+  }
+}
+
 deactivate_committed_dataplane() {
   binding="$STATE_DIR/last-good/active-transaction.env"
   [ -f "$binding" ] || binding="$STATE_DIR/last-good/transaction.env"
@@ -352,6 +449,7 @@ for owned_path in "$PREFIX" "$BIN_DIR/router-policy" "$INIT_DIR/router-policy" \
     exit 1
   }
 done
+validate_runtime_contents || exit 1
 
 mkdir -p "$BACKUP_DIR"
 manifest="$BACKUP_DIR/manifest.txt"
@@ -414,9 +512,7 @@ rm -f "$INIT_DIR/router-policy-helper" "$INIT_DIR/router-policy" "$INIT_DIR/rout
 rm -f "$BIN_DIR/router-policy-helper"
 rm -f "$HOTPLUG_IFACE_DIR/95-router-policy" "$HOTPLUG_FIREWALL_DIR/95-router-policy"
 rm -f "$ETC_DIR/firewall/router-policy.nft" "$NFTABLES_DIR/router-policy.nft" "$DNSMASQ_DIR/router-policy.conf"
-rm -f "$BIN_DIR/router-policy"
 rm -rf "$PREFIX"
-rm -rf "$RUNTIME_DIR"
 
 if [ -z "$SYSTEM_ROOT" ] && [ -x "$INIT_DIR/dnsmasq" ]; then
   "$INIT_DIR/dnsmasq" restart
@@ -426,12 +522,15 @@ if [ -z "$SYSTEM_ROOT" ] && [ -x "$INIT_DIR/dnsmasq" ]; then
   }
 fi
 
+remove_owned_runtime || exit 1
+
 # Keep older fallback backups until every teardown and the final dnsmasq
 # readiness check has succeeded.  A failed uninstall must not prune the only
 # recovery points that still describe the previous installation.
 if [ -x "$BIN_DIR/router-policy" ]; then
   "$BIN_DIR/router-policy" backup prune --root "$BACKUP_ROOT" --max 2 --max-bytes 134217728 --apply >/dev/null
 fi
+rm -f "$BIN_DIR/router-policy"
 
 echo "uninstalled=true"
 echo "backup=$BACKUP_DIR"

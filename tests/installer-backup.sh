@@ -82,6 +82,22 @@ if [ ! -f "$SYSTEM_ROOT/usr/bin/router-policy" ]; then
 fi
 echo "uninstaller_invalid_backup_blocked=true"
 
+# A fixed runtime root is not a blanket ownership grant.  Unknown entries
+# must block uninstall before any teardown or recursive deletion can touch
+# them.
+FOREIGN_RUNTIME_ROOT="$TMP/uninstall-foreign-runtime"
+mkdir -p "$FOREIGN_RUNTIME_ROOT/etc/router-policy" "$FOREIGN_RUNTIME_ROOT/tmp/router-policy"
+printf 'foreign\n' > "$FOREIGN_RUNTIME_ROOT/tmp/router-policy/foreign.bin"
+foreign_runtime_output=$(ROUTER_POLICY_SYSTEM_ROOT="$FOREIGN_RUNTIME_ROOT" \
+  BACKUP_DIR="$TMP/foreign-runtime-backup" TAR_BIN="$TMP/fake-tar" \
+  sh "$PROJECT_ROOT/uninstall.sh" --uninstall 2>&1 || true)
+printf '%s\n' "$foreign_runtime_output" | grep -F 'unowned runtime entry' >/dev/null || {
+  echo "uninstaller did not block an unowned runtime entry" >&2
+  exit 1
+}
+[ -f "$FOREIGN_RUNTIME_ROOT/tmp/router-policy/foreign.bin" ]
+echo "uninstaller_blocks_unowned_runtime=true"
+
 # The uninstaller must reject environment-derived paths that resolve through
 # a parent or use ambiguous separator spelling before it reaches tar/rm.
 unsafe_root="$TMP/uninstall-root/.."
