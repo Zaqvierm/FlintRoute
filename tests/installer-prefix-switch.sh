@@ -2,6 +2,7 @@
 set -eu
 
 ROOT=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd)
+PROJECT_ROOT="$ROOT"
 TMP="${TMPDIR:-/tmp}/router-policy-prefix-switch-$$"
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
@@ -57,40 +58,40 @@ write_marker() {
 }
 
 reset_fixture
-mkdir -p "$PREFIX" "$PREFIX.install.fixture"
-printf 'staged\n' > "$PREFIX.install.fixture/value"
+mkdir -p "$PREFIX/scripts" "$PREFIX.install.fixture/scripts"
+printf 'staged\n' > "$PREFIX.install.fixture/scripts/value"
 write_marker prepared
 recover_prefix_switch
 [ -d "$PREFIX" ] && [ ! -e "$PREFIX.install.fixture" ] && [ ! -e "$PREFIX_SWITCH_MARKER" ]
 
 reset_fixture
-mkdir -p "$PREFIX.old.fixture" "$PREFIX.install.fixture"
-printf 'staged\n' > "$PREFIX.install.fixture/value"
+mkdir -p "$PREFIX.old.fixture" "$PREFIX.install.fixture/scripts"
+printf 'staged\n' > "$PREFIX.install.fixture/scripts/value"
 write_marker prepared
 recover_prefix_switch
-[ "$(cat "$PREFIX/value")" = staged ] && [ -e "$PREFIX.old.fixture" ] && [ ! -e "$PREFIX_SWITCH_MARKER" ]
+[ "$(cat "$PREFIX/scripts/value")" = staged ] && [ -e "$PREFIX.old.fixture" ] && [ ! -e "$PREFIX_SWITCH_MARKER" ]
 
 reset_fixture
-mkdir -p "$PREFIX.old.fixture" "$PREFIX.install.fixture"
-printf 'staged\n' > "$PREFIX.install.fixture/value"
+mkdir -p "$PREFIX.old.fixture" "$PREFIX.install.fixture/scripts"
+printf 'staged\n' > "$PREFIX.install.fixture/scripts/value"
 write_marker old_moved
 recover_prefix_switch
-[ "$(cat "$PREFIX/value")" = staged ] && [ ! -e "$PREFIX_SWITCH_MARKER" ]
+[ "$(cat "$PREFIX/scripts/value")" = staged ] && [ ! -e "$PREFIX_SWITCH_MARKER" ]
 
 reset_fixture
-mkdir -p "$PREFIX.old.fixture"
-printf 'old\n' > "$PREFIX.old.fixture/value"
+mkdir -p "$PREFIX.old.fixture/scripts"
+printf 'old\n' > "$PREFIX.old.fixture/scripts/value"
 write_marker old_moved
 recover_prefix_switch
-[ "$(cat "$PREFIX/value")" = old ] && [ ! -e "$PREFIX_SWITCH_MARKER" ]
+[ "$(cat "$PREFIX/scripts/value")" = old ] && [ ! -e "$PREFIX_SWITCH_MARKER" ]
 
 reset_fixture
-mkdir -p "$PREFIX" "$PREFIX.install.fixture"
-printf 'new\n' > "$PREFIX/value"
-printf 'staged\n' > "$PREFIX.install.fixture/value"
+mkdir -p "$PREFIX/scripts" "$PREFIX.install.fixture/scripts"
+printf 'new\n' > "$PREFIX/scripts/value"
+printf 'staged\n' > "$PREFIX.install.fixture/scripts/value"
 write_marker new_active
 recover_prefix_switch
-[ "$(cat "$PREFIX/value")" = new ] && [ ! -e "$PREFIX.install.fixture" ] && [ ! -e "$PREFIX_SWITCH_MARKER" ]
+[ "$(cat "$PREFIX/scripts/value")" = new ] && [ ! -e "$PREFIX.install.fixture" ] && [ ! -e "$PREFIX_SWITCH_MARKER" ]
 
 reset_fixture
 mkdir -p "$PREFIX" "$PREFIX.old.fixture" "$PREFIX.install.fixture"
@@ -102,19 +103,42 @@ fi
 [ -f "$PREFIX_SWITCH_MARKER" ]
 
 reset_fixture
-mkdir -p "$PREFIX.old.fixture" "$PREFIX.install.fixture"
-printf 'staged\n' > "$PREFIX.install.fixture/value"
+mkdir -p "$PREFIX.old.fixture" "$PREFIX.install.fixture/scripts"
+printf 'staged\n' > "$PREFIX.install.fixture/scripts/value"
 write_marker ready_to_activate
 recover_prefix_switch
-[ "$(cat "$PREFIX/value")" = staged ] && [ -e "$PREFIX.old.fixture" ] && [ ! -e "$PREFIX_SWITCH_MARKER" ]
+[ "$(cat "$PREFIX/scripts/value")" = staged ] && [ -e "$PREFIX.old.fixture" ] && [ ! -e "$PREFIX_SWITCH_MARKER" ]
 
 reset_fixture
-mkdir -p "$PREFIX" "$PREFIX.old.fixture"
-printf 'new\n' > "$PREFIX/value"
+mkdir -p "$PREFIX/scripts" "$PREFIX.old.fixture"
+printf 'new\n' > "$PREFIX/scripts/value"
 write_marker ready_to_activate
 recover_prefix_switch
-[ "$(cat "$PREFIX/value")" = new ] && [ -e "$PREFIX.old.fixture" ] && [ ! -e "$PREFIX_SWITCH_MARKER" ]
+[ "$(cat "$PREFIX/scripts/value")" = new ] && [ -e "$PREFIX.old.fixture" ] && [ ! -e "$PREFIX_SWITCH_MARKER" ]
+
+# A stale switch directory is removable only when its top-level shape and
+# nested object types match the installer-owned prefix contract.  An unknown
+# regular file must fence instead of being deleted by a recursive cleanup.
+reset_fixture
+mkdir -p "$PREFIX.install.foreign/scripts"
+printf 'foreign\n' > "$PREFIX.install.foreign/foreign-runtime"
+if remove_owned_prefix_switch_tree "$PREFIX.install.foreign" >/dev/null 2>&1; then
+  echo "prefix switch cleanup removed an unowned top-level entry" >&2
+  exit 1
+fi
+[ -f "$PREFIX.install.foreign/foreign-runtime" ]
+
+reset_fixture
+mkdir -p "$PREFIX.install.owned/scripts"
+printf 'owned\n' > "$PREFIX.install.owned/scripts/value"
+remove_owned_prefix_switch_tree "$PREFIX.install.owned"
+[ ! -e "$PREFIX.install.owned" ]
+
+# New install attempts must fence a pre-existing PID-named path instead of
+# recursively deleting it before staging a candidate.
+grep -F 'untracked prefix switch path already exists' "$PROJECT_ROOT/install.sh" >/dev/null
 
 echo "installer_prefix_switch_recovery=true"
 echo "installer_prefix_switch_ambiguous_state_blocks=true"
 echo "installer_prefix_switch_durable_rename=true"
+echo "installer_prefix_switch_cleanup_is_bounded=true"

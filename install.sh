@@ -1301,6 +1301,91 @@ clear_prefix_switch_marker() {
   [ ! -e "$PREFIX_SWITCH_MARKER" ] || return 1
 }
 
+prefix_switch_top_entry_allowed() {
+  case "$1" in
+    scripts|openwrt|components|.managed-files.manifest) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+remove_owned_prefix_switch_tree() {
+  cleanup_tree="$1"
+  [ -e "$cleanup_tree" ] || [ -L "$cleanup_tree" ] || return 0
+  case "$cleanup_tree" in
+    "$PREFIX.install."*|"$PREFIX.old."*) ;;
+    *)
+      echo "install blocked: invalid prefix switch cleanup path: $cleanup_tree" >&2
+      return 1
+      ;;
+  esac
+  [ -d "$cleanup_tree" ] && [ ! -L "$cleanup_tree" ] || {
+    echo "install blocked: prefix switch cleanup target is not an owned directory: $cleanup_tree" >&2
+    return 1
+  }
+  command -v find >/dev/null 2>&1 || {
+    echo "install blocked: find is required to validate prefix switch cleanup" >&2
+    return 1
+  }
+  for entry in "$cleanup_tree"/* "$cleanup_tree"/.[!.]* "$cleanup_tree"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    cleanup_name="${entry##*/}"
+    prefix_switch_top_entry_allowed "$cleanup_name" || {
+      echo "install blocked: unowned prefix switch entry: $entry" >&2
+      return 1
+    }
+    case "$cleanup_name" in
+      .managed-files.manifest)
+        [ -f "$entry" ] && [ ! -L "$entry" ] || {
+          echo "install blocked: prefix switch manifest is not regular" >&2
+          return 1
+        }
+        ;;
+      scripts|openwrt|components)
+        [ -d "$entry" ] && [ ! -L "$entry" ] || {
+          echo "install blocked: prefix switch tree is not a directory: $entry" >&2
+          return 1
+        }
+        if ! cleanup_unsafe="$(find "$entry" \( -type l -o ! -type f -a ! -type d \) -print -quit 2>/dev/null)"; then
+          echo "install blocked: could not validate prefix switch entry: $entry" >&2
+          return 1
+        fi
+        [ -z "$cleanup_unsafe" ] || {
+          echo "install blocked: unsafe prefix switch entry: $cleanup_unsafe" >&2
+          return 1
+        }
+        ;;
+    esac
+  done
+  cleanup_list="$STATE_DIR/prefix-cleanup.$$"
+  [ ! -e "$cleanup_list" ] && [ ! -L "$cleanup_list" ] || {
+    echo "install blocked: prefix cleanup list already exists: $cleanup_list" >&2
+    return 1
+  }
+  if ! find "$cleanup_tree" -depth -print > "$cleanup_list"; then
+    rm -f "$cleanup_list"
+    echo "install blocked: could not enumerate prefix switch cleanup: $cleanup_tree" >&2
+    return 1
+  fi
+  cleanup_failed=0
+  while IFS= read -r entry; do
+    [ "$entry" != "$cleanup_tree" ] || continue
+    if [ -d "$entry" ] && [ ! -L "$entry" ]; then
+      rmdir "$entry" || cleanup_failed=1
+    else
+      rm -f "$entry" || cleanup_failed=1
+    fi
+  done < "$cleanup_list"
+  rm -f "$cleanup_list"
+  if [ "$cleanup_failed" -ne 0 ]; then
+    echo "install blocked: could not remove owned prefix switch tree: $cleanup_tree" >&2
+    return 1
+  fi
+  rmdir "$cleanup_tree" || {
+    echo "install blocked: prefix switch cleanup tree is not empty: $cleanup_tree" >&2
+    return 1
+  }
+}
+
 recover_prefix_switch() {
   [ -f "$PREFIX_SWITCH_MARKER" ] || return 0
   marker_version="$(sed -n 's/^version=//p' "$PREFIX_SWITCH_MARKER" | head -n 1)"
@@ -1317,7 +1402,7 @@ recover_prefix_switch() {
   case "$marker_phase" in
     prepared)
       if [ -e "$PREFIX" ] && [ ! -e "$marker_old" ]; then
-        rm -rf "$marker_staged"
+        remove_owned_prefix_switch_tree "$marker_staged"
       elif [ ! -e "$PREFIX" ] && [ -e "$marker_old" ] && [ -e "$marker_staged" ]; then
         durable_rename "$marker_staged" "$PREFIX"
       else
@@ -1361,7 +1446,7 @@ recover_prefix_switch() {
         echo "install blocked: durable prefix marker says new generation is active but prefix is missing" >&2
         return 1
       }
-      [ ! -e "$marker_staged" ] || rm -rf "$marker_staged"
+      remove_owned_prefix_switch_tree "$marker_staged"
       ;;
     *)
       echo "install blocked: unknown durable prefix switch phase" >&2
@@ -1395,7 +1480,10 @@ install_files() {
   mkdir -p "$(dirname "$PREFIX")" "$ETC_DIR/config" "$ETC_DIR/secrets" "$ETC_DIR/xray" "$ETC_DIR/zapret" "$ETC_DIR/firewall" "$STATE_DIR/last-good" "$RUNTIME_DIR" "$BIN_DIR" "$INIT_DIR" "$RC_DIR" "$HOTPLUG_IFACE_DIR" "$HOTPLUG_FIREWALL_DIR" "$DNSMASQ_DIR"
   staged_prefix="$PREFIX.install.$$"
   old_prefix="$PREFIX.old.$$"
-  rm -rf "$staged_prefix" "$old_prefix"
+  if [ -e "$staged_prefix" ] || [ -L "$staged_prefix" ] || [ -e "$old_prefix" ] || [ -L "$old_prefix" ]; then
+    echo "install blocked: untracked prefix switch path already exists" >&2
+    return 1
+  fi
   mkdir -p "$staged_prefix"
   cp -R "$ROOT/scripts" "$staged_prefix/"
   cp -R "$ROOT/openwrt" "$staged_prefix/"
