@@ -34,9 +34,9 @@
 |---|---|---|
 | Go unit/integration, race, vet, форматирование | PASS (локально на текущем HEAD, 2026-08-28) | `go test ./...`, `go test -race ./...`, `go vet ./...`, `gofmt` |
 | Frontend unit/typecheck/build | PASS | 47 Vitest-тестов, `npm run typecheck`, `npm run build` |
-| Browser/responsive UI | PASS | exact-SHA CI run [33145032178](https://github.com/Zaqvierm/FlintRoute/actions/runs/33145032178) |
-| Linux nft transition | PASS | exact-SHA CI run [33145032112](https://github.com/Zaqvierm/FlintRoute/actions/runs/33145032112) |
-| Linux Zapret process-group и Quick contract | PASS | exact-SHA CI run [33145032139](https://github.com/Zaqvierm/FlintRoute/actions/runs/33145032139) |
+| Browser/responsive UI | PASS | exact-SHA CI run [33145350784](https://github.com/Zaqvierm/FlintRoute/actions/runs/33145350784) |
+| Linux nft transition | PASS | exact-SHA CI run [33145350768](https://github.com/Zaqvierm/FlintRoute/actions/runs/33145350768) |
+| Linux Zapret process-group и Quick contract | PASS | exact-SHA CI run [33145350760](https://github.com/Zaqvierm/FlintRoute/actions/runs/33145350760) |
 | Linux-only harness на Windows | NOT RUN LOCALLY | namespace/procfs/mode требуют Linux |
 | Root-helper privilege split | PARTIAL (production contract; runtime peer proof pending) | production init запускает controller как `daemon`, root startup и отсутствие helper socket отвергаются; production adapter принимает только фиксированный `/var/run/router-policy/helper.sock`; typed helper покрывает global/transaction paths и ограничивает concurrent connections; Linux peer-credential/runtime evidence ещё не получено |
 | Route-only assignment dataplane | PARTIAL | revision-bound decision cache и post-probe есть; nft/dnsmasq runtime consumer не доказан |
@@ -118,13 +118,13 @@ response fails the installer health gate closed.
 результат тестов; при изменении кода evidence снова становится stale.
 
 Для текущего code head `4fec55d41adae0cf907b8e56aa80f91c776a974c`
-после docs-only push `aeed57c283404ab2b5105983e2b10da64e3f426c` также прошли
+после docs-only push `c932cf69b742215ee0a34bbbcb52c4b0ffcb102a` также прошли
 все PR workflows:
 
-- exact-SHA full safety gate: [33145032142](https://github.com/Zaqvierm/FlintRoute/actions/runs/33145032142);
-- nft transition: [33145032112](https://github.com/Zaqvierm/FlintRoute/actions/runs/33145032112);
-- Zapret process-group и Quick contract: [33145032139](https://github.com/Zaqvierm/FlintRoute/actions/runs/33145032139);
-- UI browser/responsive: [33145032178](https://github.com/Zaqvierm/FlintRoute/actions/runs/33145032178).
+- exact-SHA full safety gate: [33145350754](https://github.com/Zaqvierm/FlintRoute/actions/runs/33145350754);
+- nft transition: [33145350768](https://github.com/Zaqvierm/FlintRoute/actions/runs/33145350768);
+- Zapret process-group и Quick contract: [33145350760](https://github.com/Zaqvierm/FlintRoute/actions/runs/33145350760);
+- UI browser/responsive: [33145350784](https://github.com/Zaqvierm/FlintRoute/actions/runs/33145350784).
 
 Это software/CI evidence. Она не заменяет Linux-local запуск и hardware proof.
 
