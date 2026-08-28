@@ -21,14 +21,17 @@ Local evidence for that code commit:
 
 Linux network-namespace/nft and Linux process-group/procfs tests remain
 `NOT RUN LOCALLY` on Windows. Exact-SHA CI for the pushed docs tree
-`fc99c200c1c154081475c3655f53e6954dd16b74` passed: full safety
-[33208651816](https://github.com/Zaqvierm/FlintRoute/actions/runs/33208651816),
+`ea770a7d0d45026ca4d5d1bacaf987c6a7222921` passed: full safety
+[33208980709](https://github.com/Zaqvierm/FlintRoute/actions/runs/33208980709),
 nft transition
-[33208651877](https://github.com/Zaqvierm/FlintRoute/actions/runs/33208651877),
+[33208980671](https://github.com/Zaqvierm/FlintRoute/actions/runs/33208980671),
 Zapret process-group
-[33208651828](https://github.com/Zaqvierm/FlintRoute/actions/runs/33208651828),
+[33208980693](https://github.com/Zaqvierm/FlintRoute/actions/runs/33208980693),
 and UI browser/responsive
-[33208652024](https://github.com/Zaqvierm/FlintRoute/actions/runs/33208652024).
+[33208980692](https://github.com/Zaqvierm/FlintRoute/actions/runs/33208980692).
+The preceding docs tree `fc99c200c1c154081475c3655f53e6954dd16b74` also passed
+the same four workflows (`33208651816`, `33208651877`, `33208651828`,
+`33208652024`).
 These are software/CI evidence only; hardware was not accessed.
 
 Этот документ — текущий источник истины по software/CI-проверкам remediation.
