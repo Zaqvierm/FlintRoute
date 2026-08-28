@@ -43,9 +43,23 @@ export PREFIX="$TMP/prefix"
 
 # shellcheck disable=SC1091
 . "$ROOT/install.sh"
+# Git Bash exposes host uid/gid values that are unrelated to the OpenWrt
+# daemon/root pair.  Keep this fixture focused on the ownership call set while
+# preserving the installer contract that only 0:0 or daemon:daemon entries are
+# acceptable on the target platform.
+path_metadata() {
+  case "$1" in
+    "$TMP"/*) printf '755|0|0\n' ;;
+    *) return 1 ;;
+  esac
+}
 prepare_controller_identity
 
 grep -F "$TMP/etc/router-policy/secrets" "$CHOWN_LOG" >/dev/null
+if grep -F -- '-R' "$CHOWN_LOG" >/dev/null; then
+  echo "controller ownership used recursive chown" >&2
+  exit 1
+fi
 for file in vpn-subscription-url happ-crypt4-private-key.pem telegram.json webhook.env; do
   grep -F "$TMP/etc/router-policy/secrets/$file" "$CHOWN_LOG" >/dev/null || {
     echo "managed secret was not assigned: $file" >&2
@@ -54,6 +68,25 @@ for file in vpn-subscription-url happ-crypt4-private-key.pem telegram.json webho
 done
 if grep -F "$TMP/etc/router-policy/secrets/foreign-secret" "$CHOWN_LOG" >/dev/null; then
   echo "foreign secret was assigned to the controller" >&2
+  exit 1
+fi
+
+: > "$TMP/etc/router-policy/config/foreign.conf"
+path_metadata() {
+  case "$1" in
+    "$TMP/etc/router-policy/config/foreign.conf") printf '640|1000|1000\n' ;;
+    "$TMP"/*) printf '755|0|0\n' ;;
+    *) return 1 ;;
+  esac
+}
+set +e
+foreign_output=$(prepare_controller_identity 2>&1)
+foreign_rc=$?
+set -e
+[ "$foreign_rc" -ne 0 ]
+printf '%s\n' "$foreign_output" | grep -F 'foreign owner in controller-owned tree' >/dev/null
+if grep -F "$TMP/etc/router-policy/config/foreign.conf" "$CHOWN_LOG" >/dev/null; then
+  echo "foreign config was assigned to the controller" >&2
   exit 1
 fi
 

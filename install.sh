@@ -1399,13 +1399,74 @@ prepare_controller_identity() {
     return 1
   }
   command -v chown >/dev/null 2>&1 || { echo "install blocked: chown is required for non-root controller" >&2; return 1; }
-  # These are FlintRoute-owned state/config paths. Secrets are intentionally
-  # handled below as an explicit file allowlist: a recursive chown here would
-  # silently take ownership of operator-managed or foreign secret files.
-  chown -R "$controller_uid:$controller_gid" "$ETC_DIR/config" "$STATE_DIR" "$RUNTIME_DIR" || {
-    echo "install blocked: cannot assign controller-owned paths" >&2
-    return 1
+  # These roots are FlintRoute-owned, but their contents may survive an
+  # upgrade. Never use chown -R here: it would silently take ownership of a
+  # nested operator/foreign file. Validate every existing entry first, then
+  # assign ownership entry-by-entry. Root-owned entries are accepted as
+  # migration input; any other owner fences the install instead of being
+  # silently rewritten.
+  chown_owned_tree() {
+    owned_root="$1"
+    [ -e "$owned_root" ] || return 0
+    [ -d "$owned_root" ] && [ ! -L "$owned_root" ] || {
+      echo "install blocked: owned root is not a directory: $owned_root" >&2
+      return 1
+    }
+    command -v find >/dev/null 2>&1 || {
+      echo "install blocked: find is required to validate owned paths: $owned_root" >&2
+      return 1
+    }
+    ownership_list="$RUNTIME_DIR/.ownership-check.$$"
+    find "$owned_root" -print > "$ownership_list" || {
+      rm -f "$ownership_list"
+      echo "install blocked: cannot enumerate controller-owned paths: $owned_root" >&2
+      return 1
+    }
+    ownership_error=""
+    while IFS= read -r owned_entry; do
+      [ -n "$owned_entry" ] || continue
+      if [ -L "$owned_entry" ]; then
+        ownership_error="symlink in controller-owned tree: $owned_entry"
+        break
+      fi
+      if ! metadata="$(path_metadata "$owned_entry")"; then
+        ownership_error="cannot inspect controller-owned path: $owned_entry"
+        break
+      fi
+      ownership="${metadata#*|}"
+      entry_uid="${ownership%%|*}"
+      entry_gid="${ownership#*|}"
+      case "$entry_uid:$entry_gid" in
+        "0:0"|"$controller_uid:$controller_gid") ;;
+        *)
+          ownership_error="foreign owner in controller-owned tree: $owned_entry uid=$entry_uid gid=$entry_gid"
+          break
+          ;;
+      esac
+    done < "$ownership_list"
+    if [ -n "$ownership_error" ]; then
+      rm -f "$ownership_list"
+      echo "install blocked: $ownership_error" >&2
+      return 1
+    fi
+    ownership_error=""
+    while IFS= read -r owned_entry; do
+      [ -n "$owned_entry" ] || continue
+      if ! chown "$controller_uid:$controller_gid" "$owned_entry"; then
+        ownership_error="cannot assign controller-owned path: $owned_entry"
+        break
+      fi
+    done < "$ownership_list"
+    rm -f "$ownership_list" || {
+      echo "install blocked: cannot remove ownership validation artifact: $ownership_list" >&2
+      return 1
+    }
+    [ -z "$ownership_error" ] || {
+      echo "install blocked: $ownership_error" >&2
+      return 1
+    }
   }
+  chown_owned_tree "$ETC_DIR/config" "$STATE_DIR" "$RUNTIME_DIR" || return 1
   validate_managed_secret_paths || return 1
   chown "$controller_uid:$controller_gid" "$ETC_DIR/secrets" || {
     echo "install blocked: cannot assign secrets directory" >&2
