@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -148,6 +149,29 @@ func TestEventBrokerUsesNewEpochAfterRestart(t *testing.T) {
 			t.Fatalf("event lacks broker epoch: %+v", event)
 		}
 	}
+}
+
+func TestPublishEventSurfacesDurablePersistenceFailure(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	srv.store.SetFaultHook(func(operation string) error {
+		if operation == "save_json:events" {
+			return errors.New("event store unavailable")
+		}
+		return nil
+	})
+
+	original := srv.publishEvent(Event{Type: "test.durable", Durable: true, Severity: "warning", ReasonCode: "fixture"})
+	for _, event := range srv.broker.Recent(original.ID, 0) {
+		if event.Type != "storage.event_persist_failed" || event.ReasonCode != "durable_event_persist_failed" {
+			continue
+		}
+		if event.Details["event_id"] != original.ID || event.Details["event_type"] != original.Type {
+			t.Fatalf("persistence diagnostic lost original event identity: %+v", event)
+		}
+		return
+	}
+	t.Fatalf("durable event persistence failure was not surfaced: %+v", srv.broker.Recent(original.ID, 0))
 }
 
 func TestUIPollingAndSSESubscriptionsDoNotWritePersistentState(t *testing.T) {
