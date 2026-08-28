@@ -53,7 +53,22 @@ path_metadata() {
     *) return 1 ;;
   esac
 }
+mkdir -p "$TMP/prefix/components"
+: > "$TMP/prefix/components/foreign-runtime"
+chmod 700 "$TMP/prefix/components/foreign-runtime"
+component_mode_before=""
+if command -v stat >/dev/null 2>&1; then
+  component_mode_before="$(stat -c '%a' "$TMP/prefix/components/foreign-runtime" 2>/dev/null || true)"
+fi
 prepare_controller_identity
+
+if [ -n "$component_mode_before" ]; then
+  component_mode_after="$(stat -c '%a' "$TMP/prefix/components/foreign-runtime" 2>/dev/null || true)"
+  [ "$component_mode_after" = "$component_mode_before" ] || {
+    echo "preserved component runtime was chmod'ed by controller setup" >&2
+    exit 1
+  }
+fi
 
 grep -F "$TMP/etc/router-policy/secrets" "$CHOWN_LOG" >/dev/null
 if grep -F -- '-R' "$CHOWN_LOG" >/dev/null; then

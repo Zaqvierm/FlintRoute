@@ -234,3 +234,10 @@ unknown files, symlinks, or unrecognized transaction children block teardown;
 cleanup removes only known files and empty owned directories. Zapret profiles
 are stopped and disabled in a first phase, and their files are removed only
 after every owned profile stop succeeds.
+
+Installer path ownership is fail-closed as well. Before `mkdir`/copy and again
+at the mutation boundary, all managed roots are checked for unsafe path
+components or symlinks. Controller state/config/runtime entries are inspected
+before ownership is changed; only root-owned entries or the pinned daemon
+owner are accepted, and ownership is assigned per exact entry. The preserved
+component runtime is not recursively chmod'ed during controller setup.

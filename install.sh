@@ -1505,13 +1505,25 @@ prepare_controller_identity() {
     return 1
   }
   chmod 750 "$ETC_DIR/config" "$ETC_DIR/secrets" "$STATE_DIR" "$RUNTIME_DIR"
-  # The staged prefix is immutable code/assets, not controller state. Make
-  # directories traversable and files readable without granting write access;
-  # preserve execute bits on the scripts/binaries already marked executable.
-  chmod -R a+rX "$PREFIX" || {
-    echo "install blocked: cannot make managed prefix readable to controller" >&2
+  # The staged prefix is immutable code/assets, not controller state. Only the
+  # two trees copied from this release are normalized here. The preserved
+  # components runtime is a separate lifecycle-owned resource and must not be
+  # recursively chmod'ed as a side effect of an installer upgrade.
+  chmod a+rx "$PREFIX" || {
+    echo "install blocked: cannot make managed prefix traversable" >&2
     return 1
   }
+  for code_root in "$PREFIX/scripts" "$PREFIX/openwrt"; do
+    [ -d "$code_root" ] || continue
+    find "$code_root" -type d -exec chmod a+rx {} \; || {
+      echo "install blocked: cannot make managed code directories readable: $code_root" >&2
+      return 1
+    }
+    find "$code_root" -type f -exec chmod a+rX {} \; || {
+      echo "install blocked: cannot make managed code files readable: $code_root" >&2
+      return 1
+    }
+  done
   chmod 640 "$ETC_DIR/config/default.json" "$ETC_DIR/config/schema.json" "$ETC_DIR/config/listener.conf" "$ETC_DIR/helper.env"
   for secret_file in \
     "$ETC_DIR/secrets/vpn-subscription-url" \
