@@ -113,3 +113,12 @@ limits are enforced by config validation and again at the probe boundary.
 Malformed in-memory configuration therefore fails closed before starting
 remote GeoIP requests; one DNS observation cannot turn into an unbounded
 DNS/HTTP/SOCKS fan-out.
+
+## Cancellation and signal semantics
+
+Calibration has one finally-style cleanup path for normal completion, failure,
+timeout, and termination. `SIGTERM`, `SIGINT`, and `SIGHUP` are recorded as
+non-successful outcomes (`143`, `130`, and `129` respectively); cleanup still
+validates the owned process group, nfqws/NFQUEUE objects, nft state, routes, and
+rules before removing the run lock. A cancelled run therefore cannot be
+reported as a successful calibration merely because its cleanup completed.

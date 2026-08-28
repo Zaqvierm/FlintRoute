@@ -367,6 +367,12 @@ fi
 
 cleanup() {
   status=$?
+  # EXIT uses the command's status.  Signal traps pass an explicit status so
+  # cancelling calibration can never be reported as a successful run merely
+  # because the shell resumed after running the finally path.
+  if [ "$#" -gt 0 ]; then
+    status="$1"
+  fi
   trap - EXIT HUP INT TERM
   calibration_pgid="$blockcheck_pgid"
   if [ -n "$blockcheck_pgid" ]; then
@@ -413,7 +419,10 @@ cleanup() {
   rmdir "$lock_dir" 2>/dev/null || true
   exit "$status"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'cleanup 129' HUP
+trap 'cleanup 130' INT
+trap 'cleanup 143' TERM
 
 if "$TIMEOUT_BIN" 10 "$ZAPRET_INIT" running >/dev/null 2>&1; then
   [ "$allow_managed_restart" = "1" ] || {

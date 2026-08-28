@@ -257,4 +257,59 @@ if kill -0 "$orphan_pid" 2>/dev/null && [ "$orphan_state" != "Z" ]; then
   exit 1
 fi
 [ ! -e "$RUNTIME/zapret-calibration.lock" ]
+
+# SIGTERM must still run the same ownership/network cleanup, but the cancelled
+# calibration must not be reported as a successful operation.
+cat >"$TMP/blockcheck-cancel.sh" <<'SH'
+#!/bin/sh
+sleep 60
+SH
+cat >"$TMP/nfqws-version" <<'SH'
+#!/bin/sh
+echo 'github version v1'
+SH
+chmod +x "$TMP/blockcheck-cancel.sh" "$TMP/nfqws-version"
+PATH="$BIN:$PATH" \
+  TIMEOUT_BIN=fake-timeout \
+  ROUTER_POLICY_CONFIG="$TMP/config.json" \
+  ROUTER_POLICY_BIN="$BIN/router-policy" \
+  NFQWS_BIN="$TMP/nfqws-version" \
+  ZAPRET_INIT="$BIN/zapret-init" \
+  ROUTER_POLICY_RUNTIME_DIR="$RUNTIME" \
+  ZAPRET_CATALOG_OUT="$TMP/catalog/catalog.json" \
+  ROUTE_STATE="$TMP/routes.state" RULE_STATE="$TMP/rules.state" \
+  BLOCKCHECK_TIMEOUT=30 \
+  sh "$ROOT/scripts/calibrate-zapret.sh" --apply --mode exhaustive \
+    --domain observed.example \
+    --bundle-id auto-observed \
+    --network-fingerprint sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --blockcheck "$TMP/blockcheck-cancel.sh" >"$TMP/cancel.json" 2>"$TMP/cancel.log" &
+cancel_pid=$!
+i=0
+while [ ! -d "$RUNTIME/zapret-calibration.lock" ] && [ "$i" -lt 10 ]; do
+  sleep 1
+  i=$((i + 1))
+done
+[ -d "$RUNTIME/zapret-calibration.lock" ] || {
+  echo "cancel fixture did not start calibration" >&2
+  kill "$cancel_pid" 2>/dev/null || true
+  wait "$cancel_pid" 2>/dev/null || true
+  exit 1
+}
+kill -TERM "$cancel_pid"
+if wait "$cancel_pid"; then
+  echo "SIGTERM calibration unexpectedly passed" >&2
+  exit 1
+else
+  cancel_status=$?
+fi
+[ "$cancel_status" -eq 143 ] || {
+  echo "SIGTERM returned unexpected status: $cancel_status" >&2
+  exit 1
+}
+[ ! -e "$RUNTIME/zapret-calibration.lock" ] || {
+  echo "SIGTERM cleanup left calibration lock" >&2
+  exit 1
+}
 echo "zapret_calibration_resolves_timeout_from_path=true"
+echo "zapret_calibration_sigterm_is_nonzero=true"
