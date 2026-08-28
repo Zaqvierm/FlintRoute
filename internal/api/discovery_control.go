@@ -305,11 +305,21 @@ func (s *Server) handleDiscoverySuggestionAction(w http.ResponseWriter, r *http.
 	}
 	if parts[1] == "ignore" {
 		s.mu.Lock()
+		previous := suggestion
 		suggestion.PolicyState = "ignored"
 		suggestion.Reason = "ignored by administrator"
 		s.discoverySuggestionMap[domain] = suggestion
 		s.mu.Unlock()
-		s.persistDiscoverySuggestions()
+		if err := s.persistDiscoverySuggestions(); err != nil {
+			// Keep the in-memory view consistent with the durable suggestion. A
+			// failed ignore operation must not look successful to the caller or
+			// silently disappear on the next restart.
+			s.mu.Lock()
+			s.discoverySuggestionMap[domain] = previous
+			s.mu.Unlock()
+			writeError(w, r, http.StatusServiceUnavailable, "discovery_suggestion_persist_failed", err.Error())
+			return
+		}
 		writeData(w, r, map[string]any{"applied": false, "ignored": true, "domain": domain})
 		return
 	}
@@ -346,7 +356,11 @@ func (s *Server) handleDiscoverySuggestionAction(w http.ResponseWriter, r *http.
 		writeError(w, r, http.StatusConflict, "suggestion_apply_failed", result.Reason)
 		return
 	}
-	s.recordDiscoveryAutoResult(result)
+	if err := s.recordDiscoveryAutoResult(result); err != nil {
+		s.publishEvent(Event{Type: "domain.discovery", Severity: "warning", ReasonCode: "discovery_control_state_persist_failed", Details: map[string]any{
+			"domain": domain, "error": err.Error(), "durable": false,
+		}})
+	}
 	writeData(w, r, map[string]any{
 		"applied": true, "domain": domain, "route": suggestion.Route, "route_type": suggestion.RouteType,
 		// Route-only assignment is followed by a fresh route/path proof before
@@ -580,7 +594,7 @@ func (s *Server) discoveryAutoAllowed(cfg *config.Config, check planner.DomainCh
 	return nil
 }
 
-func (s *Server) recordDiscoveryAutoResult(result automaticCommitResult) {
+func (s *Server) recordDiscoveryAutoResult(result automaticCommitResult) error {
 	state := s.loadDiscoveryState()
 	now := s.discoveryNow()
 	state.AppliedAt = pruneDiscoveryTimes(state.AppliedAt, now.Add(-time.Hour))
@@ -604,7 +618,7 @@ func (s *Server) recordDiscoveryAutoResult(result automaticCommitResult) {
 			s.publishEvent(Event{Type: "discovery.auto_apply_paused", Severity: "error", ReasonCode: "consecutive_rollbacks", Details: map[string]any{"count": state.ConsecutiveRollbacks, "limit": limit}})
 		}
 	}
-	_ = s.store.SaveJSON("discovery", discoveryStateKey, state)
+	return s.store.SaveJSON("discovery", discoveryStateKey, state)
 }
 
 func (s *Server) loadDiscoveryState() discoveryControlState {
@@ -649,9 +663,9 @@ func pruneDiscoveryTimes(values []time.Time, cutoff time.Time) []time.Time {
 	return out
 }
 
-func (s *Server) saveDiscoverySuggestion(observation discovery.Observation, check planner.DomainCheck) {
+func (s *Server) saveDiscoverySuggestion(observation discovery.Observation, check planner.DomainCheck) error {
 	s.saveDiscoverySuggestionState(observation, check)
-	s.persistDiscoverySuggestions()
+	return s.persistDiscoverySuggestions()
 }
 
 // saveDiscoverySuggestionTransient keeps an in-progress verification visible
@@ -807,7 +821,7 @@ func (s *Server) loadPersistedDiscoverySuggestions() {
 	}
 }
 
-func (s *Server) persistDiscoverySuggestions() {
+func (s *Server) persistDiscoverySuggestions() error {
 	items := s.discoverySuggestions(maxDiscoverySuggestions)
-	_ = s.store.SaveJSON("discovery", discoverySuggestionKey, items)
+	return s.store.SaveJSON("discovery", discoverySuggestionKey, items)
 }

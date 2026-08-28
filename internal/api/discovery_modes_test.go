@@ -396,6 +396,79 @@ func TestDiscoverySuggestionPersistsAndReloadsWithoutPerObservationStateWrite(t 
 	}
 }
 
+func TestDiscoverySuggestionPersistenceFailureIsReturned(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, _ := newDiscoveryModeServer(t, "suggest", true, fake)
+	defer srv.Close()
+	srv.store.SetFaultHook(func(operation string) error {
+		if operation == "save_json:discovery" {
+			return errors.New("injected discovery persistence failure")
+		}
+		return nil
+	})
+
+	err := srv.saveDiscoverySuggestion(discovery.Observation{Domain: "durability.example", QueryType: "A"}, planner.DomainCheck{
+		Domain: "durability.example", Category: "UNKNOWN", Confidence: 0.9,
+		Selected: &probe.RouteResult{Route: "direct", RouteType: "direct", PathVerified: true, ServiceOK: true, Status: "OK"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected discovery persistence failure") {
+		t.Fatalf("discovery persistence failure was hidden: %v", err)
+	}
+	if items := srv.discoverySuggestions(10); len(items) != 1 || items[0].Domain != "durability.example" {
+		t.Fatalf("in-memory suggestion was unexpectedly discarded after observable write failure: %+v", items)
+	}
+}
+
+func TestDiscoveryPersistenceFailureBlocksAutomaticAssignment(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, _ := newDiscoveryModeServer(t, "auto_apply_verified", true, fake)
+	defer srv.Close()
+	runtime := &fakeRouteAssignmentRuntime{}
+	srv.routeAssignmentRuntime = runtime
+	srv.domainChecker = func(_ context.Context, _ *config.Config, domain, _ string, _ planner.Options) (planner.DomainCheck, error) {
+		selected := probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", PathVerified: true, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true}
+		return planner.DomainCheck{Domain: domain, ETLDPlusOne: domain, Category: "GEO_LOCKED", Status: "SELECTED", VerificationState: "verified", Confidence: 0.99, Selected: &selected, Results: []probe.RouteResult{selected}}, nil
+	}
+	srv.store.SetFaultHook(func(operation string) error {
+		if operation == "save_json:discovery" {
+			return errors.New("injected discovery persistence failure")
+		}
+		return nil
+	})
+
+	srv.discoverDomain(context.Background(), discovery.Observation{Domain: "durability-auto.example", QueryType: "A"})
+	if runtime.applied != 0 || runtime.rolledBack != 0 {
+		t.Fatalf("automatic assignment ran without durable suggestion evidence: runtime=%+v", runtime)
+	}
+	found := false
+	for _, event := range srv.broker.Recent(0, 0) {
+		if event.ReasonCode == "discovery_suggestion_persist_failed" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("discovery persistence failure was not published as an observable event: %+v", srv.broker.Recent(0, 0))
+	}
+}
+
+func TestDiscoveryControlStatePersistenceFailureIsReturned(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, _ := newDiscoveryModeServer(t, "auto_apply_verified", true, fake)
+	defer srv.Close()
+	srv.store.SetFaultHook(func(operation string) error {
+		if operation == "save_json:discovery" {
+			return errors.New("injected discovery control-state failure")
+		}
+		return nil
+	})
+
+	err := srv.recordDiscoveryAutoResult(automaticCommitResult{Applied: true, Reason: "fixture"})
+	if err == nil || !strings.Contains(err.Error(), "injected discovery control-state failure") {
+		t.Fatalf("discovery control-state persistence failure was hidden: %v", err)
+	}
+}
+
 func TestDiscoveryVerifyingSuggestionRemainsTransient(t *testing.T) {
 	fake := newFakeAdapter()
 	srv, _ := newDiscoveryModeServer(t, "suggest", true, fake)

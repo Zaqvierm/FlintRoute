@@ -30,6 +30,15 @@ not run a new check and does not write a raw observation to bbolt.
 While verification is in progress, the provisional item exists only in the
 bounded in-memory view; it is not persisted until the planner reaches a
 terminal verified candidate or honest exhaustion result.
+Persistence failures are observable and fail closed: a discovery check does
+not proceed to automatic route assignment when its verified suggestion cannot
+be written durably. An Ignore action restores the previous in-memory state if
+its write fails. If a route assignment has already committed, a later failure
+to persist auxiliary suggestion metadata is reported as a warning without
+pretending that the assignment itself rolled back.
+The durable discovery control-state write is also returned to its callers;
+loss of applied/rollback counters is therefore observable rather than a
+silent success.
 
 ## Discovery modes
 

@@ -850,7 +850,15 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 		s.saveDiscoverySuggestionTransient(observation, check)
 		return
 	}
-	s.saveDiscoverySuggestion(observation, check)
+	if err := s.saveDiscoverySuggestion(observation, check); err != nil {
+		// A suggestion that only exists in RAM is not durable evidence. Fail
+		// closed before any automatic route assignment and make the storage
+		// failure visible to operators instead of claiming a complete check.
+		s.publishEvent(Event{Type: "domain.discovery", Severity: "warning", ReasonCode: "discovery_suggestion_persist_failed", Details: map[string]any{
+			"domain": check.Domain, "error": err.Error(), "durable": false,
+		}})
+		return
+	}
 	if mode == "suggest" {
 		return
 	}
@@ -859,7 +867,11 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 		return
 	}
 	result := s.commitAutomaticDomain(ctx, check)
-	s.recordDiscoveryAutoResult(result)
+	if err := s.recordDiscoveryAutoResult(result); err != nil {
+		s.publishEvent(Event{Type: "domain.discovery", Severity: "warning", ReasonCode: "discovery_control_state_persist_failed", Details: map[string]any{
+			"domain": check.Domain, "error": err.Error(), "durable": false,
+		}})
+	}
 	if !result.Applied {
 		s.publishEvent(Event{Type: "domain.discovery", Severity: "warning", ReasonCode: "automatic_policy_commit_failed", Details: map[string]any{"domain": check.Domain, "error": result.Reason, "rolled_back": result.RolledBack}})
 	}
@@ -1024,7 +1036,14 @@ func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.Domain
 		s.discoverySuggestionMap[check.Domain] = suggestion
 	}
 	s.mu.Unlock()
-	s.persistDiscoverySuggestions()
+	if err := s.persistDiscoverySuggestions(); err != nil {
+		// The route assignment and revision-bound decision are already durable;
+		// suggestion metadata is auxiliary. Do not undo a verified assignment,
+		// but surface the failed metadata write explicitly.
+		s.publishEvent(Event{Type: "domain.discovery", Severity: "warning", ReasonCode: "route_assignment_suggestion_persist_failed", Details: map[string]any{
+			"domain": check.Domain, "route": route.Tag, "error": err.Error(), "durable_assignment": true,
+		}})
+	}
 	s.publishEvent(Event{Type: "route.decision", Severity: "info", ReasonCode: "route_assignment_committed", Details: map[string]any{
 		"domain": check.Domain, "route": route.Tag, "route_type": route.Type,
 		"assignment": "route_only", "post_apply_proof": true,
