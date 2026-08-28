@@ -5,12 +5,12 @@
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `98a30e069572d7b672605ecccb68f38b5bcea8d9` (route-only assignment is fenced without a registered runtime consumer; semantic, revision-bound receipts and idempotent rollback are required before persisting an applied mapping; installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools; prefix renames flush their containing directory; corrupt-state rescue artifacts are synced and atomically renamed with unique names; failed Zapret calibration retains at most three private bounded forensic bundles after cleanup; end-to-end latency is measured from DNS/network path and never derived from full verification duration; probe terminal statuses are canonicalized case-insensitively).
+- Текущий проверяемый code HEAD: `1c8c964d33b1cddbf4cb9abe8f524bfdae48d4f4` (route-only assignment is fenced without a registered runtime consumer; semantic, revision-bound receipts and idempotent rollback are required before persisting an applied mapping; discovery suggestion/control-state persistence failures are surfaced and block unsafe auto-assignment; installer rollback lease remains armed through post-install checks; DNS observer target is manifest-bound; Quick JSON channel is isolated from nft diagnostics; transient HTTP transports close both wrapper and pinned dial pools; prefix renames flush their containing directory; corrupt-state rescue artifacts are synced and atomically renamed with unique names; failed Zapret calibration retains at most three private bounded forensic bundles after cleanup; end-to-end latency is measured from DNS/network path and never derived from full verification duration; probe terminal statuses are canonicalized case-insensitively).
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
 - Базовый SHA аудита: `d45a779dfa9dc024b426cef358d3df4d32478897`.
-- Ветка: `remediation/transaction-and-privilege-boundaries-consolidated`.
+- Историческая ветка remediation: `remediation/transaction-and-privilege-boundaries-consolidated`.
 - Проверенный code baseline до текущего onboarding delta: `f7a36e63542ef92047c17cca0d5be90987cdd1a4`.
 - Software/CI claims ниже относятся только к указанному текущему HEAD; старые
   строки и run IDs, привязанные к другим code heads, считаются историческими.
@@ -78,7 +78,6 @@
 | Cleanup Zapret process group | `tests/zapret-calibration-runtime.sh` | PASS | Linux CI |
 | SSRF и decompression limits | `go test ./internal/remotefetch ./internal/vpnsub ./internal/tspu ./internal/geoip` | PASS | local |
 | HTTP transport/socket cleanup | `go test ./internal/remotefetch -run TestNewClientCloseIdleConnectionsClosesPinnedDialTransport` | PASS; `CloseIdleConnections` closes both wrapper and pinned dial pools; one-shot management/watchdog clients close their idle pools | local |
-| HTTP transport/socket cleanup | `go test ./internal/remotefetch -run TestNewClientCloseIdleConnectionsClosesPinnedDialTransport` | PASS; `CloseIdleConnections` now closes both the request wrapper and its pinned dial transport; management/watchdog one-shot clients also close idle pools | local |
 | Typed Xray input | `go test ./internal/vpnsub` | PASS | local |
 | Resource budget | `go test ./internal/api ./internal/probe` | PASS | local |
 | Запрет unvalidated probe fan-out | `go test ./internal/probe -run TestProbeRouteRejectsUnvalidatedProbeURLFanout` и race-вариант | PASS | local |
@@ -103,16 +102,19 @@ response fails the installer health gate closed.
 
 ## Запуски CI и clean-clone evidence
 
-Для предыдущего code head `1118e6594476fc05f8b52ad4c800327a916cb110` после push прошли:
+Для текущего code head `1c8c964d33b1cddbf4cb9abe8f524bfdae48d4f4` после push прошли:
 
-- exact-SHA full safety gate: [33123851786](https://github.com/Zaqvierm/FlintRoute/actions/runs/33123851786);
-- nft transition: [33123851772](https://github.com/Zaqvierm/FlintRoute/actions/runs/33123851772);
-- Zapret process-group и Quick contract: [33123851867](https://github.com/Zaqvierm/FlintRoute/actions/runs/33123851867);
-- UI browser/responsive: [33123851781](https://github.com/Zaqvierm/FlintRoute/actions/runs/33123851781).
+- exact-SHA full safety gate: [33134781942](https://github.com/Zaqvierm/FlintRoute/actions/runs/33134781942);
+- nft transition: [33134781935](https://github.com/Zaqvierm/FlintRoute/actions/runs/33134781935);
+- Zapret process-group и Quick contract: [33134781937](https://github.com/Zaqvierm/FlintRoute/actions/runs/33134781937);
+- UI browser/responsive: [33134781941](https://github.com/Zaqvierm/FlintRoute/actions/runs/33134781941).
 
-Эти run ID привязаны к exact code SHA `1118e6594476fc05f8b52ad4c800327a916cb110`.
+Эти run ID привязаны к exact code SHA `1c8c964d33b1cddbf4cb9abe8f524bfdae48d4f4`.
 Документационный HEAD может отличаться от code HEAD, но не меняет исходный
 результат тестов; при изменении кода evidence снова становится stale.
+
+Предыдущие run ID для исторического code head `1118e6594476fc05f8b52ad4c800327a916cb110`
+сохранены ниже как археологическое evidence и не наследуются текущим SHA.
 
 Кодовый delta `e6203e3` дополнительно прошёл локальные `go test ./...`,
 `go test -race ./...`, `go vet ./...` и `git diff --check`. Exact-SHA Linux
