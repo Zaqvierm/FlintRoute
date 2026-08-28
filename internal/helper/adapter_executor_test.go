@@ -59,6 +59,9 @@ func TestAdapterExecutorAcceptsOnlySemanticallyProvenReconcile(t *testing.T) {
 		"echo reconcile=ok",
 		"echo generation=" + request.Generation,
 		"echo transaction_id=" + request.TransactionID,
+		"echo revision_id=" + request.RevisionID,
+		"echo candidate_hash=" + request.CandidateHash,
+		"echo artifact_manifest_hash=" + request.ArtifactManifestHash,
 		"echo active_transaction=" + request.TransactionID,
 		"echo active_revision=" + request.RevisionID,
 		"echo active_candidate_hash=" + request.CandidateHash,
@@ -107,7 +110,8 @@ func TestAdapterExecutorRejectsSuccessWithoutExactSemanticBinding(t *testing.T) 
 		t.Fatalf("adapter success with mismatched candidate binding was accepted: %+v", response)
 	}
 
-	missing := strings.Replace(script, "echo rollback_token_hash="+request.RollbackTokenHash+"\n", "", 1)
+	valid := strings.Replace(script, "echo candidate_hash="+wrongCandidate, "echo candidate_hash="+request.CandidateHash, 1)
+	missing := strings.Replace(valid, "echo rollback_token_hash="+request.RollbackTokenHash+"\n", "", 1)
 	if err := os.WriteFile(adapterPath, []byte(missing), 0o700); err != nil {
 		t.Fatal(err)
 	}
