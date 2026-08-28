@@ -162,6 +162,12 @@ if ($LASTEXITCODE -ne 0) {
   throw "boot guard service test failed"
 }
 
+Write-Host "== baseline-bound boot guard clear =="
+& $gitSh tests/boot-guard-baseline.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "baseline boot guard clear test failed"
+}
+
 Write-Host "== controller bind safety =="
 & $gitSh tests/controller-bind-safety.sh
 if ($LASTEXITCODE -ne 0) {

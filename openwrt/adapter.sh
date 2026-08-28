@@ -323,6 +323,32 @@ clear_boot_guard_bound() {
   echo "transaction_state=committed"
 }
 
+clear_boot_guard_baseline() {
+  [ "$config" = "$known_config" ] || exit 2
+  [ "$txid" = "baseline" ] || {
+    echo "reason=baseline_transaction_binding_invalid" >&2
+    return 1
+  }
+  printf '%s\n' "$revision" | grep -Eq '^rev_1_[0-9a-f]{12}$' || {
+    echo "reason=baseline_revision_binding_invalid" >&2
+    return 1
+  }
+  printf '%s\n' "$recovery_candidate_hash" | grep -Eq '^sha256:[0-9a-f]{64}$' || {
+    echo "reason=baseline_candidate_binding_invalid" >&2
+    return 1
+  }
+  clear_boot_guard
+  echo "protocol_version=1"
+  echo "operation=clear-boot-guard-baseline"
+  echo "generation=$revision"
+  echo "transaction_id=baseline"
+  echo "revision_id=$revision"
+  echo "candidate_hash=$recovery_candidate_hash"
+  echo "active_revision=$revision"
+  echo "active_candidate_hash=$recovery_candidate_hash"
+  echo "transaction_state=baseline_confirmed"
+}
+
 sha_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -2080,6 +2106,9 @@ case "$cmd" in
   clear-boot-guard)
     [ "$config" = "$known_config" ] || exit 2
     clear_boot_guard
+    ;;
+  clear-boot-guard-baseline)
+    clear_boot_guard_baseline
     ;;
   status)
     [ "$config" = "$known_config" ] || exit 2

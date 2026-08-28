@@ -33,6 +33,7 @@ sh tests/installer-prefix-switch.sh
 sh tests/content-aware-install.sh
 sh tests/shell-library.sh
 sh tests/boot-guard-service.sh
+sh tests/boot-guard-baseline.sh
 sh tests/controller-bind-safety.sh
 sh tests/secret-scan.sh
 sh tests/adapter-rollback.sh

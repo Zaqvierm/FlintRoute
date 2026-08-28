@@ -34,6 +34,9 @@ func (e AdapterExecutor) Execute(ctx context.Context, request Request) Response 
 	if strings.HasPrefix(request.Command, "transaction.") {
 		return e.executeTransaction(ctx, request)
 	}
+	if request.Command == "recovery.clear_boot_guard_baseline" {
+		return e.executeBaselineBootGuardClear(ctx, request)
+	}
 	if strings.HasPrefix(request.Command, "service.") {
 		return e.executeService(ctx, request)
 	}
@@ -45,6 +48,50 @@ func (e AdapterExecutor) Execute(ctx context.Context, request Request) Response 
 	}
 	response.ErrorCode = "unknown_command"
 	response.Error = "helper command is not allowlisted"
+	return response
+}
+
+func (e AdapterExecutor) executeBaselineBootGuardClear(ctx context.Context, request Request) Response {
+	response := ResponseFrom(request, false, "", "")
+	command := exec.CommandContext(ctx, e.AdapterPath, "clear-boot-guard-baseline", e.ConfigPath, "baseline", request.RevisionID, request.CandidateHash)
+	raw, err := command.Output()
+	if exitErr := new(exec.ExitError); errors.As(err, &exitErr) {
+		raw = append(raw, exitErr.Stderr...)
+	}
+	if len(raw) > 64<<10 {
+		raw = raw[:64<<10]
+	}
+	response.Evidence = parseEvidence(raw)
+	response.Operation = response.Evidence["operation"]
+	response.SemanticState = response.Evidence["transaction_state"]
+	response.Reason = response.Evidence["reason"]
+	if err != nil {
+		response.ErrorCode = "adapter_exit_nonzero"
+		response.Error = "baseline boot guard clear failed"
+		return response
+	}
+	for key, expected := range map[string]string{
+		"operation":             "clear-boot-guard-baseline",
+		"generation":            request.Generation,
+		"transaction_id":        "baseline",
+		"revision_id":           request.RevisionID,
+		"candidate_hash":        request.CandidateHash,
+		"active_revision":       request.RevisionID,
+		"active_candidate_hash": request.CandidateHash,
+	} {
+		if response.Evidence[key] != expected {
+			response.ErrorCode = "baseline_boot_guard_binding_mismatch"
+			response.Error = "adapter baseline clear evidence did not match the request"
+			return response
+		}
+	}
+	if response.Evidence["boot_guard"] != "cleared" || response.SemanticState != "baseline_confirmed" {
+		response.ErrorCode = "boot_guard_not_semantically_confirmed"
+		response.Error = "adapter did not prove baseline-bound boot guard removal"
+		return response
+	}
+	response.Accepted = true
+	response.State = "accepted"
 	return response
 }
 

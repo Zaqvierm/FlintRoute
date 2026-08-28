@@ -56,6 +56,42 @@ func (a *OpenWrt) ClearBootGuard(ctx context.Context) StepResult {
 func (a *OpenWrt) ClearBootGuardForTransaction(ctx context.Context, tx Transaction) StepResult {
 	return a.runTransaction(ctx, "clear-boot-guard", tx)
 }
+func (a *OpenWrt) ClearBootGuardForBaseline(ctx context.Context, revisionID, candidateHash string) StepResult {
+	start := time.Now().UTC()
+	if !revisionIDPattern.MatchString(revisionID) || !sha256Pattern.MatchString(candidateHash) {
+		return failedStep("clear-boot-guard-baseline", start, fmt.Errorf("baseline boot guard binding failed strict validation"))
+	}
+	if a.helperSocket != "" {
+		requestID, err := secureRandomHex(8)
+		if err != nil {
+			return failedStep("clear-boot-guard-baseline", start, err)
+		}
+		request := helper.Request{
+			ProtocolVersion: helper.ProtocolVersion,
+			RequestID:       "req_" + requestID,
+			Command:         "recovery.clear_boot_guard_baseline",
+			Generation:      revisionID,
+			RevisionID:      revisionID,
+			TransactionID:   "baseline",
+			CandidateHash:   candidateHash,
+			Baseline:        &helper.BaselineRequest{Operation: "clear-boot-guard"},
+		}
+		result := a.executeHelperRequest(ctx, "clear-boot-guard-baseline", start, request)
+		if result.OK && (result.Evidence["boot_guard"] != "cleared" || result.SemanticState != "baseline_confirmed" || result.Evidence["active_revision"] != revisionID || result.Evidence["active_candidate_hash"] != candidateHash) {
+			result.OK = false
+			result.Status = "ERROR"
+			result.Reason = "adapter did not prove baseline-bound boot guard removal"
+		}
+		return result
+	}
+	result := a.execute(ctx, "clear-boot-guard-baseline", start, a.configPath, "baseline", revisionID, candidateHash)
+	if result.OK && (result.Evidence["boot_guard"] != "cleared" || result.SemanticState != "baseline_confirmed" || result.Evidence["active_revision"] != revisionID || result.Evidence["active_candidate_hash"] != candidateHash) {
+		result.OK = false
+		result.Status = "ERROR"
+		result.Reason = "adapter did not prove baseline-bound boot guard removal"
+	}
+	return result
+}
 func (a *OpenWrt) Reconcile(ctx context.Context, target RecoveryTarget) StepResult {
 	start := time.Now().UTC()
 	if err := validateRecoveryTarget(target); err != nil {

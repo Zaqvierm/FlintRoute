@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"router-policy/internal/adapter"
 	"router-policy/internal/config"
 	"router-policy/internal/discovery"
 	"router-policy/internal/health"
@@ -52,6 +53,47 @@ func TestFreshStoreCreatesCommittedBaselineWithoutDataplaneCalls(t *testing.T) {
 	}
 	if recovery := srv.currentRecoveryStatus(); recovery.Status != "not_required" || recovery.RevisionID != srv.activeRevision {
 		t.Fatalf("baseline recovery status is dishonest: %+v", recovery)
+	}
+}
+
+type baselineGuardFakeAdapter struct {
+	*fakeAdapter
+	calls int
+}
+
+func (f *baselineGuardFakeAdapter) ClearBootGuardForBaseline(_ context.Context, revisionID, candidateHash string) adapter.StepResult {
+	f.calls++
+	return adapter.StepResult{
+		ProtocolVersion: adapter.AdapterProtocolVersion,
+		Operation:       "clear-boot-guard-baseline",
+		Step:            "clear_boot_guard_baseline",
+		Status:          "OK",
+		OK:              true,
+		SemanticState:   "baseline_confirmed",
+		Evidence: map[string]any{
+			"boot_guard":            "cleared",
+			"active_revision":       revisionID,
+			"active_candidate_hash": candidateHash,
+		},
+		StartedAt:  time.Now().UTC(),
+		FinishedAt: time.Now().UTC(),
+	}
+}
+
+func TestBaselineRecoveryClearsOnlyThroughBaselineBoundAdapterOperation(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Services = map[string]config.Service{}
+	fake := &baselineGuardFakeAdapter{fakeAdapter: newFakeAdapter()}
+	srv, err := NewServerWithOptions(cfg, Options{Provider: platform.DevelopmentMockProvider{}, ProductionAdapter: fake, Development: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	if fake.calls != 1 {
+		t.Fatalf("baseline recovery did not clear the early guard exactly once: calls=%d", fake.calls)
+	}
+	if recovery := srv.currentRecoveryStatus(); recovery.Status != "not_required" || recovery.CommitPhase != "baseline_confirmed" {
+		t.Fatalf("baseline recovery status is not confirmed: %+v", recovery)
 	}
 }
 

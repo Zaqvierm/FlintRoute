@@ -88,6 +88,41 @@ func TestValidateRequestAllowsBoundRecoveryWithoutRollbackCapability(t *testing.
 	}
 }
 
+func TestValidateRequestAllowsOnlyBoundBaselineBootGuardClear(t *testing.T) {
+	request := Request{
+		ProtocolVersion: ProtocolVersion,
+		RequestID:       "req_baseline",
+		Command:         "recovery.clear_boot_guard_baseline",
+		Generation:      "rev_1_001122334455",
+		RevisionID:      "rev_1_001122334455",
+		TransactionID:   "baseline",
+		CandidateHash:   "sha256:" + strings.Repeat("a", 64),
+		Baseline:        &BaselineRequest{Operation: "clear-boot-guard"},
+	}
+	if err := ValidateRequest(request); err != nil {
+		t.Fatalf("bound baseline clear rejected: %v", err)
+	}
+	request.TransactionID = "tx_0011223344556677"
+	if err := ValidateRequest(request); err == nil {
+		t.Fatal("baseline clear accepted a non-baseline transaction binding")
+	}
+	request.TransactionID = "baseline"
+	request.CandidateHash = ""
+	if err := ValidateRequest(request); err == nil {
+		t.Fatal("baseline clear accepted without candidate binding")
+	}
+	request.CandidateHash = "sha256:" + strings.Repeat("a", 64)
+	request.ArtifactManifestHash = "sha256:" + strings.Repeat("b", 64)
+	if err := ValidateRequest(request); err == nil {
+		t.Fatal("baseline clear accepted an artifact binding")
+	}
+	request.ArtifactManifestHash = ""
+	request.NFT = &NFTRequest{Family: "inet", Table: "router_policy"}
+	if err := ValidateRequest(request); err == nil {
+		t.Fatal("baseline clear accepted an unrelated resource payload")
+	}
+}
+
 func TestValidateRequestAllowsOnlyBoundGlobalOperations(t *testing.T) {
 	request := Request{
 		ProtocolVersion: ProtocolVersion,

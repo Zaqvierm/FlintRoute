@@ -197,6 +197,52 @@ func TestAdapterExecutorAcceptsOnlyGenerationBoundBootGuardClear(t *testing.T) {
 	}
 }
 
+func TestAdapterExecutorAcceptsOnlySemanticallyProvenBaselineBootGuardClear(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("exec adapter fixture requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	adapterPath := filepath.Join(dir, "adapter.sh")
+	request := Request{
+		ProtocolVersion: ProtocolVersion,
+		RequestID:       "req_baseline",
+		Command:         "recovery.clear_boot_guard_baseline",
+		Generation:      "rev_1_001122334455",
+		RevisionID:      "rev_1_001122334455",
+		TransactionID:   "baseline",
+		CandidateHash:   "sha256:" + strings.Repeat("a", 64),
+		Baseline:        &BaselineRequest{Operation: "clear-boot-guard"},
+	}
+	script := "#!/bin/sh\n" + strings.Join([]string{
+		"echo protocol_version=1",
+		"echo operation=clear-boot-guard-baseline",
+		"echo boot_guard=cleared",
+		"echo generation=" + request.Generation,
+		"echo transaction_id=baseline",
+		"echo revision_id=" + request.RevisionID,
+		"echo candidate_hash=" + request.CandidateHash,
+		"echo active_revision=" + request.RevisionID,
+		"echo active_candidate_hash=" + request.CandidateHash,
+		"echo transaction_state=baseline_confirmed",
+	}, "\n") + "\n"
+	if err := os.WriteFile(adapterPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executor := AdapterExecutor{AdapterPath: adapterPath, ConfigPath: filepath.Join(dir, "default.json"), InitDir: dir}
+	response := executor.Execute(context.Background(), request)
+	if !response.Accepted || response.ErrorCode != "" {
+		t.Fatalf("semantic baseline clear proof was rejected: %+v", response)
+	}
+	badScript := strings.Replace(script, "echo active_candidate_hash="+request.CandidateHash, "echo active_candidate_hash=sha256:"+strings.Repeat("b", 64), 1)
+	if err := os.WriteFile(adapterPath, []byte(badScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	response = executor.Execute(context.Background(), request)
+	if response.Accepted || response.ErrorCode != "baseline_boot_guard_binding_mismatch" {
+		t.Fatalf("mismatched baseline binding was accepted: %+v", response)
+	}
+}
+
 func TestAdapterExecutorRequiresManagedServicePostcondition(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("exec service fixture requires a POSIX shell")

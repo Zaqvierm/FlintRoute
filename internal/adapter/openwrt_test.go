@@ -176,3 +176,60 @@ func TestOpenWrtGlobalUsesTypedHelperWhenConfigured(t *testing.T) {
 		t.Fatal("status did not reach the typed helper")
 	}
 }
+
+func TestOpenWrtBaselineBootGuardUsesTypedBoundHelper(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Unix helper boundary is only exercised on Linux")
+	}
+	listener, err := net.Listen("unix", t.TempDir()+"/helper.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	revision := "rev_1_001122334455"
+	candidateHash := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	requestSeen := make(chan helper.Request, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		var request helper.Request
+		if decodeErr := json.NewDecoder(connection).Decode(&request); decodeErr != nil {
+			return
+		}
+		requestSeen <- request
+		response := helper.ResponseFrom(request, true, "", "")
+		response.Operation = "clear-boot-guard-baseline"
+		response.SemanticState = "baseline_confirmed"
+		response.Evidence = map[string]string{
+			"operation":             "clear-boot-guard-baseline",
+			"generation":            revision,
+			"transaction_id":        "baseline",
+			"revision_id":           revision,
+			"candidate_hash":        candidateHash,
+			"active_revision":       revision,
+			"active_candidate_hash": candidateHash,
+			"boot_guard":            "cleared",
+			"transaction_state":     "baseline_confirmed",
+		}
+		_ = json.NewEncoder(connection).Encode(response)
+	}()
+	a := &OpenWrt{helperSocket: listener.Addr().String()}
+	result := a.ClearBootGuardForBaseline(context.Background(), revision, candidateHash)
+	if !result.OK || result.Status != "OK" {
+		t.Fatalf("typed baseline boot-guard clear was not accepted: %+v", result)
+	}
+	select {
+	case request := <-requestSeen:
+		if request.Command != "recovery.clear_boot_guard_baseline" || request.Baseline == nil || request.Baseline.Operation != "clear-boot-guard" {
+			t.Fatalf("unexpected baseline helper request: %+v", request)
+		}
+		if request.TransactionID != "baseline" || request.RevisionID != revision || request.CandidateHash != candidateHash || request.ArtifactManifestHash != "" || request.RollbackTokenHash != "" {
+			t.Fatalf("baseline request was not narrowly bound: %+v", request)
+		}
+	default:
+		t.Fatal("baseline clear did not reach the typed helper")
+	}
+}

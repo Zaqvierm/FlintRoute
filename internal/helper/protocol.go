@@ -34,6 +34,7 @@ type Request struct {
 	CandidateHash        string              `json:"candidate_hash,omitempty"`
 	ArtifactManifestHash string              `json:"artifact_manifest_hash,omitempty"`
 	Transaction          *TransactionRequest `json:"transaction,omitempty"`
+	Baseline             *BaselineRequest    `json:"baseline,omitempty"`
 	NFT                  *NFTRequest         `json:"nft,omitempty"`
 	IPPlan               *IPPlanRequest      `json:"ip_plan,omitempty"`
 	Service              *ServiceRequest     `json:"service,omitempty"`
@@ -42,6 +43,13 @@ type Request struct {
 }
 
 type TransactionRequest struct {
+	Operation string `json:"operation"`
+}
+
+// BaselineRequest is the only untransactional mutation allowed by the
+// protocol. It is bound to the immutable baseline revision and candidate
+// hash; it cannot carry a path, provider data or an arbitrary command.
+type BaselineRequest struct {
 	Operation string `json:"operation"`
 }
 
@@ -150,6 +158,10 @@ func ValidateRequest(request Request) error {
 		if request.Transaction == nil || request.Transaction.Operation != "reconcile" || !recoveryRequestBound(request) {
 			return ErrInvalidRequest
 		}
+	case "recovery.clear_boot_guard_baseline":
+		if request.Baseline == nil || request.Baseline.Operation != "clear-boot-guard" || request.Generation != request.RevisionID || request.TransactionID != "baseline" || request.RollbackTokenHash != "" || request.ArtifactManifestHash != "" || !safeHash(request.CandidateHash) || hasResourcePayload(request, "baseline") {
+			return ErrInvalidRequest
+		}
 	case "nft.replace_owned_table":
 		if !requestBound(request) || request.NFT == nil || request.NFT.Family != "inet" || !safeObjectName(request.NFT.Table) || request.NFT.Generation != request.Generation || request.NFT.ArtifactHash != request.ArtifactManifestHash {
 			return ErrInvalidRequest
@@ -186,6 +198,31 @@ func recoveryRequestBound(request Request) bool {
 
 func globalRequestBound(request Request) bool {
 	return request.Generation == "global" && request.RevisionID == "global" && request.TransactionID == "global" && request.RollbackTokenHash == "" && request.CandidateHash == "" && request.ArtifactManifestHash == ""
+}
+
+func hasResourcePayload(request Request, allowed string) bool {
+	if allowed != "transaction" && request.Transaction != nil {
+		return true
+	}
+	if allowed != "baseline" && request.Baseline != nil {
+		return true
+	}
+	if allowed != "nft" && request.NFT != nil {
+		return true
+	}
+	if allowed != "ip_plan" && request.IPPlan != nil {
+		return true
+	}
+	if allowed != "service" && request.Service != nil {
+		return true
+	}
+	if allowed != "artifact" && request.Artifact != nil {
+		return true
+	}
+	if allowed != "global" && request.Global != nil {
+		return true
+	}
+	return false
 }
 
 func globalOperation(command string) string {
