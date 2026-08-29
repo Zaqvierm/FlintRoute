@@ -1118,7 +1118,10 @@ wait_control_health() {
 
 stop_control_services_for_upgrade() {
   [ -z "$SYSTEM_ROOT" ] || return 0
-  for service in router-policy-watchdog router-policy; do
+  # Stop the controller before its privileged helper.  Replacing helper
+  # artifacts while the old process is serving requests would leave a mixed
+  # generation; a fresh controller must never race an old helper.
+  for service in router-policy-watchdog router-policy router-policy-helper; do
     service_was_running "$service" || continue
     init="$INIT_DIR/$service"
     run_bounded "$init" stop >/dev/null
@@ -1131,6 +1134,18 @@ stop_control_services_for_upgrade() {
 
 restart_running_services() {
   [ -z "$SYSTEM_ROOT" ] || return 0
+  if service_was_running router-policy; then
+    # A production controller is only valid with the pinned helper peer.  Do
+    # not resurrect the controller against a missing/stopped helper after an
+    # upgrade; that would turn a safe install into a root/direct-mutation
+    # fallback instead of failing closed.
+    if ! service_was_running router-policy-helper; then
+      echo "install blocked: controller was running without its helper service" >&2
+      return 1
+    fi
+    run_bounded "$INIT_DIR/router-policy-helper" start
+    run_bounded "$INIT_DIR/router-policy-helper" running
+  fi
   if service_was_running router-policy; then
     # The controller was intentionally stopped before files were replaced.
     # Calling rc.common restart here issues a second procd delete; some OpenWrt
@@ -1163,7 +1178,10 @@ restart_running_services() {
 
 start_control_services() {
   [ -z "$SYSTEM_ROOT" ] || return 0
-  for service in router-policy router-policy-watchdog; do
+  # The helper is the dependency boundary: it must be running before the
+  # non-root controller is started.  Starting the controller first creates a
+  # deterministic health failure on a clean install.
+  for service in router-policy-helper router-policy router-policy-watchdog; do
     if ! "$INIT_DIR/$service" running >/dev/null 2>&1; then
       run_bounded "$INIT_DIR/$service" start
     fi
@@ -1770,11 +1788,12 @@ case "$mode" in
     if [ "$enable_services" = "1" ]; then
       run_bounded "$INIT_DIR/router-policy-dns-observer" enable
       run_bounded "$INIT_DIR/router-policy-boot-guard" enable
+      run_bounded "$INIT_DIR/router-policy-helper" enable
       run_bounded "$INIT_DIR/router-policy" enable
       run_bounded "$INIT_DIR/router-policy-watchdog" enable
       start_control_services
-      echo "services_enabled=router-policy-dns-observer router-policy-boot-guard router-policy router-policy-watchdog"
-      echo "control_services_running=router-policy router-policy-watchdog"
+      echo "services_enabled=router-policy-dns-observer router-policy-boot-guard router-policy-helper router-policy router-policy-watchdog"
+      echo "control_services_running=router-policy-helper router-policy router-policy-watchdog"
       echo "dataplane_services_boot_enabled=false"
     else
       echo "services_enabled=false"

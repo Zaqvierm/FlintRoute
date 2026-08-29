@@ -73,7 +73,7 @@ These are software/CI evidence only; hardware was not accessed.
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `f177ca5ad705d19beb076b77d7890661e405afc7` on `integration/discovery-smartdns-local-dod` (route-only assignment имеет production consumer через typed helper и остаётся ограниченным exact-owned overlay; hardware/runtime evidence по физическому OpenWrt ещё не получено). Historical rows in this document remain useful only as evidence for their named SHA and are stale for the current tree.
+- Текущий проверяемый code HEAD: `235688a` (`235688a` — helper startup dependency fix) on `integration/discovery-smartdns-local-dod` (route-only assignment имеет production consumer через typed helper и остаётся ограниченным exact-owned overlay; hardware/runtime evidence по физическому OpenWrt ещё не получено). Historical rows in this document remain useful only as evidence for their named SHA and are stale for the current tree.
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -133,7 +133,7 @@ These are software/CI evidence only; hardware was not accessed.
 | Exact-SHA Zapret process-group for deterministic prefix recovery and HWID persistence | PASS | run [33159908055](https://github.com/Zaqvierm/FlintRoute/actions/runs/33159908055) |
 | Exact-SHA browser/responsive for deterministic prefix recovery and HWID persistence | PASS | run [33159908069](https://github.com/Zaqvierm/FlintRoute/actions/runs/33159908069) |
 | Linux-only harness на Windows | NOT RUN LOCALLY | namespace/procfs/mode требуют Linux |
-| Root-helper privilege split | PARTIAL (code contract; runtime peer proof pending) | production init запускает controller как `daemon`, root startup и отсутствие helper socket отвергаются; production adapter принимает только фиксированный `/var/run/router-policy/helper.sock`; typed helper покрывает global/transaction/owned paths, проверяет peer UID и ограничивает concurrent connections; component mutation без helper-backed executor теперь fail-closed, read-only inventory остаётся доступным; Linux peer-credential/runtime evidence ещё не получено |
+| Root-helper privilege split | PARTIAL (code contract; runtime peer proof pending) | production init запускает controller как `daemon`, явно включает и запускает helper до controller, блокирует controller без helper, root startup и отсутствие helper socket отвергаются; production adapter принимает только фиксированный `/var/run/router-policy/helper.sock`; typed helper покрывает global/transaction/owned paths, проверяет peer UID и ограничивает concurrent connections; component mutation без helper-backed executor теперь fail-closed, read-only inventory остаётся доступным; Linux peer-credential/runtime evidence ещё не получено |
 | Route-only assignment dataplane | PARTIAL | production consumer и revision-bound post-apply proof реализованы; Linux/OpenWrt runtime и hardware path evidence не получены |
 | Route-only runtime-consumer fence | PASS | `go test ./internal/api -run 'TestAutomaticDomainCommit|TestDiscoverySuggestionApply'`; absent consumer and invalid semantic receipt cannot produce `applied=true` |
 | Flint 2 hardware | NOT RUN / STALE | hardware не трогалось |

@@ -89,10 +89,12 @@ sh install.sh --install
 подтверждённого плана миграции и backup текущего dataplane.
 
 Команда устанавливает ARM64-бинарник, OpenWrt adapter, init-скрипты и hotplug
-hooks. DNS observer, `router-policy`, boot guard и watchdog включаются для
-следующей загрузки; control plane и watchdog запускаются сразу. Одноразовый
-observer bootstrap выполняется до штатного dnsmasq и не перезапускает DHCP/DNS
-в конце загрузки. Xray и nfqws не включаются вслепую: ими управляет
+hooks. DNS observer, `router-policy-helper`, `router-policy`, boot guard и
+watchdog включаются для следующей загрузки; helper запускается перед
+непривилегированным controller, а control plane и watchdog запускаются сразу.
+Если helper не поднялся, controller не получает fallback на прямое выполнение:
+health остаётся fail-closed. Одноразовый observer bootstrap выполняется до
+штатного dnsmasq и не перезапускает DHCP/DNS в конце загрузки. Xray и nfqws не включаются вслепую: ими управляет
 подтверждённая dataplane-транзакция.
 
 Установщик также ставит `scripts/calibrate-zapret.sh` и

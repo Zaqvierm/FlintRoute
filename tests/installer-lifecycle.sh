@@ -592,6 +592,7 @@ SH
   chmod +x "$RESTART_INIT/$service"
 done
 cat > "$SERVICE_STATE_FIXTURE/install-rollback/services.txt" <<'EOF'
+router-policy-helper|1|1
 router-policy|1|1
 router-policy-watchdog|1|1
 router-policy-xray|1|1
@@ -600,10 +601,17 @@ EOF
 SERVICE_SEQUENCE_LOG="$TMP/service-sequence.log"
 INIT_DIR="$RESTART_INIT"
 export SERVICE_SEQUENCE_LOG
+cat > "$RESTART_INIT/router-policy-helper" <<'SH'
+#!/bin/sh
+printf '%s:%s\n' "${0##*/}" "$1" >> "$SERVICE_SEQUENCE_LOG"
+exit 0
+SH
+chmod +x "$RESTART_INIT/router-policy-helper"
 wait_control_health() {
   printf 'control:healthy\n' >> "$SERVICE_SEQUENCE_LOG"
 }
 restart_running_services
+grep -Fx 'router-policy-helper:start' "$SERVICE_SEQUENCE_LOG" >/dev/null
 grep -Fx 'router-policy:start' "$SERVICE_SEQUENCE_LOG" >/dev/null
 grep -Fx 'control:healthy' "$SERVICE_SEQUENCE_LOG" >/dev/null
 grep -Fx 'router-policy-watchdog:start' "$SERVICE_SEQUENCE_LOG" >/dev/null
@@ -612,9 +620,10 @@ if grep -E '^router-policy-(xray|zapret):restart$' "$SERVICE_SEQUENCE_LOG" >/dev
   exit 1
 fi
 controller_line=$(grep -n '^router-policy:start$' "$SERVICE_SEQUENCE_LOG" | cut -d: -f1)
+helper_line=$(grep -n '^router-policy-helper:start$' "$SERVICE_SEQUENCE_LOG" | cut -d: -f1)
 health_line=$(grep -n '^control:healthy$' "$SERVICE_SEQUENCE_LOG" | cut -d: -f1)
 watchdog_line=$(grep -n '^router-policy-watchdog:start$' "$SERVICE_SEQUENCE_LOG" | cut -d: -f1)
-[ "$controller_line" -lt "$health_line" ] && [ "$health_line" -lt "$watchdog_line" ] || {
+[ "$helper_line" -lt "$controller_line" ] && [ "$controller_line" -lt "$health_line" ] && [ "$health_line" -lt "$watchdog_line" ] || {
   echo "controller/watchdog recovery order is unsafe" >&2
   exit 1
 }

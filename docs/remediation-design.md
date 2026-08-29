@@ -83,7 +83,9 @@ JSON или произвольного command/path input.
 
 Production entrypoint требует non-root peer и настроенный helper socket:
 `validateProductionPrivilege` отвергает root и запуск без socket, а OpenWrt
-procd init задаёт `daemon:daemon`. При настроенном socket recovery reconciliation
+procd init задаёт `daemon:daemon`; installer включает и запускает
+`router-policy-helper` до controller и блокирует восстановление controller без
+его running-состояния. При настроенном socket recovery reconciliation
 идёт через typed `transaction.reconcile`, а не через прямую shell mutation.
 Read-only `status` и `diagnose` остаются вне этой mutation boundary. Runtime
 проверка UID/peer credentials и hardware proof ещё не выполнены, поэтому
