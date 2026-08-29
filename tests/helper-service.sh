@@ -1,4 +1,8 @@
 #!/bin/sh
+# The init script is sourced through a test-controlled absolute ROOT path.
+# ShellCheck cannot resolve that runtime path in CI; the fixture owns the
+# sourced file and exercises it explicitly below.
+# shellcheck disable=SC1091
 set -eu
 
 ROOT=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd)
