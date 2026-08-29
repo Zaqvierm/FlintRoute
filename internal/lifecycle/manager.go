@@ -509,6 +509,7 @@ func verifyProcessIdentity(expected, actual ProcessIdentity, runID string) ([]st
 	}
 	check("PID", expected.PID > 0 && expected.PID == actual.PID)
 	check("start time", expected.StartTimeTicks > 0 && expected.StartTimeTicks == actual.StartTimeTicks)
+	check("process group", expected.PGID > 0 && expected.PGID == actual.PGID)
 	check("executable", expected.Executable != "" && filepath.Clean(expected.Executable) == filepath.Clean(actual.Executable))
 	if expected.ConfigPath != "" {
 		check("config", containsArg(actual.CommandLine, expected.ConfigPath))

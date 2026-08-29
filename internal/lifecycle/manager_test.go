@@ -44,14 +44,14 @@ func TestStaleCleanupRequiresFullProcessIdentityAndIsIdempotent(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 7, 22, 7, 0, 0, 0, time.UTC)
 	inspector := &fakeInspector{identities: map[int]ProcessIdentity{42: {
-		PID: 42, StartTimeTicks: 9001, Executable: "/usr/bin/xray",
+		PID: 42, StartTimeTicks: 9001, PGID: 40, Executable: "/usr/bin/xray",
 		CommandLine: []string{"/usr/bin/xray", "run", "-config", "/tmp/router-policy/test-runs/run-1/xray.json", "--owner", "run-1"},
 	}}}
 	manager := Manager{StateDir: filepath.Join(root, "state"), RuntimeDir: filepath.Join(root, "run"), Inspector: inspector, Now: func() time.Time { return now }}
 	manifest := testManifest(now, "run-1")
 	manifest.Resources = []Resource{{
 		ID: "xray", Kind: ResourceProcess, Owner: manifest.Owner, AllowCleanup: true,
-		Process: &ProcessIdentity{PID: 42, StartTimeTicks: 9001, Executable: "/usr/bin/xray", ConfigPath: "/tmp/router-policy/test-runs/run-1/xray.json"},
+		Process: &ProcessIdentity{PID: 42, StartTimeTicks: 9001, PGID: 40, Executable: "/usr/bin/xray", ConfigPath: "/tmp/router-policy/test-runs/run-1/xray.json"},
 	}}
 	if err := manager.Save(manifest); err != nil {
 		t.Fatal(err)
@@ -103,14 +103,14 @@ func TestPIDReuseAndForeignNamedProcessAreProtected(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 7, 22, 7, 0, 0, 0, time.UTC)
 	inspector := &fakeInspector{identities: map[int]ProcessIdentity{42: {
-		PID: 42, StartTimeTicks: 9999, Executable: "/usr/bin/xray",
+		PID: 42, StartTimeTicks: 9999, PGID: 40, Executable: "/usr/bin/xray",
 		CommandLine: []string{"/usr/bin/xray", "run", "-config", "/tmp/foreign.json"},
 	}}}
 	manager := Manager{StateDir: filepath.Join(root, "state"), RuntimeDir: filepath.Join(root, "run"), Inspector: inspector, Now: func() time.Time { return now }}
 	manifest := testManifest(now, "run-2")
 	manifest.Resources = []Resource{{
 		ID: "xray", Kind: ResourceProcess, Owner: manifest.Owner, AllowCleanup: true,
-		Process: &ProcessIdentity{PID: 42, StartTimeTicks: 9001, Executable: "/usr/bin/xray", ConfigPath: "/tmp/router-policy/test-runs/run-2/xray.json"},
+		Process: &ProcessIdentity{PID: 42, StartTimeTicks: 9001, PGID: 40, Executable: "/usr/bin/xray", ConfigPath: "/tmp/router-policy/test-runs/run-2/xray.json"},
 	}}
 	if err := manager.Save(manifest); err != nil {
 		t.Fatal(err)
@@ -118,6 +118,40 @@ func TestPIDReuseAndForeignNamedProcessAreProtected(t *testing.T) {
 	report, err := manager.CleanupStale(true)
 	if err != nil || len(inspector.terminated) != 0 || report.AmbiguousSkipped != 1 || !report.Actions[0].Skipped {
 		t.Fatalf("PID reuse was not protected: report=%+v err=%v", report, err)
+	}
+}
+
+func TestStaleCleanupRefusesProcessGroupMismatch(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 7, 22, 7, 0, 0, 0, time.UTC)
+	inspector := &fakeInspector{identities: map[int]ProcessIdentity{43: {
+		PID: 43, StartTimeTicks: 9002, PGID: 700, Executable: "/usr/bin/nfqws",
+		CommandLine: []string{"/usr/bin/nfqws", "--owner", "run-pgid"},
+	}}}
+	manager := Manager{StateDir: filepath.Join(root, "state"), RuntimeDir: filepath.Join(root, "run"), Inspector: inspector, Now: func() time.Time { return now }}
+	manifest := testManifest(now, "run-pgid")
+	manifest.Resources = []Resource{{
+		ID: "nfqws", Kind: ResourceProcess, Owner: manifest.Owner, AllowCleanup: true,
+		Process: &ProcessIdentity{PID: 43, StartTimeTicks: 9002, PGID: 701, Executable: "/usr/bin/nfqws"},
+	}}
+	if err := manager.Save(manifest); err != nil {
+		t.Fatal(err)
+	}
+	report, err := manager.CleanupStale(true)
+	if err != nil || len(inspector.terminated) != 0 || report.AmbiguousSkipped != 1 || len(report.Actions) != 1 || !report.Actions[0].Skipped {
+		t.Fatalf("process-group mismatch was not protected: report=%+v err=%v terminated=%v", report, err, inspector.terminated)
+	}
+}
+
+func TestManifestRejectsIncompleteProcessIdentity(t *testing.T) {
+	now := time.Date(2026, 7, 22, 7, 0, 0, 0, time.UTC)
+	manifest := testManifest(now, "run-incomplete")
+	manifest.Resources = []Resource{{
+		ID: "nfqws", Kind: ResourceProcess, Owner: manifest.Owner, AllowCleanup: true,
+		Process: &ProcessIdentity{PID: 43, StartTimeTicks: 9002, Executable: "/usr/bin/nfqws"},
+	}}
+	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "incomplete process identity") {
+		t.Fatalf("incomplete process identity was accepted: %v", err)
 	}
 }
 
