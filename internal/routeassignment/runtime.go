@@ -204,7 +204,26 @@ func reconcile(ctx context.Context, cfg *config.Config, expected *Request, optio
 	request := Request{Generation: values["revision_id"], RevisionID: values["revision_id"], CandidateHash: values["candidate_hash"], ArtifactManifestHash: values["artifact_manifest_hash"], Domain: "placeholder.example", RouteTag: "direct", RouteType: "direct", RouteSetID: "placeholder", AssignmentID: "placeholder", MappingHash: "sha256:" + strings.Repeat("0", 64), RequestID: "reconcile"}
 	entries, err := readManifest(filepath.Join(active.Storage.StateDir, "route-assignments.json"))
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		// A missing durable manifest must not make a leftover owned overlay
+		// authoritative.  Crash/power-loss can leave the include behind after
+		// the manifest rename; clear it only when its ownership marker proves it
+		// belongs to FlintRoute.  A foreign include is never overwritten.
+		path, pathErr := includePath(active)
+		if pathErr != nil {
+			return pathErr
+		}
+		raw, readErr := os.ReadFile(path)
+		if errors.Is(readErr, os.ErrNotExist) {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+		if !bytes.Contains(raw, []byte("# FlintRoute owned route-only overlay")) {
+			return errors.New("route assignment manifest is missing and include is not owned; refusing cleanup")
+		}
+		fresh := manifest{Version: manifestVersion, Generation: request.Generation, RevisionID: request.RevisionID, CandidateHash: request.CandidateHash, ArtifactManifestHash: request.ArtifactManifestHash}
+		return materialize(ctx, active, plan, fresh, filepath.Join(active.Storage.StateDir, "route-assignments.json"), path, options)
 	}
 	if err != nil {
 		return err

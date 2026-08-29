@@ -116,6 +116,33 @@ func TestApplyRollbackAndReconcileOnlyTouchOwnedOverlay(t *testing.T) {
 		t.Fatal("reconcile removed the persistent assignment")
 	}
 
+	// If the durable manifest disappears after a crash but the owned include
+	// survives, reconcile must not treat that include as active state. It must
+	// clear only the owned overlay and recreate a bound empty manifest.
+	manifestPath := filepath.Join(root, "route-assignments.json")
+	if err := os.Remove(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := Reconcile(context.Background(), cfg, Options{DNSMasqInit: "/sbin/dnsmasq", Runner: runner}); err != nil {
+		t.Fatalf("reconcile missing manifest: %v", err)
+	}
+	raw, err = os.ReadFile(include)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(string(raw), "youtube.com") {
+		t.Fatalf("reconcile trusted an owned overlay without a durable manifest: %s", raw)
+	}
+	if !contains(string(raw), "# FlintRoute owned route-only overlay revision="+revision) {
+		t.Fatalf("reconcile did not recreate a bound empty overlay: %s", raw)
+	}
+	if _, err := os.Stat(manifestPath); err != nil {
+		t.Fatalf("reconcile did not recreate durable manifest: %v", err)
+	}
+	if err := Apply(context.Background(), cfg, request, Options{DNSMasqInit: "/sbin/dnsmasq", Runner: runner}); err != nil {
+		t.Fatalf("re-apply after missing manifest: %v", err)
+	}
+
 	// A subsequent full revision must invalidate the old route-only mapping,
 	// not turn a stale overlay into a recovery failure.
 	cfg2 := *cfg
@@ -158,6 +185,26 @@ func TestApplyRollbackAndReconcileOnlyTouchOwnedOverlay(t *testing.T) {
 		CandidateHash: "sha256:" + strings.Repeat("d", 64), ArtifactManifestHash: manifestHash,
 	}, Options{DNSMasqInit: "/sbin/dnsmasq", Runner: runner}); err == nil {
 		t.Fatal("reconcile accepted a binding that differs from durable active state")
+	}
+
+	// A missing manifest plus a foreign include is ambiguous. Refuse the
+	// operation and leave the foreign writer's bytes untouched.
+	foreign := []byte("# foreign dnsmasq include\nserver=/foreign.example/9.9.9.9\n")
+	if err := os.WriteFile(include, foreign, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := Reconcile(context.Background(), &cfg2, Options{DNSMasqInit: "/sbin/dnsmasq", Runner: runner}); err == nil {
+		t.Fatal("reconcile overwrote a foreign include without a durable manifest")
+	}
+	got, err := os.ReadFile(include)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(foreign) {
+		t.Fatalf("foreign include changed after refused reconcile: %q", got)
 	}
 }
 
