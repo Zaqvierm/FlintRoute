@@ -597,6 +597,28 @@ adapter rollback "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 [ ! -e "$ACTIVE_ZAPRET" ] || { echo "rollback left the managed nfqws config behind" >&2; exit 1; }
 grep -Fx 'stopped' "$TMP/service-state/zapret-init.state" >/dev/null
 
+# Artifact removal must prove that the fixed target still contains the exact
+# bytes generated for this transaction. A foreign replacement at an
+# allowlisted path must survive the helper operation.
+setup_transaction "tx_7777777777777777" "rev_10_777777777777" "7777777777777777777777777777777777777777777777777777777777777777"
+adapter prepare "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
+printf 'foreign-xray\n' > "$ACTIVE_XRAY"
+set +e
+foreign_artifact_output=$(adapter artifact-remove "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" "$candidate_hash" "$artifact_manifest_hash" xray_config 2>&1)
+foreign_artifact_rc=$?
+set -e
+[ "$foreign_artifact_rc" -ne 0 ] || { echo "artifact removal accepted a foreign target" >&2; exit 1; }
+printf '%s\n' "$foreign_artifact_output" | grep -F 'reason=artifact_target_ownership_unproven' >/dev/null || {
+  echo "foreign artifact removal did not report ownership conflict" >&2
+  exit 1
+}
+grep -Fx 'foreign-xray' "$ACTIVE_XRAY" >/dev/null || { echo "foreign artifact was removed" >&2; exit 1; }
+cp "$txdir/generated/xray.json" "$ACTIVE_XRAY"
+adapter artifact-remove "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" "$candidate_hash" "$artifact_manifest_hash" xray_config >/dev/null
+[ ! -e "$ACTIVE_XRAY" ] || { echo "owned artifact was not removed" >&2; exit 1; }
+adapter rollback "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
+echo "artifact_remove_requires_exact_owned_bytes=true"
+
 echo "state_transitions_begin"
 cat "$TMP/state-transitions.log"
 echo "state_transitions_end"

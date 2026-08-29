@@ -8,6 +8,7 @@ txid="${3:-}"
 revision="${4:-}"
 recovery_candidate_hash="${5:-}"
 recovery_artifact_manifest_hash="${6:-}"
+artifact_kind="${7:-}"
 
 runtime="${RUNTIME_DIR:-/tmp/router-policy}"
 state="${STATE_DIR:-/etc/router-policy/state}"
@@ -1320,32 +1321,55 @@ artifact_paths() {
   esac
 }
 
+verify_owned_artifact_target() {
+  # Removing an allowlisted path is not proof of ownership.  A foreign file
+  # may have been placed at that path after the transaction was prepared.
+  # Only remove the exact bytes generated for this bound transaction; a
+  # mismatch is a hard ownership conflict, not an idempotent success.
+  if [ ! -e "$artifact_target" ]; then
+    return 0
+  fi
+  [ -f "$artifact_target" ] && [ ! -L "$artifact_target" ] || {
+    echo "reason=artifact_target_ownership_unproven" >&2
+    return 1
+  }
+  [ -f "$artifact_source" ] && [ ! -L "$artifact_source" ] || {
+    echo "reason=artifact_source_missing" >&2
+    return 1
+  }
+  cmp -s "$artifact_source" "$artifact_target" || {
+    echo "reason=artifact_target_ownership_unproven" >&2
+    return 1
+  }
+}
+
 install_artifact_command() {
   take_lock
   verify_token
   pending_matches || { echo "reason=transaction_not_pending" >&2; exit 3; }
-  artifact_paths "${7:-}" || exit 2
+  artifact_paths "$artifact_kind" || exit 2
   [ -f "$artifact_source" ] && [ ! -L "$artifact_source" ] || { echo "reason=artifact_source_missing" >&2; exit 3; }
-  if [ "${7:-}" = "nft_table" ]; then
+  if [ "$artifact_kind" = "nft_table" ]; then
     replace_owned_nft_table "$artifact_source"
   else
     atomic_install "$artifact_source" "$artifact_target"
   fi
   emit_operation_binding artifact.install
   echo "transaction_state=artifact_installed"
-  echo "artifact_kind=${7:-}"
+  echo "artifact_kind=$artifact_kind"
 }
 
 remove_artifact_command() {
   take_lock
   verify_token
   pending_matches || { echo "reason=transaction_not_pending" >&2; exit 3; }
-  artifact_paths "${7:-}" || exit 2
-  [ "${7:-}" != "nft_table" ] || { echo "reason=nft_table_requires_owned_transition" >&2; exit 3; }
+  artifact_paths "$artifact_kind" || exit 2
+  [ "$artifact_kind" != "nft_table" ] || { echo "reason=nft_table_requires_owned_transition" >&2; exit 3; }
+  verify_owned_artifact_target || exit 3
   rm -f "$artifact_target"
   emit_operation_binding artifact.remove
   echo "transaction_state=artifact_removed"
-  echo "artifact_kind=${7:-}"
+  echo "artifact_kind=$artifact_kind"
 }
 
 # Route-only assignment is deliberately separate from the transaction path.
