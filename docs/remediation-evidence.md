@@ -2,13 +2,16 @@
 
 ## Current evidence binding (2026-08-29)
 
-Current code/docs HEAD: `c174ef69dfa5c987cbbb262df5ce428f49f27abe` on
-`integration/discovery-smartdns-local-dod`. The worktree is clean and the branch
-is pushed. Local `tests/run-all.ps1` completed `all_tests_ok=true`; Linux
+Current code checkpoint: `3d3f910` on `integration/discovery-smartdns-local-dod`.
+The worktree/branch HEAD is the source of truth for the documentation commit;
+the external status ledger records that exact docs SHA. Local
+`tests/run-all.ps1` completed `all_tests_ok=true`; Linux
 namespace/process-group/filesystem checks remain `NOT RUN LOCALLY` on Windows.
-Exact-SHA CI for this docs-bound tree passed: full safety `33242741324`, UI and
-browser `33242741278`, nft transition `33242741316`, and Zapret process-group
-`33242741279`.
+The most recent exact-SHA CI evidence listed here is for the prior docs-bound
+tree: full safety `33242741324`, UI/browser `33242741278`, nft transition
+`33242741316`, and Zapret process-group `33242741279`. A docs-only commit does
+not change the code under test; its own workflow result is recorded in the
+external ledger after completion.
 
 These are software/CI results only. No Flint 2 connection, installation,
 dataplane mutation, reboot, or hardware validation was performed. Every older
@@ -17,13 +20,13 @@ section in this document is historical evidence for its named SHA and is
 
 ## 2026-08-29 remaining system-screen decomposition
 
-Current grouped checkpoint: `c174ef6` (`docs: bind evidence to final tree`).
+Current grouped checkpoint: `3d3f910` (`refactor: move app orchestration out of entrypoint`).
 The preceding `3d3f910` commit moved App/refresh orchestration; the `8248c01`
 commit contains the route/location parser,
 shared fallback messages, screen dispatcher/error boundary extraction, public UI
 docs, and the regenerated embedded frontend bundle. The exact-SHA runs listed
 for `3d3f910` remain evidence for that code SHA only; the current docs binding
-is `c174ef6`. The older CI runs listed below are historical evidence for their
+is the current code checkpoint `3d3f910`; the older CI runs listed below are historical evidence for their
 own SHAs only.
 
 The operational screen set is now feature-local in `ui/src/features/system.tsx`;

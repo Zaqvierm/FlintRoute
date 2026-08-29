@@ -2,9 +2,10 @@
 
 ## Current truth (2026-08-29)
 
-The authoritative current tree is `c174ef69dfa5c987cbbb262df5ce428f49f27abe`
-on `integration/discovery-smartdns-local-dod`. Local and exact-SHA CI evidence
-for this tree is software/CI only. Linux-only checks are `NOT RUN LOCALLY` on
+The authoritative current code tree is `3d3f910` on
+`integration/discovery-smartdns-local-dod`; the exact docs HEAD is recorded in
+the external ledger. Local and exact-SHA CI evidence for this tree is
+software/CI only. Linux-only checks are `NOT RUN LOCALLY` on
 Windows, and Flint 2 has not been accessed, installed, mutated, or rebooted.
 
 All hardware PASS statements and readiness percentages in the historical tables
