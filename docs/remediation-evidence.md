@@ -1,5 +1,19 @@
 # Evidence remediation
 
+## Boot guard namespace gate
+
+`tests/boot-guard-namespace.sh` is a Linux-only network-namespace harness for
+the cold-boot ordering invariant. It keeps an unrelated `foreign` nft table
+outside the owned transition, loads the committed classifier and mark-scoped
+DROP guard in separate owned batches, exercises protected forwarding, removes
+the classifier to model an early reboot, and proves that an unmarked flow is
+then dropped. Restoring the owned batch must recover the protected path without
+redeclaring or modifying the foreign table. The harness reports
+`NOT RUN LOCALLY — requires Linux network namespace/nftables` on Windows; that
+is not a PASS. The GitHub Actions nft workflow runs this harness as a separate
+step, so Linux namespace evidence remains distinct from mock and hardware
+evidence.
+
 ## 2026-08-29 early committed-classifier delta
 
 The boot-fence implementation for code commit

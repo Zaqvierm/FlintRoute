@@ -2,7 +2,7 @@ name: nft transition safety
 
 on:
   push:
-    branches: [main, remediation/**]
+    branches: [main, remediation/**, integration/**]
   pull_request:
 
 jobs:
@@ -14,3 +14,5 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y iproute2 nftables iputils-ping
       - name: Run atomic nft transition harness
         run: sudo bash tests/nft-transition-namespace.sh
+      - name: Run boot guard cold-boot fence harness
+        run: sudo bash tests/boot-guard-namespace.sh
