@@ -77,3 +77,14 @@ privacy отменяет предыдущую generation, а отменённы�
 отдельными gate. Playwright Chromium проходит локально, если установлен browser
 binary; authoritative повторяемая проверка выполняется в CI. UI-работа намеренно
 не трогает hardware.
+
+### Decomposition checkpoint
+
+Сетевые экраны и правила вынесены в `ui/src/features/network.tsx` и
+`ui/src/features/rules.tsx`, а повторно используемые UI-примитивы — в
+`ui/src/components/ui.tsx`. `main.tsx` теперь отвечает за shell, загрузку данных
+и маршрутизацию экранов; оставшиеся feature-группы выносятся отдельными
+изменениями только вместе с тестами. Это проверено `npm run typecheck`,
+`npm test -- --run` и production build; software evidence не является
+hardware proof. Этот checkpoint зафиксирован commit `bf0c1aa` до push; после
+push exact SHA должен быть указан в evidence ledger.

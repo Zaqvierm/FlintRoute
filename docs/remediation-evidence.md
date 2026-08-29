@@ -1,5 +1,13 @@
 # Evidence remediation
 
+## 2026-08-29 UI decomposition checkpoint (`bf0c1aa`)
+
+The network topology/device screens, rules/operations screens, and shared UI
+primitives were moved out of the monolithic `ui/src/main.tsx` into feature-local
+modules. `npm run typecheck`, `npm test -- --run`, `npm run build`, and
+`git diff --check` passed for this commit. This is a software-only refactor;
+Linux namespace and Flint 2 evidence remain separate and are not inferred.
+
 ## 2026-08-29 current code checkpoint (`61731755f454baae8135582e6e271fa52cae4c88`)
 
 The current tree is `integration/discovery-smartdns-local-dod` at
