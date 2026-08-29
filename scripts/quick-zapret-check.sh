@@ -426,12 +426,16 @@ profile_count=0
   printf '{"version":1,"profiles":['
   for profile in $profiles; do
     [ "$profile_count" -eq 0 ] || printf ','
-    strategy_path="$run_dir/$profile.conf"
-    write_strategy "$profile" "$strategy_path" "$MANAGED_QUEUE"
-    strategy_digest=$(sha256sum "$strategy_path" | awk '{print $1}')
+    # Keep the production artifact (bound to the managed queue) separate from
+    # the per-attempt test artifact (bound to the private queue below).  A
+    # single path here would let the attempt overwrite the bytes whose digest
+    # is published in the catalog, creating false evidence.
+    catalog_strategy_path="$run_dir/$profile.catalog.conf"
+    write_strategy "$profile" "$catalog_strategy_path" "$MANAGED_QUEUE"
+    strategy_digest=$(sha256sum "$catalog_strategy_path" | awk '{print $1}')
     profile_label=$(profile_name "$profile")
     printf '{"id":"%s","name":"%s","provider":"nfqws-v1","provider_version":"%s","binary_digest":"sha256:%s","route_type":"zapret","ip_families":["ipv4"],"transports":["tcp"],"ports":[80,443],"queue":%s,"safety":"reviewed","strategy_digest":"sha256:%s","strategy":' "$profile" "$profile_label" "$provider_version" "$binary_digest" "$MANAGED_QUEUE" "$strategy_digest"
-    json_quote_file "$strategy_path"
+    json_quote_file "$catalog_strategy_path"
     printf '}'
     profile_count=$((profile_count + 1))
   done
@@ -728,7 +732,7 @@ IFS=$old_ifs
 
 for profile in $profiles; do
   attempt_index=$((attempt_index + 1))
-  strategy_path="$run_dir/$profile.conf"
+  strategy_path="$run_dir/$profile.test.conf"
   write_strategy "$profile" "$strategy_path" "$queue"
   dry_path="$run_dir/$profile.dry.conf"
   cp "$strategy_path" "$dry_path"
@@ -768,11 +772,11 @@ for profile in $profiles; do
     probe_once "$profile" "$address"
     if [ "$result" = "PASS" ]; then
       probe_status="$result"
-      evidence="owned_nft_queue=$queue;nfqws_pid=$nfq_pid;target_ip=$address;route=$route_evidence_value"
+      evidence="owned_nft_queue=$queue;production_nfqueue=$MANAGED_QUEUE;nfqws_pid=$nfq_pid;target_ip=$address;route=$route_evidence_value"
       break
     fi
     probe_status="$result"
-    evidence="owned_nft_queue=$queue;nfqws_pid=$nfq_pid;target_ip=$address;route=$route_evidence_value"
+    evidence="owned_nft_queue=$queue;production_nfqueue=$MANAGED_QUEUE;nfqws_pid=$nfq_pid;target_ip=$address;route=$route_evidence_value"
   done
   IFS=$old_ifs
   end_ms=$(now_ms) || die "clock unavailable for bounded verification duration"
