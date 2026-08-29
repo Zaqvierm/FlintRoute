@@ -23,6 +23,50 @@ func TestAdapterExecutorUsesOnlyOwnedOperationExecutor(t *testing.T) {
 	}
 }
 
+func TestAdapterExecutorRouteAssignmentRequiresSemanticProof(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("exec adapter fixture requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	adapterPath := filepath.Join(dir, "adapter.sh")
+	request := validRequest("route_assignment.apply")
+	request.TransactionID = "route-assignment"
+	request.RollbackTokenHash = ""
+	request.RouteAssignment = &RouteAssignmentRequest{Operation: "apply", Domain: "youtube.com", RouteTag: "vless-de", RouteType: "vless", RouteSetID: "abc123", AssignmentID: "def456", MappingHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+	lines := []string{
+		"echo operation=route_assignment.apply",
+		"echo generation=" + request.Generation,
+		"echo transaction_id=route-assignment",
+		"echo revision_id=" + request.RevisionID,
+		"echo candidate_hash=" + request.CandidateHash,
+		"echo artifact_manifest_hash=" + request.ArtifactManifestHash,
+		"echo domain=" + request.RouteAssignment.Domain,
+		"echo route_tag=" + request.RouteAssignment.RouteTag,
+		"echo route_type=" + request.RouteAssignment.RouteType,
+		"echo route_set_id=" + request.RouteAssignment.RouteSetID,
+		"echo assignment_id=" + request.RouteAssignment.AssignmentID,
+		"echo mapping_hash=" + request.RouteAssignment.MappingHash,
+		"echo applied=true",
+		"echo verified=true",
+	}
+	if err := os.WriteFile(adapterPath, []byte("#!/bin/sh\n"+strings.Join(lines, "\n")+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executor := AdapterExecutor{AdapterPath: adapterPath, ConfigPath: filepath.Join(dir, "default.json"), InitDir: dir}
+	response := executor.Execute(context.Background(), request)
+	if !response.Accepted || response.ErrorCode != "" || response.RouteAssignment == nil || !response.RouteAssignment.Applied || !response.RouteAssignment.Verified {
+		t.Fatalf("valid route assignment proof was rejected: %+v", response)
+	}
+	bad := strings.Replace(strings.Join(lines, "\n"), "echo mapping_hash="+request.RouteAssignment.MappingHash, "echo mapping_hash=sha256:"+strings.Repeat("d", 64), 1)
+	if err := os.WriteFile(adapterPath, []byte("#!/bin/sh\n"+bad+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	response = executor.Execute(context.Background(), request)
+	if response.Accepted || response.ErrorCode != "route_assignment_binding_mismatch" {
+		t.Fatalf("mismatched route assignment proof was accepted: %+v", response)
+	}
+}
+
 func TestAdapterExecutorTransactionVerbsAreClosed(t *testing.T) {
 	for command, want := range map[string]string{
 		"transaction.prepare":          "prepare",

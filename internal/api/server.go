@@ -398,6 +398,12 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		}
 	} else {
 		s.recoverCommittedDataplane(context.Background())
+		if recoveryStatusAllowsMutation(s.currentRecoveryStatus()) {
+			if err := s.reconcileRouteAssignments(context.Background()); err != nil {
+				revision, _ := s.activeIdentity()
+				s.setRecoveryStatus(failedRecovery(time.Now().UTC(), "route_assignment_reconcile_failed", err.Error(), adapter.RecoveryTarget{RevisionID: revision}))
+			}
+		}
 	}
 	return s, nil
 }
@@ -445,6 +451,11 @@ func (s *Server) StartScheduler(ctx context.Context) {
 				defer cancelRecovery()
 				s.recoverCommittedDataplane(recoveryCtx)
 				if schedulerCtx.Err() == nil && recoveryStatusAllowsMutation(s.currentRecoveryStatus()) {
+					if err := s.reconcileRouteAssignments(recoveryCtx); err != nil {
+						revision, _ := s.activeIdentity()
+						s.setRecoveryStatus(failedRecovery(time.Now().UTC(), "route_assignment_reconcile_failed", err.Error(), adapter.RecoveryTarget{RevisionID: revision}))
+						return
+					}
 					s.startOperationalSchedulers(schedulerCtx)
 				}
 			}()
@@ -452,6 +463,23 @@ func (s *Server) StartScheduler(ctx context.Context) {
 		}
 		s.startOperationalSchedulers(schedulerCtx)
 	})
+}
+
+func (s *Server) reconcileRouteAssignments(ctx context.Context) error {
+	reconciler, ok := s.routeAssignmentRuntime.(RouteAssignmentReconciler)
+	if !ok {
+		return nil
+	}
+	s.mu.Lock()
+	revision := s.activeRevision
+	s.mu.Unlock()
+	if revision == "" {
+		return nil
+	}
+	// The runtime independently reads the durable binding and refuses stale
+	// manifests; passing only the context keeps controller code from gaining
+	// any path or shell authority.
+	return reconciler.ReconcileRouteAssignments(ctx)
 }
 
 func (s *Server) startOperationalSchedulers(schedulerCtx context.Context) {

@@ -180,11 +180,13 @@ func TestValidateRequestRequiresBoundBootGuardClear(t *testing.T) {
 
 func TestOwnedVerbMappingIsClosed(t *testing.T) {
 	for command, want := range map[string]string{
-		"nft.replace_owned_table": "replace-owned-nft",
-		"ip_plan.apply":           "apply-ip-plan",
-		"ip_plan.rollback":        "rollback-ip-plan",
-		"artifact.install":        "artifact-install",
-		"artifact.remove":         "artifact-remove",
+		"nft.replace_owned_table":   "replace-owned-nft",
+		"ip_plan.apply":             "apply-ip-plan",
+		"ip_plan.rollback":          "rollback-ip-plan",
+		"artifact.install":          "artifact-install",
+		"artifact.remove":           "artifact-remove",
+		"route_assignment.apply":    "route-assignment-apply",
+		"route_assignment.rollback": "route-assignment-rollback",
 	} {
 		request := validRequest(command)
 		switch command {
@@ -194,6 +196,10 @@ func TestOwnedVerbMappingIsClosed(t *testing.T) {
 			request.IPPlan = &IPPlanRequest{Generation: request.Generation, PlanHash: request.ArtifactManifestHash, Operation: strings.TrimPrefix(command, "ip_plan.")}
 		case "artifact.install", "artifact.remove":
 			request.Artifact = &ArtifactRequest{Kind: "xray_config", Hash: request.ArtifactManifestHash, Operation: strings.TrimPrefix(command, "artifact.")}
+		case "route_assignment.apply", "route_assignment.rollback":
+			request.TransactionID = "route-assignment"
+			request.RollbackTokenHash = ""
+			request.RouteAssignment = &RouteAssignmentRequest{Operation: strings.TrimPrefix(command, "route_assignment."), Domain: "youtube.com", RouteTag: "vless-de", RouteType: "vless", RouteSetID: "abc123", AssignmentID: "def456", MappingHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
 		}
 		if err := ValidateRequest(request); err != nil {
 			t.Fatalf("%s rejected: %v", command, err)
@@ -210,6 +216,30 @@ func TestOwnedVerbMappingIsClosed(t *testing.T) {
 	}
 	if _, _, ok := ownedVerb(validRequest("nft.exec")); ok {
 		t.Fatal("unknown owned command was accepted")
+	}
+}
+
+func TestValidateRouteAssignmentRejectsForeignOrIncompletePayload(t *testing.T) {
+	request := validRequest("route_assignment.apply")
+	request.TransactionID = "route-assignment"
+	request.RollbackTokenHash = ""
+	request.RouteAssignment = &RouteAssignmentRequest{Operation: "apply", Domain: "youtube.com", RouteTag: "vless-de", RouteType: "vless", RouteSetID: "abc123", AssignmentID: "def456", MappingHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+	if err := ValidateRequest(request); err != nil {
+		t.Fatalf("valid route assignment rejected: %v", err)
+	}
+	request.RouteAssignment.Domain = "youtube.com/evil"
+	if err := ValidateRequest(request); err == nil {
+		t.Fatal("route assignment accepted a path-bearing domain")
+	}
+	request.RouteAssignment.Domain = "youtube.com"
+	request.RouteAssignment.RouteType = "unknown_route_type"
+	if err := ValidateRequest(request); err == nil {
+		t.Fatal("route assignment accepted an unknown route type")
+	}
+	request.RouteAssignment.RouteType = "vless"
+	request.RouteAssignment.MappingHash = "sha256:bad"
+	if err := ValidateRequest(request); err == nil {
+		t.Fatal("route assignment accepted an invalid mapping hash")
 	}
 }
 

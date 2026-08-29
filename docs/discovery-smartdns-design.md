@@ -54,17 +54,29 @@ silent success.
   `PathVerified`, service verification succeeded, classification confidence is
   at least 0.8 and the rate/circuit-breaker/transaction fences allow it.
 
-The controller now fails closed when that runtime consumer is absent. It does
-not persist a selected decision or report `applied=true` merely because bbolt
+The controller fails closed when that runtime consumer is absent. It does not
+persist a selected decision or report `applied=true` merely because bbolt
 accepted a record. A consumer must return a semantic, revision-bound receipt
 (`Applied`, `Verified`, request ID, route identity and mapping hash) before the
 decision is persisted; any later failure calls its idempotent rollback.
 
 Auto-apply never installs components, changes Xray/Zapret configuration,
 changes marks, tables, IP rules, DNS topology or service lifecycle. The
-route-only consumer must mutate only exact owned domain mappings. Until a
-production nft/dnsmasq consumer exists, the mode remains suggestion-only and
-the API exposes `route_assignment_runtime_unavailable`.
+route-only consumer mutates only the exact owned dnsmasq overlay and its
+revision-bound assignment manifest. A missing helper/runtime still exposes
+`route_assignment_runtime_unavailable` rather than claiming success.
+
+The production bridge is `cmd/router-policy/route_assignment_runtime.go` and
+uses the typed `router-policy-helper` Unix-socket protocol. The privileged
+adapter accepts only `route-assignment-apply`, `route-assignment-rollback` and
+`route-assignment-reconcile`. The runtime validates the committed config hash,
+active transaction binding, enabled route inventory and deterministic object
+IDs before writing `router-policy-route-assignments.conf`; dnsmasq is restarted
+and its `running` action is required as the post-write readiness proof. A full
+active-revision change invalidates the old assignment manifest by replacing it
+with an empty manifest bound to the new revision, but refuses cleanup if the
+include lacks the FlintRoute ownership marker. No foreign dnsmasq file is
+overwritten.
 
 The suggestion Apply action uses the same route-only path. It is one bounded
 backend operation for the user; it does not expose validate/apply/confirm
@@ -123,5 +135,6 @@ evidence before any claim of a working path is made.
 
 Reactive VLESS failure detection follows the same boundary: it may verify the
 selected route and one known-good standby, then emits a reviewable fallback.
-It does not launch a full ChangeSet from a scheduler event; configured-service
-route-only assignment remains a separate follow-up capability.
+It does not launch a full ChangeSet from a scheduler event. Configured-service
+route-only assignment is now available only through the bounded, typed runtime
+above and remains subject to the recovery mutation fence.

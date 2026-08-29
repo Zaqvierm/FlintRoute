@@ -41,6 +41,7 @@ import (
 	"router-policy/internal/planner"
 	"router-policy/internal/platform"
 	"router-policy/internal/probe"
+	"router-policy/internal/routeassignment"
 	"router-policy/internal/security"
 	"router-policy/internal/state"
 	storagepolicy "router-policy/internal/storage"
@@ -573,6 +574,76 @@ func run(args []string) error {
 		}
 		_, err := artifact.Verify(*root, artifact.Binding{TransactionID: *txID, RevisionID: *revision, CandidateHash: *candidateHash}, *manifestHash)
 		return err
+	case "internal-route-assignment":
+		fs := flag.NewFlagSet("internal-route-assignment", flag.ContinueOnError)
+		operation := fs.String("operation", "", "apply or rollback")
+		configFile := fs.String("config", cfgPath, "committed bootstrap config")
+		requestID := fs.String("request-id", "", "route assignment request id")
+		revision := fs.String("revision", "", "committed revision")
+		candidateHash := fs.String("candidate-hash", "", "committed candidate hash")
+		manifestHash := fs.String("manifest-hash", "", "committed artifact manifest hash")
+		domain := fs.String("domain", "", "normalized domain")
+		routeTag := fs.String("route-tag", "", "existing route tag")
+		routeType := fs.String("route-type", "", "existing route type")
+		routeSetID := fs.String("route-set-id", "", "owned route set id")
+		assignmentID := fs.String("assignment-id", "", "owned assignment id")
+		mappingHash := fs.String("mapping-hash", "", "mapping hash")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 || (*operation != "apply" && *operation != "rollback") {
+			return errors.New("usage: router-policy internal-route-assignment --operation apply|rollback --config FILE --request-id ID --revision REVISION --candidate-hash HASH --manifest-hash HASH --domain DOMAIN --route-tag TAG --route-type TYPE --route-set-id ID --assignment-id ID --mapping-hash HASH")
+		}
+		cfg, err := config.Load(*configFile)
+		if err != nil {
+			return err
+		}
+		request := routeassignment.Request{
+			Generation: *revision, RevisionID: *revision, CandidateHash: *candidateHash, ArtifactManifestHash: *manifestHash,
+			Domain: *domain, RouteTag: *routeTag, RouteType: *routeType, RouteSetID: *routeSetID,
+			AssignmentID: *assignmentID, MappingHash: *mappingHash, RequestID: *requestID,
+		}
+		options := routeassignment.Options{DNSMasqInit: os.Getenv("ROUTER_POLICY_ROUTE_ASSIGNMENT_DNSMASQ_INIT")}
+		if *operation == "apply" {
+			err = routeassignment.Apply(context.Background(), cfg, request, options)
+		} else {
+			err = routeassignment.Rollback(context.Background(), cfg, request, options)
+		}
+		if err != nil {
+			return err
+		}
+		fmt.Printf("protocol_version=1\noperation=route_assignment.%s\ngeneration=%s\ntransaction_id=route-assignment\nrevision_id=%s\ncandidate_hash=%s\nartifact_manifest_hash=%s\ndomain=%s\nroute_tag=%s\nroute_type=%s\nroute_set_id=%s\nassignment_id=%s\nmapping_hash=%s\nverified=true\n", *operation, *revision, *revision, *candidateHash, *manifestHash, *domain, *routeTag, *routeType, *routeSetID, *assignmentID, *mappingHash)
+		if *operation == "apply" {
+			fmt.Println("applied=true")
+			fmt.Println("transaction_state=route_assignment_applied")
+		} else {
+			fmt.Println("applied=false")
+			fmt.Println("rollback=true")
+			fmt.Println("transaction_state=route_assignment_rolled_back")
+		}
+		return nil
+	case "internal-route-assignment-reconcile":
+		fs := flag.NewFlagSet("internal-route-assignment-reconcile", flag.ContinueOnError)
+		configFile := fs.String("config", cfgPath, "committed bootstrap config")
+		requestID := fs.String("request-id", "", "reconcile request id")
+		revision := fs.String("revision", "", "committed revision")
+		candidateHash := fs.String("candidate-hash", "", "committed candidate hash")
+		manifestHash := fs.String("manifest-hash", "", "committed artifact manifest hash")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 || *requestID == "" || *revision == "" || *candidateHash == "" || *manifestHash == "" {
+			return errors.New("usage: router-policy internal-route-assignment-reconcile --config FILE --request-id ID --revision REVISION --candidate-hash HASH --manifest-hash HASH")
+		}
+		cfg, err := config.Load(*configFile)
+		if err != nil {
+			return err
+		}
+		if err := routeassignment.ReconcileBound(context.Background(), cfg, routeassignment.Request{Generation: *revision, RevisionID: *revision, CandidateHash: *candidateHash, ArtifactManifestHash: *manifestHash}, routeassignment.Options{DNSMasqInit: os.Getenv("ROUTER_POLICY_ROUTE_ASSIGNMENT_DNSMASQ_INIT")}); err != nil {
+			return err
+		}
+		fmt.Printf("protocol_version=1\noperation=route_assignment.reconcile\ngeneration=%s\ntransaction_id=route-assignment\nrevision_id=%s\ncandidate_hash=%s\nartifact_manifest_hash=%s\nreconciled=true\nverified=true\ntransaction_state=route_assignment_reconciled\n", *revision, *revision, *candidateHash, *manifestHash)
+		return nil
 	case "internal-verify-candidate":
 		fs := flag.NewFlagSet("internal-verify-candidate", flag.ContinueOnError)
 		candidatePath := fs.String("candidate", "", "candidate config")
@@ -1529,6 +1600,7 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 	var componentManager api.ComponentManager
 	var zapretCalibration *zapret.CalibrationManager
 	var vlessThroughputTester vpnsub.ThroughputTester
+	var routeAssignmentRuntime api.RouteAssignmentRuntime
 	if development {
 		provider = platform.DevelopmentMockProvider{}
 		productionAdapter = adapter.NewFilesystem(cfg)
@@ -1537,6 +1609,7 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 		if err != nil {
 			return err
 		}
+		routeAssignmentRuntime = openWrtRouteAssignmentRuntime{adapter: productionAdapter.(*adapter.OpenWrt)}
 		runner, runnerErr := vpnsub.NewManagedExecXrayRunner(cfg.Xray.Binary)
 		if runnerErr != nil {
 			return runnerErr
@@ -1567,7 +1640,7 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 			CatalogOut: "/etc/router-policy/zapret/catalog.json",
 		})
 	}
-	app, err := api.NewServerWithOptions(cfg, api.Options{Provider: provider, ProductionAdapter: productionAdapter, SubscriptionPreparer: subscriptionPreparer, ZapretSetupChecker: zapretSetupChecker, ComponentManager: componentManager, ZapretCalibration: zapretCalibration, VLESSThroughputTester: vlessThroughputTester, Development: development, DeferRecovery: !development})
+	app, err := api.NewServerWithOptions(cfg, api.Options{Provider: provider, ProductionAdapter: productionAdapter, RouteAssignmentRuntime: routeAssignmentRuntime, SubscriptionPreparer: subscriptionPreparer, ZapretSetupChecker: zapretSetupChecker, ComponentManager: componentManager, ZapretCalibration: zapretCalibration, VLESSThroughputTester: vlessThroughputTester, Development: development, DeferRecovery: !development})
 	if err != nil {
 		if api.IsRescueRequired(err) {
 			databasePath := cfg.Storage.Database

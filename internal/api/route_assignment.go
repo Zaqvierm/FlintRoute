@@ -72,3 +72,9 @@ type RouteAssignmentRuntime interface {
 	ApplyRouteAssignment(context.Context, RouteAssignmentRequest) (RouteAssignmentReceipt, error)
 	RollbackRouteAssignment(context.Context, RouteAssignmentRequest, RouteAssignmentReceipt) error
 }
+
+// RouteAssignmentReconciler rehydrates the persistent route-only overlay into
+// the volatile dnsmasq include after committed dataplane recovery.
+type RouteAssignmentReconciler interface {
+	ReconcileRouteAssignments(context.Context) error
+}

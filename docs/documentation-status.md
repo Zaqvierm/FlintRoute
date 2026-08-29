@@ -30,7 +30,7 @@
 | `api.md` | АКТУАЛЕН software | Endpoint-контракты сверены; hardware claims не наследуются текущим SHA. |
 | `architecture.md` | АКТУАЛЕН software | OpenWrt boundary и ownership актуальны; раздел «Проверенные аппаратные факты» исторический. |
 | `component-manager.md` | АКТУАЛЕН | Lifecycle компонентов и TGWS contract; hardware activation не доказана на текущем SHA. |
-| `domain-flow.md` | ЧАСТИЧНО | Нормализация, кеш и probe описаны; automatic route-only assignment пока отсутствует. |
+| `domain-flow.md` | ЧАСТИЧНО | Нормализация, кеш, probe и production route-only consumer описаны; hardware assignment proof отсутствует. |
 | `documentation-status.md` | АКТУАЛЕН | Этот реестр — текущая точка проверки документации; его статус обновляется вместе с заметным docs-аудитом. |
 | `failure-model.md` | АКТУАЛЕН software | Recovery/fail-closed модель актуальна; аппаратные заявления требуют нового evidence. |
 | `flint2-diagnostics.md` | АКТУАЛЕН как процедура | Это read-only checklist, а не доказательство выполненного запуска. |
@@ -75,8 +75,9 @@
 
 ## Невыполненная очередь
 
-- Реализовать безопасный route-only assignment с TTL и атомарным rollback;
-  до этого `auto_apply_verified` остаётся fenced.
+- Подтвердить безопасный route-only assignment на отдельном hardware gate с TTL,
+  atomic rollback и post-apply path proof; local/CI consumer уже реализован,
+  но hardware assignment proof отсутствует.
 - Провести новый read-only gate и затем отдельную hardware validation на
   текущем SHA; старые PASS не переиспользовать.
 - Для TSPU при необходимости добавить отдельный typed source-provider API,

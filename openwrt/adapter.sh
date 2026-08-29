@@ -1339,6 +1339,41 @@ remove_artifact_command() {
   echo "artifact_kind=${7:-}"
 }
 
+# Route-only assignment is deliberately separate from the transaction path.
+# The fixed router-policy binary resolves the committed route inventory and
+# writes only the owned dnsmasq overlay; no topology or service operation is
+# accepted here.
+route_assignment_command() {
+  [ "$config" = "$known_config" ] || exit 2
+  [ "$txid" = "route-assignment" ] || { echo "reason=route_assignment_transaction_invalid" >&2; exit 2; }
+  [ "$#" -eq 13 ] || { echo "reason=route_assignment_arguments_invalid" >&2; exit 2; }
+  route_domain="$7"
+  route_tag="$8"
+  route_type="$9"
+  route_set_id="${10}"
+  route_assignment_id="${11}"
+  route_mapping_hash="${12}"
+  route_request_id="${13}"
+  ROUTER_POLICY_CONFIG="$config" ROUTER_POLICY_ROUTE_ASSIGNMENT_DNSMASQ_INIT="$dnsmasq_init" \
+    "$router_policy_bin" internal-route-assignment \
+      --operation "${cmd#route-assignment-}" --config "$config" --request-id "$route_request_id" \
+      --revision "$revision" --candidate-hash "$recovery_candidate_hash" \
+      --manifest-hash "$recovery_artifact_manifest_hash" --domain "$route_domain" \
+      --route-tag "$route_tag" --route-type "$route_type" --route-set-id "$route_set_id" \
+      --assignment-id "$route_assignment_id" --mapping-hash "$route_mapping_hash"
+}
+
+route_assignment_reconcile_command() {
+  [ "$config" = "$known_config" ] || exit 2
+  [ "$txid" = "route-assignment" ] || { echo "reason=route_assignment_transaction_invalid" >&2; exit 2; }
+  [ "$#" -eq 7 ] || { echo "reason=route_assignment_reconcile_arguments_invalid" >&2; exit 2; }
+  route_request_id="${7}"
+  ROUTER_POLICY_CONFIG="$config" ROUTER_POLICY_ROUTE_ASSIGNMENT_DNSMASQ_INIT="$dnsmasq_init" \
+    "$router_policy_bin" internal-route-assignment-reconcile \
+      --config "$config" --request-id "$route_request_id" --revision "$revision" \
+      --candidate-hash "$recovery_candidate_hash" --manifest-hash "$recovery_artifact_manifest_hash"
+}
+
 wait_dnsmasq_ready() {
   attempts=0
   while ! "$nslookup_bin" localhost 127.0.0.1 >/dev/null 2>&1; do
@@ -2228,6 +2263,12 @@ case "$cmd" in
     [ "$config" = "$known_config" ] || exit 2
     status_tx
     ;;
+  route-assignment-apply|route-assignment-rollback)
+    route_assignment_command "$@"
+    ;;
+  route-assignment-reconcile)
+    route_assignment_reconcile_command "$@"
+    ;;
   prepare|validate-candidate|snapshot-current|apply-candidate|verify-management|verify-data-plane|commit|commit-prepared|finalize-commit|rollback|clear-boot-guard-bound|replace-owned-nft|apply-ip-plan|rollback-ip-plan|artifact-install|artifact-remove)
     require_transaction_args
     case "$cmd" in
@@ -2250,7 +2291,7 @@ case "$cmd" in
     esac
     ;;
   *)
-    echo "usage: adapter.sh prepare|validate-candidate|snapshot-current|apply-candidate|verify-management|verify-data-plane|commit|commit-prepared|finalize-commit|rollback|replace-owned-nft|apply-ip-plan|rollback-ip-plan|artifact-install|artifact-remove|reconcile|boot-guard|clear-boot-guard|status CONFIG [TX_ID REVISION [CANDIDATE_HASH ARTIFACT_MANIFEST_HASH [ARTIFACT_KIND]]]" >&2
+    echo "usage: adapter.sh prepare|validate-candidate|snapshot-current|apply-candidate|verify-management|verify-data-plane|commit|commit-prepared|finalize-commit|rollback|replace-owned-nft|apply-ip-plan|rollback-ip-plan|artifact-install|artifact-remove|route-assignment-apply|route-assignment-rollback|route-assignment-reconcile|reconcile|boot-guard|clear-boot-guard|status CONFIG [TX_ID REVISION [CANDIDATE_HASH ARTIFACT_MANIFEST_HASH [ARTIFACT_KIND]]]" >&2
     exit 2
     ;;
 esac

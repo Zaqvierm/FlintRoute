@@ -106,6 +106,20 @@ policy routing для IPv6, `GEO_LOCKED` не утекает через AAAA. П
 
 ## QUIC / UDP 443
 
+## Current route-only runtime status
+
+The route-only assignment path is now backed by a production consumer. It is
+not a full dataplane apply: the typed helper can only update the owned
+`router-policy-route-assignments.conf` overlay for an already enabled route.
+The request is bound to the committed revision, candidate hash, artifact
+manifest hash and deterministic domain/route object IDs. dnsmasq restart plus
+the `running` action are required before the helper returns a verified receipt.
+
+Assignments from an older full revision are invalidated into an empty,
+newly-bound manifest. Cleanup refuses an include without the FlintRoute
+ownership marker. The software proof is local/CI only; route behavior on a
+physical OpenWrt dataplane still requires a separate hardware gate.
+
 - `GEO_LOCKED`: UDP/443 только через TProxy/VLESS или DROP;
 - `TSPU_RESTRICTED`: можно блокировать UDP/443 → клиент откатится на TCP
 (предустановка Zapret: UDP 443 → DROP);

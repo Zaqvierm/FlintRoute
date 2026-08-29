@@ -24,22 +24,23 @@ var (
 )
 
 type Request struct {
-	ProtocolVersion      int                 `json:"protocol_version"`
-	RequestID            string              `json:"request_id"`
-	Command              string              `json:"command"`
-	Generation           string              `json:"generation"`
-	RevisionID           string              `json:"revision_id"`
-	TransactionID        string              `json:"transaction_id"`
-	RollbackTokenHash    string              `json:"rollback_token_hash,omitempty"`
-	CandidateHash        string              `json:"candidate_hash,omitempty"`
-	ArtifactManifestHash string              `json:"artifact_manifest_hash,omitempty"`
-	Transaction          *TransactionRequest `json:"transaction,omitempty"`
-	Baseline             *BaselineRequest    `json:"baseline,omitempty"`
-	NFT                  *NFTRequest         `json:"nft,omitempty"`
-	IPPlan               *IPPlanRequest      `json:"ip_plan,omitempty"`
-	Service              *ServiceRequest     `json:"service,omitempty"`
-	Artifact             *ArtifactRequest    `json:"artifact,omitempty"`
-	Global               *GlobalRequest      `json:"global,omitempty"`
+	ProtocolVersion      int                     `json:"protocol_version"`
+	RequestID            string                  `json:"request_id"`
+	Command              string                  `json:"command"`
+	Generation           string                  `json:"generation"`
+	RevisionID           string                  `json:"revision_id"`
+	TransactionID        string                  `json:"transaction_id"`
+	RollbackTokenHash    string                  `json:"rollback_token_hash,omitempty"`
+	CandidateHash        string                  `json:"candidate_hash,omitempty"`
+	ArtifactManifestHash string                  `json:"artifact_manifest_hash,omitempty"`
+	Transaction          *TransactionRequest     `json:"transaction,omitempty"`
+	Baseline             *BaselineRequest        `json:"baseline,omitempty"`
+	NFT                  *NFTRequest             `json:"nft,omitempty"`
+	IPPlan               *IPPlanRequest          `json:"ip_plan,omitempty"`
+	Service              *ServiceRequest         `json:"service,omitempty"`
+	Artifact             *ArtifactRequest        `json:"artifact,omitempty"`
+	Global               *GlobalRequest          `json:"global,omitempty"`
+	RouteAssignment      *RouteAssignmentRequest `json:"route_assignment,omitempty"`
 }
 
 type TransactionRequest struct {
@@ -84,28 +85,53 @@ type GlobalRequest struct {
 	Operation string `json:"operation"`
 }
 
+// RouteAssignmentRequest describes the only dynamic mapping mutation exposed
+// to the privileged helper. It contains identity, never a path, command, or
+// provider payload. The helper resolves the fixed owned include itself.
+type RouteAssignmentRequest struct {
+	Operation    string `json:"operation"`
+	Domain       string `json:"domain"`
+	RouteTag     string `json:"route_tag"`
+	RouteType    string `json:"route_type"`
+	RouteSetID   string `json:"route_set_id"`
+	AssignmentID string `json:"assignment_id"`
+	MappingHash  string `json:"mapping_hash"`
+}
+
 type Response struct {
-	ProtocolVersion      int               `json:"protocol_version"`
-	RequestID            string            `json:"request_id"`
-	Command              string            `json:"command"`
-	Operation            string            `json:"operation,omitempty"`
-	Accepted             bool              `json:"accepted"`
-	Committed            bool              `json:"committed"`
-	RollbackCapable      bool              `json:"rollback_capable"`
-	State                string            `json:"state"`
-	SemanticState        string            `json:"semantic_state,omitempty"`
-	Generation           string            `json:"generation"`
-	RevisionID           string            `json:"revision_id"`
-	TransactionID        string            `json:"transaction_id"`
-	CandidateHash        string            `json:"candidate_hash,omitempty"`
-	ArtifactManifestHash string            `json:"artifact_manifest_hash,omitempty"`
-	RollbackTokenHash    string            `json:"rollback_token_hash,omitempty"`
-	ErrorCode            string            `json:"error_code,omitempty"`
-	Error                string            `json:"error,omitempty"`
-	Reason               string            `json:"reason,omitempty"`
-	ManagementVerified   bool              `json:"management_verified,omitempty"`
-	DataPlaneVerified    bool              `json:"data_plane_verified,omitempty"`
-	Evidence             map[string]string `json:"evidence,omitempty"`
+	ProtocolVersion      int                      `json:"protocol_version"`
+	RequestID            string                   `json:"request_id"`
+	Command              string                   `json:"command"`
+	Operation            string                   `json:"operation,omitempty"`
+	Accepted             bool                     `json:"accepted"`
+	Committed            bool                     `json:"committed"`
+	RollbackCapable      bool                     `json:"rollback_capable"`
+	State                string                   `json:"state"`
+	SemanticState        string                   `json:"semantic_state,omitempty"`
+	Generation           string                   `json:"generation"`
+	RevisionID           string                   `json:"revision_id"`
+	TransactionID        string                   `json:"transaction_id"`
+	CandidateHash        string                   `json:"candidate_hash,omitempty"`
+	ArtifactManifestHash string                   `json:"artifact_manifest_hash,omitempty"`
+	RollbackTokenHash    string                   `json:"rollback_token_hash,omitempty"`
+	ErrorCode            string                   `json:"error_code,omitempty"`
+	Error                string                   `json:"error,omitempty"`
+	Reason               string                   `json:"reason,omitempty"`
+	ManagementVerified   bool                     `json:"management_verified,omitempty"`
+	DataPlaneVerified    bool                     `json:"data_plane_verified,omitempty"`
+	Evidence             map[string]string        `json:"evidence,omitempty"`
+	RouteAssignment      *RouteAssignmentResponse `json:"route_assignment,omitempty"`
+}
+
+type RouteAssignmentResponse struct {
+	Domain       string `json:"domain"`
+	RouteTag     string `json:"route_tag"`
+	RouteType    string `json:"route_type"`
+	RouteSetID   string `json:"route_set_id"`
+	AssignmentID string `json:"assignment_id"`
+	MappingHash  string `json:"mapping_hash"`
+	Applied      bool   `json:"applied"`
+	Verified     bool   `json:"verified"`
 }
 
 type Executor interface {
@@ -182,6 +208,14 @@ func ValidateRequest(request Request) error {
 		if request.Global == nil || request.Global.Operation != globalOperation(request.Command) || !globalRequestBound(request) {
 			return ErrInvalidRequest
 		}
+	case "route_assignment.apply", "route_assignment.rollback":
+		if !routeAssignmentRequestValid(request) {
+			return ErrInvalidRequest
+		}
+	case "route_assignment.reconcile":
+		if request.RouteAssignment != nil || request.RollbackTokenHash != "" || request.TransactionID != "route-assignment" || request.Generation != request.RevisionID || !safeHash(request.CandidateHash) || !safeHash(request.ArtifactManifestHash) || hasAnyResourcePayload(request) {
+			return ErrInvalidRequest
+		}
 	default:
 		return ErrUnknownCommand
 	}
@@ -222,7 +256,52 @@ func hasResourcePayload(request Request, allowed string) bool {
 	if allowed != "global" && request.Global != nil {
 		return true
 	}
+	if allowed != "route_assignment" && request.RouteAssignment != nil {
+		return true
+	}
 	return false
+}
+
+func hasAnyResourcePayload(request Request) bool {
+	return request.Transaction != nil || request.Baseline != nil || request.NFT != nil || request.IPPlan != nil || request.Service != nil || request.Artifact != nil || request.Global != nil
+}
+
+func routeAssignmentRequestValid(request Request) bool {
+	if request.RouteAssignment == nil || !safeHash(request.CandidateHash) || !safeHash(request.ArtifactManifestHash) ||
+		request.RollbackTokenHash != "" || request.TransactionID != "route-assignment" ||
+		request.RouteAssignment.Operation != strings.TrimPrefix(request.Command, "route_assignment.") ||
+		!safeDomain(request.RouteAssignment.Domain) || !safeObjectName(request.RouteAssignment.RouteTag) ||
+		!safeRouteType(request.RouteAssignment.RouteType) || !safeObjectName(request.RouteAssignment.RouteSetID) ||
+		!safeObjectName(request.RouteAssignment.AssignmentID) || !safeHash(request.RouteAssignment.MappingHash) {
+		return false
+	}
+	return !hasResourcePayload(request, "route_assignment")
+}
+
+func safeDomain(value string) bool {
+	if value == "" || len(value) > 253 || strings.ContainsAny(value, "\r\n\x00/\\ \t") {
+		return false
+	}
+	for _, label := range strings.Split(strings.ToLower(value), ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func safeRouteType(value string) bool {
+	switch value {
+	case "direct", "drop", "zapret", "smart_dns", "vless":
+		return true
+	default:
+		return false
+	}
 }
 
 func globalOperation(command string) string {

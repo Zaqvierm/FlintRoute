@@ -46,6 +46,12 @@ func (e AdapterExecutor) Execute(ctx context.Context, request Request) Response 
 	if strings.HasPrefix(request.Command, "global.") {
 		return e.executeGlobal(ctx, request)
 	}
+	if strings.HasPrefix(request.Command, "route_assignment.") {
+		if request.Command == "route_assignment.reconcile" {
+			return e.executeRouteAssignmentReconcile(ctx, request)
+		}
+		return e.executeRouteAssignment(ctx, request)
+	}
 	response.ErrorCode = "unknown_command"
 	response.Error = "helper command is not allowlisted"
 	return response
@@ -306,9 +312,121 @@ func ownedVerb(request Request) (verb string, extra string, ok bool) {
 		return "rollback-ip-plan", "", true
 	case "artifact.install", "artifact.remove":
 		return "artifact-" + request.Artifact.Operation, request.Artifact.Kind, true
+	case "route_assignment.apply", "route_assignment.rollback":
+		return "route-assignment-" + request.RouteAssignment.Operation, "", true
 	default:
 		return "", "", false
 	}
+}
+
+func (e AdapterExecutor) executeRouteAssignment(ctx context.Context, request Request) Response {
+	response := ResponseFrom(request, false, "", "")
+	if request.RouteAssignment == nil {
+		response.ErrorCode = "route_assignment_request_missing"
+		response.Error = "route assignment payload is required"
+		return response
+	}
+	verb, _, ok := ownedVerb(request)
+	if !ok {
+		response.ErrorCode = "unknown_command"
+		response.Error = "route assignment operation is not allowlisted"
+		return response
+	}
+	r := request.RouteAssignment
+	args := []string{verb, e.ConfigPath, request.TransactionID, request.RevisionID, request.CandidateHash, request.ArtifactManifestHash,
+		r.Domain, r.RouteTag, r.RouteType, r.RouteSetID, r.AssignmentID, r.MappingHash, request.RequestID}
+	command := exec.CommandContext(ctx, e.AdapterPath, args...)
+	raw, err := command.Output()
+	if exitErr := new(exec.ExitError); errors.As(err, &exitErr) {
+		raw = append(raw, exitErr.Stderr...)
+	}
+	if len(raw) > 64<<10 {
+		raw = raw[:64<<10]
+	}
+	response.Evidence = parseEvidence(raw)
+	response.Operation = response.Evidence["operation"]
+	if response.Operation == "" {
+		response.Operation = "route_assignment." + r.Operation
+	}
+	response.SemanticState = response.Evidence["transaction_state"]
+	response.Reason = response.Evidence["reason"]
+	response.Committed = response.Evidence["committed"] == "true"
+	response.RollbackCapable = response.Evidence["rollback_capable"] == "true"
+	if err != nil {
+		response.ErrorCode = "adapter_exit_nonzero"
+		response.Error = "owned route assignment operation failed"
+		return response
+	}
+	if code, message := evidenceBindingError(request, response.Evidence, response.Operation); code != "" {
+		response.ErrorCode = code
+		response.Error = message
+		return response
+	}
+	for key, want := range map[string]string{
+		"domain": r.Domain, "route_tag": r.RouteTag, "route_type": r.RouteType,
+		"route_set_id": r.RouteSetID, "assignment_id": r.AssignmentID, "mapping_hash": r.MappingHash,
+	} {
+		if response.Evidence[key] != want {
+			response.ErrorCode = "route_assignment_binding_mismatch"
+			response.Error = "adapter route assignment evidence did not match the request"
+			return response
+		}
+	}
+	if r.Operation == "apply" && (response.Evidence["applied"] != "true" || response.Evidence["verified"] != "true") {
+		response.ErrorCode = "route_assignment_not_semantically_confirmed"
+		response.Error = "adapter did not prove route assignment apply and verification"
+		return response
+	}
+	if r.Operation == "rollback" && (response.Evidence["rollback"] != "true" || response.Evidence["verified"] != "true") {
+		response.ErrorCode = "route_assignment_rollback_not_semantically_confirmed"
+		response.Error = "adapter did not prove route assignment rollback and verification"
+		return response
+	}
+	response.RouteAssignment = &RouteAssignmentResponse{
+		Domain: r.Domain, RouteTag: r.RouteTag, RouteType: r.RouteType,
+		RouteSetID: r.RouteSetID, AssignmentID: r.AssignmentID, MappingHash: r.MappingHash,
+		Applied: response.Evidence["applied"] == "true", Verified: response.Evidence["verified"] == "true",
+	}
+	response.Accepted = true
+	response.State = "accepted"
+	return response
+}
+
+func (e AdapterExecutor) executeRouteAssignmentReconcile(ctx context.Context, request Request) Response {
+	response := ResponseFrom(request, false, "", "")
+	command := exec.CommandContext(ctx, e.AdapterPath, "route-assignment-reconcile", e.ConfigPath, request.TransactionID, request.RevisionID, request.CandidateHash, request.ArtifactManifestHash, request.RequestID)
+	raw, err := command.Output()
+	if exitErr := new(exec.ExitError); errors.As(err, &exitErr) {
+		raw = append(raw, exitErr.Stderr...)
+	}
+	if len(raw) > 64<<10 {
+		raw = raw[:64<<10]
+	}
+	response.Evidence = parseEvidence(raw)
+	response.Operation = response.Evidence["operation"]
+	if response.Operation == "" {
+		response.Operation = request.Command
+	}
+	response.SemanticState = response.Evidence["transaction_state"]
+	response.Reason = response.Evidence["reason"]
+	if err != nil {
+		response.ErrorCode = "adapter_exit_nonzero"
+		response.Error = "owned route assignment reconcile failed"
+		return response
+	}
+	if code, message := evidenceBindingError(request, response.Evidence, response.Operation); code != "" {
+		response.ErrorCode = code
+		response.Error = message
+		return response
+	}
+	if response.Evidence["reconciled"] != "true" || response.Evidence["verified"] != "true" {
+		response.ErrorCode = "route_assignment_reconcile_not_semantically_confirmed"
+		response.Error = "adapter did not prove route assignment reconcile"
+		return response
+	}
+	response.Accepted = true
+	response.State = "accepted"
+	return response
 }
 
 func (e AdapterExecutor) executeOwned(ctx context.Context, request Request) Response {
