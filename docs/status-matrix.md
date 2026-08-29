@@ -106,6 +106,13 @@ legacy in-place upgrade на указанном commit не повторялис
   заменяет client-side `external_socks`; end-to-end Telegram path требует
   отдельной конфигурации и проверки.
 
+> Current boot-guard semantics (current code): the forwarding fence has no
+> wall-clock lease and is not cleared by a generic procd stop/restart. It is
+> removed only after a generation-bound reconcile proves the committed
+> revision, or by the ownership-checked uninstall teardown. Any older row
+> mentioning a bounded 120-second boot-guard lease is historical evidence and
+> must not be read as the current fail-closed contract.
+
 ### P14: lifecycle и storage
 
 | Критерий | Локально | Flint 2 |

@@ -22,5 +22,10 @@ start_service() {
 }
 
 stop_service() {
-  "$ADAPTER" clear-boot-guard "$CONFIG"
+  # Stopping this holder must not clear the forwarding fence.  The guard is
+  # removed only by a generation-bound controller reconcile (or by the
+  # explicit, ownership-checked uninstall teardown).  Clearing it from a
+  # generic procd stop would create a fail-open window during restart,
+  # recovery, or an operator mistake.
+  return 0
 }

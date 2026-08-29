@@ -31,7 +31,7 @@ DF_BIN="${DF_BIN:-df}"
 DU_BIN="${DU_BIN:-du}"
 SERVICES="router-policy-helper router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
 ENABLE_SERVICES="router-policy-dns-observer router-policy-boot-guard $SERVICES"
-INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $ROUTER_POLICY_HELPER_BIN $INIT_DIR/router-policy-helper $INIT_DIR/router-policy $INIT_DIR/router-policy-dns-observer $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/config/listener.conf $ETC_DIR/helper.env $ETC_DIR/secrets $DNSMASQ_DIR/router-policy.conf $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
+INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $ROUTER_POLICY_HELPER_BIN $INIT_DIR/router-policy-helper $INIT_DIR/router-policy $INIT_DIR/router-policy-dns-observer $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/config/listener.conf $ETC_DIR/helper.env $ETC_DIR/secrets/vpn-subscription-url $ETC_DIR/secrets/happ-crypt4-private-key.pem $ETC_DIR/secrets/telegram.json $ETC_DIR/secrets/webhook.env $ETC_DIR/secrets $DNSMASQ_DIR/router-policy.conf $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
 
 PREFIX_SWITCH_MARKER="$STATE_DIR/prefix-switch.env"
 MANAGED_FILE_MANIFEST="$PREFIX/.managed-files.manifest"
@@ -700,12 +700,19 @@ snapshot_installation() {
     validate_no_symlink_path "$p" || { echo "unsafe symlink in install target path: $p" >&2; return 1; }
     if [ -e "$p" ]; then
       [ ! -L "$p" ] || { echo "unsafe symlink install target: $p" >&2; return 1; }
-      relative="${p#/}"
-      mkdir -p "$staging/$(dirname "$relative")"
-      copy_preserving_metadata "$p" "$staging/$relative"
       metadata=$(path_metadata "$p") || { echo "unable to snapshot metadata: $p" >&2; return 1; }
       target_mode=${metadata%%|*}; ownership=${metadata#*|}; uid=${ownership%%|*}; gid=${ownership#*|}
       echo "present|$p|$target_mode|$uid|$gid" >> "$manifest"
+      # The secrets directory is metadata-only.  Recursively copying it would
+      # capture foreign children and make rollback delete/recreate resources
+      # FlintRoute does not own.  Exact files (including managed secret files)
+      # are listed separately below.  Other owned directory targets (notably
+      # the code prefix) retain their existing recursive snapshot semantics.
+      if [ "$p" != "$ETC_DIR/secrets" ] || [ ! -d "$p" ]; then
+        relative="${p#/}"
+        mkdir -p "$staging/$(dirname "$relative")"
+        copy_preserving_metadata "$p" "$staging/$relative"
+      fi
     else
       echo "absent|$p" >> "$manifest"
     fi
@@ -742,6 +749,10 @@ snapshot_installation() {
   : > "$file_list"
   while IFS='|' read -r presence p target_mode uid gid; do
     [ "$presence" = "present" ] || continue
+    # The secrets directory entry carries metadata only; its exact managed
+    # files are separate archive members.  Other owned directory targets keep
+    # recursive archive semantics (for example the active code prefix).
+    [ "$p" != "$ETC_DIR/secrets" ] || continue
     relative="${p#/}"
     [ -n "$relative" ] || { rm -f "$file_list"; return 1; }
     printf '%s\n' "$relative" >> "$file_list"
@@ -832,7 +843,92 @@ restore_installation() {
   }
   while IFS='|' read -r presence p target_mode uid gid; do
     [ "$presence" = "present" ] || [ "$presence" = "absent" ] || continue
-    rm -rf "$p"
+    if [ "$p" = "$ETC_DIR/secrets" ]; then
+      # The secrets directory itself is an owned container, but its children
+      # are not all FlintRoute-owned. Restore only the container metadata and
+      # exact managed secret entries; never recursively remove it.
+      validate_no_symlink_path "$p" || {
+        rm -rf "$restore_staging"
+        echo "automatic install rollback blocked: symlink in secrets directory path: $p" >&2
+        return 1
+      }
+      if [ "$presence" = "present" ]; then
+        if [ -e "$p" ] && [ ! -d "$p" ]; then
+          [ ! -L "$p" ] || {
+            rm -rf "$restore_staging"
+            echo "automatic install rollback blocked: secrets directory became a symlink" >&2
+            return 1
+          }
+          rm -f "$p" || {
+            rm -rf "$restore_staging"
+            return 1
+          }
+        fi
+        [ -d "$p" ] || mkdir -p "$p" || {
+          rm -rf "$restore_staging"
+          return 1
+        }
+        chmod "$target_mode" "$p" || {
+          rm -rf "$restore_staging"
+          return 1
+        }
+        if [ "$(id -u)" = "0" ] && command -v chown >/dev/null 2>&1; then
+          chown "$uid:$gid" "$p" || {
+            rm -rf "$restore_staging"
+            return 1
+          }
+        fi
+      else
+        if [ -d "$p" ]; then
+          # Managed secret-file entries are processed before this directory
+          # entry. A non-empty directory therefore contains an unowned file;
+          # refuse to delete it instead of using rm -rf.
+          rmdir "$p" || {
+            rm -rf "$restore_staging"
+            echo "automatic install rollback blocked: secrets directory contains unowned entries" >&2
+            return 1
+          }
+        elif [ -L "$p" ]; then
+          rm -rf "$restore_staging"
+          echo "automatic install rollback blocked: refusing to remove foreign secrets symlink" >&2
+          return 1
+        elif [ -e "$p" ]; then
+          rm -rf "$restore_staging"
+          echo "automatic install rollback blocked: secrets target changed type" >&2
+          return 1
+        fi
+      fi
+      continue
+    fi
+    if [ -d "$p" ]; then
+      # The only recursive install target is the FlintRoute prefix.  Never
+      # treat an arbitrary directory from a manifest as owned: validate its
+      # bounded prefix shape and every nested object before removing it.
+      case "$p" in
+        "$PREFIX")
+          remove_owned_prefix_switch_tree "$p" || {
+            rm -rf "$restore_staging"
+            echo "automatic install rollback blocked: prefix ownership is unproven: $p" >&2
+            return 1
+          }
+          ;;
+        *)
+          rm -rf "$restore_staging"
+          echo "automatic install rollback blocked: recursive target is not the owned prefix: $p" >&2
+          return 1
+          ;;
+      esac
+    elif [ -L "$p" ]; then
+      rm -rf "$restore_staging"
+      echo "automatic install rollback blocked: refusing to remove symlink target: $p" >&2
+      return 1
+    elif [ -e "$p" ]; then
+      rm -f "$p" || {
+        rm -rf "$restore_staging"
+        echo "automatic install rollback blocked: target could not be removed: $p" >&2
+        return 1
+      }
+    fi
     if [ "$presence" = "present" ]; then
       relative="${p#/}"
       source="$restore_staging/$relative"
@@ -1336,7 +1432,7 @@ remove_owned_prefix_switch_tree() {
   cleanup_tree="$1"
   [ -e "$cleanup_tree" ] || [ -L "$cleanup_tree" ] || return 0
   case "$cleanup_tree" in
-    "$PREFIX.install."*|"$PREFIX.old."*) ;;
+    "$PREFIX"|"$PREFIX.install."*|"$PREFIX.old."*) ;;
     *)
       echo "install blocked: invalid prefix switch cleanup path: $cleanup_tree" >&2
       return 1
@@ -1484,7 +1580,11 @@ recover_prefix_switch() {
 finalize_prefix_switch() {
   if [ -n "${old_prefix:-}" ]; then
     case "$old_prefix" in "$PREFIX.old."*) ;; *) echo "install blocked: refusing unknown old prefix cleanup" >&2; return 1 ;; esac
-    [ ! -e "$old_prefix" ] || rm -rf "$old_prefix"
+    # The previous generation is an owned prefix, but its path alone is not
+    # proof that every child is owned. Reuse the same bounded shape/type
+    # validation as crash recovery; never recursively delete an injected or
+    # foreign top-level entry.
+    remove_owned_prefix_switch_tree "$old_prefix" || return 1
   fi
   clear_prefix_switch_marker
 }

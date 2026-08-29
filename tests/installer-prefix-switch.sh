@@ -134,6 +134,33 @@ printf 'owned\n' > "$PREFIX.install.owned/scripts/value"
 remove_owned_prefix_switch_tree "$PREFIX.install.owned"
 [ ! -e "$PREFIX.install.owned" ]
 
+# Rollback of the active prefix must use the same bounded ownership proof as
+# generation cleanup. An unknown top-level entry is foreign and must survive
+# the refusal; the old unconditional rm -rf path would have erased it.
+reset_fixture
+mkdir -p "$PREFIX/scripts"
+printf 'active\n' > "$PREFIX/scripts/value"
+printf 'foreign\n' > "$PREFIX/foreign-runtime"
+if remove_owned_prefix_switch_tree "$PREFIX" >/dev/null 2>&1; then
+  echo "active prefix cleanup removed an unowned top-level entry" >&2
+  exit 1
+fi
+[ -f "$PREFIX/foreign-runtime" ]
+
+# Finalization must use the same ownership proof as crash cleanup. A stale
+# old-generation directory with an injected top-level file must fence instead
+# of being recursively deleted.
+reset_fixture
+mkdir -p "$PREFIX.old.fixture/scripts"
+printf 'owned\n' > "$PREFIX.old.fixture/scripts/value"
+printf 'foreign\n' > "$PREFIX.old.fixture/foreign-runtime"
+old_prefix="$PREFIX.old.fixture"
+if finalize_prefix_switch >/dev/null 2>&1; then
+  echo "finalize removed an unowned old-prefix entry" >&2
+  exit 1
+fi
+[ -f "$PREFIX.old.fixture/foreign-runtime" ]
+
 # New install attempts must fence a pre-existing PID-named path instead of
 # recursively deleting it before staging a candidate.
 grep -F 'untracked prefix switch path already exists' "$PROJECT_ROOT/install.sh" >/dev/null
@@ -142,3 +169,4 @@ echo "installer_prefix_switch_recovery=true"
 echo "installer_prefix_switch_ambiguous_state_blocks=true"
 echo "installer_prefix_switch_durable_rename=true"
 echo "installer_prefix_switch_cleanup_is_bounded=true"
+echo "installer_prefix_rollback_ownership_fence=true"

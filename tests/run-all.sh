@@ -29,6 +29,7 @@ sh tests/installer-backup.sh
 sh tests/installer-disk-preflight.sh
 sh tests/installer-durability.sh
 sh tests/installer-lifecycle.sh
+sh tests/installer-secret-rollback.sh
 sh tests/installer-prefix-switch.sh
 sh tests/content-aware-install.sh
 sh tests/shell-library.sh

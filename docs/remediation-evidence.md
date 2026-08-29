@@ -240,7 +240,7 @@ These are software/CI evidence only; hardware was not accessed.
 | Exact-SHA Zapret process-group for durable event persistence diagnostics | PASS | run [33150610834](https://github.com/Zaqvierm/FlintRoute/actions/runs/33150610834) |
 | Exact-SHA browser/responsive for durable event persistence diagnostics | PASS | run [33150610840](https://github.com/Zaqvierm/FlintRoute/actions/runs/33150610840) |
 | Exact-target dnsmasq observer confdir ownership | `tests/installer-lifecycle.sh`, `tests/dns-observer-bootstrap.sh` | PASS; installer and root bootstrap reject UCI/override `/etc/shadow`, target symlinks, and symlinked parent components before anything can enter the rollback manifest or be written | local/mock + Linux CI |
-| Installer secret ownership allowlist | `tests/installer-secret-ownership.sh`, `tests/installer-lifecycle.sh` | PASS; only the four managed secret files are chowned/chmodded, foreign files are untouched, and symlinked managed secrets are rejected | local/mock + exact-SHA CI |
+| Installer secret ownership allowlist | `tests/installer-secret-ownership.sh`, `tests/installer-lifecycle.sh`, `tests/installer-secret-rollback.sh` | PASS on current local fixture; only the four managed secret files are chowned/chmodded/restored as exact targets, the container mode/uid/gid is restored without recursive deletion, foreign files remain untouched, and symlinked managed secrets are rejected | current local/mock; current-SHA CI pending |
 | Exact-SHA full safety for installer secret ownership | PASS | docs-bound tree `b0e8e19ead5d247fd09fed25b54db33977bcdb0c`; full run [33156902721](https://github.com/Zaqvierm/FlintRoute/actions/runs/33156902721) |
 | Exact-SHA nft transition for installer secret ownership | PASS | run [33156902712](https://github.com/Zaqvierm/FlintRoute/actions/runs/33156902712) |
 | Exact-SHA Zapret process-group for installer secret ownership | PASS | run [33156902702](https://github.com/Zaqvierm/FlintRoute/actions/runs/33156902702) |
@@ -283,6 +283,7 @@ These are software/CI evidence only; hardware was not accessed.
 | Канонические ownership paths | `tests/installer-lifecycle.sh`, `tests/installer-backup.sh` | PASS | mock |
 | Static installer-file ownership on uninstall | `install.sh`, `uninstall.sh`, `tests/installer-lifecycle.sh` | PASS (local fixture + exact-SHA full gate [33191636975](https://github.com/Zaqvierm/FlintRoute/actions/runs/33191636975)); install writes a root-owned, mode-0600 hash manifest for controller binary/helper/init/hotplug files; uninstall validates every present target before teardown and fences modified/foreign content | local/mock + exact-SHA CI; Linux/OpenWrt runtime pending |
 | Project-prefix ownership on uninstall | `uninstall.sh`, `tests/installer-lifecycle.sh` | PASS (focused local fixture + exact-SHA full gate [33229028717](https://github.com/Zaqvierm/FlintRoute/actions/runs/33229028717)); prefix top-level entries are allowlisted, nested symlinks/special files fence before teardown, ownership-walk errors are fatal, and removal uses enumerated files plus `rmdir` instead of recursive deletion | local/mock + exact-SHA CI; Linux/OpenWrt runtime pending |
+| Project-prefix ownership on install rollback | `install.sh`, `tests/installer-prefix-switch.sh` | PASS locally at current worktree: rollback no longer uses unconditional `rm -rf "$PREFIX"`; the same bounded top-level/type ownership check fences an injected foreign prefix entry and preserves it | local fixture; current-SHA CI pending |
 | Boot guard | `tests/boot-guard-policy.sh`, `tests/boot-guard-service.sh` | PASS | mock |
 | Baseline boot-fence release | `tests/boot-guard-baseline.sh`; `TestBaselineRecoveryClearsOnlyThroughBaselineBoundAdapterOperation`; `TestAdapterExecutorAcceptsOnlySemanticallyProvenBaselineBootGuardClear` | PASS; baseline recovery cannot clear the all-transit fence through an unbound command and rejects mismatched semantic evidence | local/mock + exact-SHA CI [33143980734](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143980734) |
 | Typed helper boundary | `tests/helper-service.sh`, `go test ./internal/helper` | PASS | local/mock |
@@ -471,8 +472,9 @@ proof. Linux process-group и nft namespace проверки на Windows чес
   peer-credential/Linux/hardware evidence ещё отделены и отмечены `PARTIAL`.
 - Снятие boot guard после commit теперь идёт только через transaction-bound
   helper command с совпадающими transaction/revision/candidate/artifact hashes;
-  unbound global clear больше не принимается. Старая idempotent shell-команда
-  оставлена только для procd boot-guard stop path.
+  unbound global clear больше не принимается. Procd stop boot-guard намеренно
+  сохраняет owned fence: очистка разрешена только generation-bound reconcile
+  либо ownership-checked uninstall teardown.
 - SSRF, raw provider Xray JSON, process ownership и Zapret cleanup покрыты
   отдельными regression/CI проверками.
 - `observe_only` действительно не вызывает active probe/adapter; discovery queue

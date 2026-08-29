@@ -146,6 +146,11 @@ procd не подтверждает остановку, файлы не трог
 блокируется этим transit guard. Снятие guard разрешено только для exact
 committed generation через transaction-bound проверку revision/hash.
 
+Обычный `router-policy-boot-guard stop` не очищает таблицу и не снимает
+forwarding fence. Это намеренно: procd restart, recovery и операторская
+ошибка не должны создавать fail-open окно. Guard очищается только доказанным
+generation-bound reconcile либо ownership-checked teardown при uninstall.
+
 ## Обновление
 
 Распакуйте новый пакет в новый временный каталог и снова выполните:
@@ -160,6 +165,21 @@ sh install.sh --install --enable-services
 health и только после этого возвращает watchdog. Production Xray и Zapret не
 перезапускаются; installer проверяет, что их исходное running/stopped состояние
 не изменилось.
+
+Rollback treats `/etc/router-policy/secrets` as an owned container whose mode and
+uid/gid are restored, not as a recursive deletion target. The four FlintRoute
+secret files are snapshotted as separate exact targets. Other files in that
+directory are foreign unless explicitly allowlisted: they are excluded from the
+archive and are never recreated or removed by rollback; if an originally absent
+container is non-empty during rollback, recovery stops instead of deleting its
+contents.
+
+При финализации versioned prefix старое поколение удаляется только после
+проверки allowlisted top-level shape и типов вложенных объектов; неизвестный
+файл или symlink оставляет установку в fenced состоянии. При rollback активный
+`$PREFIX` проходит ту же проверку перед удалением: каталог, не доказанный как
+owned prefix, не очищается рекурсивно, а rollback возвращает ошибку и сохраняет
+его содержимое для forensic recovery.
 
 Сохранённый GL-MT6000 evidence включает повторный clean install, upgrade,
 rollback timer, compatible downgrade, uninstall и reinstall/reconcile после

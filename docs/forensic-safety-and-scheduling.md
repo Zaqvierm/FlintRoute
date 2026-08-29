@@ -104,11 +104,22 @@ Windows unit-тестом. Это отдельные hardware-gate измере�
 
 ### Один logical check и fan-out
 
-`planner.CheckDomain` один раз проходит конечный список candidates и останавливается
-на первом verified result. Один `probeRoute` проверяет только заданные probe URLs,
-затем выполняет не более одной external-egress проверки. DNS answers, HTTP
-redirects и SOCKS dials ограничены probe context и реализацией route; они не
-добавляют новые discovery observations.
+`planner.CheckDomain` один раз проходит конечный список eligible candidates,
+собирает terminal evidence по каждому из них и только затем применяет hard
+filters и scoring. Он не использует порядок candidates как безусловный выбор
+победителя. Один `probeRoute` проверяет не более четырёх заданных probe URLs,
+затем выполняет не более одной external-egress проверки (сама egress-проверка
+ограничена двумя источниками). Один health `checkRoute` дополнительно ограничен
+восьмью контрольными сервисами. DNS answers, HTTP redirects и SOCKS dials
+ограничены probe context и реализацией route; они не добавляют новые discovery
+observations.
+
+Верхняя граница для одного route/service probe остаётся конечной: до 4 probe
+URL, до 4 адресов на URL, до 6 HTTP запросов на адрес (исходный запрос плюс
+не более пяти redirect hops), плюс до 2 egress endpoints. DNS A/AAAA и UDP/TCP
+fallback выполняются последовательно внутри того же context. Это worst-case
+счётчик попыток, а не обещание, что каждый маршрут будет полностью исчерпан;
+process-wide semaphore ограничивает одновременные logical route jobs четырьмя.
 
 Unknown-domain discovery удерживает один global probe-budget token на время
 последовательной цепочки candidates. Один logical job не может размножиться в

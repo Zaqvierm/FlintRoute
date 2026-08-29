@@ -5,8 +5,8 @@ ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
-mkdir -p "$TMP/managed" "$TMP/state" "$TMP/backups" "$TMP/etc/init.d" "$TMP/bin"
-printf 'baseline\n' > "$TMP/managed/observer-marker"
+mkdir -p "$TMP/managed/scripts" "$TMP/state" "$TMP/backups" "$TMP/etc/init.d" "$TMP/bin"
+printf 'baseline\n' > "$TMP/managed/scripts/observer-marker"
 printf 'enabled=1\nrunning=1\n' > "$TMP/dnsmasq.state"
 
 cat > "$TMP/etc/init.d/dnsmasq" <<'SH'
@@ -35,7 +35,7 @@ export DNSMASQ_STATE="$TMP/dnsmasq.state"
 export PATH="$TMP/bin:$PATH"
 export ROUTER_POLICY_INSTALL_LIB_ONLY=1
 export ROUTER_POLICY_SYSTEM_ROOT=""
-export PREFIX="$TMP/prefix"
+export PREFIX="$TMP/managed"
 export ETC_DIR="$TMP/etc/router-policy"
 export STATE_DIR="$TMP/state"
 export STATE_DATABASE="$TMP/state/router-policy.bbolt"
@@ -75,11 +75,11 @@ clear_prefix_switch_marker() { :; }
 snapshot_installation
 grep -Fx 'dnsmasq|1|1' "$BACKUP_DIR/install-rollback/services.txt" >/dev/null
 
-printf 'candidate\n' > "$TMP/managed/observer-marker"
+printf 'candidate\n' > "$TMP/managed/scripts/observer-marker"
 printf 'enabled=0\nrunning=0\n' > "$TMP/dnsmasq.state"
 restore_installation >/dev/null 2>&1
 
-[ "$(cat "$TMP/managed/observer-marker")" = baseline ]
+[ "$(cat "$TMP/managed/scripts/observer-marker")" = baseline ]
 grep -Fx 'enabled=1' "$TMP/dnsmasq.state" >/dev/null
 grep -Fx 'running=1' "$TMP/dnsmasq.state" >/dev/null
 echo "installer_dnsmasq_runtime_restore_ok=true"
