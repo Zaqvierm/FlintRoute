@@ -2,13 +2,13 @@
 
 ## Current evidence binding (2026-08-29)
 
-Current code/docs HEAD: `90ce6a644f58e59be3b441289c02b938dba37ed8` on
+Current code/docs HEAD: `75966f9fca7bc16b4a1302f40bf213c83cedf0fe` on
 `integration/discovery-smartdns-local-dod`. The worktree is clean and the branch
 is pushed. Local `tests/run-all.ps1` completed `all_tests_ok=true`; Linux
 namespace/process-group/filesystem checks remain `NOT RUN LOCALLY` on Windows.
-Exact-SHA CI for this docs-bound tree passed: full safety `33241417230`, UI and
-browser `33241417236`, nft transition `33241417229`, and Zapret process-group
-`33241417232`.
+Exact-SHA CI for this docs-bound tree passed: full safety `33242450685`, UI and
+browser `33242450612`, nft transition `33242450598`, and Zapret process-group
+`33242450594`.
 
 These are software/CI results only. No Flint 2 connection, installation,
 dataplane mutation, reboot, or hardware validation was performed. Every older
@@ -17,13 +17,13 @@ section in this document is historical evidence for its named SHA and is
 
 ## 2026-08-29 remaining system-screen decomposition
 
-Current grouped checkpoint: `90ce6a6` (`docs: bind current UI orchestration evidence`).
+Current grouped checkpoint: `75966f9` (`docs: rebind current evidence status`).
 The preceding `3d3f910` commit moved App/refresh orchestration; the `8248c01`
 commit contains the route/location parser,
 shared fallback messages, screen dispatcher/error boundary extraction, public UI
 docs, and the regenerated embedded frontend bundle. The exact-SHA runs listed
 for `3d3f910` remain evidence for that code SHA only; the current docs binding
-is `90ce6a6`. The older CI runs listed below are historical evidence for their
+is `75966f9`. The older CI runs listed below are historical evidence for their
 own SHAs only.
 
 The operational screen set is now feature-local in `ui/src/features/system.tsx`;
