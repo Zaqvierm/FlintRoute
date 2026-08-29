@@ -140,6 +140,25 @@ func TestSelectionCooldownHoldsCurrentRoute(t *testing.T) {
 	}
 }
 
+func TestSelectionWeightsControlAvailabilityPenalty(t *testing.T) {
+	tracker := probe.NewHealthTracker([]probe.RouteHealth{
+		{RouteTag: "a", RouteType: "vless", AvailabilityEWMA: 0.5},
+		{RouteTag: "b", RouteType: "smart_dns", AvailabilityEWMA: 1},
+	})
+	results := []probe.RouteResult{
+		measuredSelectionResult("a", "vless", 40),
+		measuredSelectionResult("b", "smart_dns", 50),
+	}
+	policy := configPolicyForSelection()
+	if got := SelectBestWithPolicy(results, policy, "", tracker); got == nil || got.Route != "a" {
+		t.Fatalf("default availability weight should keep the lower-latency route: %+v", got)
+	}
+	policy.RouteSelectionWeights.Availability = 1
+	if got := SelectBestWithPolicy(results, policy, "", tracker); got == nil || got.Route != "b" {
+		t.Fatalf("configured availability weight was ignored: %+v", got)
+	}
+}
+
 func TestTSPUCandidateSetIncludesAllEligibleRouteTypes(t *testing.T) {
 	cfg := discoveryConfig(t)
 	plan, err := BuildCandidates(cfg, "blocked.example", "", Options{TSPUResult: tspuMatch("MATCH")})

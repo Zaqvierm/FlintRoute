@@ -3,11 +3,25 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
 	"router-policy/internal/zapretprofile"
 )
+
+func TestValidateRouteSelectionWeights(t *testing.T) {
+	cfg := validConfig()
+	cfg.Policy.RouteSelectionWeights.EndToEndLatency = -1
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "route_selection_weights.end_to_end_latency") {
+		t.Fatalf("negative route-selection weight was accepted: %v", err)
+	}
+	cfg = validConfig()
+	cfg.Policy.RouteSelectionWeights.Availability = math.NaN()
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "route_selection_weights.availability") {
+		t.Fatalf("NaN route-selection weight was accepted: %v", err)
+	}
+}
 
 func TestPlatformIPv6FalseKeepsLegacyCanonicalJSON(t *testing.T) {
 	legacy := []byte(`{"target":"glinet-flint2","require_confirmed_diagnostics":true,"unsupported_apply_policy":"fail_closed"}`)

@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"net/url"
@@ -76,32 +77,43 @@ type Policy struct {
 	UnknownDomainFirstPath string `json:"unknown_domain_first_path"`
 	// RouteSelectionStrategy controls scoring after the hard evidence filter.
 	// It never changes route eligibility or safety constraints.
-	RouteSelectionStrategy           string `json:"route_selection_strategy,omitempty"`
-	RouteSelectionHysteresisPercent  int    `json:"route_selection_hysteresis_percent,omitempty"`
-	RouteSelectionCooldownSeconds    int    `json:"route_selection_cooldown_seconds,omitempty"`
-	UnknownDomainBackgroundCheck     bool   `json:"unknown_domain_background_check"`
-	RouteHoldSeconds                 int    `json:"route_hold_seconds"`
-	FailAfterConsecutiveErrors       int    `json:"fail_after_consecutive_errors"`
-	RecoverAfterConsecutiveSuccess   int    `json:"recover_after_consecutive_successes"`
-	HealthCheckIntervalSeconds       int    `json:"health_check_interval_seconds"`
-	InventoryHealthIntervalSeconds   int    `json:"inventory_health_interval_seconds,omitempty"`
-	ProbeBudget                      int    `json:"probe_budget,omitempty"`
-	DiscoveryQueueLimit              int    `json:"discovery_queue_limit,omitempty"`
-	DomainDecisionTTLSeconds         int    `json:"domain_decision_ttl_seconds"`
-	SubscriptionUpdateIntervalSecs   int    `json:"subscription_update_interval_seconds"`
-	TSPUListUpdateIntervalSeconds    int    `json:"tspu_list_update_interval_seconds"`
-	TSPUStalePolicy                  string `json:"tspu_stale_policy"`
-	MaxSubscriptionBytes             int64  `json:"max_subscription_bytes"`
-	MaxTSPUListBytes                 int64  `json:"max_tspu_list_bytes"`
-	MaxProbeSeconds                  int    `json:"max_probe_seconds"`
-	ParallelServerChecks             int    `json:"parallel_server_checks"`
-	GeoLockedUnknownCountryIsSafe    bool   `json:"geo_locked_unknown_country_is_safe"`
-	GeoLockedAllowDirect             bool   `json:"geo_locked_allow_direct"`
-	GeoLockedAllowZapret             bool   `json:"geo_locked_allow_zapret"`
-	DirectOnlyAllowForeignProxy      bool   `json:"direct_only_allow_foreign_proxy"`
-	DiscoveryMode                    string `json:"discovery_mode,omitempty"`
-	DiscoveryMaxNewRulesPerHour      int    `json:"discovery_max_new_rules_per_hour,omitempty"`
-	DiscoveryMaxConsecutiveRollbacks int    `json:"discovery_max_consecutive_rollbacks,omitempty"`
+	RouteSelectionStrategy          string `json:"route_selection_strategy,omitempty"`
+	RouteSelectionHysteresisPercent int    `json:"route_selection_hysteresis_percent,omitempty"`
+	RouteSelectionCooldownSeconds   int    `json:"route_selection_cooldown_seconds,omitempty"`
+	// RouteSelectionWeights controls the relative penalties used after the
+	// hard evidence filter. Zero values use documented defaults so legacy
+	// configs remain deterministic; invalid numeric values fail validation.
+	RouteSelectionWeights            RouteSelectionWeights `json:"route_selection_weights,omitempty"`
+	UnknownDomainBackgroundCheck     bool                  `json:"unknown_domain_background_check"`
+	RouteHoldSeconds                 int                   `json:"route_hold_seconds"`
+	FailAfterConsecutiveErrors       int                   `json:"fail_after_consecutive_errors"`
+	RecoverAfterConsecutiveSuccess   int                   `json:"recover_after_consecutive_successes"`
+	HealthCheckIntervalSeconds       int                   `json:"health_check_interval_seconds"`
+	InventoryHealthIntervalSeconds   int                   `json:"inventory_health_interval_seconds,omitempty"`
+	ProbeBudget                      int                   `json:"probe_budget,omitempty"`
+	DiscoveryQueueLimit              int                   `json:"discovery_queue_limit,omitempty"`
+	DomainDecisionTTLSeconds         int                   `json:"domain_decision_ttl_seconds"`
+	SubscriptionUpdateIntervalSecs   int                   `json:"subscription_update_interval_seconds"`
+	TSPUListUpdateIntervalSeconds    int                   `json:"tspu_list_update_interval_seconds"`
+	TSPUStalePolicy                  string                `json:"tspu_stale_policy"`
+	MaxSubscriptionBytes             int64                 `json:"max_subscription_bytes"`
+	MaxTSPUListBytes                 int64                 `json:"max_tspu_list_bytes"`
+	MaxProbeSeconds                  int                   `json:"max_probe_seconds"`
+	ParallelServerChecks             int                   `json:"parallel_server_checks"`
+	GeoLockedUnknownCountryIsSafe    bool                  `json:"geo_locked_unknown_country_is_safe"`
+	GeoLockedAllowDirect             bool                  `json:"geo_locked_allow_direct"`
+	GeoLockedAllowZapret             bool                  `json:"geo_locked_allow_zapret"`
+	DirectOnlyAllowForeignProxy      bool                  `json:"direct_only_allow_foreign_proxy"`
+	DiscoveryMode                    string                `json:"discovery_mode,omitempty"`
+	DiscoveryMaxNewRulesPerHour      int                   `json:"discovery_max_new_rules_per_hour,omitempty"`
+	DiscoveryMaxConsecutiveRollbacks int                   `json:"discovery_max_consecutive_rollbacks,omitempty"`
+}
+
+type RouteSelectionWeights struct {
+	EndToEndLatency float64 `json:"end_to_end_latency,omitempty"`
+	Availability    float64 `json:"availability,omitempty"`
+	ErrorRate       float64 `json:"error_rate,omitempty"`
+	Privacy         float64 `json:"privacy,omitempty"`
 }
 
 type Xray struct {
@@ -679,6 +691,17 @@ func (c *Config) Validate() error {
 	}
 	if c.Policy.RouteSelectionCooldownSeconds < 0 || c.Policy.RouteSelectionCooldownSeconds > 86400 {
 		return fmt.Errorf("route_selection_cooldown_seconds must be between 0 and 86400")
+	}
+	weights := c.Policy.RouteSelectionWeights
+	for name, value := range map[string]float64{
+		"end_to_end_latency": weights.EndToEndLatency,
+		"availability":       weights.Availability,
+		"error_rate":         weights.ErrorRate,
+		"privacy":            weights.Privacy,
+	} {
+		if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 100 {
+			return fmt.Errorf("route_selection_weights.%s must be between 0 and 100", name)
+		}
 	}
 	if c.Policy.DiscoveryMaxNewRulesPerHour < 0 || c.Policy.DiscoveryMaxNewRulesPerHour > 1000 {
 		return fmt.Errorf("discovery_max_new_rules_per_hour must be between 0 and 1000")

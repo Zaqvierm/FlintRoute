@@ -424,17 +424,30 @@ func selectionScore(result probe.RouteResult, policy config.Policy, health *prob
 	if !known {
 		return 1e15
 	}
-	score := float64(latency)
+	weights := policy.RouteSelectionWeights
+	if weights.EndToEndLatency == 0 {
+		weights.EndToEndLatency = 1
+	}
+	if weights.Availability == 0 {
+		weights.Availability = 0.25
+	}
+	if weights.ErrorRate == 0 {
+		weights.ErrorRate = 0.1
+	}
+	if weights.Privacy == 0 {
+		weights.Privacy = 0.25
+	}
+	score := float64(latency) * weights.EndToEndLatency
 	if strings.EqualFold(policy.RouteSelectionStrategy, "privacy_first") && result.RouteType == "direct" {
-		score *= 1.25
+		score *= 1 + weights.Privacy
 	}
 	if health != nil {
 		if h, ok := health.Get(result.Route); ok {
 			if h.AvailabilityEWMA > 0 && h.AvailabilityEWMA < 1 {
-				score *= 1 + (1-h.AvailabilityEWMA)*0.25
+				score *= 1 + (1-h.AvailabilityEWMA)*weights.Availability
 			}
 			if h.ConsecutiveErrors > 0 {
-				score *= 1 + float64(h.ConsecutiveErrors)*0.1
+				score *= 1 + float64(h.ConsecutiveErrors)*weights.ErrorRate
 			}
 		}
 	}

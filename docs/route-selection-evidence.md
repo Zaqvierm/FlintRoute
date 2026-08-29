@@ -60,11 +60,18 @@ only a hint (`SEEDED_*`) until live evidence confirms or contradicts it.
 
 The default strategy is balanced; `fastest`, `privacy_first`, and
 `fail_closed` are validated configuration values. The score combines the
-end-to-end metric with health evidence. Hysteresis defaults to 15 percent: a
-healthy current route is retained when a new candidate is only marginally
-better, and a new route must accumulate more than one successful observation
-before replacing it. Health cooldown/backoff remains authoritative for routes
-marked unhealthy.
+end-to-end metric with health evidence. The relative penalties are configured
+under `policy.route_selection_weights`: `end_to_end_latency` (default `1`),
+`availability` (default `0.25`), `error_rate` (default `0.1`), and
+`privacy` (default `0.25` for Direct under `privacy_first`). These are
+multiplicative penalties after hard filtering; they never make an unverified
+route eligible. Zero values in a legacy config use these defaults, while
+negative, NaN, and infinite values are rejected. Metrics not present in the
+typed probe/health evidence are not invented or substituted. Hysteresis
+defaults to 15 percent: a healthy current route is retained when a new
+candidate is only marginally better, and a new route must accumulate more than
+one successful observation before replacing it. Health cooldown/backoff
+remains authoritative for routes marked unhealthy.
 
 ## Cache and first-connection policy
 

@@ -5,6 +5,12 @@
     "route_selection_strategy": "balanced",
     "route_selection_hysteresis_percent": 15,
     "route_selection_cooldown_seconds": 60,
+    "route_selection_weights": {
+      "end_to_end_latency": 1,
+      "availability": 0.25,
+      "error_rate": 0.1,
+      "privacy": 0.25
+    },
     "unknown_domain_background_check": true,
     "route_hold_seconds": 600,
     "fail_after_consecutive_errors": 3,
