@@ -424,6 +424,15 @@ func selectionEvidence(result probe.RouteResult) bool {
 	return true
 }
 
+// SelectionEvidence reports whether a route result is strong enough to be
+// presented or selected as a verified candidate. Keep this semantic gate
+// shared with API projections so a cached decision cannot look verified there
+// when the planner would reject it (for example, an OK response carrying
+// regional, authentication, or WAF evidence).
+func SelectionEvidence(result probe.RouteResult) bool {
+	return selectionEvidence(result)
+}
+
 func selectionLatency(result probe.RouteResult) (int64, bool) {
 	if result.EndToEndLatencyAvailable && result.EndToEndLatencyMS > 0 {
 		return result.EndToEndLatencyMS, true

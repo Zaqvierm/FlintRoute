@@ -137,6 +137,32 @@ func TestAutomaticDecisionAcceptsCaseVariantVerifiedEvidence(t *testing.T) {
 	}
 }
 
+func TestAutomaticDecisionRejectsContradictoryVerifiedEvidence(t *testing.T) {
+	tests := []struct {
+		name string
+		set  func(*probe.RouteResult)
+	}{
+		{name: "regional block", set: func(result *probe.RouteResult) { result.RegionalBlock = true }},
+		{name: "authentication required", set: func(result *probe.RouteResult) { result.AuthenticationRequired = true }},
+		{name: "waf or rate limit", set: func(result *probe.RouteResult) { result.WAFOrRateLimit = true }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := probe.RouteResult{
+				Route: "vless-de", RouteType: "vless", Status: "OK", PathVerified: true, ServiceOK: true,
+			}
+			test.set(&result)
+			decision := domaincache.Decision{
+				Status: "SELECTED", SelectedRoute: result.Route, SelectedType: result.RouteType,
+				Results: []probe.RouteResult{result},
+			}
+			if got := automaticDecisionProbeState(decision, decision.SelectedRoute, decision.SelectedType, decision.Status); got != "verifying" {
+				t.Fatalf("contradictory evidence was presented as %q", got)
+			}
+		})
+	}
+}
+
 func TestAutomaticDecisionNoSafeRouteRequiresTerminalEvidence(t *testing.T) {
 	decision := domaincache.Decision{Status: "NO_SAFE_ROUTE"}
 	if got := automaticDecisionProbeState(decision, "", "", decision.Status); got != "verifying" {
