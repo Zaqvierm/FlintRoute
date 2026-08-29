@@ -635,11 +635,23 @@ printf '%s\n' "$foreign_artifact_output" | grep -F 'reason=artifact_target_owner
   exit 1
 }
 grep -Fx 'foreign-xray' "$ACTIVE_XRAY" >/dev/null || { echo "foreign artifact was removed" >&2; exit 1; }
+printf 'foreign-xray\n' > "$ACTIVE_XRAY"
+set +e
+foreign_install_output=$(adapter artifact-install "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" "$candidate_hash" "$artifact_manifest_hash" xray_config 2>&1)
+foreign_install_rc=$?
+set -e
+[ "$foreign_install_rc" -ne 0 ] || { echo "artifact installation overwrote a foreign target" >&2; exit 1; }
+printf '%s\n' "$foreign_install_output" | grep -F 'reason=install_target_ownership_unproven' >/dev/null || {
+  echo "foreign artifact installation did not report ownership conflict" >&2
+  exit 1
+}
+grep -Fx 'foreign-xray' "$ACTIVE_XRAY" >/dev/null || { echo "foreign artifact was overwritten" >&2; exit 1; }
 cp "$txdir/generated/xray.json" "$ACTIVE_XRAY"
+adapter artifact-install "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" "$candidate_hash" "$artifact_manifest_hash" xray_config >/dev/null
 adapter artifact-remove "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" "$candidate_hash" "$artifact_manifest_hash" xray_config >/dev/null
 [ ! -e "$ACTIVE_XRAY" ] || { echo "owned artifact was not removed" >&2; exit 1; }
 adapter rollback "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
-echo "artifact_remove_requires_exact_owned_bytes=true"
+echo "artifact_install_remove_requires_exact_owned_bytes=true"
 
 echo "state_transitions_begin"
 cat "$TMP/state-transitions.log"

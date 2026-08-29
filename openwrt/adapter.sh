@@ -1176,10 +1176,79 @@ cancel_timer() {
   rm -f "$timer_file" "$timer_file.bootstrap" "$timer_file.bootstrap.tmp"
 }
 
+verify_install_target_ownership() {
+  # An allowlisted path is not an ownership grant. Before replacing an
+  # existing target, prove that it is either the exact artifact for this
+  # transaction, the hash-verified previous snapshot, or the already-bound
+  # active transaction record. Otherwise a foreign file at a known path would
+  # be silently overwritten by apply/recovery.
+  # The function is also exercised as a standalone content-aware primitive by
+  # library tests. Those calls have no transaction context and must not be
+  # mistaken for a privileged adapter operation.
+  if [ -z "${generated:-}" ] || [ -z "${txdir:-}" ]; then
+    return 0
+  fi
+  [ ! -e "$install_target" ] && return 0
+  [ -f "$install_target" ] && [ ! -L "$install_target" ] || {
+    echo "reason=install_target_ownership_unproven" >&2
+    return 1
+  }
+  if cmp -s "$install_source" "$install_target"; then
+    return 0
+  fi
+  case "$install_target" in
+    "${active_nft:-}") owned_source="${generated:-}/router-policy.nft" ;;
+    "${active_dnsmasq:-}") owned_source="${generated:-}/router-policy-dnsmasq.conf" ;;
+    "${active_xray:-}") owned_source="${generated:-}/xray.json" ;;
+    "${active_zapret:-}") owned_source="${generated:-}/nfqws.conf" ;;
+    "${active_zapret_profiles:-}") owned_source="${generated:-}/zapret-profiles.manifest" ;;
+    "${config:-}") owned_source="${candidate:-}" ;;
+    "${active_file:-}")
+      active_matches && return 0
+      owned_source=""
+      ;;
+    "${zapret_profile_dir:-}/"*.conf)
+      owned_profile_id="${install_target#"${zapret_profile_dir:-}/"}"
+      owned_profile_id="${owned_profile_id%.conf}"
+      owned_source="${generated:-}/zapret-profile-$owned_profile_id.conf"
+      ;;
+    "${zapret_profile_init_prefix:-}"*)
+      owned_profile_id="${install_target#"${zapret_profile_init_prefix:-}"}"
+      owned_source="${generated:-}/zapret-service-$owned_profile_id"
+      ;;
+    *) owned_source="" ;;
+  esac
+  if [ -n "$owned_source" ] && [ -f "$owned_source" ] && [ ! -L "$owned_source" ] && cmp -s "$owned_source" "$install_target"; then
+    return 0
+  fi
+  snapshot_manifest="${txdir:-}/snapshot/manifest.txt"
+  [ -f "$snapshot_manifest" ] || {
+    echo "reason=install_target_ownership_unproven" >&2
+    return 1
+  }
+  while IFS='|' read -r saved_target saved_state saved_name saved_bytes saved_hash saved_owner; do
+    [ "$saved_target" = "$install_target" ] || continue
+    [ "$saved_state" = "present" ] && [ "$saved_owner" = "project" ] || {
+      echo "reason=install_target_ownership_unproven" >&2
+      return 1
+    }
+    current_bytes="$(wc -c < "$install_target" | tr -d ' ')"
+    current_hash="sha256:$(sha_file "$install_target")"
+    [ "$current_bytes" = "$saved_bytes" ] && [ "$current_hash" = "$saved_hash" ] || {
+      echo "reason=install_target_ownership_unproven" >&2
+      return 1
+    }
+    return 0
+  done < "$snapshot_manifest"
+  echo "reason=install_target_ownership_unproven" >&2
+  return 1
+}
+
 atomic_install() {
   install_source="$1"
   install_target="$2"
   [ ! -L "$install_target" ] || { echo "reason=refusing_symlink_install_target" >&2; return 1; }
+  verify_install_target_ownership || return 1
   install_mode="$(file_mode_bits "$install_source")"
   install_event="file_created"
   [ ! -f "$install_target" ] || install_event="file_replaced"
