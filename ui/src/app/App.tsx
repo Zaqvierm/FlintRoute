@@ -1,29 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import QRCode from 'qrcode';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import {
   APIError,
-  addManualVLESSServer,
-  cancelZapretCalibration,
-  componentAction,
-  activateExternalSOCKS,
-  activateZapretSetup,
-  applyDiscoverySuggestion,
-  changeAction,
-  checkExternalSOCKS,
-  checkZapretSetup,
-  classifyService,
-  configureDiscovery,
-  configureSmartDNS,
-  configureTelegram,
-  configureTGWS,
-  createChange,
   getChanges,
-  getComponents,
   getBackups,
   getDevices,
   getDiagnostics,
   getDiscovery,
-  getExternalSOCKS,
   getEvents,
   getHealth,
   getOverview,
@@ -32,72 +14,29 @@ import {
   getRoutes,
   getSecurity,
   getSecuritySummary,
-  getSmartDNS,
   getServices,
-  getSubscriptionHWID,
-  getSubscriptionSecretStatus,
   getSystem,
   getSettings,
   getLifecycle,
-  getManualVLESSServers,
-  getVLESSPool,
   getStorage,
-  getTelegram,
-  getTGWS,
   getTraffic,
   getTopology,
-  getZapret,
-  getZapretCalibration,
-  ignoreDiscoverySuggestion,
   login,
   logout,
   me,
-  prepareSubscription,
-  removeSubscriptionSource,
-  saveSubscriptionSecrets,
-  saveSubscriptionHWID,
-  verifyService,
-  runVLESSSpeedTest,
-  setVLESSTariff,
-  startZapretCalibration,
   setupAdmin,
-  testTelegram,
   updateOnboarding,
   type ChangeSet,
-  type ChangeOp,
-  type ComponentAction,
-  type ComponentKind,
-  type ComponentStatus,
   type DiscoveryStatus,
   type EventItem,
-  type ManualVLESSServer,
   type OnboardingState,
   type RevisionSummary,
-  type SessionInfo,
-  type SubscriptionHWIDSettings,
-  type TrafficSnapshot,
-  type ZapretCalibrationStatus
+  type SessionInfo
 } from '../api';
 import {
-  asArray,
-  asRecord,
   errorInfo,
-  formatDateTime,
-  groupServices,
-  humanStatus,
-  isAdministrativeEvent,
-  isDecisionEvent,
-  onboardingRouterReady,
-  onboardingProgress,
-  parseResolverInput,
   recoveryMutationAllowed,
-  serviceColumnFor,
-  statusTone,
-  stringArray,
-  textValue,
-  toDecisionCard,
-  decisionVerificationPresentation,
-  verificationPresentationLabel
+  textValue
 } from '../view-models';
 import {
   AlertCenter,
@@ -114,25 +53,16 @@ import {
   withTrafficRates,
   type TrafficView
 } from '../features/system';
-import { availableScreens, navigation, notFoundScreen, screenFromLocation } from './routes';
+import { navigation, notFoundScreen, screenFromLocation } from './routes';
 import { staleFallback, unavailableOverview } from './messages';
 import { Content as ScreenContent } from './content';
+import { useNavigation } from './useNavigation';
 
 export { type ContentProps } from './content';
 
 function App() {
-  const [screen, setScreen] = useState(() => {
-    try {
-      const fromURL = screenFromLocation();
-      if (fromURL) return fromURL;
-      const stored = window.localStorage.getItem('flintroute-screen');
-      return stored && availableScreens.has(stored) ? stored : 'Обзор';
-    } catch {
-      return 'Обзор';
-    }
-  });
+  const { screen, screenRef, mobileMoreOpen, setMobileMoreOpen, selectScreen } = useNavigation();
   const [session, setSession] = useState<SessionInfo | null>(null);
-  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [authError, setAuthError] = useState('');
   const [apiError, setApiError] = useState('');
@@ -175,31 +105,6 @@ function App() {
     // first launch; opting into hidden mode is explicit and persistent.
     try { return window.localStorage.getItem('flintroute-address-privacy') === 'hidden'; } catch { return false; }
   });
-  const screenRef = useRef(screen);
-
-  useEffect(() => {
-    screenRef.current = screen;
-  }, [screen]);
-
-  function selectScreen(next: string) {
-    setScreen(next);
-    setMobileMoreOpen(false);
-    try {
-      window.localStorage.setItem('flintroute-screen', next);
-      const url = new URL(window.location.href);
-      url.searchParams.set('screen', next);
-      window.history.pushState({ screen: next }, '', url);
-    } catch {
-      // Storage may be disabled; navigation still works for this session.
-    }
-  }
-
-  useEffect(() => {
-    const onPopState = () => setScreen(screenFromLocation() ?? 'Обзор');
-    window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
-  }, []);
-
   async function refresh(hideAddresses = privacyHidden) {
     // One dashboard refresh is enough.  A slow router must not accumulate
     // overlapping command batches when the timer, SSE reconnect, or a user
