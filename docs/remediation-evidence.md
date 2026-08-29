@@ -3,13 +3,13 @@
 ## 2026-08-29 current code checkpoint
 
 The current code HEAD is
-`911395ddc7942785cfb4a655eb43140c4e205a41` on
+`7e7f8bf78c8286c885ac2b54bd3abf35f1907ef4` on
 `integration/discovery-smartdns-local-dod`. The worktree was clean before
 this checkpoint and the branch is pushed. The current exact-SHA CI evidence
-for that code is full safety [33224997032](https://github.com/Zaqvierm/FlintRoute/actions/runs/33224997032),
-nft transition [33224996990](https://github.com/Zaqvierm/FlintRoute/actions/runs/33224996990),
-Zapret process-group [33224996957](https://github.com/Zaqvierm/FlintRoute/actions/runs/33224996957),
-and browser/responsive [33224997002](https://github.com/Zaqvierm/FlintRoute/actions/runs/33224997002).
+for that code is full safety [33229028717](https://github.com/Zaqvierm/FlintRoute/actions/runs/33229028717),
+nft transition [33229028720](https://github.com/Zaqvierm/FlintRoute/actions/runs/33229028720),
+Zapret process-group [33229028721](https://github.com/Zaqvierm/FlintRoute/actions/runs/33229028721),
+and browser/responsive [33229028725](https://github.com/Zaqvierm/FlintRoute/actions/runs/33229028725).
 These are software/CI results only; Linux-only execution on this Windows host
 and all Flint 2 evidence remain separate and are not inferred from CI.
 
@@ -73,7 +73,7 @@ These are software/CI evidence only; hardware was not accessed.
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `65192686301d0224b851402b8055e38af347762c` on `integration/discovery-smartdns-local-dod` (route-only assignment remains fenced without a registered runtime consumer; the current tree also includes fail-closed calibration signal handling, managed-root ownership fencing, static installer-file ownership manifests, non-recursive project-prefix teardown, fail-closed ownership-walk errors, and bounded prefix-switch cleanup). Historical rows in this document remain useful only as evidence for their named SHA and are stale for the current tree.
+- Текущий проверяемый code HEAD: `7e7f8bf78c8286c885ac2b54bd3abf35f1907ef4` on `integration/discovery-smartdns-local-dod` (route-only assignment имеет production consumer через typed helper и остаётся ограниченным exact-owned overlay; hardware/runtime evidence по физическому OpenWrt ещё не получено). Historical rows in this document remain useful only as evidence for their named SHA and are stale for the current tree.
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -94,8 +94,8 @@ These are software/CI evidence only; hardware was not accessed.
   Нижний уровень не превращается в верхний.
 - На текущем HEAD локальный Windows `tests/run-all.ps1` завершился
   `all_tests_ok=true`. Exact-SHA CI для этого HEAD: full safety
-  `33199990532`, UI `33199990442`, Zapret process-group `33199990452`, nft
-  transition `33199990424`. Linux-only checks PASS только в CI; локально они
+  `33229028717`, UI `33229028725`, Zapret process-group `33229028721`, nft
+  transition `33229028720`. Linux-only checks PASS только в CI; локально они
   остаются `NOT RUN LOCALLY`. Hardware не использовалось.
 - Старые hardware-записи, включая `docs/flint2-hardware-report.md` и
   `H:\LAN\Versions\FlintRoute 0.2.0-alpha.1\hardware\summary.txt`, имеют статус
@@ -134,7 +134,7 @@ These are software/CI evidence only; hardware was not accessed.
 | Exact-SHA browser/responsive for deterministic prefix recovery and HWID persistence | PASS | run [33159908069](https://github.com/Zaqvierm/FlintRoute/actions/runs/33159908069) |
 | Linux-only harness на Windows | NOT RUN LOCALLY | namespace/procfs/mode требуют Linux |
 | Root-helper privilege split | PARTIAL (code contract; runtime peer proof pending) | production init запускает controller как `daemon`, root startup и отсутствие helper socket отвергаются; production adapter принимает только фиксированный `/var/run/router-policy/helper.sock`; typed helper покрывает global/transaction/owned paths, проверяет peer UID и ограничивает concurrent connections; component mutation без helper-backed executor теперь fail-closed, read-only inventory остаётся доступным; Linux peer-credential/runtime evidence ещё не получено |
-| Route-only assignment dataplane | PARTIAL | revision-bound decision cache и post-probe есть; nft/dnsmasq runtime consumer не доказан |
+| Route-only assignment dataplane | PARTIAL | production consumer и revision-bound post-apply proof реализованы; Linux/OpenWrt runtime и hardware path evidence не получены |
 | Route-only runtime-consumer fence | PASS | `go test ./internal/api -run 'TestAutomaticDomainCommit|TestDiscoverySuggestionApply'`; absent consumer and invalid semantic receipt cannot produce `applied=true` |
 | Flint 2 hardware | NOT RUN / STALE | hardware не трогалось |
 
@@ -165,7 +165,7 @@ These are software/CI evidence only; hardware was not accessed.
 | HWID persistence ordering | `go test ./internal/api -run TestSubscriptionHWIDFailedFingerprintPreservesPreviousSettings` | PASS; fingerprint resolution/preview is completed before writing settings, and a failed generated source preserves the prior preset | local + exact-SHA CI [33159908174](https://github.com/Zaqvierm/FlintRoute/actions/runs/33159908174) |
 | Канонические ownership paths | `tests/installer-lifecycle.sh`, `tests/installer-backup.sh` | PASS | mock |
 | Static installer-file ownership on uninstall | `install.sh`, `uninstall.sh`, `tests/installer-lifecycle.sh` | PASS (local fixture + exact-SHA full gate [33191636975](https://github.com/Zaqvierm/FlintRoute/actions/runs/33191636975)); install writes a root-owned, mode-0600 hash manifest for controller binary/helper/init/hotplug files; uninstall validates every present target before teardown and fences modified/foreign content | local/mock + exact-SHA CI; Linux/OpenWrt runtime pending |
-| Project-prefix ownership on uninstall | `uninstall.sh`, `tests/installer-lifecycle.sh` | PASS (focused local fixture + exact-SHA full gate [33199990532](https://github.com/Zaqvierm/FlintRoute/actions/runs/33199990532)); prefix top-level entries are allowlisted, nested symlinks/special files fence before teardown, ownership-walk errors are fatal, and removal uses enumerated files plus `rmdir` instead of recursive deletion | local/mock + exact-SHA CI; Linux/OpenWrt runtime pending |
+| Project-prefix ownership on uninstall | `uninstall.sh`, `tests/installer-lifecycle.sh` | PASS (focused local fixture + exact-SHA full gate [33229028717](https://github.com/Zaqvierm/FlintRoute/actions/runs/33229028717)); prefix top-level entries are allowlisted, nested symlinks/special files fence before teardown, ownership-walk errors are fatal, and removal uses enumerated files plus `rmdir` instead of recursive deletion | local/mock + exact-SHA CI; Linux/OpenWrt runtime pending |
 | Boot guard | `tests/boot-guard-policy.sh`, `tests/boot-guard-service.sh` | PASS | mock |
 | Baseline boot-fence release | `tests/boot-guard-baseline.sh`; `TestBaselineRecoveryClearsOnlyThroughBaselineBoundAdapterOperation`; `TestAdapterExecutorAcceptsOnlySemanticallyProvenBaselineBootGuardClear` | PASS; baseline recovery cannot clear the all-transit fence through an unbound command and rejects mismatched semantic evidence | local/mock + exact-SHA CI [33143980734](https://github.com/Zaqvierm/FlintRoute/actions/runs/33143980734) |
 | Typed helper boundary | `tests/helper-service.sh`, `go test ./internal/helper` | PASS | local/mock |
@@ -419,13 +419,13 @@ UI не выдумывает это число.
 
 ## Current exact-SHA CI checkpoint
 
-Для code HEAD `65192686301d0224b851402b8055e38af347762c` все обязательные
+Для code HEAD `7e7f8bf78c8286c885ac2b54bd3abf35f1907ef4` все обязательные
 software workflows завершились успешно:
 
-- exact-SHA full safety gate: [33199990532](https://github.com/Zaqvierm/FlintRoute/actions/runs/33199990532);
-- UI browser/responsive: [33199990442](https://github.com/Zaqvierm/FlintRoute/actions/runs/33199990442);
-- Zapret process-group: [33199990452](https://github.com/Zaqvierm/FlintRoute/actions/runs/33199990452);
-- nft transition: [33199990424](https://github.com/Zaqvierm/FlintRoute/actions/runs/33199990424).
+- exact-SHA full safety gate: [33229028717](https://github.com/Zaqvierm/FlintRoute/actions/runs/33229028717);
+- UI browser/responsive: [33229028725](https://github.com/Zaqvierm/FlintRoute/actions/runs/33229028725);
+- Zapret process-group: [33229028721](https://github.com/Zaqvierm/FlintRoute/actions/runs/33229028721);
+- nft transition: [33229028720](https://github.com/Zaqvierm/FlintRoute/actions/runs/33229028720).
 
 The full gate includes the installer lifecycle regression that injects a failed
 ownership enumeration and proves the project prefix is preserved; the prefix
@@ -442,11 +442,12 @@ separate and are not implied by this checkpoint.
   ограниченное число concurrent connections и закрывает новые соединения при
   насыщении. Runtime Linux/OpenWrt и hardware proof ещё не выполнены. LAN
   exposure остаётся явным opt-in.
-- Automatic route-only assignment сейчас gated: controller сохраняет
-  revision-bound decision и делает post-probe, но production nft/dnsmasq
-  consumer, который материализует mapping, не доказан. Поэтому API не должен
-  выдавать это за фактически применённое dataplane assignment; topology/component
-  apply из discovery запрещён.
+- Automatic route-only assignment сейчас gated: controller и production
+  `cmd/router-policy` consumer сохраняют revision-bound binding, атомарно
+  материализуют только owned dnsmasq overlay и выполняют post-apply proof.
+  При отсутствии consumer API fail closed; topology/component apply из
+  discovery запрещён. Linux/OpenWrt runtime и hardware path evidence остаются
+  отдельным gate.
 - CPU/FD/socket idle, реальное восстановление после power loss и пользовательский
   hardware flow требуют отдельного read-only gate и не наследуются от CI.
 

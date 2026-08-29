@@ -37,10 +37,13 @@ DNS observation и изменение committed config — разные дейс
   bounded observation/reason в runtime/event stream; активные DNS/TLS/HTTP/SOCKS
   probes и новые правила не запускаются;
 - `suggest` дополнительно сохраняет предложение для UI;
-- `auto_apply_verified` в текущем production-коде не выполняет автоматическую
-  запись: после проверки `PathVerified` результат остаётся suggestion, потому
-  что безопасный route-only assignment ещё не реализован. Полный ChangeSet из
-  фонового DNS-события запрещён; режим оставлен как явно fenced capability.
+- `auto_apply_verified` может выполнить только узкий route-only assignment,
+  если production consumer зарегистрирован и проверены `PathVerified`,
+  service/egress evidence, revision-bound receipt и post-apply proof. Consumer
+  меняет только exact-owned dnsmasq overlay уже существующего маршрута; при его
+  отсутствии результат остаётся suggestion с
+  `route_assignment_runtime_unavailable`. Полный ChangeSet из фонового
+  DNS-события запрещён.
 - `locked` останавливает discovery до probe.
 
 Direct и Drop не фиксируются автоматически: перехват обычного прямого трафика и
@@ -234,7 +237,7 @@ helper (`adapter.Interface`), а не ad-hoc shell. `VERIFY` требует вс
 recovery (`adapter.Reconcile` через `api.recoverCommittedDataplane`) восстанавливает
 committed dataplane после рестарта — отдельный путь, не показан в hot-path flow.
 
-## Фактическая сверка с кодом на `effa938`
+## Фактическая сверка с кодом на `7e7f8bf`
 
 Эта секция отделяет реализованный control flow от целевого flowchart. Проверка
 выполнена по `internal/planner/planner.go`, `internal/api/server.go`,
@@ -265,10 +268,11 @@ committed dataplane после рестарта — отдельный путь,
 - Узел `TSPU evidence match` реализован только для загруженного локального
   кеша. При недоступном/повреждённом кеше результат — `UNAVAILABLE`, а не
   выдуманная классификация.
-- Автоматическое назначение уже существующего route ID пока отсутствует:
-  `discoveryAutoAllowed` и `commitAutomaticDomain` возвращают
-  `automatic_route_assignment_unavailable`. Поэтому ветка `TX` на схеме не
-  выполняется из фонового discovery.
+- Автоматическое назначение уже существующего route ID выполняется только
+  через зарегистрированный `RouteAssignmentRuntime`; без него
+  `discoveryAutoAllowed`/`commitAutomaticDomain` fail closed и возвращают
+  `route_assignment_runtime_unavailable`. Ветка `TX` не имеет права менять
+  topology или компоненты.
 - В flowchart показаны гипотетические `GEO_LOCKED`/`TSPU_RESTRICTED`
   fallback-ветви. В production они формируются только после результата
   `CheckDomain`; discovery не редактирует topology, Xray, nft или firewall.
@@ -276,15 +280,13 @@ committed dataplane после рестарта — отдельный путь,
   discovery является фоновой очередью после записи dnsmasq-наблюдения. Она не
   является доказательством полного LAN DNS interception на каждом устройстве.
 
-### Не реализовано на этом SHA
+### Не доказано на этом SHA
 
-- Безопасный route-only writer с TTL, атомарным mapping rollback и отдельным
-  ownership proof.
-- Автоматическое подтверждение/применение предложения из `auto_apply_verified`.
-- Hardware acceptance этого flow на текущем SHA. Старые записи Flint 2
-  являются историческим evidence и не наследуются `effa938`.
+- Hardware acceptance и end-to-end поведение этого flow на физическом Flint 2.
+  Старые записи Flint 2 являются историческим evidence и не наследуются
+  текущим кодом.
 
-Итог: flowchart корректен как целевая модель probe/selection/transaction, но не
-как обещание полного автоматического применения. Для пользователя текущий
-гарантированный результат discovery — наблюдение или suggestion; изменение
-production policy требует явного ChangeSet.
+Итог: flowchart корректен как модель probe/selection/route-only transaction,
+но не как обещание полного topology apply. Для пользователя гарантированы
+наблюдение или suggestion; автоматическое назначение возможно только при
+зарегистрированном consumer, его semantic receipt и post-apply proof.

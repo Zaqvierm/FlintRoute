@@ -1,6 +1,6 @@
 # API и плоскость управления
 
-> **Статус на `effa938`:** API-контракт и локальные проверки актуальны. Любые
+> **Статус на `7e7f8bf`:** API-контракт и локальные проверки актуальны. Любые
 > аппаратные результаты, упомянутые ниже, относятся к старым SHA и имеют
 > `STALE FOR CURRENT SHA`.
 
@@ -148,13 +148,16 @@ Discovery по умолчанию работает в `observe_only`: он то�
 не запускает активные route probes. `suggest` сохраняет
 классифицированное предложение в bounded RAM cache (до 256 доменов), `locked`
 останавливает probe, а
-`auto_apply_verified` — зарезервированный контракт будущего route-only writer;
-в текущем production-коде он fenced и не выполняет автоматический apply.
-Для будущего включения потребуются `PathVerified`, свободный transaction slot и
-rollback timer. Часовой лимит задаётся policy, management/firewall operations
-не допускаются, а серия rollback открывает circuit breaker. Direct/Drop
-наблюдения автоматически не закрепляются: блокировка и захват прямого трафика
-остаются явным действием администратора.
+`auto_apply_verified` — узкий route-only writer для уже существующего enabled
+route. При зарегистрированном consumer он допускает автоматическое назначение
+только после `PathVerified`, service/egress evidence, свободного transaction
+slot, rate/circuit-breaker и post-apply proof; consumer меняет лишь
+revision-bound exact-owned dnsmasq overlay. Если consumer отсутствует, API
+возвращает `route_assignment_runtime_unavailable` и оставляет результат
+suggestion. Полный ChangeSet, topology, Xray/Zapret, marks, IP rules и сервисы
+из DNS-события не запускаются. Direct/Drop наблюдения автоматически не
+закрепляются: блокировка и захват прямого трафика остаются явным действием
+администратора.
 
 Смена режима и лимитов Discovery является control-plane настройкой. Она
 сохраняется отдельно от route config и не создаёт ChangeSet, не перезапускает
