@@ -232,11 +232,15 @@ flowchart TD
 
 ## Отклонения от flowchart
 
-`APPLY_ATOMIC` реализован как полная транзакция control plane + production
-helper (`adapter.Interface`), а не ad-hoc shell. `VERIFY` требует все четыре
-уровня, включая bound path proof (`evidence.ValidateRouteProof`). Reboot
-recovery (`adapter.Reconcile` через `api.recoverCommittedDataplane`) восстанавливает
-committed dataplane после рестарта — отдельный путь, не показан в hot-path flow.
+`APPLY_ATOMIC` реализован как транзакция control plane + production helper
+(`adapter.Interface`) с атомарной заменой owned nft table и fail-closed
+transition guard, а не как обещание атомарности всей системы. Конфиги,
+listeners, IP plan и dnsmasq меняются отдельными шагами под этим guard; при
+сбое защищённый трафик остаётся fenced и операция уходит в rollback/recovery.
+`VERIFY` требует все четыре уровня, включая bound path proof
+(`evidence.ValidateRouteProof`). Reboot recovery (`adapter.Reconcile` через
+`api.recoverCommittedDataplane`) восстанавливает committed dataplane после
+рестарта — отдельный путь, не показан в hot-path flow.
 
 ## Фактическая сверка с кодом на `e97f8dd`
 
