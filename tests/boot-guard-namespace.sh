@@ -55,6 +55,7 @@ ip netns exec "$router" sysctl -q -w net.ipv4.ip_forward=1
 ip netns exec "$server" ip link set lo up
 ip netns exec "$server" ip link set "rp-s-$suffix" name wan0 up
 ip netns exec "$server" ip addr add 198.18.1.2/24 dev wan0
+ip netns exec "$server" ip addr add 198.18.1.3/24 dev wan0
 ip netns exec "$server" ip route add default via 198.18.1.1
 
 run_nft() {
@@ -65,7 +66,7 @@ cat >"$foreign_batch" <<'NFT'
 table inet foreign {
   chain forward {
     type filter hook forward priority -200; policy accept;
-    ip daddr 198.18.1.2 meta mark != 0x110 counter comment "foreign-direct-escape"
+    ip daddr { 198.18.1.2, 198.18.1.3 } meta mark != 0x110 counter comment "foreign-direct-escape"
   }
 }
 NFT
@@ -74,17 +75,18 @@ cat >"$owned_batch" <<'NFT'
 table inet router_policy {
   set protected_v4 {
     type ipv4_addr
-    elements = { 198.18.1.2 }
+    elements = { 198.18.1.2, 198.18.1.3 }
   }
   chain prerouting {
     type filter hook prerouting priority mangle; policy accept;
-    iifname "lan0" ip daddr @protected_v4 meta mark set 0x110 counter comment "verified-committed-classifier"
+    iifname "lan0" ip daddr @protected_v4 meta mark set 0x110 ct mark set 0x110 counter comment "verified-committed-classifier"
   }
 }
 table inet router_policy_boot_guard {
   chain forward {
     type filter hook forward priority -300; policy drop;
     meta mark 0x110 counter accept comment "rp boot_guard allow=verified-classifier"
+    ct mark 0x110 counter accept comment "rp boot_guard allow=verified-conntrack"
     counter drop comment "rp boot_guard action=drop-unclassified"
   }
 }
@@ -127,7 +129,7 @@ case "$foreign_packets" in 0|'') ;; *) echo "protected traffic reached foreign h
 run_nft delete table inet router_policy
 run_nft delete table inet router_policy_boot_guard
 run_nft -f "$guard_only"
-if ip netns exec "$client" ping -c 1 -W 1 198.18.1.2 >/dev/null 2>&1; then
+if ip netns exec "$client" ping -c 1 -W 1 198.18.1.3 >/dev/null 2>&1; then
   echo 'unmarked traffic escaped guard while classifier was absent' >&2
   exit 1
 fi
