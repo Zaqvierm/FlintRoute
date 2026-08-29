@@ -64,7 +64,11 @@ jobs:
         uses: ludeeus/action-shellcheck@master
         with:
           scandir: './'
-          ignore_paths: node_modules
+          # Only lint repository-owned shell sources. Toolchains, generated
+          # artifacts, and local fixtures are excluded just like run-all.ps1;
+          # excluding them prevents vendored Go scripts from becoming CI
+          # failures while leaving every tracked project script in scope.
+          ignore_paths: "node_modules .tools dist .local .git"
           severity: warning
 
       - name: Installer, adapter and recovery fixtures
