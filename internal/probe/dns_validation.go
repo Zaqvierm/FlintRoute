@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/netip"
 	"sort"
 	"strings"
@@ -112,10 +113,7 @@ func ValidateSmartDNSCandidate(ctx context.Context, endpoint, domain string) (Sm
 	}
 	result.UDP, result.TCP = udp, tcp
 	result.Addresses = uniqueStrings(append(append([]string{}, udp.Addresses...), tcp.Addresses...))
-	expectedCodes := make([]int, 0, 300)
-	for code := 200; code < 500; code++ {
-		expectedCodes = append(expectedCodes, code)
-	}
+	expectedCodes := smartDNSValidationExpectedCodes()
 	routeResult := ProbeRoute(ctx, &config.Config{
 		Platform: config.Platform{Target: "generic-openwrt"},
 		Policy:   config.Policy{MaxProbeSeconds: 10},
@@ -130,7 +128,7 @@ func ValidateSmartDNSCandidate(ctx context.Context, endpoint, domain string) (Sm
 	result.HTTPStatus = check.HTTPCode
 	result.TLSOK = check.TLSOK && check.SNIPreserved
 	result.HTTPOK = check.HTTPOK && check.HostPreserved
-	if !check.DNSOK || !check.TransportOK || !result.TLSOK || !result.HTTPOK || !check.ExpectedCodeMatched || check.ConnectedIP == "" {
+	if !smartDNSApplicationProofAccepted(routeResult) || !check.DNSOK || !check.TransportOK || !result.TLSOK || !result.HTTPOK || !check.ExpectedCodeMatched || check.ConnectedIP == "" {
 		reason := check.Reason
 		if reason == "" {
 			reason = "HTTP/TLS path was not verified"
@@ -138,6 +136,32 @@ func ValidateSmartDNSCandidate(ctx context.Context, endpoint, domain string) (Sm
 		return result, fmt.Errorf("Smart DNS application check failed: %s", reason)
 	}
 	return result, nil
+}
+
+// smartDNSValidationExpectedCodes are responses that prove an HTTP path is
+// usable without pretending that authentication, WAF, rate limiting, or a
+// missing resource is a successful service check.  In particular, 401/403
+// must never be accepted merely because TCP/TLS completed.
+func smartDNSValidationExpectedCodes() []int {
+	return []int{
+		http.StatusOK,
+		http.StatusNoContent,
+		http.StatusPartialContent,
+		http.StatusMultipleChoices,
+		http.StatusMovedPermanently,
+		http.StatusFound,
+		http.StatusSeeOther,
+		http.StatusTemporaryRedirect,
+		http.StatusPermanentRedirect,
+	}
+}
+
+func smartDNSApplicationProofAccepted(routeResult RouteResult) bool {
+	return strings.EqualFold(routeResult.Status, "OK") &&
+		routeResult.ServiceOK &&
+		!routeResult.RegionalBlock &&
+		!routeResult.AuthenticationRequired &&
+		!routeResult.WAFOrRateLimit
 }
 
 func uniqueStrings(values []string) []string {

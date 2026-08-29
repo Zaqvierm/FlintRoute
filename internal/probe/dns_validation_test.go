@@ -3,6 +3,7 @@ package probe
 import (
 	"context"
 	"net"
+	"net/http"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -51,5 +52,31 @@ func startValidationUDPServer(t *testing.T) (string, func()) {
 func TestValidateDNSResolverTransportRejectsPrivateProductionEndpoint(t *testing.T) {
 	if _, err := ValidateDNSResolverTransport(context.Background(), "127.0.0.1:53", "example.com", "udp"); err == nil {
 		t.Fatal("private production resolver endpoint was accepted")
+	}
+}
+
+func TestSmartDNSValidationDoesNotTreatAuthOrWAFAsApplicationProof(t *testing.T) {
+	for _, status := range []string{"AUTH_REQUIRED", "WAF_OR_RATE_LIMIT", "REGION_BLOCK"} {
+		if smartDNSApplicationProofAccepted(RouteResult{
+			Status: status, ServiceOK: false,
+		}) {
+			t.Fatalf("status %s was accepted as Smart DNS application proof", status)
+		}
+	}
+	if smartDNSApplicationProofAccepted(RouteResult{
+		Status: "OK", ServiceOK: true,
+	}) == false {
+		t.Fatal("a fully verified OK route was rejected")
+	}
+}
+
+func TestSmartDNSValidationExpectedCodesExcludeErrorClasses(t *testing.T) {
+	codes := smartDNSValidationExpectedCodes()
+	for _, forbidden := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusTooManyRequests} {
+		for _, code := range codes {
+			if code == forbidden {
+				t.Fatalf("HTTP %d must not be a Smart DNS validation success code", forbidden)
+			}
+		}
 	}
 }

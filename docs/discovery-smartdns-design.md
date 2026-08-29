@@ -107,6 +107,13 @@ Transport reachability alone is never enough to call Smart DNS usable. A
 resolver can be reachable while its returned address or content path is
 invalid; the API reports those stages separately.
 
+The endpoint preflight accepts only an explicit set of successful HTTP or
+redirect responses (2xx and the supported 3xx codes). `401 Unauthorized`,
+`403 Forbidden`, `404 Not Found`, `405 Method Not Allowed`, `429 Too Many
+Requests`, regional-denial markers and WAF responses are never converted into
+Smart DNS application proof merely because TCP/TLS completed. They remain a
+typed failure/ambiguous result and cannot authorize a production route.
+
 The Smart DNS screen keeps the safety transaction behind one product action:
 “Add and verify endpoint”. A new endpoint is validated and represented as a
 candidate/draft; existing production endpoints show their blast radius before
