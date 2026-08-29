@@ -16,6 +16,7 @@ NFT_BIN="${NFT_BIN:-/usr/sbin/nft}"
 CURL_BIN="${CURL_BIN:-/usr/bin/curl}"
 SETSID_BIN="${SETSID_BIN:-/usr/bin/setsid}"
 SU_BIN="${SU_BIN:-/bin/su}"
+IP_BIN="${IP_BIN:-/sbin/ip}"
 PROBE_USER="${ZAPRET_QUICK_PROBE_USER:-nobody}"
 QUEUE_BASE="${ZAPRET_QUICK_QUEUE_BASE:-30000}"
 MANAGED_QUEUE="${ZAPRET_MANAGED_QUEUE:-}"
@@ -43,6 +44,7 @@ path_verified_count=0
 probe_mode=""
 probe_user=""
 watchdog_pid=""
+route_evidence_value=""
 
 usage() {
   echo "usage: quick-zapret-check.sh --apply --mode quick --domain DOMAIN --bundle-id ID --network-fingerprint sha256:HEX" >&2
@@ -98,6 +100,7 @@ require_absolute_path "$NFQWS_BIN" "nfqws binary"
 require_absolute_path "$NFT_BIN" "nft binary"
 require_absolute_path "$CURL_BIN" "curl binary"
 require_absolute_path "$SETSID_BIN" "setsid"
+require_absolute_path "$IP_BIN" "ip"
 require_absolute_path "$RUNTIME_DIR" "runtime directory"
 require_absolute_path "$CATALOG_OUT" "catalog output"
 case "$MAX_ADDRESSES" in
@@ -123,6 +126,7 @@ require_binary "$NFQWS_BIN" "nfqws binary" no
 require_binary "$NFT_BIN" "nft binary" no
 require_binary "$CURL_BIN" "curl binary" no
 require_binary "$SETSID_BIN" "setsid" yes
+[ -x "$IP_BIN" ] || die "ip utility is unavailable"
 
 # Most desktop Linux images provide `su`, but the supported embedded OpenWrt
 # images often do not.  The runner is already a root-owned, bounded operation;
@@ -155,6 +159,9 @@ cleanup() {
   trap - EXIT HUP INT TERM
   if command -v cleanup_attempt >/dev/null 2>&1; then
     cleanup_attempt || status=1
+  fi
+  if [ -f "$run_dir/routes.before" ] && command -v verify_network_baseline >/dev/null 2>&1; then
+    verify_network_baseline || status=1
   fi
   if [ -n "$catalog_tmp" ]; then
     rm -f "$catalog_tmp"
@@ -252,6 +259,14 @@ owned_nfqwss() {
     command_line=$(proc_cmdline "$pid")
     case "$command_line" in
       *"@$strategy_path"*) printf '%s\n' "$pid" ;;
+      *)
+        # A daemonized nfqws may rewrite argv or detach into a new session.
+        # The per-run environment marker is the second ownership proof; a
+        # matching executable alone is never enough to kill a process.
+        if [ -r "$proc/environ" ] && tr '\000' '\n' < "$proc/environ" 2>/dev/null | grep -Fqx -- "ROUTER_POLICY_CALIBRATION_RUN_ID=$run_token"; then
+          printf '%s\n' "$pid"
+        fi
+        ;;
     esac
   done
 }
@@ -485,7 +500,7 @@ install_probe_table() {
 start_nfqwss() {
   strategy_path="$1"
   log_path="$2"
-  "$SETSID_BIN" "$NFQWS_BIN" "@$strategy_path" > "$log_path" 2>&1 &
+  ROUTER_POLICY_CALIBRATION_RUN_ID="$run_token" "$SETSID_BIN" "$NFQWS_BIN" "@$strategy_path" > "$log_path" 2>&1 &
   nfq_pid=$!
   sleep 1
   kill -0 "$nfq_pid" 2>/dev/null || return 1
@@ -530,6 +545,11 @@ start_parent_watchdog() {
         command_line=$(proc_cmdline "$pid")
         case "$command_line" in
           *"@$watched_strategy"*) kill -KILL "$pid" 2>/dev/null || true ;;
+          *)
+            if [ -r "/proc/$pid/environ" ] && tr '\000' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -Fqx -- "ROUTER_POLICY_CALIBRATION_RUN_ID=$run_token"; then
+              kill -KILL "$pid" 2>/dev/null || true
+            fi
+            ;;
         esac
       done
     fi
@@ -597,12 +617,41 @@ cleanup_attempt() {
   return "$local_status"
 }
 
+capture_network_baseline() {
+  "$IP_BIN" route show table all > "$run_dir/routes.before" 2>"$run_dir/routes.before.err" || return 1
+  "$IP_BIN" rule show > "$run_dir/rules.before" 2>"$run_dir/rules.before.err" || return 1
+}
+
+verify_network_baseline() {
+  "$IP_BIN" route show table all > "$run_dir/routes.after" 2>"$run_dir/routes.after.err" || return 1
+  "$IP_BIN" rule show > "$run_dir/rules.after" 2>"$run_dir/rules.after.err" || return 1
+  cmp -s "$run_dir/routes.before" "$run_dir/routes.after" || return 1
+  cmp -s "$run_dir/rules.before" "$run_dir/rules.after" || return 1
+}
+
+route_evidence() {
+  output=$("$IP_BIN" route get "$1" 2>/dev/null) || return 1
+  # Keep evidence bounded and safe for the machine-readable JSON string.
+  route_evidence_value=$(printf '%s' "$output" | tr '\r\n\t' '   ' | cut -c1-512 | sed 's/\\/\\\\/g; s/"/\\"/g')
+  [ -n "$route_evidence_value" ]
+}
+
+capture_network_baseline || die "unable to capture route/rule baseline"
+
 probe_once() {
   profile="$1"
   ip="$2"
+  route_evidence_value=""
   out="$run_dir/$profile-$attempt_index.curl"
   errfile="$run_dir/$profile-$attempt_index.curl.log"
-  command_string="$(shell_quote "$CURL_BIN") --silent --show-error --connect-timeout 5 --max-time 12 --output /dev/null --write-out '%{http_code}|%{time_total}' --resolve $(shell_quote "$domain:443:$ip") $(shell_quote "https://$domain/")"
+  if ! route_evidence "$ip"; then
+    result="INFRA_ERROR"
+    path_ok=false
+    error_code="route_unavailable"
+    error_text="kernel route lookup for the verified target failed"
+    return 0
+  fi
+  command_string="$(shell_quote "$CURL_BIN") --silent --show-error --noproxy '*' --connect-timeout 5 --max-time 12 --output /dev/null --write-out '%{http_code}|%{time_total}' --resolve $(shell_quote "$domain:443:$ip") $(shell_quote "https://$domain/")"
   set +e
   if [ "$probe_mode" = "unprivileged" ]; then
     "$SU_BIN" -s /bin/sh "$PROBE_USER" -c "$command_string" > "$out" 2> "$errfile"
@@ -692,11 +741,13 @@ for profile in $profiles; do
   start_ms=$(now_ms) || die "clock unavailable for bounded verification duration"
   if ! start_nfqwss "$strategy_path" "$run_dir/$profile.nfqws.log"; then
     cleanup_attempt || die "unable to clean failed nfqws start"
+    verify_network_baseline || die "quick calibration cleanup changed routes or rules after failed nfqws start"
     append_attempt "$profile" "INFRA_ERROR" false true "process_group" 0 0 0 0 0 "nfqws_process_unbound" "nfqws process group could not be proven"
     continue
   fi
   if ! install_probe_table "$selected_addresses"; then
     cleanup_attempt || die "unable to clean failed nft installation"
+    verify_network_baseline || die "quick calibration cleanup changed routes or rules after failed nft installation"
     append_attempt "$profile" "INFRA_ERROR" false true "nft_owned_table" 0 0 0 0 0 "nft_transition_failed" "owned temporary output table could not be installed"
     continue
   fi
@@ -717,11 +768,11 @@ for profile in $profiles; do
     probe_once "$profile" "$address"
     if [ "$result" = "PASS" ]; then
       probe_status="$result"
-      evidence="owned_nft_queue=$queue;nfqws_pid=$nfq_pid;target_ip=$address"
+      evidence="owned_nft_queue=$queue;nfqws_pid=$nfq_pid;target_ip=$address;route=$route_evidence_value"
       break
     fi
     probe_status="$result"
-    evidence="owned_nft_queue=$queue;nfqws_pid=$nfq_pid;target_ip=$address"
+    evidence="owned_nft_queue=$queue;nfqws_pid=$nfq_pid;target_ip=$address;route=$route_evidence_value"
   done
   IFS=$old_ifs
   end_ms=$(now_ms) || die "clock unavailable for bounded verification duration"
@@ -732,6 +783,7 @@ for profile in $profiles; do
     die "quick calibration cleanup proof failed for $profile"
   fi
   [ "$cleanup_ok" = "true" ] || die "quick calibration cleanup proof failed for $profile"
+  verify_network_baseline || die "quick calibration cleanup changed routes or rules for $profile"
   append_attempt "$profile" "$probe_status" "$path_ok" "$cleanup_ok" "$evidence" "$packets" "$counter_delta" "$latency_ms" "$duration_ms" "$http_status" "$error_code" "$error_text"
 done
 

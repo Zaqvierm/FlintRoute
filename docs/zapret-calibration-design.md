@@ -71,11 +71,14 @@ Quick-runner возвращает полную bounded-таблицу прове
 это не ложный успех и не должно превращаться в `NO_SAFE_ROUTE` доменного решения.
 
 Production связывает `ExecCalibrationRunner.QuickScript` со
-`scripts/quick-zapret-check.sh`. Runner последовательно выполняет четыре
+`scripts/quick-zapret-check.sh`. Runner последовательно выполняет шесть
 встроенных проверенных профиля, выделяет bounded private NFQUEUE, создаёт только
 свою временную output-table для отдельного probe UID и запускает одну
 принадлежащую ему process group `nfqws` на попытку. В отчёт попадают delta
-счётчика, target IP, HTTP-результат, latency и cleanup proof. Ответ HTTP 200 при
+счётчика, target IP, kernel route lookup до запроса, HTTP-результат, latency и
+cleanup proof. Запрос принудительно идёт без переменных HTTP-прокси
+(`--noproxy '*'`), иначе локальный proxy мог бы дать ложное доказательство пути.
+Ответ HTTP 200 при
 неизменившемся счётчике собственной NFQUEUE — `INFRA_ERROR`, а не `PASS`.
 
 На embedded OpenWrt `su` часто отсутствует. Это не блокирует quick-check:

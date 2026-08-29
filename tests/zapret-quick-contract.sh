@@ -99,6 +99,10 @@ grep -F '$NFT_BIN -f "$rules" >&2 || return 1' "$ROOT/scripts/quick-zapret-check
 # shellcheck disable=SC2016
 grep -F 'printf "%s", $0; printf "\\n"' "$ROOT/scripts/quick-zapret-check.sh" >/dev/null
 grep -F 'start_parent_watchdog' "$ROOT/scripts/quick-zapret-check.sh" >/dev/null
+grep -F "ROUTER_POLICY_CALIBRATION_RUN_ID=\"\$run_token\"" "$ROOT/scripts/quick-zapret-check.sh" >/dev/null
+grep -F 'route_evidence()' "$ROOT/scripts/quick-zapret-check.sh" >/dev/null
+grep -F -- '--noproxy '\''*'\''' "$ROOT/scripts/quick-zapret-check.sh" >/dev/null
+grep -F 'verify_network_baseline' "$ROOT/scripts/quick-zapret-check.sh" >/dev/null
 grep -F "lock_dir=\"\$RUNTIME_DIR/zapret-calibration.lock\"" "$ROOT/scripts/quick-zapret-check.sh" >/dev/null
 # OpenWrt's BusyBox grep treats a needle beginning with `--` as an option
 # unless the option terminator is present.  Keep the regression visible in the

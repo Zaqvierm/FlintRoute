@@ -460,7 +460,7 @@ func parseCalibrationEvidence(raw []byte, mode CalibrationMode, domain string) (
 			seenAttempts[attempt.ProfileID] = struct{}{}
 			switch attempt.Result {
 			case "PASS":
-				if !attempt.PathVerified {
+				if !attempt.PathVerified || !quickAttemptHasPathEvidence(*attempt) {
 					return parsedCalibrationResult{}, errCalibrationQuickEvidenceUnavailable
 				}
 				passCount++
@@ -468,7 +468,7 @@ func parseCalibrationEvidence(raw []byte, mode CalibrationMode, domain string) (
 				// A bounded strategy failure/timeout is still a valid attempt only
 				// when the runner proved that the request traversed the tested
 				// path. An infrastructure failure is the explicit exception below.
-				if !attempt.PathVerified {
+				if !attempt.PathVerified || !quickAttemptHasPathEvidence(*attempt) {
 					return parsedCalibrationResult{}, errCalibrationQuickEvidenceUnavailable
 				}
 			case "INFRA_ERROR":
@@ -526,6 +526,11 @@ func parseCalibrationEvidence(raw []byte, mode CalibrationMode, domain string) (
 		evidenceLevel = "curl_only"
 	}
 	return parsedCalibrationResult{Candidates: result, Attempts: append([]CalibrationAttempt(nil), document.Attempts...), EvidenceLevel: evidenceLevel, PathVerified: document.PathVerified}, nil
+}
+
+func quickAttemptHasPathEvidence(attempt CalibrationAttempt) bool {
+	return strings.TrimSpace(attempt.RouteEvidence) != "" &&
+		attempt.NFQueuePackets > 0 && attempt.NFQueueCounterDelta > 0
 }
 
 func calibrationRunID(request CalibrationRequest, now time.Time) string {
