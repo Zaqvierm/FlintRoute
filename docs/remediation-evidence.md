@@ -1,5 +1,22 @@
 # Evidence remediation
 
+## 2026-08-29 current code checkpoint (`c9b17d10f28d35fda66e3dc33d67282eb48cdc4f`)
+
+The current tree is `integration/discovery-smartdns-local-dod` at
+`c9b17d10f28d35fda66e3dc33d67282eb48cdc4f`. In addition to the helper startup
+and rollback lifecycle fixes, the uninstaller now requires a typed read-only
+`internal-verify-no-owned-ip-state` proof before claiming `verified-empty` when
+no committed transaction binding exists. Matching project marks, reserved
+rule priorities, non-empty project route tables, unreadable `ip` output, or
+missing controller all block teardown. Local full safety, race, vet,
+ShellCheck, installer lifecycle, and `git diff --check` pass. Current-SHA CI is
+green for full safety [33234073044](https://github.com/Zaqvierm/FlintRoute/actions/runs/33234073044),
+nft transition [33234073081](https://github.com/Zaqvierm/FlintRoute/actions/runs/33234073081),
+Zapret process-group [33234073075](https://github.com/Zaqvierm/FlintRoute/actions/runs/33234073075),
+and UI/responsive [33234073079](https://github.com/Zaqvierm/FlintRoute/actions/runs/33234073079).
+These are software/CI results only; Linux-only local checks and all Flint 2
+hardware evidence remain separate and are not inferred from CI.
+
 ## 2026-08-29 current code checkpoint (`e97f8ddeca93de6dc6032edcbb88063f52abbea9`)
 
 The current tree is `integration/discovery-smartdns-local-dod` at
