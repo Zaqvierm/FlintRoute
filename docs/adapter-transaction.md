@@ -183,6 +183,9 @@ baseline. Factory adapter не зависит от внешнего GNU `stat`: 
 
 Rollback timer — transaction-bound и revision-bound, PID + process start time
 для wrapper и sleeper. Никогда не ищет process command lines.
+Отмена идемпотентна к гонке завершения: если привязанный процесс успел выйти
+между проверкой `/proc` и `kill`, повторная проверка принимает его как уже
+остановленный; живой процесс с другим start-time по-прежнему блокирует cleanup.
 
 ## No-op apply и cleanup после commit
 

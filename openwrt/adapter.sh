@@ -93,7 +93,13 @@ terminate_owned_timer_pid() {
   process_terminated "$timer_pid_arg" && return 0
   current_timer_start="$(process_start "$timer_pid_arg" 2>/dev/null || true)"
   [ -n "$current_timer_start" ] && [ "$current_timer_start" = "$timer_start_arg" ] || return 1
-  kill -TERM "$timer_pid_arg" 2>/dev/null || return 1
+  # The owned worker can exit between the /proc check above and kill(2).
+  # Treat that race as an already-completed cancellation, but never accept a
+  # live process whose start time no longer matches the ownership binding.
+  if ! kill -TERM "$timer_pid_arg" 2>/dev/null; then
+    process_terminated "$timer_pid_arg" && return 0
+    return 1
+  fi
   timer_wait=0
   while [ "$timer_wait" -lt 5 ] && ! process_terminated "$timer_pid_arg"; do
     current_timer_start="$(process_start "$timer_pid_arg" 2>/dev/null || true)"
@@ -104,7 +110,10 @@ terminate_owned_timer_pid() {
   if ! process_terminated "$timer_pid_arg"; then
     current_timer_start="$(process_start "$timer_pid_arg" 2>/dev/null || true)"
     [ "$current_timer_start" = "$timer_start_arg" ] || return 1
-    kill -KILL "$timer_pid_arg" 2>/dev/null || return 1
+    if ! kill -KILL "$timer_pid_arg" 2>/dev/null; then
+      process_terminated "$timer_pid_arg" && return 0
+      return 1
+    fi
     sleep 1
     process_terminated "$timer_pid_arg" || return 1
   fi

@@ -151,4 +151,21 @@ if verify_token >/dev/null 2>&1; then
   exit 1
 fi
 
+# A timer owner may exit in the small window between the ownership check and
+# kill(2).  Cancellation must treat that race as already complete instead of
+# reporting a false rollback failure.  Keep this deterministic by replacing
+# the process primitives with a fixture that models exactly that interleave.
+timer_process_checks=0
+process_terminated() {
+  timer_process_checks=$((timer_process_checks + 1))
+  [ "$timer_process_checks" -gt 1 ]
+}
+process_start() { printf '%s\n' "fixture-start"; }
+kill() { return 1; }
+if ! terminate_owned_timer_pid 12345 fixture-start; then
+  echo "timer cancellation did not tolerate an already-exited owner" >&2
+  exit 1
+fi
+echo "timer_cancellation_race_is_idempotent=true"
+
 echo "adapter_rollback_integrity_ok=true"
