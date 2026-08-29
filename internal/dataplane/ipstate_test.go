@@ -459,8 +459,8 @@ func TestVerifyDetectsOrphanedRuleWhenRollbackIncomplete(t *testing.T) {
 	if err := ApplyIPPlanWithUCI(context.Background(), applyRunner{st}, "ip", "", plan); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if err := RollbackIPState(context.Background(), st, "ip", plan, pre); err != nil {
-		t.Fatalf("rollback should tolerate failed del: %v", err)
+	if err := RollbackIPState(context.Background(), st, "ip", plan, pre); err == nil {
+		t.Fatal("rollback reported success with orphaned rules left by incomplete rollback")
 	}
 	if err := VerifyIPState(context.Background(), st, "ip", plan, pre); err == nil {
 		t.Fatal("verify accepted orphaned rules left by incomplete rollback")

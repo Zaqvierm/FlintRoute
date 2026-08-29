@@ -273,6 +273,11 @@ both IPv4 and IPv6. An inspection error, malformed JSON, remaining rule, or
 non-empty table blocks uninstall; `dataplane_deactivation=verified-empty` is
 printed only after this proof succeeds.
 
+The typed IP rollback command also re-snapshots the owned route/rule boundary
+before returning success. A failed delete or an orphaned resource therefore
+cannot be reported as a verified deactivation; the uninstaller stops and keeps
+the managed state intact for forensic recovery.
+
 Installer path ownership is fail-closed as well. Before `mkdir`/copy and again
 at the mutation boundary, all managed roots are checked for unsafe path
 components or symlinks. Controller state/config/runtime entries are inspected

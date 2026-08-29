@@ -334,6 +334,15 @@ func RollbackIPState(ctx context.Context, runner CommandRunner, ipBinary string,
 			}
 		}
 	}
+	// A successful command exit is not enough to claim rollback: the kernel
+	// state is the source of truth.  In particular, an ignored `ip rule del`
+	// or `ip route del` failure can otherwise leave an owned orphan while the
+	// caller reports a successful deactivation.  Re-snapshot the exact owned
+	// boundary before returning success; this is idempotent because a second
+	// rollback against an already-restored state produces the same snapshot.
+	if err := VerifyIPState(ctx, runner, ipBinary, plan, pre); err != nil {
+		return fmt.Errorf("ip rollback verification failed: %w", err)
+	}
 	return nil
 }
 
