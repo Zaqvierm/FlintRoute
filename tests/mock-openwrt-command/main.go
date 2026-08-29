@@ -71,6 +71,10 @@ func handleNFT(args []string) int {
 		return 0
 	}
 	if len(args) == 4 && args[0] == "list" && args[1] == "table" && args[2] == "inet" && args[3] == "router_policy" {
+		if os.Getenv("MOCK_NFT_FOREIGN_TABLE") == "1" {
+			fmt.Println(`table inet router_policy { comment "foreign owner=unrelated" }`)
+			return 0
+		}
 		fmt.Println(`table inet router_policy { comment "router-policy owner=flintroute" }`)
 		return 0
 	}

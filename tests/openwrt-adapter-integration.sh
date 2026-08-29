@@ -119,7 +119,7 @@ MOCK_LOOPBACK_API_HEALTH=0
 ROUTER_POLICY_BOOT_ID_PATH="$TMP_NATIVE/boot-id"
 export STATE_DIR RUNTIME_DIR ROUTER_POLICY_CONFIG_PATH ROUTER_POLICY_BIN ROUTER_POLICY_ADAPTER_SELF
 export ACTIVE_NFT ACTIVE_DNSMASQ ACTIVE_XRAY ACTIVE_ZAPRET MOCK_OPENWRT_LOG MOCK_NFT_BOOT_GUARD_STATE
-export NFT_BIN FW4_BIN DNSMASQ_BIN DNSMASQ_INIT XRAY_BIN XRAY_INIT NFQWS_BIN ZAPRET_INIT IP_BIN UCI_BIN WGET_BIN NSLOOKUP_BIN PIDOF_BIN
+export NFT_BIN FW4_BIN DNSMASQ_BIN DNSMASQ_INIT XRAY_BIN XRAY_INIT NFQWS_BIN ZAPRET_INIT IP_BIN UCI_BIN WGET_BIN NSLOOKUP_BIN PIDOF_BIN MOCK_NFT_FOREIGN_TABLE
 export ROUTER_POLICY_ALLOW_SIMULATED_DIAGNOSTICS ROUTER_POLICY_AUTO_COLLECT_EVIDENCE MOCK_UCI_STATE MOCK_IP_STATE MOCK_SERVICE_STATE
 export MOCK_MANAGEMENT_INTERFACE MOCK_LOOPBACK_API_HEALTH ROUTER_POLICY_BOOT_ID_PATH
 
@@ -237,6 +237,28 @@ printf 'old-nft\n' > "$ACTIVE_NFT"
 printf 'old-dnsmasq\n' > "$ACTIVE_DNSMASQ"
 printf 'old-xray\n' > "$ACTIVE_XRAY"
 : > "$TMP/openwrt-calls.log"
+
+# A same-name table without the FlintRoute ownership marker is foreign. The
+# adapter must fence the transition instead of deleting or replacing it.
+setup_transaction "tx_0000000000000001" "rev_1_000000000001" "0000000000000000000000000000000000000000000000000000000000000001"
+adapter prepare "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
+export MOCK_NFT_FOREIGN_TABLE=1
+set +e
+foreign_nft_output=$(adapter replace-owned-nft "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" 2>&1)
+foreign_nft_rc=$?
+set -e
+unset MOCK_NFT_FOREIGN_TABLE
+[ "$foreign_nft_rc" -ne 0 ] || { echo "owned nft replacement accepted a foreign table" >&2; exit 1; }
+printf '%s\n' "$foreign_nft_output" | grep -F 'reason=owned_nft_ownership_unproven' >/dev/null || {
+  echo "foreign nft table refusal did not report ownership conflict" >&2
+  exit 1
+}
+! grep -Eq '^nft -f .*nft-transition-' "$TMP/openwrt-calls.log" || {
+  echo "foreign nft table was replaced" >&2
+  exit 1
+}
+adapter rollback "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
+echo "owned_nft_requires_marker=true"
 
 setup_transaction "tx_0011223344556677" "rev_2_001122334455" "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
 set +e
