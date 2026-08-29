@@ -87,9 +87,29 @@ func testManager(t *testing.T, body []byte, driver *fakeDriver) *Manager {
 	}
 	return &Manager{
 		StateDir: t.TempDir(), RuntimeDir: t.TempDir(), Driver: driver,
-		HTTP:    &http.Client{Transport: staticTransport{body: body, status: http.StatusOK}},
-		Catalog: map[Kind]Release{KindXray: release},
-		Now:     func() time.Time { return time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC) },
+		HTTP:                  &http.Client{Transport: staticTransport{body: body, status: http.StatusOK}},
+		Catalog:               map[Kind]Release{KindXray: release},
+		DirectMutationAllowed: true,
+		Now:                   func() time.Time { return time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC) },
+	}
+}
+
+func TestManagerRejectsDirectMutationWithoutPrivilegedExecutor(t *testing.T) {
+	driver := &fakeDriver{
+		platform: Platform{GOARCH: "arm64"}, preflight: Preflight{Ready: true},
+		health: Health{State: "ready", ServiceState: "running", Ready: true},
+	}
+	manager := testManager(t, []byte("verified-archive"), driver)
+	manager.DirectMutationAllowed = false
+
+	for _, action := range []Action{ActionInstall, ActionUpdate, ActionRestart, ActionRollback, ActionUninstall} {
+		_, err := manager.Execute(context.Background(), Request{Kind: KindXray, Action: action, ConfirmDisruption: true})
+		if err == nil || !strings.Contains(err.Error(), "helper-backed privileged executor") {
+			t.Fatalf("action %s was not fenced: %v", action, err)
+		}
+	}
+	if driver.installCalls != 0 || driver.restartCalls != 0 || driver.rollbackCalls != 0 || driver.uninstallCalls != 0 {
+		t.Fatalf("direct driver was called despite privilege fence: install=%d restart=%d rollback=%d uninstall=%d", driver.installCalls, driver.restartCalls, driver.rollbackCalls, driver.uninstallCalls)
 	}
 }
 

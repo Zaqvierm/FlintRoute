@@ -171,9 +171,12 @@ fault-injection тестами. Полная reboot/fault matrix и hardware evi
 socket; его контракт протестирован. Production-controller запускается через
 procd как `daemon`, а root и запуск без helper отвергаются. Разделение
 привилегий всё ещё **PARTIAL** до Linux runtime/peer-credential и hardware
-evidence; helper path — единственный production mutation path, прямой shell
-adapter оставлен только legacy/development режимом. LAN exposure по умолчанию
-запрещён.
+evidence. Основной transaction/route dataplane использует helper path; прямой
+shell adapter оставлен только legacy/development режимом. Для component API
+отдельно действует fail-closed ограждение: пока helper-backed component
+executor не подключён, production controller может читать inventory/status, но
+не имеет права выполнять install/update/restart/rollback/uninstall через
+прямой `OpenWrtDriver`. LAN exposure по умолчанию запрещён.
 
 ## Порядок remediation
 

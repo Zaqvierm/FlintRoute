@@ -40,7 +40,13 @@ type Manager struct {
 	Releases   ReleaseSource
 	Catalog    map[Kind]Release
 	Now        func() time.Time
-	mu         sync.Mutex
+	// DirectMutationAllowed is an explicit development/test escape hatch.
+	// Production managers must use a helper-backed executor instead of calling
+	// an OpenWrtDriver directly from the controller process.  Keep the default
+	// fail-closed so adding a new production wiring site cannot silently regain
+	// root-owned file/service mutation.
+	DirectMutationAllowed bool
+	mu                    sync.Mutex
 }
 
 func (m *Manager) List(ctx context.Context) ([]Status, error) {
@@ -114,6 +120,9 @@ func (m *Manager) Status(ctx context.Context, kind Kind, checkUpstream bool) (St
 func (m *Manager) Execute(ctx context.Context, request Request) (Result, error) {
 	if !request.Kind.Valid() || !request.Action.Valid() {
 		return Result{}, errors.New("unsupported component action")
+	}
+	if isMutationAction(request.Action) && !m.DirectMutationAllowed {
+		return Result{}, errors.New("component mutation requires a helper-backed privileged executor")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -192,6 +201,15 @@ func (m *Manager) Execute(ctx context.Context, request Request) (Result, error) 
 	}
 	result.Status, err = m.Status(ctx, request.Kind, false)
 	return result, err
+}
+
+func isMutationAction(action Action) bool {
+	switch action {
+	case ActionInstall, ActionUpdate, ActionRestart, ActionRollback, ActionUninstall:
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *Manager) install(ctx context.Context, request Request, release Release, previous Record) (Result, error) {

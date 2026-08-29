@@ -1622,6 +1622,10 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 		zapretSetupChecker = zapret.LocalSetupChecker{}
 		componentManager = &component.Manager{
 			StateDir: cfg.Storage.StateDir, RuntimeDir: cfg.Storage.RuntimeDir,
+			// The production controller is non-root.  Until component operations
+			// have a typed helper backend, keep this manager read-only rather than
+			// allowing a direct OpenWrtDriver mutation attempt.
+			DirectMutationAllowed: false,
 			Driver: component.OpenWrtDriver{
 				StateDir:   cfg.Storage.StateDir,
 				XrayBinary: cfg.Xray.Binary, XrayService: cfg.Xray.InitScript,
