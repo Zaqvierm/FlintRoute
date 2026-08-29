@@ -73,22 +73,31 @@ jobs:
 
       - name: Installer, adapter and recovery fixtures
         run: |
-          sh tests/package-openwrt.sh
-          sh tests/installer-backup.sh
-          sh tests/installer-disk-preflight.sh
-          sh tests/installer-durability.sh
-          sh tests/installer-lifecycle.sh
-          sh tests/installer-prefix-switch.sh
-          sh tests/content-aware-install.sh
-          sh tests/shell-library.sh
-          sh tests/dns-observer-bootstrap.sh
-          sh tests/boot-guard-service.sh
-          sh tests/controller-bind-safety.sh
-          sh tests/boot-guard-policy.sh
-          sh tests/helper-service.sh
-          sh tests/hotplug-bounded.sh
-          sh tests/adapter-rollback.sh
-          sh tests/openwrt-adapter-integration.sh
+          run_fixture() {
+            fixture="$1"
+            shift
+            if "$@"; then
+              return 0
+            fi
+            echo "::error title=fixture failure::${fixture}"
+            return 1
+          }
+          run_fixture package-openwrt sh tests/package-openwrt.sh
+          run_fixture installer-backup sh tests/installer-backup.sh
+          run_fixture installer-disk-preflight sh tests/installer-disk-preflight.sh
+          run_fixture installer-durability sh tests/installer-durability.sh
+          run_fixture installer-lifecycle sh tests/installer-lifecycle.sh
+          run_fixture installer-prefix-switch sh tests/installer-prefix-switch.sh
+          run_fixture content-aware-install sh tests/content-aware-install.sh
+          run_fixture shell-library sh tests/shell-library.sh
+          run_fixture dns-observer-bootstrap sh tests/dns-observer-bootstrap.sh
+          run_fixture boot-guard-service sh tests/boot-guard-service.sh
+          run_fixture controller-bind-safety sh tests/controller-bind-safety.sh
+          run_fixture boot-guard-policy sh tests/boot-guard-policy.sh
+          run_fixture helper-service sh tests/helper-service.sh
+          run_fixture hotplug-bounded sh tests/hotplug-bounded.sh
+          run_fixture adapter-rollback sh tests/adapter-rollback.sh
+          run_fixture openwrt-adapter-integration sh tests/openwrt-adapter-integration.sh
 
       - name: Zapret ownership and cleanup fixtures
         run: |
