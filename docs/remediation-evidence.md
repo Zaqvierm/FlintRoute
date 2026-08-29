@@ -2,7 +2,10 @@
 
 ## Current evidence binding (2026-08-29)
 
-Current code checkpoint: `3d3f910` on `integration/discovery-smartdns-local-dod`.
+Current code checkpoint before this uncommitted refactor: `c975bdb` on
+`integration/discovery-smartdns-local-dod`. The working tree currently contains
+the follow-up `useDashboardData` extraction; its exact SHA and CI runs are not
+claimed until the change is committed and pushed.
 The worktree/branch HEAD is the source of truth for the documentation commit;
 the external status ledger records that exact docs SHA. Local
 `tests/run-all.ps1` completed `all_tests_ok=true`; Linux
@@ -35,15 +38,18 @@ history updates, mobile-menu state and the current-screen ref are no longer
 owned by the data-refresh component. This remains a software-only decomposition;
 the resulting branch SHA and CI runs are recorded in the external ledger.
 
-The operational screen set is now feature-local in `ui/src/features/system.tsx`;
-`ui/src/features/setup.tsx` owns the setup wizard, and `ui/src/app/routes.ts`
-owns navigation/location parsing. `ui/src/app/messages.ts` owns shared
-unavailable/stale-state fallbacks. `ui/src/app/App.tsx` retains shell, refresh
-orchestration, setup wiring, and screen dispatch; `main.tsx` only mounts `App`.
-The grouped commit includes the generated embedded bundle and the UI contract
-documentation. `npm run typecheck`, `npm test -- --run`, `npm run build`, and
-`git diff --check` passed. This remains software-only evidence; Linux and Flint 2
-hardware proof are not inferred.
+The operational screen set is feature-local in `ui/src/features/system.tsx`;
+`ui/src/features/setup.tsx` owns the setup wizard, `ui/src/app/routes.ts` owns
+navigation/location parsing, and `ui/src/app/messages.ts` owns shared
+unavailable/stale-state fallbacks. `ui/src/app/useNavigation.ts` owns URL,
+history, remembered-screen preference, and mobile-menu state. The uncommitted
+follow-up `ui/src/app/useDashboardData.ts` moves dashboard data state, polling,
+SSE, abort/retry handling, privacy clearing, and onboarding writes out of
+`App.tsx`; after commit it will leave `App.tsx` with session/shell wiring and
+screen composition while `main.tsx` remains mount-only. Local
+`npm run typecheck`, `npm test -- --run`, `npm run browser:test`, `npm run build`,
+and `git diff --check` pass for this working tree. This remains software-only
+evidence; Linux and Flint 2 hardware proof are not inferred.
 
 ## 2026-08-29 route-screen decomposition implementation (`c1940be1994fe44215fb150d6909818e09205bcb`)
 
