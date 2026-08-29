@@ -3,13 +3,13 @@
 ## 2026-08-29 current code checkpoint
 
 The current code HEAD is
-`7e7f8bf78c8286c885ac2b54bd3abf35f1907ef4` on
+`f177ca5ad705d19beb076b77d7890661e405afc7` on
 `integration/discovery-smartdns-local-dod`. The worktree was clean before
 this checkpoint and the branch is pushed. The current exact-SHA CI evidence
-for that code is full safety [33229028717](https://github.com/Zaqvierm/FlintRoute/actions/runs/33229028717),
-nft transition [33229028720](https://github.com/Zaqvierm/FlintRoute/actions/runs/33229028720),
-Zapret process-group [33229028721](https://github.com/Zaqvierm/FlintRoute/actions/runs/33229028721),
-and browser/responsive [33229028725](https://github.com/Zaqvierm/FlintRoute/actions/runs/33229028725).
+for that code is full safety [33230838569](https://github.com/Zaqvierm/FlintRoute/actions/runs/33230838569),
+nft transition [33230838558](https://github.com/Zaqvierm/FlintRoute/actions/runs/33230838558),
+Zapret process-group [33230838562](https://github.com/Zaqvierm/FlintRoute/actions/runs/33230838562),
+and browser/responsive [33230838623](https://github.com/Zaqvierm/FlintRoute/actions/runs/33230838623).
 These are software/CI results only; Linux-only execution on this Windows host
 and all Flint 2 evidence remain separate and are not inferred from CI.
 
@@ -73,7 +73,7 @@ These are software/CI evidence only; hardware was not accessed.
 
 ## Область проверки
 
-- Текущий проверяемый code HEAD: `7e7f8bf78c8286c885ac2b54bd3abf35f1907ef4` on `integration/discovery-smartdns-local-dod` (route-only assignment имеет production consumer через typed helper и остаётся ограниченным exact-owned overlay; hardware/runtime evidence по физическому OpenWrt ещё не получено). Historical rows in this document remain useful only as evidence for their named SHA and are stale for the current tree.
+- Текущий проверяемый code HEAD: `f177ca5ad705d19beb076b77d7890661e405afc7` on `integration/discovery-smartdns-local-dod` (route-only assignment имеет production consumer через typed helper и остаётся ограниченным exact-owned overlay; hardware/runtime evidence по физическому OpenWrt ещё не получено). Historical rows in this document remain useful only as evidence for their named SHA and are stale for the current tree.
 - Текущая ветка: `integration/discovery-smartdns-local-dod`.
 - Этот документ не наследует hardware evidence от старых SHA.
 
@@ -419,13 +419,13 @@ UI не выдумывает это число.
 
 ## Current exact-SHA CI checkpoint
 
-Для code HEAD `7e7f8bf78c8286c885ac2b54bd3abf35f1907ef4` все обязательные
+Для code HEAD `f177ca5ad705d19beb076b77d7890661e405afc7` все обязательные
 software workflows завершились успешно:
 
-- exact-SHA full safety gate: [33229028717](https://github.com/Zaqvierm/FlintRoute/actions/runs/33229028717);
-- UI browser/responsive: [33229028725](https://github.com/Zaqvierm/FlintRoute/actions/runs/33229028725);
-- Zapret process-group: [33229028721](https://github.com/Zaqvierm/FlintRoute/actions/runs/33229028721);
-- nft transition: [33229028720](https://github.com/Zaqvierm/FlintRoute/actions/runs/33229028720).
+- exact-SHA full safety gate: [33230838569](https://github.com/Zaqvierm/FlintRoute/actions/runs/33230838569);
+- UI browser/responsive: [33230838623](https://github.com/Zaqvierm/FlintRoute/actions/runs/33230838623);
+- Zapret process-group: [33230838562](https://github.com/Zaqvierm/FlintRoute/actions/runs/33230838562);
+- nft transition: [33230838558](https://github.com/Zaqvierm/FlintRoute/actions/runs/33230838558).
 
 The full gate includes the installer lifecycle regression that injects a failed
 ownership enumeration and proves the project prefix is preserved; the prefix

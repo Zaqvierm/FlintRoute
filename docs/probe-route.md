@@ -1,6 +1,6 @@
 # Единый probe_route
 
-> **Статус на `7e7f8bf`:** software-контракт и локальные проверки актуальны.
+> **Статус на `f177ca5`:** software-контракт и локальные проверки актуальны.
 > Hardware path proof для этого SHA отсутствует.
 
 `probe.ProbeRoute(ctx, cfg, domain, serviceName, svc, route)` — единственная

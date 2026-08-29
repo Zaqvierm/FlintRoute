@@ -237,7 +237,7 @@ helper (`adapter.Interface`), а не ad-hoc shell. `VERIFY` требует вс
 recovery (`adapter.Reconcile` через `api.recoverCommittedDataplane`) восстанавливает
 committed dataplane после рестарта — отдельный путь, не показан в hot-path flow.
 
-## Фактическая сверка с кодом на `7e7f8bf`
+## Фактическая сверка с кодом на `f177ca5`
 
 Эта секция отделяет реализованный control flow от целевого flowchart. Проверка
 выполнена по `internal/planner/planner.go`, `internal/api/server.go`,
