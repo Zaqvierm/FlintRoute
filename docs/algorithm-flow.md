@@ -126,13 +126,13 @@ flowchart TD
     MANUAL -- "BLOCKED" --> DROP_MANUAL["DROP"]
     MANUAL -- "DIRECT_ONLY" --> BUILD_DIRECT["Очередь: direct"]
     MANUAL -- "GEO_LOCKED" --> KILLSWITCH["Kill-switch на WAN, запрет direct/zapret"]
-    MANUAL -- "TELEGRAM" --> BUILD_TG["Проверенный внешний SOCKS -> VLESS -> DROP"]
-    MANUAL -- "TSPU_RESTRICTED" --> BUILD_TSPU["Очередь: zapret -> VLESS -> DROP"]
-    MANUAL -- "DIRECT_PREFERRED" --> BUILD_DP["Очередь: direct; расширение только по evidence"]
+    MANUAL -- "TELEGRAM" --> BUILD_TG["Eligible: external SOCKS, VLESS, DROP"]
+    MANUAL -- "TSPU_RESTRICTED" --> BUILD_TSPU["Eligible: Zapret, Smart DNS, VLESS, DROP"]
+    MANUAL -- "DIRECT_PREFERRED" --> BUILD_DP["Eligible: Direct, Zapret, Smart DNS, VLESS, DROP"]
     MANUAL -- "обычная/unknown" --> TSPU_LIST{"TSPU evidence match?"}
     TSPU_LIST -- "да" --> BUILD_TSPU
-    TSPU_LIST -- "нет" --> BUILD_UNKNOWN["Очередь: direct"]
-    KILLSWITCH --> BUILD_GEO["Очередь: smart_dns -> VLESS по рейтингу"]
+    TSPU_LIST -- "нет" --> BUILD_UNKNOWN["Eligible: Direct, Zapret, Smart DNS, VLESS, DROP"]
+    KILLSWITCH --> BUILD_GEO["Eligible: Smart DNS, VLESS, DROP"]
     BUILD_DIRECT --> POLICY_READY
     BUILD_GEO --> POLICY_READY
     BUILD_TG --> POLICY_READY
@@ -144,7 +144,8 @@ flowchart TD
     CACHE -- "нет/stale/запрещён" --> START_PROBE["Проверка очереди кандидатов"]
     USE_ACTIVE --> RETURN_DNS["Вернуть клиенту DNS-ответ"]
     START_PROBE --> NEXT_ROUTE{"Непроверенный кандидат?"}
-    NEXT_ROUTE -- "нет" --> SELECT["Оценить все результаты"]
+    NEXT_ROUTE -- "нет" --> FILTER["Hard filter, then score comparable end-to-end evidence"]
+    FILTER --> SELECT["Select best result with hysteresis/cooldown"]
     NEXT_ROUTE -- "да" --> ROUTE_ALLOWED{"Разрешён политикой и компонент доступен?"}
     ROUTE_ALLOWED -- "нет" --> SAVE_FORBIDDEN["FORBIDDEN/UNAVAILABLE"]
     SAVE_FORBIDDEN --> NEXT_ROUTE
@@ -160,12 +161,12 @@ flowchart TD
     CLASSIFY -- "SUSPECTED_TSPU" --> SAVE_TSPU
     CLASSIFY -- "RU_EXIT" --> SAVE_RU
     CLASSIFY -- "FAIL/DEGRADED" --> SAVE_FAIL
-    SAVE_OK --> DISCOVERY
-    SAVE_UNVERIFIED --> DISCOVERY
-    SAVE_REGION --> DISCOVERY
-    SAVE_TSPU --> DISCOVERY
-    SAVE_RU --> DISCOVERY
-    SAVE_FAIL --> DISCOVERY
+    SAVE_OK --> NEXT_ROUTE
+    SAVE_UNVERIFIED --> NEXT_ROUTE
+    SAVE_REGION --> NEXT_ROUTE
+    SAVE_TSPU --> NEXT_ROUTE
+    SAVE_RU --> NEXT_ROUTE
+    SAVE_FAIL --> NEXT_ROUTE
     DISCOVERY{"Discovery: regional/TSPU/fallback?"}
     DISCOVERY -- "regional, не GEO_LOCKED" --> MARK_GEO["Пометить GEO_LOCKED, убрать direct/zapret"]
     DISCOVERY -- "TSPU на direct, нет zapret" --> ADD_ZAPRET["Добавить zapret в очередь"]

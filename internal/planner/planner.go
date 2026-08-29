@@ -164,7 +164,15 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 		if regionalBlock && (route.Type == "direct" || route.Type == "zapret") {
 			continue
 		}
-		if profile.override == nil && route.Type == "zapret" && !tspuStartsWithZapret(plan.TSPUStatus, cfg.Policy.TSPUStalePolicy) {
+		// An explicit TSPU_RESTRICTED service category is already a policy
+		// eligibility decision. Do not silently skip its Zapret candidates just
+		// because this invocation has no fresh TSPU detector result. The route
+		// is still ranked only after terminal evidence from every candidate;
+		// this guard applies only to unclassified/ordinary domains where Zapret
+		// should not be probed speculatively.
+		if profile.override == nil && route.Type == "zapret" &&
+			!strings.EqualFold(profile.service.Category, "TSPU_RESTRICTED") &&
+			!tspuStartsWithZapret(plan.TSPUStatus, cfg.Policy.TSPUStalePolicy) {
 			if !directAttempted || !directLookedLikeTSPU {
 				continue
 			}

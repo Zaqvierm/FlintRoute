@@ -621,6 +621,41 @@ func TestTSPUCheckFallsBackFromZapretToSmartDNSBeforeVLESS(t *testing.T) {
 	}
 }
 
+func TestExplicitTSPUCategoryProbesZapretWithoutFreshDetectorResult(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cfg.Services["tspu-service"] = config.Service{
+		Category:       "TSPU_RESTRICTED",
+		AllowedPaths:   []string{"zapret", "smart_dns", "vless", "drop"},
+		ForbiddenPaths: []string{"direct"},
+	}
+	prober := &scriptedProber{results: map[string]probe.RouteResult{
+		"zapret": successfulResult("zapret", "zapret", "rev-active"),
+		"smart-one": func() probe.RouteResult {
+			result := successfulResult("smart-one", "smart_dns", "rev-active")
+			result.EndToEndLatencyMS = 70
+			return result
+		}(),
+		"vless-one": func() probe.RouteResult {
+			result := successfulResult("vless-one", "vless", "rev-active")
+			result.EndToEndLatencyMS = 40
+			return result
+		}(),
+	}}
+	result, err := CheckDomain(context.Background(), cfg, "listed.example", "tspu-service", Options{
+		RouteProber: prober, ActiveRevision: "rev-active",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCalls := []string{"zapret", "smart-one", "vless-one", "drop"}
+	if !reflect.DeepEqual(prober.calls, wantCalls) {
+		t.Fatalf("explicit TSPU category skipped a candidate: got calls=%v want=%v", prober.calls, wantCalls)
+	}
+	if result.Selected == nil || result.Selected.Route != "vless-one" {
+		t.Fatalf("selection must use verified evidence rather than candidate order: %+v", result.Selected)
+	}
+}
+
 func TestRegionalBlockRemovesDirectAndZapretFromRemainingQueue(t *testing.T) {
 	cfg := discoveryConfig(t)
 	prober := &scriptedProber{results: map[string]probe.RouteResult{
