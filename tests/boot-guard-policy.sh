@@ -22,10 +22,22 @@ cat > "$TMP/nft" <<'SH'
 set -eu
 case "${1:-}" in
   list)
-    [ "${2:-}" = "tables" ] && exit 0
+    if [ "${2:-}" = "tables" ]; then
+      exit 0
+    fi
+    if [ "${2:-}" = "table" ] && [ "${3:-}" = "inet" ] && [ "${4:-}" = "router_policy" ]; then
+      if [ "${NFT_FOREIGN_CLASSIFIER:-0}" = "1" ]; then
+        printf '%s\n' 'table inet router_policy {' '  comment "foreign owner=someone-else"' '}'
+        exit 0
+      fi
+      exit 1
+    fi
     exit 1
     ;;
-  delete) exit 0 ;;
+  delete)
+    printf '%s\n' "$*" >> "$NFT_COMMAND_LOG"
+    exit 0
+    ;;
 esac
 if [ "${1:-}" = "-f" ]; then
   cp "$2" "$BOOT_GUARD_CAPTURE"
@@ -59,7 +71,9 @@ ROUTER_POLICY_CONFIG_PATH="$TMP/config.json"
 NFT_BIN="$TMP/nft"
 ROUTER_POLICY_BIN="$TMP/router-policy"
 BOOT_GUARD_CAPTURE="$TMP/captured.nft"
-export ROUTER_POLICY_ADAPTER_LIB_ONLY STATE_DIR RUNTIME_DIR ROUTER_POLICY_CONFIG_PATH NFT_BIN ROUTER_POLICY_BIN BOOT_GUARD_CAPTURE
+NFT_COMMAND_LOG="$TMP/nft.commands"
+: > "$NFT_COMMAND_LOG"
+export ROUTER_POLICY_ADAPTER_LIB_ONLY STATE_DIR RUNTIME_DIR ROUTER_POLICY_CONFIG_PATH NFT_BIN ROUTER_POLICY_BIN BOOT_GUARD_CAPTURE NFT_COMMAND_LOG
 # shellcheck source=openwrt/adapter.sh
 . "$ROOT/openwrt/adapter.sh"
 
@@ -106,5 +120,27 @@ classifier_line=$(grep -n '^table inet router_policy {' "$BOOT_GUARD_CAPTURE" | 
 guard_line=$(grep -n '^table inet router_policy_boot_guard {' "$BOOT_GUARD_CAPTURE" | cut -d: -f1)
 [ "$classifier_line" -lt "$guard_line" ] || exit 1
 
+# An existing classifier with no FlintRoute ownership proof is a hard fence:
+# do not redeclare or delete it, and do not admit any mark whose producer is
+# unknown.  The guard remains DROP-only until an owned generation is proven.
+export NFT_FOREIGN_CLASSIFIER=1
+install_boot_guard >/dev/null
+if grep -F 'table inet router_policy {' "$BOOT_GUARD_CAPTURE" >/dev/null; then
+  echo 'foreign classifier was copied into boot guard transition' >&2
+  exit 1
+fi
+if grep -E 'allow=meta|allow=conntrack' "$BOOT_GUARD_CAPTURE" >/dev/null; then
+  echo 'foreign classifier caused mark admission' >&2
+  exit 1
+fi
+grep -Fx '    type filter hook forward priority -300; policy drop;' "$BOOT_GUARD_CAPTURE" >/dev/null
+grep -F 'rp boot_guard action=drop_unclassified' "$BOOT_GUARD_CAPTURE" >/dev/null
+if grep -F 'delete table inet router_policy' "$NFT_COMMAND_LOG" >/dev/null; then
+  echo 'foreign classifier was deleted during boot guard install' >&2
+  exit 1
+fi
+unset NFT_FOREIGN_CLASSIFIER
+
 echo "boot_guard_unclassified_forwarding_fenced=true"
 echo "boot_guard_early_classifier_verified=true"
+echo "boot_guard_foreign_classifier_fenced=true"

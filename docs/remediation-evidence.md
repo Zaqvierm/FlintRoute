@@ -1,5 +1,25 @@
 # Evidence remediation
 
+## 2026-08-29 current code checkpoint
+
+The current code HEAD is
+`911395ddc7942785cfb4a655eb43140c4e205a41` on
+`integration/discovery-smartdns-local-dod`. The worktree was clean before
+this checkpoint and the branch is pushed. The current exact-SHA CI evidence
+for that code is full safety [33224997032](https://github.com/Zaqvierm/FlintRoute/actions/runs/33224997032),
+nft transition [33224996990](https://github.com/Zaqvierm/FlintRoute/actions/runs/33224996990),
+Zapret process-group [33224996957](https://github.com/Zaqvierm/FlintRoute/actions/runs/33224996957),
+and browser/responsive [33224997002](https://github.com/Zaqvierm/FlintRoute/actions/runs/33224997002).
+These are software/CI results only; Linux-only execution on this Windows host
+and all Flint 2 evidence remain separate and are not inferred from CI.
+
+The boot-guard policy fixture now also models an existing foreign
+`inet router_policy` table. When ownership cannot be proven, the transition
+does not copy or delete that table and emits a DROP-only guard with no mark
+admission. `tests/boot-guard-policy.sh` reports
+`boot_guard_foreign_classifier_fenced=true` for this case. This is a local
+mock ownership proof; the namespace workflow remains the Linux-level proof.
+
 ## Boot guard namespace gate
 
 `tests/boot-guard-namespace.sh` is a Linux-only network-namespace harness for
