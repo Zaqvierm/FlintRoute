@@ -1,5 +1,17 @@
 # Evidence remediation
 
+## 2026-08-29 current code checkpoint (`61731755f454baae8135582e6e271fa52cae4c88`)
+
+The current tree is `integration/discovery-smartdns-local-dod` at
+`61731755f454baae8135582e6e271fa52cae4c88`, version `0.2.0-alpha.4`. The
+formal version/changelog commit keeps hardware claims out of the release and
+does not create a tag. Its current-SHA full safety gate [33234703300](https://github.com/Zaqvierm/FlintRoute/actions/runs/33234703300),
+nft transition [33234703299](https://github.com/Zaqvierm/FlintRoute/actions/runs/33234703299),
+Zapret process-group [33234703296](https://github.com/Zaqvierm/FlintRoute/actions/runs/33234703296),
+and UI/responsive [33234703302](https://github.com/Zaqvierm/FlintRoute/actions/runs/33234703302)
+are PASS. These remain software/CI evidence only; Linux-only local checks and
+all Flint 2 hardware evidence are separate and are not inherited.
+
 ## 2026-08-29 current code checkpoint (`c9b17d10f28d35fda66e3dc33d67282eb48cdc4f`)
 
 The current tree is `integration/discovery-smartdns-local-dod` at
