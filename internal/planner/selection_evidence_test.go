@@ -28,6 +28,16 @@ func TestDropIsASelectableTerminalSafetyOutcome(t *testing.T) {
 	}
 }
 
+func TestDropDoesNotBeatVerifiedPathWithoutComparableLatency(t *testing.T) {
+	results := []probe.RouteResult{
+		{Route: "drop", RouteType: "drop", Status: "DROP", ApplicationStatus: "DROP"},
+		{Route: "vless-no-latency", RouteType: "vless", Status: "OK", ApplicationStatus: "OK", PathVerified: true, ServiceOK: true},
+	}
+	if got := SelectBestWithPolicy(results, configPolicyForSelection(), "", nil); got == nil || got.Route != "vless-no-latency" {
+		t.Fatalf("verified non-DROP path must win over terminal DROP fallback: %+v", got)
+	}
+}
+
 func TestSelectionUsesEndToEndLatencyNotPolicyOrder(t *testing.T) {
 	results := []probe.RouteResult{
 		measuredSelectionResult("smart-primary", "smart_dns", 70),

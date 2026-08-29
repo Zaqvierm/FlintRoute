@@ -343,6 +343,19 @@ func SelectBestWithPolicy(results []probe.RouteResult, policy config.Policy, cur
 	if len(ok) == 0 {
 		return nil
 	}
+	// DROP is a terminal safety outcome, not a peer route.  When at least one
+	// verified non-DROP path exists, never let an unavailable latency sample or
+	// a score tie make DROP win merely because it was present in the candidate
+	// set.  DROP remains selectable when it is the only verified outcome.
+	nonDrop := make([]probe.RouteResult, 0, len(ok))
+	for _, result := range ok {
+		if result.RouteType != "drop" {
+			nonDrop = append(nonDrop, result)
+		}
+	}
+	if len(nonDrop) > 0 {
+		ok = nonDrop
+	}
 	sort.SliceStable(ok, func(i, j int) bool {
 		left, right := selectionScore(ok[i], policy, health), selectionScore(ok[j], policy, health)
 		if left != right {
