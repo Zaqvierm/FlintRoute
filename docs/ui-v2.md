@@ -90,3 +90,12 @@ binary; authoritative повторяемая проверка выполняет
 `npm test -- --run` и production build; software evidence не является
 hardware proof. Текущий decomposition checkpoint фиксируется отдельным
 grouped commit и должен быть привязан к его exact SHA в evidence ledger.
+
+### System-screen decomposition checkpoint
+
+The remaining operational screens are now isolated in `ui/src/features/system.tsx`:
+components, discovery, traffic, external SOCKS, TG WS, Telegram, decision flow,
+diagnostics, security, recovery, settings, and login. The setup wizard is isolated
+in `ui/src/features/setup.tsx`; `main.tsx` keeps shell, data refresh, routing,
+screen dispatch, and the recovery banner. This is a software-only
+refactor; it does not change dataplane behavior or provide hardware evidence.

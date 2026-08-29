@@ -1,10 +1,11 @@
 # Актуальность документации
 
 Проверено: `2026-08-29`, база production-кода
-`c1940be1994fe44215fb150d6909818e09205bcb` (route-screen decomposition implementation).
+latest grouped UI decomposition commit (exact SHA is recorded in the external
+evidence ledger; this document is kept free of self-referential commit hashes).
 
 The status table below retains historical labels from earlier checkpoints;
-the authoritative implementation SHA for this document is `c1940be`. Historical
+the authoritative implementation SHA is recorded in the external evidence ledger. Historical
 rows are not current evidence unless explicitly rebound to that SHA.
 Документационный commit фиксирует этот code SHA; hardware claims для него не
 наследуются.

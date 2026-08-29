@@ -1,5 +1,14 @@
 # Evidence remediation
 
+## 2026-08-29 remaining system-screen decomposition
+
+The operational screen set is now feature-local in `ui/src/features/system.tsx`;
+`main.tsx` retains shell, refresh orchestration, setup, and screen dispatch.
+The grouped commit includes the generated embedded bundle and the UI contract
+documentation. `npm run typecheck`, `npm test -- --run`, `npm run build`, and
+`git diff --check` passed. This remains software-only evidence; Linux and Flint 2
+hardware proof are not inferred.
+
 ## 2026-08-29 route-screen decomposition implementation (`c1940be1994fe44215fb150d6909818e09205bcb`)
 
 VLESS, Zapret, Smart DNS, and route display screens now live in feature-local
