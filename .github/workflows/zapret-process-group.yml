@@ -2,7 +2,7 @@ name: Zapret process-group safety
 
 on:
   push:
-    branches: [main, remediation/**]
+    branches: [main, remediation/**, integration/**]
   pull_request:
 
 jobs:
