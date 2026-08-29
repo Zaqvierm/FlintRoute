@@ -80,6 +80,12 @@ decision-layer constraint; a production dataplane consumer must enforce the
 same mode before the first packet. The policy describes the first connection
 while the passive observer classifies the domain.
 
+Terminal `NO_SAFE_ROUTE` outcomes are cached under the same revision,
+inventory, and TTL binding. The cache entry must contain non-empty, terminal
+evidence for known candidates and the planner's exhaustion reason. In-progress,
+malformed, incomplete, or mismatched entries are rejected and re-probed; they
+never suppress verification or manufacture a terminal decision.
+
 ## Route-only assignment
 
 Automatic discovery may assign a domain only to an already enabled, verified

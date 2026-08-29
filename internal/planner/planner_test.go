@@ -233,7 +233,7 @@ func TestUnknownDomainDirectSuccessIsCachedAndReused(t *testing.T) {
 	}
 }
 
-func TestUnknownDomainFailureIsNotCached(t *testing.T) {
+func TestUnknownDomainNoSafeRouteIsCachedAndReused(t *testing.T) {
 	cfg := discoveryConfig(t)
 	cache := openDecisionCache(t, cfg)
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
@@ -249,15 +249,45 @@ func TestUnknownDomainFailureIsNotCached(t *testing.T) {
 	if first.Status != "NO_SAFE_ROUTE" || first.VerificationState != "terminal_no_safe_route" || first.Confidence != 0 || first.Selected != nil {
 		t.Fatalf("unexpected failed decision: %+v", first)
 	}
-	if got := cache.Snapshot(); len(got) != 0 {
-		t.Fatalf("failed observation was persisted as a route decision: %+v", got)
+	if got := cache.Snapshot(); len(got) != 1 || got[0].Status != "NO_SAFE_ROUTE" || got[0].SelectedRoute != "" {
+		t.Fatalf("terminal exhaustion was not persisted safely: %+v", got)
 	}
 	firstCalls := len(prober.calls)
-	if _, err := CheckDomain(context.Background(), cfg, "unreachable.example", "", opts); err != nil {
+	second, err := CheckDomain(context.Background(), cfg, "unreachable.example", "", opts)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(prober.calls) <= firstCalls {
-		t.Fatalf("failed observation suppressed a fresh probe: before=%d after=%d", firstCalls, len(prober.calls))
+	if !second.Cached || second.Status != "NO_SAFE_ROUTE" || second.VerificationState != "terminal_no_safe_route" || second.Selected != nil {
+		t.Fatalf("terminal exhaustion cache was not reused: %+v", second)
+	}
+	if len(prober.calls) != firstCalls {
+		t.Fatalf("cached terminal exhaustion triggered fresh probes: before=%d after=%d", firstCalls, len(prober.calls))
+	}
+}
+
+func TestIncompleteNoSafeRouteCacheEntryIsRejected(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cache := openDecisionCache(t, cfg)
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	if _, err := cache.Save("incomplete.example", domaincache.Decision{
+		Service: "UNKNOWN:incomplete.example", Category: "UNKNOWN", Status: "NO_SAFE_ROUTE",
+		Reason: "no_verified_policy_allowed_route", AdapterRevision: "rev-active", Confidence: 0,
+		CheckedAt: now, ExpiresAt: now.Add(time.Hour), Results: nil,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prober := &scriptedProber{results: map[string]probe.RouteResult{}}
+	check, err := CheckDomain(context.Background(), cfg, "incomplete.example", "", Options{
+		RouteProber: prober, DecisionCache: cache, ActiveRevision: "rev-active", Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.Cached {
+		t.Fatalf("incomplete terminal cache entry was accepted: %+v", check)
+	}
+	if len(prober.calls) == 0 {
+		t.Fatal("incomplete terminal cache entry suppressed fresh verification")
 	}
 }
 

@@ -281,7 +281,8 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 	out.ExpiresAt = out.CheckedAt.Add(ttl)
 	out.Confidence = decisionConfidence(out, opts.TSPUResult)
 
-	if profile.unknown && profile.override == nil && opts.DecisionCache != nil && opts.ActiveRevision != "" && out.Selected != nil {
+	if profile.unknown && profile.override == nil && opts.DecisionCache != nil && opts.ActiveRevision != "" &&
+		(out.Selected != nil || out.Status == "NO_SAFE_ROUTE") {
 		decision := domaincache.Decision{
 			Service: profile.name, Category: out.Category, TSPUStatus: out.TSPUStatus,
 			ClassificationState: out.ClassificationState, ClassificationReason: out.ClassificationReason,
@@ -292,8 +293,10 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 			VerificationDurationMS: out.VerificationDurationMS, Results: out.Results, CheckedAt: out.CheckedAt,
 			ExpiresAt: out.ExpiresAt, LastUsedAt: out.CheckedAt,
 		}
-		decision.SelectedRoute = out.Selected.Route
-		decision.SelectedType = out.Selected.RouteType
+		if out.Selected != nil {
+			decision.SelectedRoute = out.Selected.Route
+			decision.SelectedType = out.Selected.RouteType
+		}
 		if _, err := opts.DecisionCache.Save(profile.domain, decision); err != nil {
 			return out, fmt.Errorf("persist domain decision: %w", err)
 		}
@@ -727,6 +730,13 @@ func cachedCheck(decision domaincache.Decision, plan CandidatePlan, profile serv
 		out.ClassificationSource = decision.ClassificationSource
 		out.ClassificationEvidence = decision.ClassificationEvidence
 	}
+	if strings.EqualFold(strings.TrimSpace(decision.Status), "NO_SAFE_ROUTE") {
+		if !validCachedNoSafeRoute(decision, plan) {
+			return DomainCheck{}, false
+		}
+		out.VerificationState = "terminal_no_safe_route"
+		return out, true
+	}
 	if decision.SelectedRoute == "" {
 		return out, false
 	}
@@ -749,6 +759,32 @@ func cachedCheck(decision domaincache.Decision, plan CandidatePlan, profile serv
 		}
 	}
 	return DomainCheck{}, false
+}
+
+// validCachedNoSafeRoute keeps terminal exhaustion cache entries fail-closed.
+// A missing, in-progress, malformed, or foreign candidate result must never be
+// treated as proof that no safe route exists.  The active revision and
+// inventory checks are performed by cachedCheck before this helper runs.
+func validCachedNoSafeRoute(decision domaincache.Decision, plan CandidatePlan) bool {
+	if decision.SelectedRoute != "" || decision.Reason != "no_verified_policy_allowed_route" || len(decision.Results) == 0 {
+		return false
+	}
+	for _, result := range decision.Results {
+		if !probeResultTerminal(result) {
+			return false
+		}
+		matched := false
+		for _, candidate := range plan.Candidates {
+			if candidate.Tag == result.Route && candidate.Type == result.RouteType {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
 }
 
 func optionNow(opts Options) time.Time {
