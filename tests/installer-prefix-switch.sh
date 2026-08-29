@@ -154,6 +154,10 @@ reset_fixture
 mkdir -p "$PREFIX.old.fixture/scripts"
 printf 'owned\n' > "$PREFIX.old.fixture/scripts/value"
 printf 'foreign\n' > "$PREFIX.old.fixture/foreign-runtime"
+# finalize_prefix_switch consumes this dynamically-scoped value from the
+# sourced installer library; ShellCheck cannot model that cross-file contract.
+# shellcheck disable=SC2034
+old_prefix="$PREFIX.old.fixture"
 if finalize_prefix_switch >/dev/null 2>&1; then
   echo "finalize removed an unowned old-prefix entry" >&2
   exit 1
