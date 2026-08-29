@@ -1033,6 +1033,22 @@ func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.Domain
 		}
 		return automaticCommitResult{Reason: "route_assignment_runtime_semantic_response_invalid"}
 	}
+	// Prove that the newly materialized route works before recording a durable
+	// decision. A pre-apply result cannot be reused: the assignment itself is
+	// the mutation boundary, so the post-apply probe must observe that exact
+	// route/revision.
+	if s.probeEngineFactory == nil {
+		return rollbackRuntime("route_assignment_post_apply_proof_unavailable")
+	}
+	post := s.probeEngineFactory(active).ProbeRoute(ctx, active, check.Domain, service, autoService, route)
+	if post.Route != route.Tag || post.RouteType != route.Type || post.AdapterRevision != revision ||
+		!strings.EqualFold(post.Status, "OK") || !post.PathVerified || !post.ServiceOK ||
+		(check.Selected.CandidateHash != "" && post.CandidateHash != check.Selected.CandidateHash) ||
+		(check.Selected.ArtifactManifestHash != "" && post.ArtifactManifestHash != check.Selected.ArtifactManifestHash) ||
+		(autoService.RequireNonRUEgress && route.Type != "drop" && (!post.EgressConsensus || strings.TrimSpace(post.ExternalCountry) == "" || strings.EqualFold(post.ExternalCountry, "RU"))) {
+		return rollbackRuntime("route_assignment_post_apply_proof_failed")
+	}
+
 	decision := domaincache.Decision{
 		Domain: check.Domain, ETLDPlusOne: check.ETLDPlusOne, Service: service,
 		Category: check.Category, TSPUStatus: check.TSPUStatus, SelectedRoute: route.Tag,
@@ -1044,7 +1060,8 @@ func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.Domain
 		VerificationDurationMS: check.VerificationDurationMS, Results: results,
 		CheckedAt: now, ExpiresAt: expires, LastUsedAt: now,
 	}
-	if _, err := s.domainDecisions.Save(check.Domain, decision); err != nil {
+	saved, err := s.domainDecisions.Save(check.Domain, decision)
+	if err != nil {
 		return rollbackRuntime("route_assignment_persist_failed: " + err.Error())
 	}
 	// Read back the exact revision-bound decision before reporting success. This
@@ -1056,24 +1073,15 @@ func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.Domain
 		if lookupErr == nil {
 			lookupErr = errors.New("stored route assignment does not match active revision")
 		}
-		return rollbackRuntime("route_assignment_readback_failed: " + lookupErr.Error())
-	}
-	// Route-only assignment is still a production mutation of the domain map.
-	// Re-probe the exact selected route after the durable write and require the
-	// same service/path/revision evidence. A pre-apply probe must not be reused
-	// as proof that the new mapping is effective.
-	if s.probeEngineFactory == nil {
-		_ = s.domainDecisions.Discard(check.Domain)
-		return rollbackRuntime("route_assignment_post_apply_proof_unavailable")
-	}
-	post := s.probeEngineFactory(active).ProbeRoute(ctx, active, check.Domain, service, autoService, route)
-	if post.Route != route.Tag || post.RouteType != route.Type || post.AdapterRevision != revision ||
-		!strings.EqualFold(post.Status, "OK") || !post.PathVerified || !post.ServiceOK ||
-		(check.Selected.CandidateHash != "" && post.CandidateHash != check.Selected.CandidateHash) ||
-		(check.Selected.ArtifactManifestHash != "" && post.ArtifactManifestHash != check.Selected.ArtifactManifestHash) ||
-		(autoService.RequireNonRUEgress && route.Type != "drop" && (!post.EgressConsensus || strings.TrimSpace(post.ExternalCountry) == "" || strings.EqualFold(post.ExternalCountry, "RU"))) {
-		_ = s.domainDecisions.Discard(check.Domain)
-		return rollbackRuntime("route_assignment_post_apply_proof_failed")
+		cleanupErr := error(nil)
+		if saved.Key != "" {
+			cleanupErr = s.domainDecisions.Discard(saved.Key)
+		}
+		reason := "route_assignment_readback_failed: " + lookupErr.Error()
+		if cleanupErr != nil {
+			reason += "; decision_cleanup_failed: " + cleanupErr.Error()
+		}
+		return rollbackRuntime(reason)
 	}
 	s.mu.Lock()
 	if suggestion, exists := s.discoverySuggestionMap[check.Domain]; exists {

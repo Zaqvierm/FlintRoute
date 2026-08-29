@@ -20,7 +20,10 @@ func fakeAdapterCallCount(fake *fakeAdapter) int {
 	return len(fake.calls)
 }
 
-type routeAssignmentProofEngine struct{ revision string }
+type routeAssignmentProofEngine struct {
+	revision string
+	fail     bool
+}
 
 type fakeRouteAssignmentRuntime struct {
 	applied    int
@@ -61,11 +64,40 @@ func (r *fakeRouteAssignmentRuntime) RollbackRouteAssignment(_ context.Context, 
 }
 
 func (e routeAssignmentProofEngine) ProbeRoute(_ context.Context, _ *config.Config, domain, service string, _ config.Service, route config.Route) probe.RouteResult {
+	if e.fail {
+		return probe.RouteResult{
+			Domain: domain, Service: service, Route: route.Tag, RouteType: route.Type,
+			Status: "FAIL", ApplicationStatus: "FAIL", AdapterRevision: e.revision,
+		}
+	}
 	return probe.RouteResult{
 		Domain: domain, Service: service, Route: route.Tag, RouteType: route.Type,
 		Status: "OK", ApplicationStatus: "OK", PathVerified: true, ServiceOK: true,
 		DNSOK: true, TransportOK: true, TLSOK: true, HTTPOK: true, ContentOK: true,
 		ExternalCountry: "DE", EgressConsensus: true, AdapterRevision: e.revision,
+	}
+}
+
+func TestAutomaticDomainCommitRollsBackRuntimeBeforePersistingFailedPostProof(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, ts, _, _, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer ts.Close()
+	defer srv.Close()
+	runtime := &fakeRouteAssignmentRuntime{}
+	srv.routeAssignmentRuntime = runtime
+	srv.probeEngineFactory = func(*config.Config) health.ProbeEngine {
+		return routeAssignmentProofEngine{revision: srv.activeRevision, fail: true}
+	}
+
+	result := srv.commitAutomaticDomain(context.Background(), planner.DomainCheck{
+		Domain: "post-proof-failure.example", ETLDPlusOne: "post-proof-failure.example", Category: "GEO_LOCKED", Confidence: 1,
+		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true},
+	})
+	if result.Applied || !result.RolledBack || runtime.applied != 1 || runtime.rolledBack != 1 {
+		t.Fatalf("failed post-apply proof did not roll back runtime: result=%+v runtime=%+v", result, runtime)
+	}
+	if _, ok, err := srv.domainDecisions.Lookup("post-proof-failure.example", srv.activeRevision, time.Now().UTC()); err != nil || ok {
+		t.Fatalf("failed post-apply proof left a durable route decision: ok=%v err=%v", ok, err)
 	}
 }
 
