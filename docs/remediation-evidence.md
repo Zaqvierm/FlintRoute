@@ -2,10 +2,10 @@
 
 ## Current evidence binding (2026-08-29)
 
-Current code checkpoint before this uncommitted refactor: `c975bdb` on
+Current pushed code checkpoint before this uncommitted refactor: `114b68f` on
 `integration/discovery-smartdns-local-dod`. The working tree currently contains
-the follow-up `useDashboardData` extraction; its exact SHA and CI runs are not
-claimed until the change is committed and pushed.
+the follow-up `AppShell` extraction; its exact SHA and CI runs are not claimed
+until the change is committed and pushed.
 The worktree/branch HEAD is the source of truth for the documentation commit;
 the external status ledger records that exact docs SHA. Local
 `tests/run-all.ps1` completed `all_tests_ok=true`; Linux
@@ -23,13 +23,13 @@ section in this document is historical evidence for its named SHA and is
 
 ## 2026-08-29 remaining system-screen decomposition
 
-Current grouped checkpoint: `3d3f910` (`refactor: move app orchestration out of entrypoint`).
-The preceding `3d3f910` commit moved App/refresh orchestration; the `8248c01`
+Current grouped checkpoint: `114b68f` (`refactor: isolate dashboard data orchestration`).
+The preceding `114b68f` commit moved dashboard state and refresh orchestration; the `8248c01`
 commit contains the route/location parser,
 shared fallback messages, screen dispatcher/error boundary extraction, public UI
 docs, and the regenerated embedded frontend bundle. The exact-SHA runs listed
-for `3d3f910` remain evidence for that code SHA only; the current docs binding
-is the current code checkpoint `3d3f910`; the older CI runs listed below are historical evidence for their
+for `114b68f` remain evidence for that code SHA only; the current docs binding
+is the current code checkpoint `114b68f`; the older CI runs listed below are historical evidence for their
 own SHAs only.
 
 The follow-up UI refactor isolates browser navigation state in
@@ -42,11 +42,13 @@ The operational screen set is feature-local in `ui/src/features/system.tsx`;
 `ui/src/features/setup.tsx` owns the setup wizard, `ui/src/app/routes.ts` owns
 navigation/location parsing, and `ui/src/app/messages.ts` owns shared
 unavailable/stale-state fallbacks. `ui/src/app/useNavigation.ts` owns URL,
-history, remembered-screen preference, and mobile-menu state. The uncommitted
-follow-up `ui/src/app/useDashboardData.ts` moves dashboard data state, polling,
-SSE, abort/retry handling, privacy clearing, and onboarding writes out of
-`App.tsx`; after commit it will leave `App.tsx` with session/shell wiring and
-screen composition while `main.tsx` remains mount-only. Local
+history, remembered-screen preference, and mobile-menu state. The follow-up
+`ui/src/app/useDashboardData.ts` moves dashboard data state, polling, SSE,
+abort/retry handling, privacy clearing, and onboarding writes out of `App.tsx`.
+The uncommitted `ui/src/app/AppShell.tsx` extraction additionally moves
+sidebar/mobile navigation and the shell container out of `App.tsx`; after commit
+`App.tsx` will retain session wiring and screen composition while `main.tsx`
+remains mount-only. Local
 `npm run typecheck`, `npm test -- --run`, `npm run browser:test`, `npm run build`,
 and `git diff --check` pass for this working tree. This remains software-only
 evidence; Linux and Flint 2 hardware proof are not inferred.

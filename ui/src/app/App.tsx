@@ -19,10 +19,10 @@ import {
   SessionBar,
   TopBar
 } from './shell';
-import { navigation } from './routes';
 import { Content as ScreenContent } from './content';
 import { useNavigation } from './useNavigation';
 import { useDashboardData } from './useDashboardData';
+import { AppShell } from './AppShell';
 
 export { type ContentProps } from './content';
 
@@ -106,46 +106,15 @@ function App() {
   if (!session) return <AuthShell error={authError} onLogin={handleLogin} onSetup={handleSetup} />;
 
   return (
-    <div class="shell">
-      <aside class="side">
-        <div class="brand">
-          <div class="mark">FR</div>
-          <div>
-            <strong>{textValue(system?.hostname, 'FlintRoute')}</strong>
-            <span>{textValue(system?.model, 'OpenWrt router')}</span>
-          </div>
-        </div>
-        <nav>
-          {navigation.map((group) => <section class="nav-group" key={group.title}>
-            <span class="nav-title">{group.title}</span>
-            {group.screens.map((item) => (
-              <button class={screen === item ? 'active' : ''} aria-current={screen === item ? 'page' : undefined} title={item} onClick={() => selectScreen(item)} key={item}>
-                <span class="nav-dot" />{item}
-              </button>
-            ))}
-          </section>)}
-        </nav>
-        <nav class="mobile-nav" aria-label="Основная навигация">
-          {[
-            ['Обзор', 'Обзор'],
-            ['Карта сети', 'Сеть'],
-            ['Сервисы', 'Правила'],
-            ['Поток решений', 'Активность']
-          ].map(([target, label]) => <button class={screen === target ? 'active' : ''} aria-current={screen === target ? 'page' : undefined} title={target} onClick={() => selectScreen(target)} key={target}><span class="nav-dot" />{label}</button>)}
-          <button class={mobileMoreOpen ? 'active' : ''} aria-expanded={mobileMoreOpen} onClick={() => setMobileMoreOpen((open) => !open)}><span class="nav-dot" />Ещё</button>
-        </nav>
-        {mobileMoreOpen && <div class="mobile-more-backdrop" role="presentation" onClick={() => setMobileMoreOpen(false)}><section class="mobile-more" role="dialog" aria-modal="true" aria-label="Дополнительные разделы" onClick={(event) => event.stopPropagation()}><header><b>Дополнительные разделы</b><button class="icon-button" aria-label="Закрыть" onClick={() => setMobileMoreOpen(false)}>×</button></header>{navigation.flatMap((group) => group.screens).filter((item) => !['Обзор', 'Карта сети', 'Сервисы', 'Поток решений'].includes(item)).map((item) => <button class={screen === item ? 'active' : ''} aria-current={screen === item ? 'page' : undefined} onClick={() => selectScreen(item)} key={item}>{item}</button>)}</section></div>}
-      </aside>
-      <main>
-        <SessionBar session={session} apiError={apiError} loading={refreshing} lastUpdated={lastUpdated} onRetry={() => refresh()} onLogout={handleLogout} />
-        <PrivacyBar hidden={privacyHidden} onToggle={togglePrivacy} />
-        <TopBar overview={overview} navigate={selectScreen} />
-        <AlertCenter errors={sliceErrors} onRetry={(name) => { void retrySlice(name); }} onRetryAll={() => { void refresh(); }} retrying={retryingSlice} />
-        <RecoveryMutationBanner overview={overview} navigate={selectScreen} onRetry={() => refresh()} />
-        <OperationCenterSummary changes={changes} navigate={selectScreen} />
-        {loading ? <LoadingSkeleton /> : <ScreenErrorBoundary key={`${screen}:${privacyHidden ? 'hidden' : 'visible'}`}><ScreenContent screen={screen} session={session} configVersion={configVersion} overview={overview} mutationLocked={!recoveryMutationAllowed(overview)} onboarding={onboarding} topology={topology} devices={devices} services={services} discovery={discovery} routes={routes} traffic={traffic} events={events} changes={changes} security={security} securitySummary={securitySummary} system={system} diagnostics={diagnostics} lifecycle={lifecycle} storage={storage} settings={settings} backups={backups} revisions={revisions} privacyHidden={privacyHidden} onTogglePrivacy={togglePrivacy} refresh={refresh} onboardingAction={updateOnboardingState} navigate={selectScreen} /></ScreenErrorBoundary>}
-      </main>
-    </div>
+    <AppShell screen={screen} mobileMoreOpen={mobileMoreOpen} setMobileMoreOpen={setMobileMoreOpen} selectScreen={selectScreen} system={system}>
+      <SessionBar session={session} apiError={apiError} loading={refreshing} lastUpdated={lastUpdated} onRetry={() => refresh()} onLogout={handleLogout} />
+      <PrivacyBar hidden={privacyHidden} onToggle={togglePrivacy} />
+      <TopBar overview={overview} navigate={selectScreen} />
+      <AlertCenter errors={sliceErrors} onRetry={(name) => { void retrySlice(name); }} onRetryAll={() => { void refresh(); }} retrying={retryingSlice} />
+      <RecoveryMutationBanner overview={overview} navigate={selectScreen} onRetry={() => refresh()} />
+      <OperationCenterSummary changes={changes} navigate={selectScreen} />
+      {loading ? <LoadingSkeleton /> : <ScreenErrorBoundary key={`${screen}:${privacyHidden ? 'hidden' : 'visible'}`}><ScreenContent screen={screen} session={session} configVersion={configVersion} overview={overview} mutationLocked={!recoveryMutationAllowed(overview)} onboarding={onboarding} topology={topology} devices={devices} services={services} discovery={discovery} routes={routes} traffic={traffic} events={events} changes={changes} security={security} securitySummary={securitySummary} system={system} diagnostics={diagnostics} lifecycle={lifecycle} storage={storage} settings={settings} backups={backups} revisions={revisions} privacyHidden={privacyHidden} onTogglePrivacy={togglePrivacy} refresh={refresh} onboardingAction={updateOnboardingState} navigate={selectScreen} /></ScreenErrorBoundary>}
+    </AppShell>
   );
 }
 
