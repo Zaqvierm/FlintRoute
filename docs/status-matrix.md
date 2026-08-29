@@ -13,6 +13,10 @@ below belong to their named older SHA and are `STALE FOR CURRENT SHA`; they must
 not be read as current hardware proof. Current item-by-item status is maintained
 in the external ledger `H:\LAN\Internal\Context\flintroute-unfinished-work-20260828.md`.
 
+The current UI branch also isolates browser navigation state in
+`ui/src/app/useNavigation.ts`; this does not change the hardware evidence
+boundary described below.
+
 > **Примечание о текущем SHA:** эта матрица содержит исторические фазы и
 > проценты. Hardware claims и PASS старых ревизий имеют статус `STALE FOR
 > CURRENT SHA`; remediation-ветка не содержит hardware evidence. Точный

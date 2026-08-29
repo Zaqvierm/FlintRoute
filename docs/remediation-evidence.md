@@ -29,6 +29,12 @@ for `3d3f910` remain evidence for that code SHA only; the current docs binding
 is the current code checkpoint `3d3f910`; the older CI runs listed below are historical evidence for their
 own SHAs only.
 
+The follow-up UI refactor isolates browser navigation state in
+`ui/src/app/useNavigation.ts`: URL parsing, remembered-screen preference,
+history updates, mobile-menu state and the current-screen ref are no longer
+owned by the data-refresh component. This remains a software-only decomposition;
+the resulting branch SHA and CI runs are recorded in the external ledger.
+
 The operational screen set is now feature-local in `ui/src/features/system.tsx`;
 `ui/src/features/setup.tsx` owns the setup wizard, and `ui/src/app/routes.ts`
 owns navigation/location parsing. `ui/src/app/messages.ts` owns shared
