@@ -87,6 +87,9 @@ echo "uninstaller_invalid_backup_blocked=true"
 # managed path.
 MISSING_BINDING_ROOT="$TMP/uninstall-missing-binding"
 mkdir -p "$MISSING_BINDING_ROOT/etc/router-policy/state/transactions/rev_1_deadbeef0001/tx_deadbeefdeadbeef"
+# The child shell intentionally expands $1; keep the command literal for the
+# test fixture rather than interpolating the parent shell's path.
+# shellcheck disable=SC2016
 missing_binding_output=$(env \
   ROUTER_POLICY_UNINSTALL_LIB_ONLY=1 \
   ROUTER_POLICY_SYSTEM_ROOT="$MISSING_BINDING_ROOT" \

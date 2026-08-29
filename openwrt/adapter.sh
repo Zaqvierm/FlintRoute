@@ -1226,7 +1226,7 @@ verify_install_target_ownership() {
     echo "reason=install_target_ownership_unproven" >&2
     return 1
   }
-  while IFS='|' read -r saved_target saved_state saved_name saved_bytes saved_hash saved_owner; do
+  while IFS='|' read -r saved_target saved_state _saved_name saved_bytes saved_hash saved_owner; do
     [ "$saved_target" = "$install_target" ] || continue
     [ "$saved_state" = "present" ] && [ "$saved_owner" = "project" ] || {
       echo "reason=install_target_ownership_unproven" >&2
