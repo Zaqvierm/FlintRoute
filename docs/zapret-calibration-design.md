@@ -129,3 +129,13 @@ non-successful outcomes (`143`, `130`, and `129` respectively); cleanup still
 validates the owned process group, nfqws/NFQUEUE objects, nft state, routes, and
 rules before removing the run lock. A cancelled run therefore cannot be
 reported as a successful calibration merely because its cleanup completed.
+
+The exhaustive wrapper snapshots the complete `nft list ruleset` output and the
+complete route/rule state before starting the provider. The same configured
+`NFT_BIN`/`IP_BIN` tools are used after cleanup and the snapshots must compare
+byte-for-byte. This deliberately fails closed if a provider leaves an
+unregistered NFQUEUE rule/table or if another actor changes the network while
+calibration is running; it is not a claim that concurrent mutation is safe.
+An nfqws process that was not present in the baseline is killable only with a
+matching process-group or per-run ownership marker. An unmarked process is
+reported as a foreign-resource conflict and is left alive.

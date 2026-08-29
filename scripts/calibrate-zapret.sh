@@ -4,6 +4,8 @@ set -eu
 CONFIG="${ROUTER_POLICY_CONFIG:-/etc/router-policy/config/default.json}"
 ROUTER_POLICY_BIN="${ROUTER_POLICY_BIN:-/usr/bin/router-policy}"
 NFQWS_BIN="${NFQWS_BIN:-/usr/bin/nfqws}"
+NFT_BIN="${NFT_BIN:-nft}"
+IP_BIN="${IP_BIN:-ip}"
 ZAPRET_INIT="${ZAPRET_INIT:-/etc/init.d/router-policy-zapret}"
 RUNTIME_DIR="${ROUTER_POLICY_RUNTIME_DIR:-/tmp/router-policy}"
 CATALOG_OUT="${ZAPRET_CATALOG_OUT:-/etc/router-policy/zapret/catalog.json}"
@@ -125,6 +127,17 @@ for command in "$ROUTER_POLICY_BIN" "$NFQWS_BIN" "$TIMEOUT_BIN"; do
   [ -x "$command" ] || { echo "required executable is unavailable: $command" >&2; exit 1; }
   [ ! -L "$command" ] || { echo "refusing symlink executable: $command" >&2; exit 1; }
 done
+resolve_tool() {
+  tool="$1"
+  case "$tool" in
+    /*) [ -x "$tool" ] || return 1; printf '%s\n' "$tool" ;;
+    *) command -v "$tool" ;;
+  esac
+}
+NFT_BIN=$(resolve_tool "$NFT_BIN") || { echo "required executable is unavailable: nft" >&2; exit 1; }
+IP_BIN=$(resolve_tool "$IP_BIN") || { echo "required executable is unavailable: ip" >&2; exit 1; }
+[ ! -L "$NFT_BIN" ] || { echo "refusing symlink executable: $NFT_BIN" >&2; exit 1; }
+[ ! -L "$IP_BIN" ] || { echo "refusing symlink executable: $IP_BIN" >&2; exit 1; }
 [ -f "$blockcheck_script" ] && [ ! -L "$blockcheck_script" ] || {
   echo "upstream blockcheck must be a regular non-symlink file" >&2
   exit 1
@@ -140,6 +153,7 @@ mkdir "$run_dir"
 chmod 700 "$run_dir"
 process_manifest="$run_dir/processes.txt"
 nfqws_baseline="$run_dir/nfqws.before"
+nft_baseline="$run_dir/nft.before"
 routes_baseline="$run_dir/routes.before"
 rules_baseline="$run_dir/rules.before"
 report="$run_dir/blockcheck.log"
@@ -292,23 +306,20 @@ verify_no_owned_nfqwss() {
 }
 
 verify_calibration_network_cleanup() {
-  if command -v nft >/dev/null 2>&1; then
-    if nft list ruleset 2>/dev/null | grep -Fq "router-policy-calibration owner=$calibration_run_id"; then
-      echo "calibration cleanup left an NFQUEUE/nft resource" >&2
-      return 1
-    fi
+  "$NFT_BIN" list ruleset 2>/dev/null > "$run_dir/nft.after" || return 1
+  if ! cmp -s "$nft_baseline" "$run_dir/nft.after"; then
+    echo "calibration cleanup changed nftables state or left a temporary NFQUEUE object" >&2
+    return 1
   fi
-  if command -v ip >/dev/null 2>&1; then
-    ip -o route show table all 2>/dev/null > "$run_dir/routes.after" || return 1
-    ip -o rule show 2>/dev/null > "$run_dir/rules.after" || return 1
-    if ! cmp -s "$routes_baseline" "$run_dir/routes.after"; then
-      echo "calibration cleanup changed routing tables" >&2
-      return 1
-    fi
-    if ! cmp -s "$rules_baseline" "$run_dir/rules.after"; then
-      echo "calibration cleanup changed policy rules" >&2
-      return 1
-    fi
+  "$IP_BIN" -o route show table all 2>/dev/null > "$run_dir/routes.after" || return 1
+  "$IP_BIN" -o rule show 2>/dev/null > "$run_dir/rules.after" || return 1
+  if ! cmp -s "$routes_baseline" "$run_dir/routes.after"; then
+    echo "calibration cleanup changed routing tables" >&2
+    return 1
+  fi
+  if ! cmp -s "$rules_baseline" "$run_dir/rules.after"; then
+    echo "calibration cleanup changed policy rules" >&2
+    return 1
   fi
   return 0
 }
@@ -331,7 +342,7 @@ write_failure_bundle() {
     tail -n 64 "$report" | tr '\r\n\t' '   ' | cut -c1-4096 > "$failure_bundle/report.tail" || return 1
     chmod 600 "$failure_bundle/report.tail" || return 1
   fi
-  for evidence in nfqws.before nfqws.after nfqws.remaining routes.before routes.after rules.before rules.after processes.txt; do
+  for evidence in nfqws.before nfqws.after nfqws.remaining nft.before nft.after routes.before routes.after rules.before rules.after processes.txt; do
     if [ -f "$run_dir/$evidence" ]; then
       cp "$run_dir/$evidence" "$failure_bundle/$evidence" || return 1
       chmod 600 "$failure_bundle/$evidence" || return 1
@@ -357,13 +368,9 @@ write_failure_bundle() {
 }
 
 list_nfqwss > "$nfqws_baseline"
-if command -v ip >/dev/null 2>&1; then
-  ip -o route show table all 2>/dev/null > "$routes_baseline" || exit 1
-  ip -o rule show 2>/dev/null > "$rules_baseline" || exit 1
-else
-  : > "$routes_baseline"
-  : > "$rules_baseline"
-fi
+"$NFT_BIN" list ruleset 2>/dev/null > "$nft_baseline" || exit 1
+"$IP_BIN" -o route show table all 2>/dev/null > "$routes_baseline" || exit 1
+"$IP_BIN" -o rule show 2>/dev/null > "$rules_baseline" || exit 1
 
 cleanup() {
   status=$?
