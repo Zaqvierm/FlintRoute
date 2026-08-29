@@ -642,6 +642,7 @@ printf 'present|%s\n' "$ROLLBACK_TARGET" > "$ROLLBACK_BACKUP/install-rollback/ma
 (cd "$ROLLBACK_STAGE" && tar -cf "$ROLLBACK_BACKUP/install-rollback/files.tar" .)
 sha256sum "$ROLLBACK_BACKUP/install-rollback/files.tar" | awk '{print $1}' > "$ROLLBACK_BACKUP/install-rollback/files.sha256"
 cat > "$ROLLBACK_BACKUP/install-rollback/services.txt" <<'EOF'
+router-policy-helper|0|0
 router-policy|1|1
 router-policy-watchdog|1|1
 router-policy-xray|1|1
@@ -656,10 +657,24 @@ exit 0
 SH
   chmod +x "$ROLLBACK_INIT/$service"
 done
+ROLLBACK_HELPER_STATE="$TMP/rollback-helper-state"
+ROLLBACK_HELPER_LOG="$TMP/rollback-helper.log"
+printf 'running\n' > "$ROLLBACK_HELPER_STATE"
+cat > "$ROLLBACK_INIT/router-policy-helper" <<'SH'
+#!/bin/sh
+case "${1:-}" in
+  running) [ "$(cat "$ROLLBACK_HELPER_STATE")" = running ] ;;
+  stop) printf 'stop\n' >> "$ROLLBACK_HELPER_LOG"; printf 'stopped\n' > "$ROLLBACK_HELPER_STATE" ;;
+  disable|enable) : ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$ROLLBACK_INIT/router-policy-helper"
+export ROLLBACK_HELPER_STATE ROLLBACK_HELPER_LOG
 BACKUP_DIR="$ROLLBACK_BACKUP"
 INIT_DIR="$ROLLBACK_INIT"
 INSTALL_TARGETS="$ROLLBACK_TARGET"
-ENABLE_SERVICES="router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
+ENABLE_SERVICES="router-policy-helper router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
 if rollback_output=$(restore_installation 2>&1); then
   echo "rollback reported success after controller restoration failed" >&2
   exit 1
@@ -670,6 +685,8 @@ if printf '%s\n' "$rollback_output" | grep -Fx 'install_rollback=restored' >/dev
   exit 1
 fi
 [ "$(cat "$ROLLBACK_TARGET")" = "original" ]
+[ "$(cat "$ROLLBACK_HELPER_STATE")" = "stopped" ]
+grep -Fx 'stop' "$ROLLBACK_HELPER_LOG" >/dev/null
 
 printf 'changed-again\n' > "$ROLLBACK_TARGET"
 printf 'present|%s\n' "$TMP/not-owned-by-flintroute" > "$ROLLBACK_BACKUP/install-rollback/manifest.txt"

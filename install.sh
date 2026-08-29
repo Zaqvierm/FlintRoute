@@ -799,7 +799,9 @@ restore_installation() {
   }
   service_restore_ok=1
   if [ -z "$SYSTEM_ROOT" ]; then
-    for service in router-policy-watchdog router-policy; do
+    # Stop the non-root controller before the privileged helper so rollback
+    # cannot restore a mixed binary/config generation underneath a live peer.
+    for service in router-policy-watchdog router-policy router-policy-helper; do
       init="$INIT_DIR/$service"
       if [ -x "$init" ] && run_bounded "$init" running >/dev/null 2>&1; then
         run_bounded "$init" stop >/dev/null 2>&1 || service_restore_ok=0
@@ -886,6 +888,10 @@ restore_installation() {
         fi
       fi
     done < "$services"
+    if [ "$service_restore_ok" = "1" ] && service_was_running router-policy-helper; then
+      run_bounded "$INIT_DIR/router-policy-helper" start >/dev/null 2>&1 || service_restore_ok=0
+      [ "$service_restore_ok" != "1" ] || run_bounded "$INIT_DIR/router-policy-helper" running >/dev/null 2>&1 || service_restore_ok=0
+    fi
     if [ "$service_restore_ok" = "1" ] && service_was_running router-policy; then
       run_bounded "$INIT_DIR/router-policy" start >/dev/null 2>&1 || service_restore_ok=0
       [ "$service_restore_ok" != "1" ] || wait_control_health || service_restore_ok=0
