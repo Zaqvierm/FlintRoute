@@ -953,7 +953,11 @@ func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.Domain
 	if failure != nil {
 		return automaticCommitResult{Reason: failure.Message}
 	}
-	defer release()
+	defer func() {
+		if release != nil {
+			release()
+		}
+	}()
 	if failure := s.mutationFailureNow(); failure != nil {
 		return automaticCommitResult{Reason: failure.Message}
 	}
@@ -1054,7 +1058,24 @@ func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.Domain
 		(check.Selected.CandidateHash != "" && post.CandidateHash != check.Selected.CandidateHash) ||
 		(check.Selected.ArtifactManifestHash != "" && post.ArtifactManifestHash != check.Selected.ArtifactManifestHash) ||
 		(autoService.RequireNonRUEgress && route.Type != "drop" && (!post.EgressConsensus || strings.TrimSpace(post.ExternalCountry) == "" || strings.EqualFold(post.ExternalCountry, "RU"))) {
-		return rollbackRuntime("route_assignment_post_apply_proof_failed")
+		failureResult := rollbackRuntime("route_assignment_post_apply_proof_failed")
+		// A failed post-apply proof is candidate-specific evidence, not proof
+		// that every already-verified route is bad.  Retry the next bounded,
+		// policy-allowed candidate after the owned mapping has been rolled back.
+		// Infrastructure failures (apply, semantic receipt, persistence, or
+		// rollback) still return immediately and never fan out into retries.
+		if failureResult.RolledBack {
+			if next, found := nextAutomaticAssignmentCandidate(check, active, route.Tag); found {
+				retry := check
+				nextCopy := next
+				retry.Selected = &nextCopy
+				retry.Results = remainingRouteResults(check.Results, route.Tag)
+				release()
+				release = nil
+				return s.commitAutomaticDomain(ctx, retry)
+			}
+		}
+		return failureResult
 	}
 
 	decision := domaincache.Decision{
@@ -1113,6 +1134,69 @@ func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.Domain
 	}})
 	_ = ctx // proof is the PathVerified result bound to the current revision.
 	return automaticCommitResult{Applied: true, Reason: "route assignment committed"}
+}
+
+// nextAutomaticAssignmentCandidate returns the best remaining verified route
+// that can be materialized without changing component/topology state.  The
+// current route is excluded so a post-apply failure cannot recurse forever.
+// The planner has already attached selection scores; sorting those scores
+// preserves the same evidence-based ordering used for the initial choice.
+func nextAutomaticAssignmentCandidate(check planner.DomainCheck, active *config.Config, currentRoute string) (probe.RouteResult, bool) {
+	if active == nil {
+		return probe.RouteResult{}, false
+	}
+	candidates := make([]probe.RouteResult, 0, len(check.Results))
+	seen := make(map[string]struct{}, len(check.Results))
+	for _, result := range check.Results {
+		if result.Route == "" || result.Route == currentRoute {
+			continue
+		}
+		if _, exists := seen[result.Route]; exists {
+			continue
+		}
+		seen[result.Route] = struct{}{}
+		if !strings.EqualFold(result.Status, "OK") || strings.EqualFold(result.Status, "REGION_BLOCK") || !result.PathVerified || !result.ServiceOK || result.RegionalBlock {
+			continue
+		}
+		route, ok := active.RouteByTag(result.Route)
+		if !ok || !route.Enabled() {
+			continue
+		}
+		candidateCheck := check
+		candidate := result
+		candidateCheck.Selected = &candidate
+		autoService, _, autoOK := automaticServiceForDecision(candidateCheck)
+		if !autoOK || !config.PathAllowed(autoService, route, active.Policy) {
+			continue
+		}
+		if autoService.RequireNonRUEgress && route.Type != "drop" {
+			country := strings.ToUpper(strings.TrimSpace(result.ExternalCountry))
+			if !result.EgressConsensus || country == "" || country == "RU" {
+				continue
+			}
+		}
+		candidates = append(candidates, result)
+	}
+	if len(candidates) == 0 {
+		return probe.RouteResult{}, false
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].SelectionScore != candidates[j].SelectionScore {
+			return candidates[i].SelectionScore < candidates[j].SelectionScore
+		}
+		return candidates[i].Route < candidates[j].Route
+	})
+	return candidates[0], true
+}
+
+func remainingRouteResults(results []probe.RouteResult, excludedRoute string) []probe.RouteResult {
+	remaining := make([]probe.RouteResult, 0, len(results))
+	for _, result := range results {
+		if result.Route != excludedRoute {
+			remaining = append(remaining, result)
+		}
+	}
+	return remaining
 }
 
 func automaticServiceForDecision(check planner.DomainCheck) (config.Service, string, bool) {

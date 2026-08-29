@@ -84,6 +84,12 @@ internals. It is rejected unless the stored candidate is still PathVerified
 and the requested route matches the evidence. Recovery fences and the single
 mutation lease apply to this action as to every other mutation.
 
+If the post-apply proof fails, the owned mapping is rolled back before the
+next already-verified, policy-allowed candidate is attempted. This retry is
+bounded by the finite candidate evidence set and is reserved for
+candidate-specific proof failure; helper, semantic-receipt, persistence, or
+rollback errors stop the operation and never fan out into an apply storm.
+
 ## Smart DNS is a route candidate
 
 Each configured Smart DNS endpoint is an independent route candidate. It is

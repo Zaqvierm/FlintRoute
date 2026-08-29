@@ -21,19 +21,22 @@ func fakeAdapterCallCount(fake *fakeAdapter) int {
 }
 
 type routeAssignmentProofEngine struct {
-	revision string
-	fail     bool
+	revision  string
+	fail      bool
+	failRoute string
 }
 
 type fakeRouteAssignmentRuntime struct {
-	applied    int
-	rolledBack int
-	invalid    bool
-	badBinding bool
+	applied       int
+	rolledBack    int
+	invalid       bool
+	badBinding    bool
+	appliedRoutes []string
 }
 
 func (r *fakeRouteAssignmentRuntime) ApplyRouteAssignment(_ context.Context, request RouteAssignmentRequest) (RouteAssignmentReceipt, error) {
 	r.applied++
+	r.appliedRoutes = append(r.appliedRoutes, request.RouteTag)
 	receipt := RouteAssignmentReceipt{
 		ProtocolVersion: request.ProtocolVersion,
 		RequestID:       request.RequestID,
@@ -64,7 +67,7 @@ func (r *fakeRouteAssignmentRuntime) RollbackRouteAssignment(_ context.Context, 
 }
 
 func (e routeAssignmentProofEngine) ProbeRoute(_ context.Context, _ *config.Config, domain, service string, _ config.Service, route config.Route) probe.RouteResult {
-	if e.fail {
+	if e.fail || route.Tag == e.failRoute {
 		return probe.RouteResult{
 			Domain: domain, Service: service, Route: route.Tag, RouteType: route.Type,
 			Status: "FAIL", ApplicationStatus: "FAIL", AdapterRevision: e.revision,
@@ -75,6 +78,38 @@ func (e routeAssignmentProofEngine) ProbeRoute(_ context.Context, _ *config.Conf
 		Status: "OK", ApplicationStatus: "OK", PathVerified: true, ServiceOK: true,
 		DNSOK: true, TransportOK: true, TLSOK: true, HTTPOK: true, ContentOK: true,
 		ExternalCountry: "DE", EgressConsensus: true, AdapterRevision: e.revision,
+	}
+}
+
+func TestAutomaticDomainCommitRetriesNextVerifiedCandidateAfterPostProofFailure(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Routes = append(cfg.Routes, config.Route{Type: "vless", Tag: "vless", SOCKS5: "127.0.0.1:12000", DNSMode: "socks_remote", DNSServer: cfg.Xray.ProbeDNSResolver, Mark: "0x44"})
+	cfg.Xray.OutboundBundleSHA256 = "sha256:" + strings.Repeat("a", 64)
+	fake := newFakeAdapter()
+	srv, ts, _, _, _ := newTransactionHTTP(t, cfg, fake)
+	defer ts.Close()
+	defer srv.Close()
+	runtime := &fakeRouteAssignmentRuntime{}
+	srv.routeAssignmentRuntime = runtime
+	srv.probeEngineFactory = func(*config.Config) health.ProbeEngine {
+		return routeAssignmentProofEngine{revision: srv.activeRevision, failRoute: "smart"}
+	}
+
+	selected := probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", PathVerified: true, ServiceOK: true, SelectionScore: 1, ExternalCountry: "DE", EgressConsensus: true}
+	next := probe.RouteResult{Route: "vless", RouteType: "vless", Status: "OK", PathVerified: true, ServiceOK: true, SelectionScore: 2, ExternalCountry: "DE", EgressConsensus: true}
+	result := srv.commitAutomaticDomain(context.Background(), planner.DomainCheck{
+		Domain: "retry.example", ETLDPlusOne: "retry.example", Category: "GEO_LOCKED", Confidence: 1,
+		Selected: &selected, Results: []probe.RouteResult{selected, next},
+	})
+	if !result.Applied || result.RolledBack || runtime.applied != 2 || runtime.rolledBack != 1 {
+		t.Fatalf("post-proof failure did not retry next candidate: result=%+v runtime=%+v", result, runtime)
+	}
+	if got, want := strings.Join(runtime.appliedRoutes, ","), "smart,vless"; got != want {
+		t.Fatalf("unexpected candidate order: got=%q want=%q", got, want)
+	}
+	decision, ok, err := srv.domainDecisions.Lookup("retry.example", srv.activeRevision, time.Now().UTC())
+	if err != nil || !ok || decision.SelectedRoute != "vless" || decision.SelectedType != "vless" {
+		t.Fatalf("retry did not persist the verified next candidate: decision=%+v ok=%v err=%v", decision, ok, err)
 	}
 }
 
