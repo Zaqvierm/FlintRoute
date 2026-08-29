@@ -410,9 +410,9 @@ func selectionLatency(result probe.RouteResult) (int64, bool) {
 	if result.EndToEndLatencyAvailable && result.EndToEndLatencyMS > 0 {
 		return result.EndToEndLatencyMS, true
 	}
-	if result.RouteLatencyAvailable && result.RouteLatencyMS > 0 {
-		return result.RouteLatencyMS, true
-	}
+	// RouteLatencyMS is a request/path measurement and is intentionally not
+	// comparable across candidates that use different DNS or preparation
+	// paths. Only the typed end-to-end service metric may drive scoring.
 	return 0, false
 }
 

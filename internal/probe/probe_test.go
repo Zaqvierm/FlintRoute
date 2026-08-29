@@ -183,6 +183,16 @@ func TestFinalizeCheckResultPreservesMeasuredE2E(t *testing.T) {
 	}
 }
 
+func TestComposeEndToEndLatencyDoesNotAccumulatePreviousAttempts(t *testing.T) {
+	// The first target may have timed out before a second target succeeds. The
+	// comparable metric is DNS once plus the successful attempt, not the sum of
+	// all target attempts.
+	got, ok := composeEndToEndLatency(12, 85)
+	if !ok || got != 97 {
+		t.Fatalf("unexpected per-attempt end-to-end latency: got=%d ok=%v", got, ok)
+	}
+}
+
 func TestProbeHTTP204EmptyBodyIsOK(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(204)

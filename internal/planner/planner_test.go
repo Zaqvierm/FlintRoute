@@ -117,19 +117,19 @@ func TestSelectBestUsesMeasuredEndToEndLatencyOverRoutePriority(t *testing.T) {
 
 func TestSelectBestDoesNotTreatUnknownLatencyAsZero(t *testing.T) {
 	results := []probe.RouteResult{
-		{Route: "measured", RouteType: "vless", RoutePriority: 50, Status: "OK", PathVerified: true, ServiceOK: true, RouteLatencyMS: 120, RouteLatencyAvailable: true},
-		{Route: "unknown", RouteType: "direct", RoutePriority: 50, Status: "OK", PathVerified: true, ServiceOK: true},
+		{Route: "request-only", RouteType: "vless", RoutePriority: 50, Status: "OK", PathVerified: true, ServiceOK: true, RouteLatencyMS: 1, RouteLatencyAvailable: true},
+		{Route: "e2e", RouteType: "direct", RoutePriority: 50, Status: "OK", PathVerified: true, ServiceOK: true, EndToEndLatencyMS: 120, EndToEndLatencyAvailable: true},
 	}
 	selected := SelectBest(results)
-	if selected == nil || selected.Route != "measured" {
-		t.Fatalf("unknown latency must not rank as zero: %+v", selected)
+	if selected == nil || selected.Route != "e2e" {
+		t.Fatalf("request-only latency must not beat comparable end-to-end evidence: %+v", selected)
 	}
 }
 
 func TestSelectBestDoesNotUseVerificationDurationAsLatency(t *testing.T) {
 	results := []probe.RouteResult{
 		{Route: "legacy-duration", RouteType: "direct", RoutePriority: 50, Status: "OK", PathVerified: true, ServiceOK: true, LatencyMS: 1, VerificationDurationMS: 9000},
-		{Route: "measured", RouteType: "direct", RoutePriority: 50, Status: "OK", PathVerified: true, ServiceOK: true, RouteLatencyMS: 80, RouteLatencyAvailable: true, VerificationDurationMS: 12000},
+		{Route: "measured", RouteType: "direct", RoutePriority: 50, Status: "OK", PathVerified: true, ServiceOK: true, EndToEndLatencyMS: 80, EndToEndLatencyAvailable: true, RouteLatencyMS: 60, RouteLatencyAvailable: true, VerificationDurationMS: 12000},
 	}
 	selected := SelectBest(results)
 	if selected == nil || selected.Route != "measured" {

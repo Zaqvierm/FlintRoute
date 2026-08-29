@@ -376,12 +376,16 @@ func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check
 		}
 	}
 
-	networkPathStarted := time.Now()
+	// Resolve once per service check. Keep the DNS portion separate so a
+	// later address attempt cannot accidentally inherit the duration of a
+	// previous failed address.
+	dnsStarted := time.Now()
 	ips, resolver, protocol, err := resolveForRoute(ctx, cfg, route, host)
 	if err != nil {
 		res.Reason = "dns_failed:" + err.Error()
 		return finalizeCheckResult(res, start)
 	}
+	dnsLatencyMS, dnsLatencyAvailable := measuredRouteLatency(dnsStarted)
 	res.DNSOK = true
 	res.DNSResolver = resolver
 	res.DNSProtocol = protocol
@@ -414,6 +418,7 @@ func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check
 			lastReason = "ssrf_private_address_blocked"
 			continue
 		}
+		attemptStarted := time.Now()
 		attempt := runHTTPAttempt(ctx, cfg, route, check, parsed, host, port, ip)
 		if attempt.ConnectedIP != "" {
 			res.ConnectedIP = attempt.ConnectedIP
@@ -444,10 +449,16 @@ func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check
 		res.SuspectedTSPU = attempt.SuspectedTSPU
 		res.AuthenticationRequired = attempt.AuthenticationRequired
 		res.WAFOrRateLimit = attempt.WAFOrRateLimit
-		if attempt.ResponseReceived {
-			if e2e, ok := measuredRouteLatency(networkPathStarted); ok && (!res.EndToEndLatencyAvailable || e2e < res.EndToEndLatencyMS) {
-				res.EndToEndLatencyMS = e2e
-				res.EndToEndLatencyAvailable = true
+		if attempt.ResponseReceived && dnsLatencyAvailable {
+			// End-to-end service latency includes the DNS lookup and this
+			// particular completed network attempt. It must not include a
+			// previous target's timeout/retry or the full verification job.
+			if attemptMS, ok := measuredRouteLatency(attemptStarted); ok {
+				e2e, ok := composeEndToEndLatency(dnsLatencyMS, attemptMS)
+				if ok && (!res.EndToEndLatencyAvailable || e2e < res.EndToEndLatencyMS) {
+					res.EndToEndLatencyMS = e2e
+					res.EndToEndLatencyAvailable = true
+				}
 			}
 		}
 		if attempt.RouteLatencyAvailable && (!res.RouteLatencyAvailable || attempt.RouteLatencyMS < res.RouteLatencyMS) {
@@ -1013,6 +1024,21 @@ func measuredRouteLatency(start time.Time) (int64, bool) {
 		latency = 1
 	}
 	return latency, true
+}
+
+// composeEndToEndLatency combines the one-time DNS measurement with the
+// duration of one completed network attempt. Keeping this arithmetic explicit
+// prevents retry/queue duration from being smuggled into the comparable
+// service-path metric.
+func composeEndToEndLatency(dnsMS, attemptMS int64) (int64, bool) {
+	if dnsMS < 0 || attemptMS < 0 {
+		return 0, false
+	}
+	total := dnsMS + attemptMS
+	if total < 1 {
+		total = 1
+	}
+	return total, true
 }
 
 func elapsedMilliseconds(start time.Time) int64 {

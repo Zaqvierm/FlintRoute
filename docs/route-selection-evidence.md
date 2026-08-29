@@ -27,6 +27,11 @@ duration is orchestration time (queue, setup, retries, cleanup) and is never a
 latency score. If no honest network measurement exists, latency is unavailable
 and the candidate ranks after measured paths.
 
+The planner does not fall back to `route_latency_ms` when calculating a
+selection score. Request-only measurements can still be displayed as evidence,
+but they cannot make a candidate win a comparison against a route with a
+comparable end-to-end measurement.
+
 The API and Decision Flow expose these values separately, together with the
 policy score and the evidence for each candidate.
 
