@@ -154,7 +154,6 @@ reset_fixture
 mkdir -p "$PREFIX.old.fixture/scripts"
 printf 'owned\n' > "$PREFIX.old.fixture/scripts/value"
 printf 'foreign\n' > "$PREFIX.old.fixture/foreign-runtime"
-old_prefix="$PREFIX.old.fixture"
 if finalize_prefix_switch >/dev/null 2>&1; then
   echo "finalize removed an unowned old-prefix entry" >&2
   exit 1
