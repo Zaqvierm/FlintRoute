@@ -2,8 +2,9 @@ name: exact SHA full safety gate
 
 on:
   push:
-    branches: [main, remediation/**]
+    branches: [main, remediation/**, integration/**]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   full-gate:
