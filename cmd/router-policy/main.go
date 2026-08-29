@@ -896,6 +896,34 @@ func run(args []string) error {
 		fmt.Printf("routes=%d`n", len(pre.Routes))
 		fmt.Printf("rules=%d`n", len(pre.Rules))
 		return nil
+	case "internal-verify-no-owned-ip-state":
+		if len(args) != 1 {
+			return errors.New("usage: router-policy internal-verify-no-owned-ip-state")
+		}
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			return err
+		}
+		marks := []string{
+			cfg.OpenWrt.DirectMark,
+			cfg.OpenWrt.ZapretMark,
+			cfg.OpenWrt.XrayMark,
+			cfg.OpenWrt.XrayTProxyMark,
+			cfg.OpenWrt.XrayBypassMark,
+			cfg.OpenWrt.DropMark,
+		}
+		tables := []int{cfg.OpenWrt.WANRouteTable, cfg.OpenWrt.ZapretRouteTable, cfg.OpenWrt.XrayRouteTable}
+		ipBinary := os.Getenv("ROUTER_POLICY_IP_BIN")
+		if ipBinary == "" {
+			ipBinary = "ip"
+		}
+		if err := dataplane.VerifyNoOwnedIPState(context.Background(), dataplane.ExecCommandRunner{}, ipBinary, dataplane.OwnedIPStateSpec{
+			Marks: marks, RouteTables: tables, MinRulePriority: 10000, MaxRulePriority: 20099,
+		}); err != nil {
+			return err
+		}
+		fmt.Println("ip_state_empty=true")
+		return nil
 	case "internal-verify-data-plane":
 		fs := flag.NewFlagSet("internal-verify-data-plane", flag.ContinueOnError)
 		planPath := fs.String("plan", "", "verification plan")

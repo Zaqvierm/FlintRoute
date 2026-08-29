@@ -25,6 +25,7 @@ PIDOF_BIN="${PIDOF_BIN:-pidof}"
 NSLOOKUP_BIN="${NSLOOKUP_BIN:-nslookup}"
 SLEEP_BIN="${SLEEP_BIN:-sleep}"
 NFT_BIN="${NFT_BIN:-nft}"
+IP_BIN="${ROUTER_POLICY_IP_BIN:-ip}"
 SERVICES="router-policy-dns-observer router-policy-boot-guard router-policy-helper router-policy-watchdog router-policy router-policy-xray router-policy-zapret"
 mode="${1:---dry-run}"
 
@@ -223,6 +224,15 @@ deactivate_committed_dataplane() {
     # journal's exact IP plan there is no ownership proof for cleanup.
     if [ -d "$STATE_DIR/transactions" ] && [ -n "$(ls -A "$STATE_DIR/transactions" 2>/dev/null)" ]; then
       echo "uninstall blocked: committed transaction binding is missing while transaction journals remain" >&2
+      return 1
+    fi
+    [ -x "$BIN_DIR/router-policy" ] || {
+      echo "uninstall blocked: controller is unavailable to prove owned IP state is empty" >&2
+      return 1
+    }
+    if ! ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" ROUTER_POLICY_IP_BIN="$IP_BIN" \
+      "$BIN_DIR/router-policy" internal-verify-no-owned-ip-state >/dev/null; then
+      echo "uninstall blocked: owned IP state is not proven empty" >&2
       return 1
     fi
     restore_flow_offloading_baseline

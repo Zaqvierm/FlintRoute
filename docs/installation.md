@@ -245,6 +245,14 @@ the managed code tree. Zapret profiles are stopped
 and disabled in a first phase, and their files are removed only after every
 owned profile stop succeeds.
 
+If the committed binding is absent and transaction journals are empty, that is
+not proof that the kernel dataplane is empty. The uninstaller therefore calls
+the typed read-only `internal-verify-no-owned-ip-state` command, which checks
+project marks, the reserved rule-priority range, and project route tables for
+both IPv4 and IPv6. An inspection error, malformed JSON, remaining rule, or
+non-empty table blocks uninstall; `dataplane_deactivation=verified-empty` is
+printed only after this proof succeeds.
+
 Installer path ownership is fail-closed as well. Before `mkdir`/copy and again
 at the mutation boundary, all managed roots are checked for unsafe path
 components or symlinks. Controller state/config/runtime entries are inspected

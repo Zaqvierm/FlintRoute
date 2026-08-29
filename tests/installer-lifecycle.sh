@@ -773,6 +773,10 @@ mkdir -p \
   "$UNINSTALL_DEACTIVATE_ROOT/etc/router-policy/state/transactions/rev_4_aabbccddeeff/tx_0011223344556677/generated"
 cat >"$UNINSTALL_DEACTIVATE_ROOT/bin/router-policy" <<'SH'
 #!/bin/sh
+if [ "$1" = internal-verify-no-owned-ip-state ]; then
+  printf '%s\n' 'ip_state_empty=true' >"$UNINSTALL_DEACTIVATE_LOG"
+  exit 0
+fi
 printf '%s\n' "$*" >"$UNINSTALL_DEACTIVATE_LOG"
 [ "$1" = internal-rollback-ip-state ]
 SH
@@ -870,6 +874,39 @@ set -e
 [ "$missing_binding_status" -ne 0 ]
 grep -F 'committed transaction binding is missing while transaction journals remain' \
   "$UNINSTALL_MISSING_BINDING_ROOT/stderr.txt" >/dev/null
+
+UNINSTALL_ORPHAN_IP_ROOT="$TMP/uninstall-orphan-ip-state"
+mkdir -p "$UNINSTALL_ORPHAN_IP_ROOT/etc/router-policy/state/ownership"
+cp "$UNINSTALL_DEACTIVATE_ROOT/etc/router-policy/state/ownership/flow-offloading.env" \
+  "$UNINSTALL_ORPHAN_IP_ROOT/etc/router-policy/state/ownership/flow-offloading.env"
+cat >"$UNINSTALL_DEACTIVATE_ROOT/bin/router-policy-orphan-ip" <<'SH'
+#!/bin/sh
+if [ "$1" = internal-verify-no-owned-ip-state ]; then
+  echo "owned ipv4 rule remains: priority=10010 mark=0x41 table=100" >&2
+  exit 1
+fi
+exit 1
+SH
+chmod +x "$UNINSTALL_DEACTIVATE_ROOT/bin/router-policy-orphan-ip"
+mkdir -p "$UNINSTALL_ORPHAN_IP_ROOT/bin"
+cp "$UNINSTALL_DEACTIVATE_ROOT/bin/router-policy-orphan-ip" "$UNINSTALL_ORPHAN_IP_ROOT/bin/router-policy"
+set +e
+env \
+  ROUTER_POLICY_UNINSTALL_LIB_ONLY=1 \
+  SYSTEM_ROOT="$UNINSTALL_ORPHAN_IP_ROOT" \
+  ETC_DIR="$UNINSTALL_ORPHAN_IP_ROOT/etc/router-policy" \
+  STATE_DIR="$UNINSTALL_ORPHAN_IP_ROOT/etc/router-policy/state" \
+  RUNTIME_DIR="$UNINSTALL_ORPHAN_IP_ROOT/tmp/router-policy" \
+  BIN_DIR="$UNINSTALL_ORPHAN_IP_ROOT/bin" \
+  ROUTER_POLICY_IP_BIN=ip \
+  UCI_BIN="$UNINSTALL_DEACTIVATE_ROOT/bin/uci" \
+  PROJECT_ROOT="$PROJECT_ROOT" \
+  RESULT_PATH="$UNINSTALL_ORPHAN_IP_ROOT/result.txt" \
+  sh "$UNINSTALL_DEACTIVATE_HELPER" >"$UNINSTALL_ORPHAN_IP_ROOT/stdout.txt" 2>"$UNINSTALL_ORPHAN_IP_ROOT/stderr.txt"
+orphan_ip_status=$?
+set -e
+[ "$orphan_ip_status" -ne 0 ]
+grep -F 'owned IP state is not proven empty' "$UNINSTALL_ORPHAN_IP_ROOT/stderr.txt" >/dev/null
 
 UNINSTALL_DNS_READY_ROOT="$TMP/uninstall-dns-ready"
 mkdir -p "$UNINSTALL_DNS_READY_ROOT/bin"
