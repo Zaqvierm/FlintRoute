@@ -1,5 +1,17 @@
 # Матрица состояния
 
+## Current truth (2026-08-29)
+
+The authoritative current tree is `90ce6a644f58e59be3b441289c02b938dba37ed8`
+on `integration/discovery-smartdns-local-dod`. Local and exact-SHA CI evidence
+for this tree is software/CI only. Linux-only checks are `NOT RUN LOCALLY` on
+Windows, and Flint 2 has not been accessed, installed, mutated, or rebooted.
+
+All hardware PASS statements and readiness percentages in the historical tables
+below belong to their named older SHA and are `STALE FOR CURRENT SHA`; they must
+not be read as current hardware proof. Current item-by-item status is maintained
+in the external ledger `H:\LAN\Internal\Context\flintroute-unfinished-work-20260828.md`.
+
 > **Примечание о текущем SHA:** эта матрица содержит исторические фазы и
 > проценты. Hardware claims и PASS старых ревизий имеют статус `STALE FOR
 > CURRENT SHA`; remediation-ветка не содержит hardware evidence. Точный
