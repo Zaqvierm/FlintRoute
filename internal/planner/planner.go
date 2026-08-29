@@ -413,7 +413,9 @@ func selectionEvidence(result probe.RouteResult) bool {
 		// outcome; a generic HTTP OK must never masquerade as DROP evidence.
 		return strings.EqualFold(result.Status, "DROP") || strings.EqualFold(result.ApplicationStatus, "DROP")
 	}
-	if !strings.EqualFold(result.Status, "OK") || !result.PathVerified || !result.ServiceOK || result.RegionalBlock || strings.EqualFold(result.Status, "REGION_BLOCK") {
+	if !strings.EqualFold(result.Status, "OK") || !result.PathVerified || !result.ServiceOK ||
+		result.RegionalBlock || result.AuthenticationRequired || result.WAFOrRateLimit ||
+		strings.EqualFold(result.Status, "REGION_BLOCK") {
 		return false
 	}
 	// DROP is a verified terminal safety outcome, not a network path. Unknown
@@ -795,9 +797,21 @@ func validCachedNoSafeRoute(decision domaincache.Decision, plan CandidatePlan) b
 	if decision.SelectedRoute != "" || decision.Reason != "no_verified_policy_allowed_route" || len(decision.Results) == 0 {
 		return false
 	}
+	seen := make(map[string]struct{}, len(decision.Results))
+	directRegional := false
 	for _, result := range decision.Results {
 		if !probeResultTerminal(result) {
 			return false
+		}
+		if result.Route == "" {
+			return false
+		}
+		if _, duplicate := seen[result.Route]; duplicate {
+			return false
+		}
+		seen[result.Route] = struct{}{}
+		if result.RouteType == "direct" && (result.RegionalBlock || strings.EqualFold(strings.TrimSpace(result.Status), "REGION_BLOCK")) {
+			directRegional = true
 		}
 		matched := false
 		for _, candidate := range plan.Candidates {
@@ -810,7 +824,36 @@ func validCachedNoSafeRoute(decision domaincache.Decision, plan CandidatePlan) b
 			return false
 		}
 	}
+	// A terminal NO_SAFE_ROUTE is valid only after every candidate that this
+	// plan could have probed has a terminal result. Two bounded planner paths
+	// intentionally omit candidates: speculative Zapret is skipped for an
+	// ordinary unknown domain until direct evidence looks like TSPU, and both
+	// Direct and Zapret are skipped after a direct regional denial. Everything
+	// else must be represented; otherwise a truncated/corrupt cache entry could
+	// suppress the required fresh verification.
+	for _, candidate := range plan.Candidates {
+		if _, present := seen[candidate.Tag]; present {
+			continue
+		}
+		if directRegional && (candidate.Type == "direct" || candidate.Type == "zapret") {
+			continue
+		}
+		if profileUnknownPlanSkipsZapret(plan, candidate) {
+			continue
+		}
+		return false
+	}
 	return true
+}
+
+func profileUnknownPlanSkipsZapret(plan CandidatePlan, candidate config.Route) bool {
+	if !plan.Unknown || candidate.Type != "zapret" {
+		return false
+	}
+	// NO_MATCH/UNAVAILABLE ordinary unknown traffic does not probe Zapret
+	// speculatively. MATCH and zapret-first STALE_MATCH do probe it; fail-closed
+	// stale policy has no Zapret candidate in the plan at all.
+	return plan.TSPUStatus != "MATCH" && plan.TSPUStatus != "STALE_MATCH"
 }
 
 func optionNow(opts Options) time.Time {

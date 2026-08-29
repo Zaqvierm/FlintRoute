@@ -122,6 +122,24 @@ func TestSelectionHardFiltersRegionalAndIncompleteEvidence(t *testing.T) {
 	}
 }
 
+func TestSelectionRejectsSuccessWithAuthOrWAFFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*probe.RouteResult)
+	}{
+		{name: "auth_required", mutate: func(result *probe.RouteResult) { result.AuthenticationRequired = true }},
+		{name: "waf_or_rate_limit", mutate: func(result *probe.RouteResult) { result.WAFOrRateLimit = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := measuredSelectionResult("unsafe", "vless", 1)
+			tc.mutate(&result)
+			if got := SelectBestWithPolicy([]probe.RouteResult{result}, configPolicyForSelection(), "", nil); got != nil {
+				t.Fatalf("inconsistent success evidence was selected: %+v", got)
+			}
+		})
+	}
+}
+
 func TestSelectionHysteresisAvoidsFlapping(t *testing.T) {
 	policy := configPolicyForSelection()
 	policy.RouteSelectionHysteresisPercent = 15

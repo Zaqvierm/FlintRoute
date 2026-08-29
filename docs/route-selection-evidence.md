@@ -89,7 +89,11 @@ while the passive observer classifies the domain.
 
 Terminal `NO_SAFE_ROUTE` outcomes are cached under the same revision,
 inventory, and TTL binding. The cache entry must contain non-empty, terminal
-evidence for known candidates and the planner's exhaustion reason. In-progress,
+evidence for every candidate that the current bounded plan could probe, plus
+the planner's exhaustion reason. The only omitted candidates are those the
+planner can prove it intentionally skipped: speculative Zapret for an
+ordinary unknown domain without TSPU evidence, or Direct/Zapret after a
+direct regional denial. Duplicate, foreign, truncated, in-progress,
 malformed, incomplete, or mismatched entries are rejected and re-probed; they
 never suppress verification or manufacture a terminal decision.
 

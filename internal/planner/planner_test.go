@@ -291,6 +291,41 @@ func TestIncompleteNoSafeRouteCacheEntryIsRejected(t *testing.T) {
 	}
 }
 
+func TestTruncatedNoSafeRouteCacheEntryIsRejected(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cache := openDecisionCache(t, cfg)
+	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	plan, err := BuildCandidates(cfg, "truncated.example", "", Options{ActiveRevision: "rev-active"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The inventory hash matches the current plan, but the result list is
+	// truncated to Direct only. That is not terminal exhaustion: Smart DNS,
+	// VLESS and DROP still need bounded terminal results before NO_SAFE_ROUTE
+	// can be cached.
+	if _, err := cache.Save("truncated.example", domaincache.Decision{
+		Service: "UNKNOWN:truncated.example", Category: "DIRECT_PREFERRED", TSPUStatus: plan.TSPUStatus,
+		Status: "NO_SAFE_ROUTE", Reason: "no_verified_policy_allowed_route", AdapterRevision: "rev-active",
+		CandidateInventoryHash: plan.InventoryHash, Confidence: 0, CheckedAt: now, ExpiresAt: now.Add(time.Hour),
+		Results: []probe.RouteResult{{Route: "direct", RouteType: "direct", Status: "FAIL"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prober := &scriptedProber{results: map[string]probe.RouteResult{}}
+	check, err := CheckDomain(context.Background(), cfg, "truncated.example", "", Options{
+		RouteProber: prober, DecisionCache: cache, ActiveRevision: "rev-active", Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.Cached {
+		t.Fatalf("truncated terminal cache entry was accepted: %+v", check)
+	}
+	if !reflect.DeepEqual(prober.calls, []string{"direct", "smart-one", "vless-one", "drop"}) {
+		t.Fatalf("fresh verification did not cover every required candidate: %v", prober.calls)
+	}
+}
+
 func TestCancelledDomainCheckNeverBecomesTerminalNoSafeRoute(t *testing.T) {
 	cfg := discoveryConfig(t)
 	ctx, cancel := context.WithCancel(context.Background())
