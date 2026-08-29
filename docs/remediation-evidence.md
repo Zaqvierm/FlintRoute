@@ -17,6 +17,12 @@ and UI/responsive [33234073079](https://github.com/Zaqvierm/FlintRoute/actions/r
 These are software/CI results only; Linux-only local checks and all Flint 2
 hardware evidence remain separate and are not inferred from CI.
 
+This evidence proves atomic replacement of the owned nft transaction only. It
+does not claim that the complete dataplane (artifacts, listeners, IP policy,
+nft, and DNS) changes as one indivisible hardware operation; that boundary
+remains covered by the transition guard, recovery fence, and the separate
+Linux/runtime/hardware matrix.
+
 ## 2026-08-29 current code checkpoint (`e97f8ddeca93de6dc6032edcbb88063f52abbea9`)
 
 The current tree is `integration/discovery-smartdns-local-dod` at
