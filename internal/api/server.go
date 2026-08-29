@@ -513,6 +513,9 @@ func (s *Server) startOperationalSchedulers(schedulerCtx context.Context) {
 				if err := s.store.Maintain(time.Now().UTC()); err != nil {
 					s.publishEvent(Event{Type: "storage.maintenance_failed", Severity: "error", ReasonCode: "bbolt_maintenance_failed", Details: map[string]any{"error": err.Error()}})
 				}
+				if err := s.prunePersistedDiscoverySuggestions(time.Now().UTC()); err != nil {
+					s.publishEvent(Event{Type: "discovery.storage", Severity: "warning", ReasonCode: "suggestion_retention_cleanup_failed", Details: map[string]any{"error": err.Error()}})
+				}
 			}
 			next.Stop()
 		}

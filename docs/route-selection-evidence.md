@@ -91,6 +91,12 @@ verified candidate, explicit fail-closed DROP, or fully evidenced terminal
 exhaustion can be persisted. A provisional or empty `DomainCheck` remains a
 RAM-only live view and is rejected by the durable write path.
 
+Raw observations are retained only in the bounded in-memory ring (one hour).
+Durable suggestions are keyed by normalized eTLD+1, capped at 256 entries, and
+expire after seven days. Reads hide expired entries; the six-hour storage
+maintenance pass removes them from bbolt without turning each DNS observation
+into a persistent write.
+
 ## Route-only assignment
 
 Automatic discovery may assign a domain only to an already enabled, verified

@@ -587,6 +587,49 @@ func TestDiscoverySuggestionsStayBoundedInMemory(t *testing.T) {
 	}
 }
 
+func TestDiscoveryObservationsExpireFromReadSnapshot(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, _ := newDiscoveryModeServer(t, "observe_only", true, fake)
+	defer srv.Close()
+	base := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	srv.discoveryNow = func() time.Time { return base }
+	srv.recordDiscoveryObservation(discovery.Observation{Domain: "old.example", QueryType: "A"})
+	srv.discoveryNow = func() time.Time { return base.Add(discoveryObservationTTL + time.Second) }
+	if got := srv.discoveryObservationsSnapshot(10); len(got) != 0 {
+		t.Fatalf("expired observation remained visible: %+v", got)
+	}
+}
+
+func TestDiscoverySuggestionTTLIsPersistentlyPruned(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, _ := newDiscoveryModeServer(t, "suggest", true, fake)
+	defer srv.Close()
+	base := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	srv.discoveryNow = func() time.Time { return base }
+	check := planner.DomainCheck{
+		Domain: "expired.example", Category: "UNKNOWN", Confidence: 0.9,
+		Status: "SELECTED", VerificationState: "verified",
+		Selected: &probe.RouteResult{Route: "direct", RouteType: "direct", PathVerified: true, ServiceOK: true, Status: "OK"},
+	}
+	if err := srv.saveDiscoverySuggestion(discovery.Observation{Domain: "expired.example", QueryType: "A"}, check); err != nil {
+		t.Fatal(err)
+	}
+	srv.discoveryNow = func() time.Time { return base.Add(discoverySuggestionTTL + time.Second) }
+	if err := srv.prunePersistedDiscoverySuggestions(base.Add(discoverySuggestionTTL + time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if got := srv.discoverySuggestions(10); len(got) != 0 {
+		t.Fatalf("expired suggestion remained visible: %+v", got)
+	}
+	var persisted []discoverySuggestion
+	if err := srv.store.LoadJSON("discovery", discoverySuggestionKey, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted) != 0 {
+		t.Fatalf("expired suggestion remained durable: %+v", persisted)
+	}
+}
+
 func TestDiscoveryLockedDoesNotProbe(t *testing.T) {
 	fake := newFakeAdapter()
 	srv, calls := newDiscoveryModeServer(t, "locked", true, fake)

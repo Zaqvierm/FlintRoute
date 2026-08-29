@@ -24,6 +24,8 @@ const (
 	maxDiscoverySuggestions  = 256
 	maxDiscoveryObservations = 1000
 	discoverySuggestionKey   = "suggestions"
+	discoveryObservationTTL  = time.Hour
+	discoverySuggestionTTL   = 7 * 24 * time.Hour
 	// A DNS cache miss can be reported repeatedly by several clients.  Treat
 	// the eTLD+1 as one discovery subject for a bounded observation window;
 	// ordinary repeat queries must not restart route probes.
@@ -837,9 +839,14 @@ func (s *Server) saveDiscoverySuggestionState(observation discovery.Observation,
 }
 
 func (s *Server) discoverySuggestions(limit int) []discoverySuggestion {
+	now := s.discoveryNow()
+	cutoff := now.Add(-discoverySuggestionTTL)
 	s.mu.Lock()
 	items := make([]discoverySuggestion, 0, len(s.discoverySuggestionMap))
 	for _, item := range s.discoverySuggestionMap {
+		if !item.LastSeen.IsZero() && item.LastSeen.Before(cutoff) {
+			continue
+		}
 		items = append(items, item)
 	}
 	s.mu.Unlock()
@@ -855,14 +862,7 @@ func (s *Server) recordDiscoveryObservation(observation discovery.Observation) {
 	item := discoveryObservation{Domain: observation.Domain, QueryType: observation.QueryType, Client: observation.Client, ObservedAt: now}
 	s.mu.Lock()
 	s.discoveryObservations = append(s.discoveryObservations, item)
-	cutoff := now.Add(-time.Hour)
-	first := 0
-	for first < len(s.discoveryObservations) && (len(s.discoveryObservations)-first > maxDiscoveryObservations || s.discoveryObservations[first].ObservedAt.Before(cutoff)) {
-		first++
-	}
-	if first > 0 {
-		s.discoveryObservations = append([]discoveryObservation(nil), s.discoveryObservations[first:]...)
-	}
+	s.pruneDiscoveryObservationsLocked(now)
 	s.mu.Unlock()
 }
 
@@ -870,7 +870,9 @@ func (s *Server) discoveryObservationsSnapshot(limit int) []discoveryObservation
 	if limit <= 0 || limit > maxDiscoveryObservations {
 		limit = maxDiscoveryObservations
 	}
+	now := s.discoveryNow()
 	s.mu.Lock()
+	s.pruneDiscoveryObservationsLocked(now)
 	items := append([]discoveryObservation(nil), s.discoveryObservations...)
 	s.mu.Unlock()
 	sort.Slice(items, func(i, j int) bool { return items[i].ObservedAt.After(items[j].ObservedAt) })
@@ -878,6 +880,39 @@ func (s *Server) discoveryObservationsSnapshot(limit int) []discoveryObservation
 		items = items[:limit]
 	}
 	return items
+}
+
+func (s *Server) pruneDiscoveryObservationsLocked(now time.Time) {
+	cutoff := now.Add(-discoveryObservationTTL)
+	first := 0
+	for first < len(s.discoveryObservations) && (len(s.discoveryObservations)-first > maxDiscoveryObservations || s.discoveryObservations[first].ObservedAt.Before(cutoff)) {
+		first++
+	}
+	if first > 0 {
+		s.discoveryObservations = append([]discoveryObservation(nil), s.discoveryObservations[first:]...)
+	}
+}
+
+func (s *Server) pruneDiscoverySuggestionsLocked(now time.Time) bool {
+	cutoff := now.Add(-discoverySuggestionTTL)
+	removed := false
+	for key, item := range s.discoverySuggestionMap {
+		if !item.LastSeen.IsZero() && item.LastSeen.Before(cutoff) {
+			delete(s.discoverySuggestionMap, key)
+			removed = true
+		}
+	}
+	return removed
+}
+
+func (s *Server) prunePersistedDiscoverySuggestions(now time.Time) error {
+	s.mu.Lock()
+	removed := s.pruneDiscoverySuggestionsLocked(now)
+	s.mu.Unlock()
+	if !removed {
+		return nil
+	}
+	return s.persistDiscoverySuggestions()
 }
 
 func (s *Server) discoveryCounter(kind string) uint64 {
@@ -895,10 +930,16 @@ func (s *Server) loadPersistedDiscoverySuggestions() {
 		return
 	}
 	now := s.discoveryNow()
+	cutoff := now.Add(-discoverySuggestionTTL)
+	stale := false
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for _, item := range items {
-		if item.Domain == "" || (!item.LastSeen.IsZero() && now.Sub(item.LastSeen) > 7*24*time.Hour) {
+		if item.Domain == "" {
+			stale = true
+			continue
+		}
+		if !item.LastSeen.IsZero() && item.LastSeen.Before(cutoff) {
+			stale = true
 			continue
 		}
 		if item.Count == 0 {
@@ -906,9 +947,26 @@ func (s *Server) loadPersistedDiscoverySuggestions() {
 		}
 		s.discoverySuggestionMap[discoverySuggestionMapKey(item.Domain)] = item
 	}
+	s.mu.Unlock()
+	// Rewrite once after startup if expired/malformed entries were filtered;
+	// this keeps the durable store bounded without writing on every DNS event.
+	if stale {
+		_ = s.persistDiscoverySuggestions()
+	}
 }
 
 func (s *Server) persistDiscoverySuggestions() error {
-	items := s.discoverySuggestions(maxDiscoverySuggestions)
+	now := s.discoveryNow()
+	s.mu.Lock()
+	s.pruneDiscoverySuggestionsLocked(now)
+	items := make([]discoverySuggestion, 0, len(s.discoverySuggestionMap))
+	for _, item := range s.discoverySuggestionMap {
+		items = append(items, item)
+	}
+	s.mu.Unlock()
+	sort.Slice(items, func(i, j int) bool { return items[i].ObservedAt.After(items[j].ObservedAt) })
+	if len(items) > maxDiscoverySuggestions {
+		items = items[:maxDiscoverySuggestions]
+	}
 	return s.store.SaveJSON("discovery", discoverySuggestionKey, items)
 }
