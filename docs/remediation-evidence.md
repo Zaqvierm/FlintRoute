@@ -2,19 +2,17 @@
 
 ## Current evidence binding (2026-08-29)
 
-Current pushed code checkpoint before this uncommitted refactor: `114b68f` on
-`integration/discovery-smartdns-local-dod`. The working tree currently contains
-the follow-up `AppShell` extraction; its exact SHA and CI runs are not claimed
-until the change is committed and pushed.
+Current code checkpoint: `ea7c831` on
+`integration/discovery-smartdns-local-dod`. This checkpoint includes the
+`AppShell` extraction; the exact SHA and CI runs are recorded in the external
+ledger and below.
 The worktree/branch HEAD is the source of truth for the documentation commit;
 the external status ledger records that exact docs SHA. Local
 `tests/run-all.ps1` completed `all_tests_ok=true`; Linux
 namespace/process-group/filesystem checks remain `NOT RUN LOCALLY` on Windows.
-The most recent exact-SHA CI evidence listed here is for the prior docs-bound
-tree: full safety `33242741324`, UI/browser `33242741278`, nft transition
-`33242741316`, and Zapret process-group `33242741279`. A docs-only commit does
-not change the code under test; its own workflow result is recorded in the
-external ledger after completion.
+The exact-SHA CI evidence for this checkpoint is full safety `33244505765`,
+UI/browser `33244505687`, nft transition `33244505715`, and Zapret process-group
+`33244505762`.
 
 These are software/CI results only. No Flint 2 connection, installation,
 dataplane mutation, reboot, or hardware validation was performed. Every older
@@ -23,13 +21,14 @@ section in this document is historical evidence for its named SHA and is
 
 ## 2026-08-29 remaining system-screen decomposition
 
-Current grouped checkpoint: `114b68f` (`refactor: isolate dashboard data orchestration`).
-The preceding `114b68f` commit moved dashboard state and refresh orchestration; the `8248c01`
+Current grouped checkpoint: `ea7c831` (`refactor: isolate application shell navigation`).
+The preceding `114b68f` commit moved dashboard state and refresh orchestration; `ea7c831`
+additionally moved the application shell and navigation; the `8248c01`
 commit contains the route/location parser,
 shared fallback messages, screen dispatcher/error boundary extraction, public UI
 docs, and the regenerated embedded frontend bundle. The exact-SHA runs listed
-for `114b68f` remain evidence for that code SHA only; the current docs binding
-is the current code checkpoint `114b68f`; the older CI runs listed below are historical evidence for their
+for `ea7c831` remain evidence for that code SHA only; the current docs binding
+is the current code checkpoint `ea7c831`; the older CI runs listed below are historical evidence for their
 own SHAs only.
 
 The follow-up UI refactor isolates browser navigation state in
@@ -45,10 +44,9 @@ unavailable/stale-state fallbacks. `ui/src/app/useNavigation.ts` owns URL,
 history, remembered-screen preference, and mobile-menu state. The follow-up
 `ui/src/app/useDashboardData.ts` moves dashboard data state, polling, SSE,
 abort/retry handling, privacy clearing, and onboarding writes out of `App.tsx`.
-The uncommitted `ui/src/app/AppShell.tsx` extraction additionally moves
-sidebar/mobile navigation and the shell container out of `App.tsx`; after commit
-`App.tsx` will retain session wiring and screen composition while `main.tsx`
-remains mount-only. Local
+The committed `ui/src/app/AppShell.tsx` extraction additionally moves sidebar,
+mobile navigation and the shell container out of `App.tsx`; `App.tsx` now retains
+session wiring and screen composition while `main.tsx` remains mount-only. Local
 `npm run typecheck`, `npm test -- --run`, `npm run browser:test`, `npm run build`,
 and `git diff --check` pass for this working tree. This remains software-only
 evidence; Linux and Flint 2 hardware proof are not inferred.
