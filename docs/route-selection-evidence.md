@@ -13,10 +13,14 @@ bounded timeout), hard safety filters have run, and the remaining candidates
 have been scored. Explicit user overrides are the only exception: they are a
 forced route decision and retain DROP as the failure fallback.
 
-The planner never treats an HTTP success, DNS answer, process start, or array
-position as proof of a usable route. A selectable network route requires
-`Status=OK`, `PathVerified=true`, `ServiceOK=true`, no regional denial, and a
-revision-bound candidate identity. DROP is a separate terminal safety outcome.
+The planner never treats an HTTP success, DNS answer, process start, simulated
+result, or array position as proof of a usable route. A selectable network
+route requires `Simulation=false`, `Status=OK`, `PathVerified=true`,
+`ServiceOK=true`, no regional denial, and a revision-bound candidate identity.
+DROP is a separate terminal safety outcome. The exported
+`planner.SelectionEvidence` gate is reused by API projections and route-only
+assignment, so automatic mutation cannot accept weaker evidence than planner
+selection.
 The API's cached-decision projection uses the same typed `SelectionEvidence`
 gate as the planner, so contradictory authentication, WAF/rate-limit, or
 regional evidence cannot be rendered as a verified route.

@@ -644,7 +644,7 @@ func (s *Server) discoveryAutoAllowed(cfg *config.Config, check planner.DomainCh
 	if len(pruneDiscoveryTimes(state.AppliedAt, s.discoveryNow().Add(-time.Hour))) >= maxRules {
 		return errors.New("automatic_route_assignment_rate_limited")
 	}
-	if check.Selected == nil || !check.Selected.PathVerified || !check.Selected.ServiceOK || check.Confidence < 0.8 {
+	if check.Selected == nil || !planner.SelectionEvidence(*check.Selected) || check.Confidence < 0.8 {
 		return errors.New("automatic_route_assignment_requires_verified_evidence")
 	}
 	route, ok := cfg.RouteByTag(check.Selected.Route)

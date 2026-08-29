@@ -669,7 +669,7 @@ func TestDiscoveryAutoApplySafetyLimits(t *testing.T) {
 	fake := newFakeAdapter()
 	srv, _ := newDiscoveryModeServer(t, "auto_apply_verified", true, fake)
 	defer srv.Close()
-	check := planner.DomainCheck{Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true}}
+	check := planner.DomainCheck{Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", PathVerified: true, ServiceOK: true}}
 
 	srv.mu.Lock()
 	srv.changes["busy"] = ChangeSet{ID: "busy", State: "awaiting_confirmation"}
@@ -701,6 +701,31 @@ func TestDiscoveryAutoApplySafetyLimits(t *testing.T) {
 	}
 	if err := validateDiscoveryOperations([]ChangeOp{{Type: "set", Path: "/platform/management", Value: true}}); err == nil {
 		t.Fatal("discovery accepted a management change")
+	}
+}
+
+func TestDiscoveryAutoApplyRejectsContradictorySelectionEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*probe.RouteResult)
+	}{
+		{name: "regional_denial", mutate: func(result *probe.RouteResult) { result.RegionalBlock = true }},
+		{name: "authentication_required", mutate: func(result *probe.RouteResult) { result.AuthenticationRequired = true }},
+		{name: "waf_or_rate_limit", mutate: func(result *probe.RouteResult) { result.WAFOrRateLimit = true }},
+		{name: "simulation", mutate: func(result *probe.RouteResult) { result.Simulation = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeAdapter()
+			srv, _ := newDiscoveryModeServer(t, "auto_apply_verified", true, fake)
+			defer srv.Close()
+			srv.routeAssignmentRuntime = &fakeRouteAssignmentRuntime{}
+			selected := probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", PathVerified: true, ServiceOK: true}
+			tc.mutate(&selected)
+			check := planner.DomainCheck{Selected: &selected, Confidence: 1}
+			if err := srv.discoveryAutoAllowed(srv.currentConfig(), check); err == nil || !strings.Contains(err.Error(), "verified_evidence") {
+				t.Fatalf("contradictory evidence passed auto-apply gate: %v", err)
+			}
+		})
 	}
 }
 

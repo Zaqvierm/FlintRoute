@@ -126,7 +126,7 @@ func TestAutomaticDomainCommitRollsBackRuntimeBeforePersistingFailedPostProof(t 
 
 	result := srv.commitAutomaticDomain(context.Background(), planner.DomainCheck{
 		Domain: "post-proof-failure.example", ETLDPlusOne: "post-proof-failure.example", Category: "GEO_LOCKED", Confidence: 1,
-		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true},
+		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", PathVerified: true, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true},
 	})
 	if result.Applied || !result.RolledBack || runtime.applied != 1 || runtime.rolledBack != 1 {
 		t.Fatalf("failed post-apply proof did not roll back runtime: result=%+v runtime=%+v", result, runtime)
@@ -321,7 +321,7 @@ func TestAutomaticDomainCommitRespectsRecoveryFence(t *testing.T) {
 			}
 			result := srv.commitAutomaticDomain(nil, planner.DomainCheck{
 				Domain: "blocked.example", Category: "GEO_LOCKED", Confidence: 1,
-				Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true},
+				Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", PathVerified: true, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true},
 			})
 			if result.Reason == "" {
 				t.Fatalf("status %q returned an empty blocked reason: %+v", status, result)
@@ -344,7 +344,7 @@ func TestAutomaticDomainCommitRequiresRuntimeConsumer(t *testing.T) {
 
 	result := srv.commitAutomaticDomain(context.Background(), planner.DomainCheck{
 		Domain: "verified.example", ETLDPlusOne: "verified.example", Category: "GEO_LOCKED", Confidence: 1,
-		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true},
+		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", PathVerified: true, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true},
 	})
 	if result.Applied || result.Reason != "route_assignment_runtime_unavailable" {
 		t.Fatalf("assignment without runtime consumer was not fenced: %+v", result)
@@ -370,13 +370,43 @@ func TestAutomaticDomainCommitRequiresSemanticRuntimeReceipt(t *testing.T) {
 
 	result := srv.commitAutomaticDomain(context.Background(), planner.DomainCheck{
 		Domain: "verified.example", ETLDPlusOne: "verified.example", Category: "GEO_LOCKED", Confidence: 1,
-		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true},
+		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", PathVerified: true, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true},
 	})
 	if !result.Applied || result.RolledBack || runtime.applied != 1 || runtime.rolledBack != 0 {
 		t.Fatalf("verified semantic runtime receipt did not commit: result=%+v runtime=%+v", result, runtime)
 	}
 	if _, ok, err := srv.domainDecisions.Lookup("verified.example", srv.activeRevision, time.Now().UTC()); err != nil || !ok {
 		t.Fatalf("committed assignment was not persisted: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestAutomaticDomainCommitRejectsContradictorySelectionEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*probe.RouteResult)
+	}{
+		{name: "regional_denial", mutate: func(result *probe.RouteResult) { result.RegionalBlock = true }},
+		{name: "authentication_required", mutate: func(result *probe.RouteResult) { result.AuthenticationRequired = true }},
+		{name: "waf_or_rate_limit", mutate: func(result *probe.RouteResult) { result.WAFOrRateLimit = true }},
+		{name: "simulation", mutate: func(result *probe.RouteResult) { result.Simulation = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeAdapter()
+			srv, ts, _, _, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+			defer ts.Close()
+			defer srv.Close()
+			runtime := &fakeRouteAssignmentRuntime{}
+			srv.routeAssignmentRuntime = runtime
+			selected := probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", PathVerified: true, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true}
+			tc.mutate(&selected)
+			result := srv.commitAutomaticDomain(context.Background(), planner.DomainCheck{
+				Domain: "contradictory.example", ETLDPlusOne: "contradictory.example", Category: "GEO_LOCKED", Confidence: 1,
+				Selected: &selected,
+			})
+			if result.Applied || runtime.applied != 0 || !strings.Contains(result.Reason, "verified_evidence") {
+				t.Fatalf("contradictory evidence reached route assignment: result=%+v runtime=%+v", result, runtime)
+			}
+		})
 	}
 }
 
@@ -389,7 +419,7 @@ func TestAutomaticDomainCommitRollsBackInvalidRuntimeReceipt(t *testing.T) {
 	srv.routeAssignmentRuntime = runtime
 	result := srv.commitAutomaticDomain(context.Background(), planner.DomainCheck{
 		Domain: "invalid-receipt.example", ETLDPlusOne: "invalid-receipt.example", Category: "GEO_LOCKED", Confidence: 1,
-		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true},
+		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", PathVerified: true, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true},
 	})
 	if result.Applied || !result.RolledBack || runtime.applied != 1 || runtime.rolledBack != 1 {
 		t.Fatalf("invalid runtime receipt was not rolled back: result=%+v runtime=%+v", result, runtime)
@@ -412,7 +442,7 @@ func TestAutomaticDomainCommitRollsBackMismatchedRouteBinding(t *testing.T) {
 
 	result := srv.commitAutomaticDomain(context.Background(), planner.DomainCheck{
 		Domain: "bound.example", ETLDPlusOne: "bound.example", Category: "GEO_LOCKED", Confidence: 1,
-		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true},
+		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", PathVerified: true, ServiceOK: true, ExternalCountry: "DE", EgressConsensus: true},
 	})
 	if result.Applied || !result.RolledBack || runtime.applied != 1 || runtime.rolledBack != 1 || !strings.Contains(result.Reason, "semantic") {
 		t.Fatalf("mismatched route binding was not fenced and rolled back: result=%+v runtime=%+v", result, runtime)

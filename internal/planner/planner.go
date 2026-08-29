@@ -407,6 +407,13 @@ func SelectBestWithPolicy(results []probe.RouteResult, policy config.Policy, cur
 }
 
 func selectionEvidence(result probe.RouteResult) bool {
+	// Simulated or fixture output is useful for development diagnostics, but it
+	// is never proof that the production path works. Keep this guard here so
+	// every caller (planner, API projections, and route-only assignment) shares
+	// the same semantic boundary.
+	if result.Simulation {
+		return false
+	}
 	if result.RouteType == "drop" {
 		// A successful drop probe may report Status=OK after path proof, but
 		// ApplicationStatus remains DROP. Accept only that explicit safety

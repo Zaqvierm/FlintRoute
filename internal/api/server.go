@@ -961,7 +961,7 @@ func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.Domain
 	if failure := s.mutationFailureNow(); failure != nil {
 		return automaticCommitResult{Reason: failure.Message}
 	}
-	if check.Selected == nil || !check.Selected.PathVerified || !check.Selected.ServiceOK || check.Confidence < 0.8 {
+	if check.Selected == nil || !planner.SelectionEvidence(*check.Selected) || check.Confidence < 0.8 {
 		return automaticCommitResult{Reason: "automatic_route_assignment_requires_verified_evidence"}
 	}
 	active := s.currentConfig()
@@ -1054,7 +1054,7 @@ func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.Domain
 	}
 	post := s.probeEngineFactory(active).ProbeRoute(ctx, active, check.Domain, service, autoService, route)
 	if post.Route != route.Tag || post.RouteType != route.Type || post.AdapterRevision != revision ||
-		!strings.EqualFold(post.Status, "OK") || !post.PathVerified || !post.ServiceOK ||
+		!planner.SelectionEvidence(post) ||
 		(check.Selected.CandidateHash != "" && post.CandidateHash != check.Selected.CandidateHash) ||
 		(check.Selected.ArtifactManifestHash != "" && post.ArtifactManifestHash != check.Selected.ArtifactManifestHash) ||
 		(autoService.RequireNonRUEgress && route.Type != "drop" && (!post.EgressConsensus || strings.TrimSpace(post.ExternalCountry) == "" || strings.EqualFold(post.ExternalCountry, "RU"))) {

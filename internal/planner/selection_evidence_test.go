@@ -140,6 +140,17 @@ func TestSelectionRejectsSuccessWithAuthOrWAFFlags(t *testing.T) {
 	}
 }
 
+func TestSelectionRejectsSimulationEvenWhenLegacyFieldsSayOK(t *testing.T) {
+	result := measuredSelectionResult("simulated", "vless", 1)
+	result.Simulation = true
+	if SelectionEvidence(result) {
+		t.Fatalf("simulated probe was accepted as production selection evidence: %+v", result)
+	}
+	if got := SelectBestWithPolicy([]probe.RouteResult{result}, configPolicyForSelection(), "", nil); got != nil {
+		t.Fatalf("simulated probe was selected as a usable route: %+v", got)
+	}
+}
+
 func TestSelectionHysteresisAvoidsFlapping(t *testing.T) {
 	policy := configPolicyForSelection()
 	policy.RouteSelectionHysteresisPercent = 15
