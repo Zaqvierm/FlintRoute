@@ -82,6 +82,24 @@ if [ ! -f "$SYSTEM_ROOT/usr/bin/router-policy" ]; then
 fi
 echo "uninstaller_invalid_backup_blocked=true"
 
+# A missing last-good binding is not evidence that the dataplane is empty when
+# transaction journals remain. The uninstaller must fence before touching any
+# managed path.
+MISSING_BINDING_ROOT="$TMP/uninstall-missing-binding"
+mkdir -p "$MISSING_BINDING_ROOT/etc/router-policy/state/transactions/rev_1_deadbeef0001/tx_deadbeefdeadbeef"
+missing_binding_output=$(env \
+  ROUTER_POLICY_UNINSTALL_LIB_ONLY=1 \
+  ROUTER_POLICY_SYSTEM_ROOT="$MISSING_BINDING_ROOT" \
+  STATE_DIR="$MISSING_BINDING_ROOT/etc/router-policy/state" \
+  ETC_DIR="$MISSING_BINDING_ROOT/etc/router-policy" \
+  sh -c 'PROJECT_ROOT="$1"; export PROJECT_ROOT; . "$PROJECT_ROOT/uninstall.sh"; deactivate_committed_dataplane' \
+  sh "$PROJECT_ROOT" 2>&1 || true)
+printf '%s\n' "$missing_binding_output" | grep -F 'committed transaction binding is missing while transaction journals remain' >/dev/null || {
+  echo "uninstaller did not fence missing last-good binding" >&2
+  exit 1
+}
+echo "uninstaller_missing_binding_fenced=true"
+
 # A fixed runtime root is not a blanket ownership grant.  Unknown entries
 # must block uninstall before any teardown or recursive deletion can touch
 # them.
