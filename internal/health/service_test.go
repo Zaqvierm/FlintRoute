@@ -189,6 +189,38 @@ func TestCycleRejectsMixedRevisionEvidence(t *testing.T) {
 	}
 }
 
+func TestSafeHealthResultRejectsSimulationAndContradictoryFlags(t *testing.T) {
+	route := config.Route{Type: "vless", Tag: "fast"}
+	base := probe.RouteResult{
+		Route: route.Tag, RouteType: route.Type, Status: "OK", ApplicationStatus: "OK",
+		PathVerified: true, ServiceOK: true, EgressConsensus: true,
+		AdapterRevision: "rev_2_001122334455", CandidateHash: "sha256:" + repeat("a", 64),
+		ArtifactManifestHash: "sha256:" + repeat("b", 64), ExternalIPHash: "sha256:" + repeat("c", 64),
+		ExternalCountry: "DE",
+	}
+	if !safeHealthResult(route, base) {
+		t.Fatal("valid health evidence was rejected")
+	}
+	tests := []struct {
+		name string
+		set  func(*probe.RouteResult)
+	}{
+		{name: "simulation", set: func(result *probe.RouteResult) { result.Simulation = true }},
+		{name: "regional block", set: func(result *probe.RouteResult) { result.RegionalBlock = true }},
+		{name: "authentication required", set: func(result *probe.RouteResult) { result.AuthenticationRequired = true }},
+		{name: "waf or rate limit", set: func(result *probe.RouteResult) { result.WAFOrRateLimit = true }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := base
+			test.set(&result)
+			if safeHealthResult(route, result) {
+				t.Fatalf("contradictory result was accepted: %+v", result)
+			}
+		})
+	}
+}
+
 func TestCycleHysteresisQuarantinesAndRecoversRoute(t *testing.T) {
 	cfg := healthConfig()
 	cfg.Routes = cfg.Routes[:1]

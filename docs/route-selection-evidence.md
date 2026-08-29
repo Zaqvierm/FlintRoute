@@ -47,6 +47,9 @@ Hard filters run before scoring:
 * regional denial exclusion;
 * required non-RU egress must be known and non-RU;
 * candidate identity must match the active revision.
+Health-control quorum applies the same principle: simulation results and
+results carrying regional-denial, authentication, or WAF/rate-limit flags are
+never promoted to healthy merely because legacy status fields contain `OK`.
 
 `GEO_LOCKED` is confirmed only when the Direct baseline reports a regional
 denial and at least one alternate non-DROP route passes the same service

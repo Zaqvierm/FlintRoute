@@ -347,7 +347,10 @@ func aggregate(route config.Route, results []probe.RouteResult, configuredContro
 
 func safeHealthResult(route config.Route, result probe.RouteResult) bool {
 	country := strings.ToUpper(result.ExternalCountry)
-	return result.Route == route.Tag && result.RouteType == route.Type && result.Status == "OK" && result.ApplicationStatus == "OK" && result.PathVerified && result.ServiceOK && result.EgressConsensus && result.AdapterRevision != "" && result.CandidateHash != "" && result.ArtifactManifestHash != "" && result.ExternalIPHash != "" && country != "" && country != "UNKNOWN" && country != "RU"
+	// Health is consumed by route selection and failover.  A simulation or a
+	// contradictory typed outcome must never be promoted by a control-service
+	// quorum just because the legacy status fields say OK.
+	return result.Route == route.Tag && result.RouteType == route.Type && result.Status == "OK" && result.ApplicationStatus == "OK" && result.PathVerified && result.ServiceOK && !result.Simulation && !result.RegionalBlock && !result.AuthenticationRequired && !result.WAFOrRateLimit && result.EgressConsensus && result.AdapterRevision != "" && result.CandidateHash != "" && result.ArtifactManifestHash != "" && result.ExternalIPHash != "" && country != "" && country != "UNKNOWN" && country != "RU"
 }
 
 func onlyKey(values map[string]bool) string {
