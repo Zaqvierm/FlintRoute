@@ -1,5 +1,13 @@
 # Evidence remediation
 
+## 2026-08-29 route-screen decomposition checkpoint (`380d774b7b266b87e43821383acec4b05dc1d11d`)
+
+VLESS, Zapret, Smart DNS, and route display screens now live in feature-local
+modules; `main.tsx` retains shell/data orchestration and the remaining system
+screens. Local `npm run typecheck`, `npm test -- --run`, `npm run build`, and
+`git diff --check` passed. This refactor does not change dataplane semantics and
+does not provide Linux or Flint 2 evidence.
+
 ## 2026-08-29 UI decomposition checkpoint (`bf0c1aa`)
 
 The network topology/device screens, rules/operations screens, and shared UI

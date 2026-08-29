@@ -1,10 +1,10 @@
 # Актуальность документации
 
 Проверено: `2026-08-29`, база production-кода
-`bf0c1aa` (UI feature decomposition checkpoint).
+`380d774b7b266b87e43821383acec4b05dc1d11d` (route-screen decomposition checkpoint).
 
 The status table below retains historical labels from earlier checkpoints;
-the authoritative current code SHA for this document is `bf0c1aa`. Historical
+the authoritative current code SHA for this document is `380d774`. Historical
 rows are not current evidence unless explicitly rebound to that SHA.
 Документационный commit фиксирует этот code SHA; hardware claims для него не
 наследуются.

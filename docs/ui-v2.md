@@ -80,11 +80,13 @@ binary; authoritative повторяемая проверка выполняет
 
 ### Decomposition checkpoint
 
-Сетевые экраны и правила вынесены в `ui/src/features/network.tsx` и
-`ui/src/features/rules.tsx`, а повторно используемые UI-примитивы — в
-`ui/src/components/ui.tsx`. `main.tsx` теперь отвечает за shell, загрузку данных
-и маршрутизацию экранов; оставшиеся feature-группы выносятся отдельными
+Сетевые экраны, правила и route-интеграции вынесены в
+`ui/src/features/network.tsx`, `ui/src/features/rules.tsx`,
+`ui/src/features/vless.tsx` и `ui/src/features/route-integrations.tsx`, а
+повторно используемые UI-примитивы — в `ui/src/components/ui.tsx`.
+`main.tsx` отвечает за shell, загрузку данных и маршрутизацию экранов; остаток
+системных экранов сохраняет тот же контракт и выносится отдельными
 изменениями только вместе с тестами. Это проверено `npm run typecheck`,
 `npm test -- --run` и production build; software evidence не является
-hardware proof. Этот checkpoint зафиксирован commit `bf0c1aa` до push; после
-push exact SHA должен быть указан в evidence ledger.
+hardware proof. Текущий decomposition checkpoint фиксируется отдельным
+grouped commit и должен быть привязан к его exact SHA в evidence ledger.
