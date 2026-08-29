@@ -1,5 +1,20 @@
 # Evidence remediation
 
+## 2026-08-29 current code checkpoint (`e97f8ddeca93de6dc6032edcbb88063f52abbea9`)
+
+The current tree is `integration/discovery-smartdns-local-dod` at
+`e97f8ddeca93de6dc6032edcbb88063f52abbea9`. The helper-startup dependency
+fix is included: `install.sh --enable-services` enables and starts
+`router-policy-helper` before the non-root controller, and upgrades refuse to
+resurrect a controller that was running without its helper. Local
+`tests/run-all.ps1` completed `all_tests_ok=true`; current-SHA CI is green for
+full safety [33232513879](https://github.com/Zaqvierm/FlintRoute/actions/runs/33232513879),
+nft transition [33232513865](https://github.com/Zaqvierm/FlintRoute/actions/runs/33232513865),
+Zapret process-group [33232513945](https://github.com/Zaqvierm/FlintRoute/actions/runs/33232513945),
+and UI/responsive [33232513931](https://github.com/Zaqvierm/FlintRoute/actions/runs/33232513931).
+These are software/CI results only; Linux-only local checks and all Flint 2
+hardware evidence remain separate and are not inferred from CI.
+
 ## 2026-08-29 current code checkpoint
 
 The current code HEAD is
@@ -419,7 +434,7 @@ UI не выдумывает это число.
 
 ## Current exact-SHA CI checkpoint
 
-Для code HEAD `f177ca5ad705d19beb076b77d7890661e405afc7` все обязательные
+Для code HEAD `e97f8ddeca93de6dc6032edcbb88063f52abbea9` все обязательные
 software workflows завершились успешно:
 
 - exact-SHA full safety gate: [33230838569](https://github.com/Zaqvierm/FlintRoute/actions/runs/33230838569);

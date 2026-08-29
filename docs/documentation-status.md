@@ -1,7 +1,7 @@
 # Актуальность документации
 
 Проверено: `2026-08-29`, база production-кода
-`f177ca5ad705d19beb076b77d7890661e405afc7`.
+`e97f8ddeca93de6dc6032edcbb88063f52abbea9`.
 Документационный commit фиксирует этот code SHA; hardware claims для него не
 наследуются.
 Ветка: `integration/discovery-smartdns-local-dod`.
@@ -22,7 +22,7 @@
 
 ## Полный реестр
 
-| Документ | Статус на code `f177ca5` | Что подтверждено / что нельзя обещать |
+| Документ | Статус на code `e97f8dd` | Что подтверждено / что нельзя обещать |
 |---|---|---|
 | `adapter-transaction.md` | АКТУАЛЕН | Typed adapter, recovery и fail-closed состояния; hardware-абзацы исторические. |
 | `adaptive-zapret-strategy.md` | ЧАСТИЧНО | Bounded health/calibration contract есть; старые Flint 2/P12 PASS требуют нового прогона. |
@@ -69,7 +69,7 @@
    а match используется как evidence перед `ProbeRoute`.
 3. `tspu-cache.md` и `tspu-sources.md` явно отделяют старый Flint 2 report от
    текущего software/CI evidence.
-4. `remediation-evidence.md` привязан к текущему code HEAD `f177ca5` и отдельно отмечает исторические SHA.
+4. `remediation-evidence.md` привязан к текущему code HEAD `e97f8dd` и отдельно отмечает исторические SHA.
    и содержит свежие CI run IDs.
 5. DNS rotation, stale freshness, bounded login pressure, route-fetch SSRF
    fallback и Quick maintenance restart policy отражены в evidence matrix.
