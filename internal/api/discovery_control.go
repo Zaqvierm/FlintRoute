@@ -74,6 +74,58 @@ func discoveryDedupeKey(domain string) string {
 	return domain
 }
 
+func discoverySuggestionMapKey(domain string) string {
+	return discoveryDedupeKey(domain)
+}
+
+// enqueueDiscoveryObservation performs admission-time coalescing.  Dedupe at
+// the worker alone is too late: a DNS storm can fill the bounded channel with
+// copies of one eTLD+1 and evict unrelated domains before the worker gets to
+// discard them.  A pending key remains reserved until the worker finishes the
+// observation, so a second event cannot slip into the queue between dequeue
+// and beginDiscoveryObservation.
+func (s *Server) enqueueDiscoveryObservation(observation discovery.Observation) (accepted, queueFull bool) {
+	key := discoveryDedupeKey(observation.Domain)
+	if key == "" {
+		return false, false
+	}
+	now := time.Now().UTC()
+	if s.discoveryNow != nil {
+		now = s.discoveryNow()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.discoveryPending == nil {
+		s.discoveryPending = make(map[string]bool)
+	}
+	if s.discoveryPending[key] || s.discoveryInFlight[key] {
+		return false, false
+	}
+	if last := s.discoveryRecent[key]; !last.IsZero() && now.Sub(last) < discoveryDedupeWindow {
+		return false, false
+	}
+	if s.discoveryQueue == nil {
+		return false, true
+	}
+	select {
+	case s.discoveryQueue <- observation:
+		s.discoveryPending[key] = true
+		return true, false
+	default:
+		return false, true
+	}
+}
+
+func (s *Server) releasePendingDiscovery(domain string) {
+	key := discoveryDedupeKey(domain)
+	if key == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.discoveryPending, key)
+	s.mu.Unlock()
+}
+
 func discoveryCandidateDetails(results []probe.RouteResult) []map[string]any {
 	items := make([]map[string]any, 0, len(results))
 	for _, result := range results {
@@ -297,7 +349,17 @@ func (s *Server) handleDiscoverySuggestionAction(w http.ResponseWriter, r *http.
 	}
 	defer release()
 	s.mu.Lock()
-	suggestion, ok := s.discoverySuggestionMap[domain]
+	key := discoverySuggestionMapKey(domain)
+	suggestion, ok := s.discoverySuggestionMap[key]
+	if !ok {
+		// Accept entries written by older versions that used the full hostname
+		// as their map key; the next durable write normalizes them.
+		suggestion, ok = s.discoverySuggestionMap[domain]
+		if ok && domain != key {
+			delete(s.discoverySuggestionMap, domain)
+			s.discoverySuggestionMap[key] = suggestion
+		}
+	}
 	s.mu.Unlock()
 	if !ok {
 		writeError(w, r, http.StatusNotFound, "suggestion_not_found", "suggestion has expired or was removed")
@@ -308,7 +370,7 @@ func (s *Server) handleDiscoverySuggestionAction(w http.ResponseWriter, r *http.
 		previous := suggestion
 		suggestion.PolicyState = "ignored"
 		suggestion.Reason = "ignored by administrator"
-		s.discoverySuggestionMap[domain] = suggestion
+		s.discoverySuggestionMap[key] = suggestion
 		s.mu.Unlock()
 		if err := s.persistDiscoverySuggestions(); err != nil {
 			// Keep the in-memory view consistent with the durable suggestion. A
@@ -664,6 +726,21 @@ func pruneDiscoveryTimes(values []time.Time, cutoff time.Time) []time.Time {
 }
 
 func (s *Server) saveDiscoverySuggestion(observation discovery.Observation, check planner.DomainCheck) error {
+	// Durable suggestions are an operator-facing claim that the bounded
+	// verification reached a terminal result.  In-progress, empty, or
+	// otherwise unclassified checks belong only in the transient live view;
+	// accepting them here would let a malformed DomainCheck masquerade as a
+	// verified suggestion after restart.
+	switch plannerProbeState(check) {
+	case "verified_candidate", "drop_enforced":
+		// These states carry a selected route or an explicit fail-closed DROP.
+	case "no_safe_route":
+		if len(check.Results) == 0 || check.Reason != "no_verified_policy_allowed_route" {
+			return errors.New("durable discovery suggestion requires terminal candidate evidence")
+		}
+	default:
+		return errors.New("durable discovery suggestion requires terminal verification")
+	}
 	s.saveDiscoverySuggestionState(observation, check)
 	return s.persistDiscoverySuggestions()
 }
@@ -726,7 +803,17 @@ func (s *Server) saveDiscoverySuggestionState(observation discovery.Observation,
 	suggestion.Client = strings.TrimSpace(observation.Client)
 	suggestion.LastSeen = suggestion.ObservedAt
 	s.mu.Lock()
-	if previous, ok := s.discoverySuggestionMap[check.Domain]; ok {
+	key := discoverySuggestionMapKey(check.Domain)
+	previous, ok := s.discoverySuggestionMap[key]
+	if !ok {
+		// Migrate an entry written by the pre-eTLD+1 map-key format while
+		// preserving its count on the next normalized write.
+		previous, ok = s.discoverySuggestionMap[check.Domain]
+		if ok && check.Domain != key {
+			delete(s.discoverySuggestionMap, check.Domain)
+		}
+	}
+	if ok {
 		suggestion.Count = previous.Count + 1
 		if suggestion.Count == 0 {
 			suggestion.Count = 1
@@ -734,7 +821,7 @@ func (s *Server) saveDiscoverySuggestionState(observation discovery.Observation,
 	} else {
 		suggestion.Count = 1
 	}
-	s.discoverySuggestionMap[check.Domain] = suggestion
+	s.discoverySuggestionMap[discoverySuggestionMapKey(check.Domain)] = suggestion
 	if len(s.discoverySuggestionMap) > maxDiscoverySuggestions {
 		oldestDomain := ""
 		var oldestTime time.Time
@@ -817,7 +904,7 @@ func (s *Server) loadPersistedDiscoverySuggestions() {
 		if item.Count == 0 {
 			item.Count = 1
 		}
-		s.discoverySuggestionMap[item.Domain] = item
+		s.discoverySuggestionMap[discoverySuggestionMapKey(item.Domain)] = item
 	}
 }
 

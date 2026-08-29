@@ -274,6 +274,45 @@ func TestServerUsesBoundedGlobalProbeBudgetAndDiscoveryQueue(t *testing.T) {
 	}
 }
 
+func TestDiscoveryAdmissionCoalescesPendingETLDPlusOne(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Policy.ProbeBudget = 1
+	cfg.Policy.DiscoveryQueueLimit = 2
+	srv, err := NewServerWithOptions(cfg, Options{
+		Provider: platform.DevelopmentMockProvider{}, ProductionAdapter: newFakeAdapter(),
+		Development: true, DeferRecovery: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	if accepted, full := srv.enqueueDiscoveryObservation(discovery.Observation{Domain: "a.example.com", QueryType: "A"}); !accepted || full {
+		t.Fatalf("first admission accepted=%v full=%v", accepted, full)
+	}
+	if accepted, full := srv.enqueueDiscoveryObservation(discovery.Observation{Domain: "b.example.com", QueryType: "A"}); accepted || full {
+		t.Fatalf("same eTLD+1 was not coalesced: accepted=%v full=%v", accepted, full)
+	}
+	if got := len(srv.discoveryQueue); got != 1 {
+		t.Fatalf("pending duplicate occupied queue: depth=%d", got)
+	}
+	if accepted, full := srv.enqueueDiscoveryObservation(discovery.Observation{Domain: "other.example.net", QueryType: "A"}); !accepted || full {
+		t.Fatalf("independent domain was not admitted: accepted=%v full=%v", accepted, full)
+	}
+	if accepted, full := srv.enqueueDiscoveryObservation(discovery.Observation{Domain: "third.example.org", QueryType: "A"}); accepted || !full {
+		t.Fatalf("full queue was not reported: accepted=%v full=%v", accepted, full)
+	}
+	if got := len(srv.discoveryQueue); got != 2 {
+		t.Fatalf("queue escaped configured bound: depth=%d cap=%d", got, cap(srv.discoveryQueue))
+	}
+
+	first := <-srv.discoveryQueue
+	srv.releasePendingDiscovery(first.Domain)
+	if accepted, full := srv.enqueueDiscoveryObservation(discovery.Observation{Domain: "c.example.com", QueryType: "A"}); !accepted || full {
+		t.Fatalf("released eTLD+1 was not admitted: accepted=%v full=%v", accepted, full)
+	}
+}
+
 func TestDiscoveryStormIsBoundedAndDrainsToBaseline(t *testing.T) {
 	cfg := testAPIConfig(t)
 	cfg.Policy.ProbeBudget = 4

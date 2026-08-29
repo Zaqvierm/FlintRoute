@@ -326,6 +326,7 @@ func TestDiscoverySuggestionApplyCommitsRevisionBoundRouteAssignment(t *testing.
 	srv.saveDiscoverySuggestion(discovery.Observation{Domain: "apply.example", QueryType: "A"}, planner.DomainCheck{
 		Domain: "apply.example", ETLDPlusOne: "apply.example", Category: "GEO_LOCKED", Confidence: 0.99,
 		ClassificationConfidence: 0.95, ClassificationSource: "fixture", ClassificationEvidence: "geo_match",
+		Status: "SELECTED", VerificationState: "verified",
 		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true, Status: "OK", ExternalCountry: "DE", EgressConsensus: true},
 	})
 	recorder := httptest.NewRecorder()
@@ -357,6 +358,7 @@ func TestDiscoverySuggestionApplyIsFencedWithoutRuntimeConsumer(t *testing.T) {
 	srv.saveDiscoverySuggestion(discovery.Observation{Domain: "fenced.example", QueryType: "A"}, planner.DomainCheck{
 		Domain: "fenced.example", ETLDPlusOne: "fenced.example", Category: "GEO_LOCKED", Confidence: 0.99,
 		ClassificationConfidence: 0.95, ClassificationSource: "fixture", ClassificationEvidence: "geo_match",
+		Status: "SELECTED", VerificationState: "verified",
 		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, ServiceOK: true, Status: "OK", ExternalCountry: "DE", EgressConsensus: true},
 	})
 	recorder := httptest.NewRecorder()
@@ -377,6 +379,7 @@ func TestDiscoverySuggestionPersistsAndReloadsWithoutPerObservationStateWrite(t 
 	srv.saveDiscoverySuggestion(discovery.Observation{Domain: "persisted.example", QueryType: "A", Client: "192.0.2.44"}, planner.DomainCheck{
 		Domain: "persisted.example", Category: "GEO_LOCKED", Confidence: 0.91,
 		ClassificationConfidence: 0.8, ClassificationSource: "fixture", ClassificationEvidence: "geo_match",
+		Status: "SELECTED", VerificationState: "verified",
 		Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", PathVerified: true, Status: "OK"},
 	})
 	var persisted []discoverySuggestion
@@ -396,6 +399,33 @@ func TestDiscoverySuggestionPersistsAndReloadsWithoutPerObservationStateWrite(t 
 	}
 }
 
+func TestDiscoverySuggestionsDeduplicatePersistedSubdomainsByETLDPlusOne(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, _ := newDiscoveryModeServer(t, "suggest", true, fake)
+	defer srv.Close()
+
+	for _, domain := range []string{"cdn-a.example.com", "cdn-b.example.com"} {
+		if err := srv.saveDiscoverySuggestion(discovery.Observation{Domain: domain, QueryType: "A"}, planner.DomainCheck{
+			Domain: domain, Category: "UNKNOWN", Confidence: 0.9,
+			Status: "SELECTED", VerificationState: "verified",
+			Selected: &probe.RouteResult{Route: "direct", RouteType: "direct", PathVerified: true, ServiceOK: true, Status: "OK"},
+		}); err != nil {
+			t.Fatalf("save suggestion %s: %v", domain, err)
+		}
+	}
+	items := srv.discoverySuggestions(10)
+	if len(items) != 1 || items[0].Domain != "cdn-b.example.com" || items[0].Count != 2 {
+		t.Fatalf("persisted subdomains were not coalesced: %+v", items)
+	}
+	var persisted []discoverySuggestion
+	if err := srv.store.LoadJSON("discovery", discoverySuggestionKey, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted) != 1 || persisted[0].Count != 2 {
+		t.Fatalf("durable subdomain suggestions were duplicated: %+v", persisted)
+	}
+}
+
 func TestDiscoverySuggestionPersistenceFailureIsReturned(t *testing.T) {
 	fake := newFakeAdapter()
 	srv, _ := newDiscoveryModeServer(t, "suggest", true, fake)
@@ -409,6 +439,7 @@ func TestDiscoverySuggestionPersistenceFailureIsReturned(t *testing.T) {
 
 	err := srv.saveDiscoverySuggestion(discovery.Observation{Domain: "durability.example", QueryType: "A"}, planner.DomainCheck{
 		Domain: "durability.example", Category: "UNKNOWN", Confidence: 0.9,
+		Status: "SELECTED", VerificationState: "verified",
 		Selected: &probe.RouteResult{Route: "direct", RouteType: "direct", PathVerified: true, ServiceOK: true, Status: "OK"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "injected discovery persistence failure") {
@@ -416,6 +447,23 @@ func TestDiscoverySuggestionPersistenceFailureIsReturned(t *testing.T) {
 	}
 	if items := srv.discoverySuggestions(10); len(items) != 1 || items[0].Domain != "durability.example" {
 		t.Fatalf("in-memory suggestion was unexpectedly discarded after observable write failure: %+v", items)
+	}
+}
+
+func TestDiscoverySuggestionRejectsUnverifiedTerminalClaim(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, _ := newDiscoveryModeServer(t, "suggest", true, fake)
+	defer srv.Close()
+
+	err := srv.saveDiscoverySuggestion(discovery.Observation{Domain: "unverified.example", QueryType: "A"}, planner.DomainCheck{
+		Domain: "unverified.example", Category: "UNKNOWN", Status: "NO_SAFE_ROUTE",
+		VerificationState: "terminal_no_safe_route", Reason: "no_verified_policy_allowed_route",
+	})
+	if err == nil || !strings.Contains(err.Error(), "terminal candidate evidence") {
+		t.Fatalf("empty terminal claim was accepted: %v", err)
+	}
+	if got := len(srv.discoverySuggestions(10)); got != 0 {
+		t.Fatalf("unverified terminal claim created %d suggestions", got)
 	}
 }
 
@@ -493,6 +541,8 @@ func TestDiscoverySuggestionSeparatesClassificationAndDecisionConfidence(t *test
 	srv.saveDiscoverySuggestion(discovery.Observation{Domain: "evidence.example", QueryType: "A"}, planner.DomainCheck{
 		Domain: "evidence.example", Category: "TSPU_RESTRICTED", Confidence: 1,
 		ClassificationConfidence: 0.42, ClassificationSource: "fixture", ClassificationEvidence: "curated_match",
+		Status: "SELECTED", VerificationState: "verified",
+		Selected: &probe.RouteResult{Route: "zapret", RouteType: "zapret", PathVerified: true, ServiceOK: true, Status: "OK"},
 	})
 	items := srv.discoverySuggestions(10)
 	if len(items) != 1 {
@@ -524,7 +574,13 @@ func TestDiscoverySuggestionsStayBoundedInMemory(t *testing.T) {
 	defer srv.Close()
 	for index := 0; index < maxDiscoverySuggestions+20; index++ {
 		domain := fmt.Sprintf("domain-%03d.example", index)
-		srv.saveDiscoverySuggestion(discovery.Observation{Domain: domain, QueryType: "A"}, planner.DomainCheck{Domain: domain})
+		if err := srv.saveDiscoverySuggestion(discovery.Observation{Domain: domain, QueryType: "A"}, planner.DomainCheck{
+			Domain: domain, Category: "UNKNOWN", Confidence: 0.9,
+			Status: "SELECTED", VerificationState: "verified",
+			Selected: &probe.RouteResult{Route: "direct", RouteType: "direct", PathVerified: true, ServiceOK: true, Status: "OK"},
+		}); err != nil {
+			t.Fatalf("save suggestion %s: %v", domain, err)
+		}
 	}
 	if got := len(srv.discoverySuggestions(maxDiscoverySuggestions + 20)); got != maxDiscoverySuggestions {
 		t.Fatalf("suggestion cache size=%d want=%d", got, maxDiscoverySuggestions)

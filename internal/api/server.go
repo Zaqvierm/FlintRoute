@@ -163,6 +163,7 @@ type Server struct {
 	discoveryFailed        uint64
 	discoveryRecent        map[string]time.Time
 	discoveryInFlight      map[string]bool
+	discoveryPending       map[string]bool
 	discoveryQueue         chan discovery.Observation
 	probeBudget            chan struct{}
 	routeFailureQueue      chan routeFailureReport
@@ -356,6 +357,7 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		discoveryObservations:   make([]discoveryObservation, 0, maxDiscoveryObservations),
 		discoveryRecent:         map[string]time.Time{},
 		discoveryInFlight:       map[string]bool{},
+		discoveryPending:        map[string]bool{},
 		discoveryQueue:          make(chan discovery.Observation, discoveryQueueLimit),
 		probeBudget:             make(chan struct{}, probeBudgetSize),
 		routeFailureQueue:       make(chan routeFailureReport, 16),
@@ -646,8 +648,12 @@ func (s *Server) startDNSDiscovery(ctx context.Context) {
 					select {
 					case <-ctx.Done():
 						return
-					case observation := <-s.discoveryQueue:
+					case observation, ok := <-s.discoveryQueue:
+						if !ok {
+							return
+						}
 						s.discoverDomain(ctx, observation)
+						s.releasePendingDiscovery(observation.Domain)
 					}
 				}
 			}()
@@ -674,9 +680,8 @@ func (s *Server) startDNSDiscovery(ctx context.Context) {
 			},
 			Emit: func(observationContext context.Context, observation discovery.Observation) {
 				s.recordDiscoveryObservation(observation)
-				select {
-				case s.discoveryQueue <- observation:
-				default:
+				_, queueFull := s.enqueueDiscoveryObservation(observation)
+				if queueFull {
 					// A busy DNS log must never turn queue backpressure into one
 					// durable/event-broker write per dropped line.  Keep the queue
 					// bounded and emit at most one coalesced notice per minute.

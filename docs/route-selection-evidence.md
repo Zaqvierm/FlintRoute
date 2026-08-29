@@ -86,6 +86,11 @@ evidence for known candidates and the planner's exhaustion reason. In-progress,
 malformed, incomplete, or mismatched entries are rejected and re-probed; they
 never suppress verification or manufacture a terminal decision.
 
+The durable discovery-suggestion store applies the same boundary: only a
+verified candidate, explicit fail-closed DROP, or fully evidenced terminal
+exhaustion can be persisted. A provisional or empty `DomainCheck` remains a
+RAM-only live view and is rejected by the durable write path.
+
 ## Route-only assignment
 
 Automatic discovery may assign a domain only to an already enabled, verified
