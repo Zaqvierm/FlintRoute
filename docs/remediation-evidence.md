@@ -2,8 +2,18 @@
 
 ## 2026-08-29 remaining system-screen decomposition
 
+Current grouped checkpoint: `901d9bd` (`refactor: isolate frontend routing and
+screen composition`). The commit contains the route/location parser, shared
+fallback messages, screen dispatcher/error boundary extraction, public UI docs,
+and the regenerated embedded frontend bundle. Local `tests/run-all.ps1` reached
+`all_tests_ok=true`; this exact SHA still requires a fresh push/CI binding. The
+older CI runs listed below are historical evidence for their own SHAs only.
+
 The operational screen set is now feature-local in `ui/src/features/system.tsx`;
-`main.tsx` retains shell, refresh orchestration, setup, and screen dispatch.
+`ui/src/features/setup.tsx` owns the setup wizard, and `ui/src/app/routes.ts`
+owns navigation/location parsing. `ui/src/app/messages.ts` owns shared
+unavailable/stale-state fallbacks. `main.tsx` retains shell, refresh
+orchestration, setup wiring, and screen dispatch.
 The grouped commit includes the generated embedded bundle and the UI contract
 documentation. `npm run typecheck`, `npm test -- --run`, `npm run build`, and
 `git diff --check` passed. This remains software-only evidence; Linux and Flint 2

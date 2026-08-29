@@ -1,4 +1,4 @@
-import { Component, render, type ComponentChildren } from 'preact';
+import { render } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import QRCode from 'qrcode';
 import {
@@ -107,144 +107,18 @@ import {
   LoadingSkeleton,
   OperationCenterSummary,
   PrivacyBar,
+  ScreenErrorBoundary,
   SessionBar,
   TopBar
 } from './app/shell';
 import {
-  Card,
-  DetailDrawer,
-  DisabledActions,
-  EmptyState,
-  EntityCard,
-  EventRow,
-  EvidenceList,
-  Generic,
-  Grid,
-  InfoGrid,
-  PageHeader,
-  RawDisclosure,
-  RouteBadge,
-  StatusBadge,
-  StatusLine,
-  useConfirmDialog,
-  statusWithFreshness
-} from './components/ui';
-import { DeviceCard, Devices, NetworkMap, OverviewScreen } from './features/network';
-import { Changes, Policies, Routes, ServiceGroup, Services } from './features/rules';
-import { Vless } from './features/vless';
-import { RouteType, SmartDNS, Zapret } from './features/route-integrations';
-import {
-  Components,
-  DecisionFlow,
-  Diagnostics,
-  Discovery,
-  ExternalSOCKS,
-  LoginScreen,
-  Recovery,
-  Security,
-  Settings,
-  TGWS,
-  Telegram,
-  Traffic,
   withTrafficRates,
   type TrafficView
 } from './features/system';
-import { SetupScreen } from './features/setup';
+import { availableScreens, navigation, notFoundScreen, screenFromLocation } from './app/routes';
+import { staleFallback, unavailableOverview } from './app/messages';
+import { Content as ScreenContent } from './app/content';
 import './styles.css';
-
-const navigation = [
-  { title: 'Обзор', screens: ['Быстрая настройка', 'Обзор'] },
-  { title: 'Сеть', screens: ['Карта сети', 'Устройства', 'Трафик'] },
-  { title: 'Правила', screens: ['Сервисы', 'Маршруты', 'Компоненты', 'VLESS-серверы', 'Smart DNS', 'Zapret', 'TG WS Proxy', 'Discovery'] },
-  { title: 'Активность', screens: ['Поток решений', 'Операции', 'Telegram', 'Ревизии и recovery'] },
-  { title: 'Система', screens: ['Диагностика', 'Безопасность', 'Настройки', 'Резервное копирование', 'Advanced', 'External SOCKS'] }
-];
-const notFoundScreen = 'Страница не найдена';
-const availableScreens = new Set([...navigation.flatMap((group) => group.screens), 'External SOCKS', notFoundScreen]);
-
-class ScreenErrorBoundary extends Component<{ children: ComponentChildren }, { failed: boolean }> {
-  state = { failed: false };
-
-  static getDerivedStateFromError(): { failed: boolean } {
-    return { failed: true };
-  }
-
-  render() {
-    if (this.state.failed) {
-      return <section class="screen-error" role="alert" aria-live="assertive">
-        <h1>Экран временно недоступен</h1>
-        <p>FlintRoute не смог отрисовать этот раздел. Сеть и уже сохранённая конфигурация не изменялись.</p>
-        <p class="mono">Код: ui_screen_render_failed</p>
-        <button class="primary" onClick={() => this.setState({ failed: false })}>Повторить</button>
-      </section>;
-    }
-    return this.props.children;
-  }
-}
-
-function screenFromLocation(): string | null {
-  if (typeof window === 'undefined') return null;
-  const raw = new URLSearchParams(window.location.search).get('screen');
-  if (raw === null) return null;
-  return availableScreens.has(raw) ? raw : notFoundScreen;
-}
-
-function humanChangeBlock(reason?: string): string {
-  const messages: Record<string, string> = {
-    flow_offloading_incompatible: 'Аппаратное ускорение пакетов мешает выборочной маршрутизации. Разреши FlintRoute отключить flow offloading и повтори.',
-    transparent_activation_unverified: 'Для этого правила нужен управляемый Xray. Сначала открой VLESS-серверы и явно включи managed Xray.',
-    lan_interfaces_unverified: 'FlintRoute не смог надёжно определить LAN-интерфейсы. Сеть не изменена; открой диагностику.',
-    wan_interface_unverified: 'FlintRoute не смог надёжно определить выход в интернет. Сеть не изменена; открой диагностику.'
-  };
-  return messages[reason ?? ''] ?? `Проверка на роутере не завершена${reason ? ` (${reason})` : ''}. Сеть не изменена. Открой «Диагностика», проверь состояние роутера и повтори применение.`;
-}
-
-function humanChangeFailure(change: ChangeSet): string {
-  if (change.state === 'requires_device') return humanChangeBlock(change.artifact_block_reason);
-  if (change.state === 'rolled_back') return 'Проверка нового правила не прошла. FlintRoute восстановил предыдущую рабочую конфигурацию; интернет не должен пострадать.';
-  if (change.state === 'failed') return 'Не удалось применить правило. FlintRoute остановил изменение и сохранил прежнюю конфигурацию.';
-  return `Правило не применено. Техническое состояние: ${change.state}. Открой подробности для диагностики.`;
-}
-
-function humanSmartDNSReason(reason?: string): string {
-  const messages: Record<string, string> = {
-    route_not_bound_to_verification_plan: 'DNS-сервер проверен, но пока не используется ни одним сервисом. Полный PathVerified будет выполнен внутри первой транзакции применения.',
-    route_nft_counter_did_not_advance: 'DNS-сервер доступен, но FlintRoute пока не увидел трафик через новое правило.',
-    smart_dns_socket_mark_or_policy_missing: 'DNS-сервер доступен, но правило маршрутизации не подтвердилось на роутере.',
-    probe_adapter_revision_mismatch: 'Старая проверка относится к предыдущей конфигурации. Нужна свежая проверка пути.',
-    dnsmasq_not_ready: 'dnsmasq не принял новую конфигурацию. FlintRoute восстановил предыдущую.'
-  };
-  return messages[reason ?? ''] ?? (reason ? `Проверка пути не пройдена: ${reason}.` : 'Конфигурация сохранена, но путь ещё не подтверждён.');
-}
-
-const unavailableOverview = {
-  internet: 'unavailable',
-  external_ipv4: 'unavailable',
-  ipv6: 'unavailable',
-  dns: 'unavailable',
-  zapret: 'unavailable',
-  vless_working: 0,
-  smart_dns: 0,
-  external_socks_configured: 0,
-  cpu: 'unavailable',
-  memory: 'unavailable',
-  temperature: 'unavailable',
-  data_plane: 'unavailable',
-  source: 'api-unavailable',
-  freshness: 'stale'
-};
-
-function staleFallback<T>(value: T): T {
-  if (Array.isArray(value)) {
-    return value.map((item) => item !== null && typeof item === 'object' && !Array.isArray(item)
-      ? { ...(item as Record<string, unknown>), freshness: 'stale' }
-      : item) as T;
-  }
-  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-    return { ...(value as Record<string, unknown>), freshness: 'stale' } as T;
-  }
-  return value;
-}
 
 function App() {
   const [screen, setScreen] = useState(() => {
@@ -726,7 +600,7 @@ function App() {
         <AlertCenter errors={sliceErrors} onRetry={(name) => { void retrySlice(name); }} onRetryAll={() => { void refresh(); }} retrying={retryingSlice} />
         <RecoveryMutationBanner overview={overview} navigate={selectScreen} onRetry={() => refresh()} />
         <OperationCenterSummary changes={changes} navigate={selectScreen} />
-        {loading ? <LoadingSkeleton /> : <ScreenErrorBoundary key={`${screen}:${privacyHidden ? 'hidden' : 'visible'}`}><Content screen={screen} session={session} configVersion={configVersion} overview={overview} mutationLocked={!recoveryMutationAllowed(overview)} onboarding={onboarding} topology={topology} devices={devices} services={services} discovery={discovery} routes={routes} traffic={traffic} events={events} changes={changes} security={security} securitySummary={securitySummary} system={system} diagnostics={diagnostics} lifecycle={lifecycle} storage={storage} settings={settings} backups={backups} revisions={revisions} privacyHidden={privacyHidden} onTogglePrivacy={togglePrivacy} refresh={refresh} onboardingAction={async (step: string, action: 'skip' | 'accept' | 'automatic' | 'complete') => { const next = await updateOnboarding(step, action); setOnboarding(next); return next; }} navigate={selectScreen} /></ScreenErrorBoundary>}
+        {loading ? <LoadingSkeleton /> : <ScreenErrorBoundary key={`${screen}:${privacyHidden ? 'hidden' : 'visible'}`}><ScreenContent screen={screen} session={session} configVersion={configVersion} overview={overview} mutationLocked={!recoveryMutationAllowed(overview)} onboarding={onboarding} topology={topology} devices={devices} services={services} discovery={discovery} routes={routes} traffic={traffic} events={events} changes={changes} security={security} securitySummary={securitySummary} system={system} diagnostics={diagnostics} lifecycle={lifecycle} storage={storage} settings={settings} backups={backups} revisions={revisions} privacyHidden={privacyHidden} onTogglePrivacy={togglePrivacy} refresh={refresh} onboardingAction={async (step: string, action: 'skip' | 'accept' | 'automatic' | 'complete') => { const next = await updateOnboarding(step, action); setOnboarding(next); return next; }} navigate={selectScreen} /></ScreenErrorBoundary>}
       </main>
     </div>
   );
@@ -742,73 +616,4 @@ function RecoveryMutationBanner({ overview, navigate, onRetry }: { overview: any
   </section>;
 }
 
-function Content(props: any) {
-  switch (props.screen) {
-    case 'Вход':
-      return <LoginScreen />;
-    case 'Первичная настройка':
-    case 'Быстрая настройка':
-      return <SetupScreen {...props} />;
-    case 'Обзор':
-      return <OverviewScreen {...props} />;
-    case 'Карта сети':
-      return <NetworkMap topology={props.topology} devices={props.devices} system={props.system} expanded />;
-    case 'Трафик':
-      return <Traffic data={props.traffic} />;
-    case 'Устройства':
-      return <Devices devices={props.devices} events={props.events} />;
-    case 'Карточка устройства':
-      return <DeviceCard device={props.devices[0]} />;
-    case 'Сервисы':
-      return <Services services={props.services} configVersion={props.configVersion} role={props.session.role} mutationLocked={props.mutationLocked} refresh={props.refresh} navigate={props.navigate} />;
-    case 'Discovery':
-      return <Discovery data={props.discovery} configVersion={props.configVersion} role={props.session.role} mutationLocked={props.mutationLocked} refresh={props.refresh} />;
-    case 'Группа сервиса':
-      return <ServiceGroup service={props.services[0]} />;
-    case 'Политики: таблица':
-      return <Policies mode="table" />;
-    case 'Политики: доска':
-      return <Policies mode="board" />;
-    case 'Advanced':
-      return <Changes changes={props.changes} refresh={props.refresh} role={props.session.role} configVersion={props.configVersion} mutationLocked={props.mutationLocked} navigate={props.navigate} mode="developer" />;
-    case 'Операции':
-      return <Changes changes={props.changes} refresh={props.refresh} role={props.session.role} configVersion={props.configVersion} mutationLocked={props.mutationLocked} navigate={props.navigate} mode="operations" />;
-    case 'Маршруты':
-      return <Routes routes={props.routes} navigate={props.navigate} />;
-    case 'Компоненты':
-      return <Components role={props.session.role} mutationLocked={props.mutationLocked} navigate={props.navigate} />;
-    case 'VLESS-серверы':
-      return <Vless routes={props.routes} configVersion={props.configVersion} role={props.session.role} mutationLocked={props.mutationLocked} refresh={props.refresh} navigate={props.navigate} />;
-    case 'Smart DNS':
-      return <SmartDNS configVersion={props.configVersion} role={props.session.role} mutationLocked={props.mutationLocked} refresh={props.refresh} navigate={props.navigate} />;
-    case 'Zapret':
-      return <Zapret routes={props.routes} configVersion={props.configVersion} role={props.session.role} mutationLocked={props.mutationLocked} refresh={props.refresh} navigate={props.navigate} />;
-    case 'External SOCKS':
-      return <ExternalSOCKS configVersion={props.configVersion} role={props.session.role} mutationLocked={props.mutationLocked} refresh={props.refresh} navigate={props.navigate} />;
-    case 'TG WS Proxy':
-      return <TGWS role={props.session.role} mutationLocked={props.mutationLocked} navigate={props.navigate} />;
-    case 'Telegram':
-      return <Telegram role={props.session.role} mutationLocked={props.mutationLocked} events={props.events} />;
-    case 'Поток решений':
-      return <DecisionFlow events={props.events} discovery={props.discovery} />;
-    case 'Диагностика':
-      return <Diagnostics system={props.system} diagnostics={props.diagnostics} lifecycle={props.lifecycle} storage={props.storage} />;
-    case 'Безопасность':
-      return <Security data={props.security} summary={props.securitySummary} />;
-    case 'Ревизии и recovery':
-      return <Recovery revisions={props.revisions} backups={props.backups} lifecycle={props.lifecycle} />;
-    case 'Удалённые клиенты':
-      return <Generic title="Удалённые клиенты" text="Профили удалённого доступа, лимиты, срок действия и политика маршрутизации." />;
-    case 'Настройки':
-      return <Settings data={props.settings} privacyHidden={props.privacyHidden} onTogglePrivacy={props.onTogglePrivacy} mutationLocked={props.mutationLocked} role={props.session.role} />;
-    case 'Обновление':
-      return <Generic title="Обновление" text="Проверка версии, подпись выпуска, checksum, staged install и rollback." />;
-    case 'Резервное копирование':
-      return <Generic title="Резервное копирование и откат" text="Резервные копии конфигурации, секретов по явному выбору, nft/dnsmasq/fw4 snapshots." />;
-    case notFoundScreen:
-      return <Generic title="Страница не найдена" text="Такого раздела FlintRoute нет. Вернись в обзор или выбери раздел в меню." />;
-    default:
-      return <OverviewScreen {...props} />;
-  }
-}
 render(<App />, document.getElementById('app')!);

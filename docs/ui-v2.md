@@ -96,6 +96,8 @@ grouped commit и должен быть привязан к его exact SHA в 
 The remaining operational screens are now isolated in `ui/src/features/system.tsx`:
 components, discovery, traffic, external SOCKS, TG WS, Telegram, decision flow,
 diagnostics, security, recovery, settings, and login. The setup wizard is isolated
-in `ui/src/features/setup.tsx`; `main.tsx` keeps shell, data refresh, routing,
-screen dispatch, and the recovery banner. This is a software-only
+in `ui/src/features/setup.tsx`; route definitions and location parsing live in
+`ui/src/app/routes.ts`, and shared unavailable/stale-state fallbacks live in
+`ui/src/app/messages.ts`. `main.tsx` keeps shell, data refresh, screen dispatch,
+and the recovery banner. This is a software-only
 refactor; it does not change dataplane behavior or provide hardware evidence.

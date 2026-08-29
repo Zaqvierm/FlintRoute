@@ -1,6 +1,27 @@
 import type { ChangeSet, SessionInfo } from '../api';
+import { Component, type ComponentChildren } from 'preact';
 import { useState } from 'preact/hooks';
 import { formatDateTime, humanStatus, statusTone, textValue } from '../view-models';
+
+export class ScreenErrorBoundary extends Component<{ children: ComponentChildren }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  render() {
+    if (this.state.failed) {
+      return <section class="screen-error" role="alert" aria-live="assertive">
+        <h1>Экран временно недоступен</h1>
+        <p>FlintRoute не смог отрисовать этот раздел. Сеть и уже сохранённая конфигурация не изменялись.</p>
+        <p class="mono">Код: ui_screen_render_failed</p>
+        <button class="primary" onClick={() => this.setState({ failed: false })}>Повторить</button>
+      </section>;
+    }
+    return this.props.children;
+  }
+}
 
 export function SessionBar({ session, apiError, loading, lastUpdated, onRetry, onLogout }: {
   session: SessionInfo;
