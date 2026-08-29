@@ -1,10 +1,10 @@
 # Актуальность документации
 
 Проверено: `2026-08-29`, база production-кода
-`380d774b7b266b87e43821383acec4b05dc1d11d` (route-screen decomposition checkpoint).
+`c1940be1994fe44215fb150d6909818e09205bcb` (route-screen decomposition implementation).
 
 The status table below retains historical labels from earlier checkpoints;
-the authoritative current code SHA for this document is `380d774`. Historical
+the authoritative implementation SHA for this document is `c1940be`. Historical
 rows are not current evidence unless explicitly rebound to that SHA.
 Документационный commit фиксирует этот code SHA; hardware claims для него не
 наследуются.

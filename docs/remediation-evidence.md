@@ -1,6 +1,6 @@
 # Evidence remediation
 
-## 2026-08-29 route-screen decomposition checkpoint (`380d774b7b266b87e43821383acec4b05dc1d11d`)
+## 2026-08-29 route-screen decomposition implementation (`c1940be1994fe44215fb150d6909818e09205bcb`)
 
 VLESS, Zapret, Smart DNS, and route display screens now live in feature-local
 modules; `main.tsx` retains shell/data orchestration and the remaining system
