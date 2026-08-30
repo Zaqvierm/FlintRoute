@@ -38,8 +38,16 @@ grep -F 'disabled: helper.env peer_uid is invalid' "$LOGGER_LOG" >/dev/null
 printf 'peer_uid=1001\nsocket=/var/run/router-policy/helper.sock\n' > "$ROUTER_POLICY_HELPER_ENV"
 start_service
 grep -F 'open:router-policy-helper' "$PROCD_LOG" >/dev/null
-grep -F 'param:env ROUTER_POLICY_HELPER_PEER_UID=1001' "$PROCD_LOG" >/dev/null
-grep -F 'param:env ROUTER_POLICY_HELPER_SOCKET=/var/run/router-policy/helper.sock' "$PROCD_LOG" >/dev/null
+env_line=$(grep '^param:env ' "$PROCD_LOG" | tail -n 1)
+printf '%s\n' "$env_line" | grep -F 'ROUTER_POLICY_HELPER_PEER_UID=1001' >/dev/null
+printf '%s\n' "$env_line" | grep -F 'ROUTER_POLICY_HELPER_SOCKET=/var/run/router-policy/helper.sock' >/dev/null
+printf '%s\n' "$env_line" | grep -F 'ROUTER_POLICY_ADAPTER_PATH=/usr/lib/router-policy/openwrt/adapter.sh' >/dev/null
+printf '%s\n' "$env_line" | grep -F 'ROUTER_POLICY_CONFIG_PATH=/etc/router-policy/config/default.json' >/dev/null
+printf '%s\n' "$env_line" | grep -F 'ROUTER_POLICY_INIT_DIR=/etc/init.d' >/dev/null
+[ "$(grep -c '^param:env ' "$PROCD_LOG")" -eq 1 ] || {
+  echo "helper environment was split across replace-style procd calls" >&2
+  exit 1
+}
 grep -F 'param:command /usr/bin/router-policy-helper' "$PROCD_LOG" >/dev/null
 
 printf 'peer_uid=1001\nsocket=/tmp/unsafe.sock\n' > "$ROUTER_POLICY_HELPER_ENV"
