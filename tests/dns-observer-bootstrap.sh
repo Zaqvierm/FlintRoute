@@ -32,7 +32,12 @@ cat > "$TMP/bin/uci" <<'EOF'
 #!/bin/sh
 exit 1
 EOF
-chmod +x "$TMP/bin/dnsmasq" "$TMP/bin/dnsmasq-init" "$TMP/bin/nslookup" "$TMP/bin/sleep" "$TMP/bin/uci"
+cat > "$TMP/bin/chown" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$DNSMASQ_CHOWN_LOG"
+exit 0
+EOF
+chmod +x "$TMP/bin/dnsmasq" "$TMP/bin/dnsmasq-init" "$TMP/bin/nslookup" "$TMP/bin/sleep" "$TMP/bin/uci" "$TMP/bin/chown"
 
 export PATH="$TMP/bin:$PATH"
 export DNSMASQ_BIN="$TMP/bin/dnsmasq"
@@ -40,6 +45,8 @@ export DNSMASQ_INIT="$TMP/bin/dnsmasq-init"
 export NSLOOKUP_BIN="$TMP/bin/nslookup"
 export SLEEP_BIN="$TMP/bin/sleep"
 export DNSMASQ_RESTART_LOG="$TMP/restarts.log"
+export DNSMASQ_CHOWN_LOG="$TMP/chown.log"
+export ROUTER_POLICY_DNS_OBSERVATION_LOG="$TMP/observer.log"
 export ROUTER_POLICY_DNS_OBSERVER_BOOTSTRAP="$ROOT/openwrt/dnsmasq/router-policy.conf"
 export ROUTER_POLICY_SYSTEM_ROOT="$TMP/root"
 export ROUTER_POLICY_DNSMASQ_CONFDIR="$TMP/root/tmp/dnsmasq.d"
@@ -54,6 +61,8 @@ if [ -e "$DNSMASQ_RESTART_LOG" ]; then
   exit 1
 fi
 
+printf 'dnsmasq observation\n' > "$ROUTER_POLICY_DNS_OBSERVATION_LOG"
+
 second=$(sh "$SCRIPT")
 printf '%s\n' "$second" | grep -Fx 'dns_observer=present' >/dev/null
 [ ! -e "$DNSMASQ_RESTART_LOG" ]
@@ -62,6 +71,7 @@ existing_reload=$(sh "$SCRIPT" --reload-if-needed)
 printf '%s\n' "$existing_reload" | grep -Fx 'dns_observer=present' >/dev/null
 printf '%s\n' "$existing_reload" | grep -Fx 'dnsmasq_restart=performed' >/dev/null
 [ "$(wc -l < "$DNSMASQ_RESTART_LOG" | tr -d ' ')" -eq 1 ]
+grep -F "root:daemon $ROUTER_POLICY_DNS_OBSERVATION_LOG" "$DNSMASQ_CHOWN_LOG" >/dev/null
 
 printf 'server=/managed.example/1.1.1.1\n' > "$TMP/root/tmp/dnsmasq.d/router-policy.conf"
 sh "$SCRIPT" >/dev/null
