@@ -1,18 +1,18 @@
 # Evidence remediation
 
-## Current evidence binding (2026-08-29)
+## Current evidence binding (2026-08-30)
 
-Current code checkpoint: `ea7c831` on
+Current code checkpoint: `7f8c480c511d028d876b63d11a0c03e8a383ff79` on
 `integration/discovery-smartdns-local-dod`. This checkpoint includes the
-`AppShell` extraction; the exact SHA and CI runs are recorded in the external
-ledger and below.
+route-eligibility/subscription evidence regressions; the exact SHA and CI runs
+are recorded in the external ledger and below.
 The worktree/branch HEAD is the source of truth for the documentation commit;
 the external status ledger records that exact docs SHA. Local
 `tests/run-all.ps1` completed `all_tests_ok=true`; Linux
 namespace/process-group/filesystem checks remain `NOT RUN LOCALLY` on Windows.
-The exact-SHA CI evidence for this checkpoint is full safety `33244505765`,
-UI/browser `33244505687`, nft transition `33244505715`, and Zapret process-group
-`33244505762`.
+The exact-SHA CI evidence for this checkpoint is full safety `33294149562`,
+UI/browser `33294149541`, nft transition `33294149526`, and Zapret process-group
+`33294149529`.
 
 These are software/CI results only. No Flint 2 connection, installation,
 dataplane mutation, reboot, or hardware validation was performed. Every older
