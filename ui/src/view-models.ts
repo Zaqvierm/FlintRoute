@@ -111,6 +111,7 @@ export type DecisionCard = {
   fallbackPath: string[];
   verified: boolean;
   classificationState: string;
+  classificationReason: string;
   probeState: string;
   policyState: string;
   status: string;
@@ -120,6 +121,9 @@ export type DecisionCard = {
   probeLatencyMS?: number;
   routeLatencyMS?: number;
   routeLatencyAvailable: boolean;
+  endToEndLatencyMS?: number;
+  endToEndLatencyAvailable: boolean;
+  selectionScore?: number;
   verificationDurationMS?: number;
   candidates: unknown[];
   timeline: unknown[];
@@ -127,7 +131,7 @@ export type DecisionCard = {
   raw: EventItem;
 };
 
-export type VerificationPresentation = 'verified' | 'checking' | 'no_safe_route' | 'observed' | 'unverified';
+export type VerificationPresentation = 'verified' | 'checking' | 'no_safe_route' | 'blocked' | 'observed' | 'not_checked' | 'unverified';
 
 const decisionTypes = new Set([
   'route.decision',
@@ -188,11 +192,14 @@ export function humanStatus(value: unknown): string {
     configured: 'Настроено',
     'not configured': 'Не настроено',
     unavailable: 'Недоступно',
+    disabled: 'Выключено',
+    stale: 'Нет новых записей',
     unverified: 'Не подтверждено',
     degraded: 'Работает с ошибками',
     failed: 'Ошибка',
     error: 'Ошибка',
     stopped: 'Остановлено',
+    foreign: 'Обнаружен вне FlintRoute',
     absent: 'Не установлен',
     'not installed': 'Не установлен',
     'requires device': 'Нужна проверка на роутере',
@@ -297,6 +304,7 @@ export function toDecisionCard(event: EventItem): DecisionCard {
     fallbackPath,
     verified: bool(details, ['path_verified', 'verified', 'data_plane_verified']),
     classificationState: first(details, ['classification_state'], 'unresolved'),
+    classificationReason: first(details, ['classification_reason'], ''),
     probeState: first(details, ['probe_state'], 'unverified'),
     policyState: first(details, ['policy_state'], 'observed'),
     status: humanStatus(status),
@@ -306,6 +314,9 @@ export function toDecisionCard(event: EventItem): DecisionCard {
     probeLatencyMS: Number.isFinite(probeLatency) ? probeLatency : undefined,
     routeLatencyMS: Number.isFinite(probeLatency) ? probeLatency : undefined,
     routeLatencyAvailable,
+    endToEndLatencyMS: Number.isFinite(Number(details.end_to_end_latency_ms)) && bool(details, ['end_to_end_latency_available']) ? Number(details.end_to_end_latency_ms) : undefined,
+    endToEndLatencyAvailable: Number.isFinite(Number(details.end_to_end_latency_ms)) && bool(details, ['end_to_end_latency_available']),
+    selectionScore: Number.isFinite(Number(details.selection_score)) ? Number(details.selection_score) : undefined,
     verificationDurationMS: Number.isFinite(verificationDuration) ? verificationDuration : undefined,
     candidates: asArray(details.candidates),
     timeline: asArray(details.timeline ?? details.evidence_timeline),
@@ -324,22 +335,26 @@ export function decisionVerificationPresentation(decision: Pick<DecisionCard, 'v
   const probeState = textValue(decision.probeState, '').toLowerCase().replace(/[._-]+/g, ' ');
   const verificationState = textValue(decision.details.verification_state, '').toLowerCase().replace(/[._-]+/g, ' ');
   if (['verifying', 'in progress', 'waiting for verification', 'waiting'].includes(probeState) || verificationState === 'in progress') return 'checking';
+  if (probeState === 'drop enforced' || verificationState === 'drop enforced') return 'blocked';
   // NO_SAFE_ROUTE is terminal only with an explicit planner terminal state.
   // A status string or a malformed probe_state alone is not exhaustion
   // evidence; keep it visibly in verification rather than lying to the user.
   if (verificationState === 'terminal no safe route') return 'no_safe_route';
   if (probeState === 'no safe route') return 'checking';
   if (probeState === 'not run observe only' || verificationState === 'not run observe only') return 'observed';
+  if (probeState === 'not checked' || verificationState === 'not checked') return 'not_checked';
   if (decision.verified) return 'verified';
   return 'unverified';
 }
 
 export function verificationPresentationLabel(presentation: VerificationPresentation): string {
+  if (presentation === 'blocked') return 'Traffic blocked (fail-closed)';
   switch (presentation) {
     case 'verified': return 'Путь подтверждён';
     case 'checking': return 'Проверяется…';
     case 'no_safe_route': return 'Безопасный маршрут не найден';
     case 'observed': return 'Наблюдение — проверка не запускалась';
+    case 'not_checked': return 'Путь ещё не проверен';
     default: return 'Путь пока не подтверждён';
   }
 }

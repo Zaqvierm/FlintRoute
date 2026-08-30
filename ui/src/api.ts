@@ -81,7 +81,25 @@ export type SubscriptionSecretStatus = {
   count: number;
   capacity: number;
   slots: Array<{ slot: number; configured: boolean }>;
+  sources?: Array<{ source_masked: string; source_type: string; crypto_version?: string }>;
   changed?: boolean;
+};
+export type SubscriptionHWIDSettings = {
+  mode: 'generated' | 'preset' | 'disabled' | string;
+  source: 'composite' | 'device' | 'os' | 'software' | 'machine' | 'network' | 'mac' | 'machine_id' | 'router_serial' | 'hostname' | 'device_model' | 'ssid' | 'custom_seed' | string;
+  current_hwid: string;
+  preset_configured: boolean;
+  preset?: string;
+  custom_seed?: string;
+  preview?: Array<{
+    source: string;
+    label: string;
+    value?: string;
+    hwid?: string;
+    available: boolean;
+    selected: boolean;
+    reason?: string;
+  }>;
 };
 export type SubscriptionPreparation = {
   change?: ChangeSet;
@@ -123,6 +141,9 @@ export type ComponentAction = 'install' | 'check' | 'check_updates' | 'update' |
 export type ComponentStatus = {
   kind: ComponentKind;
   installed: boolean;
+  detected: boolean;
+  managed: boolean;
+  ownership: 'flintroute' | 'foreign' | 'absent' | string;
   version?: string;
   latest_supported_version: string;
   latest_upstream_version?: string;
@@ -130,7 +151,9 @@ export type ComponentStatus = {
   update_blocked_reason?: string;
   architecture?: string;
   source: string;
+  pinned_asset_url?: string;
   checksum?: string;
+  binary_sha256?: string;
   service_state: string;
   health_state: string;
   health_ready: boolean;
@@ -151,7 +174,7 @@ export type ComponentResult = {
 export type VLESSPoolSnapshot = {
   generated_at?: string;
   tariff_mbps: number;
-  sources: Array<{ id: string; name: string; provider_id: string; provider_name: string; added_at?: string; expires_at?: string; expiry_known: boolean; server_count: number; manual?: boolean }>;
+  sources: Array<{ id: string; name: string; provider_id: string; provider_name: string; added_at?: string; expires_at?: string; expiry_known: boolean; server_count: number; manual?: boolean; original_source_masked?: string; resolved_source_masked?: string; source_type?: string; crypto_version?: string; resolution_status?: string }>;
   provider_matches?: Array<{ left_provider_id: string; right_provider_id: string; matched_servers: number; compared_servers: number; overlap: number; recommendation: string }>;
   servers: any[];
 };
@@ -177,6 +200,7 @@ export type ZapretSetupReport = {
 
 export type ZapretCalibrationCandidate = {
   profile_id: string;
+  profile_name?: string;
   provider: string;
   provider_version: string;
   transports: string[];
@@ -188,6 +212,7 @@ export type ZapretCalibrationCandidate = {
 
 export type ZapretCalibrationAttempt = {
   profile_id: string;
+  profile_name?: string;
   target: string;
   protocol: string;
   result: 'PASS' | 'FAIL' | 'TIMEOUT' | 'INFRA_ERROR' | string;
@@ -198,6 +223,8 @@ export type ZapretCalibrationAttempt = {
   nfqueue_counter_delta?: number;
   latency_ms?: number;
   verification_duration_ms?: number;
+  classification_state?: string;
+  classification_reason?: string;
   http_status?: number;
   error_code?: string;
   error?: string;
@@ -244,6 +271,10 @@ export type SmartDNSValidation = {
 };
 export type DiscoveryStatus = {
   mode: 'observe_only' | 'suggest' | 'auto_apply_verified' | 'locked';
+  configured_mode?: 'observe_only' | 'suggest' | 'auto_apply_verified' | 'locked';
+  effective_mode?: 'observe_only' | 'suggest' | 'auto_apply_verified' | 'locked';
+  auto_apply_available?: boolean;
+  auto_apply_reason?: string;
   max_new_rules_per_hour: number;
   max_consecutive_rollbacks: number;
   consecutive_rollbacks: number;
@@ -251,11 +282,23 @@ export type DiscoveryStatus = {
   paused: boolean;
   paused_reason?: string;
   suggestions: Array<Record<string, unknown>>;
+  observations?: Array<{ domain: string; query_type?: string; client?: string; observed_at?: string }>;
+  applied_count?: number;
+  failed_count?: number;
+  queue_depth?: number;
+  queue_capacity?: number;
+  active_probe_jobs?: number;
   observation_source: {
-    status: 'receiving' | 'listening' | 'waiting' | 'unavailable';
+    status: 'disabled' | 'receiving' | 'stale' | 'listening' | 'waiting' | 'unavailable';
+    enabled?: boolean;
+    source?: string;
     reason?: string;
     bytes?: number;
     last_updated?: string;
+    cursor?: number;
+    lag_bytes?: number;
+    emitted?: number;
+    dropped?: number;
   };
 };
 export type TelegramStatus = {
@@ -407,6 +450,35 @@ export async function classifyService(
     })
   });
 }
+export type ServiceVerification = {
+  service_id: string;
+  domain: string;
+  status: string;
+  verification_state: string;
+  classification_state?: string;
+  classification_reason?: string;
+  reason?: string;
+  error_code?: string;
+  error?: string;
+  checked_at?: string;
+  verification_duration_ms?: number;
+  selected_route_tag?: string;
+  selected_route_type?: string;
+  path_verified: boolean;
+  route_latency_ms?: number;
+  route_latency_available?: boolean;
+  end_to_end_latency_ms?: number;
+  end_to_end_latency_available?: boolean;
+  selection_score?: number;
+  evidence_persisted: number;
+  candidates: unknown[];
+};
+export async function verifyService(serviceID: string, domain?: string): Promise<ServiceVerification> {
+  return request('/services/verify', {
+    method: 'POST',
+    body: JSON.stringify({ service_id: serviceID, domain })
+  });
+}
 export async function getRoutes(signal?: AbortSignal): Promise<any[]> { return request('/routes', { signal }); }
 export async function getComponents(signal?: AbortSignal): Promise<ComponentStatus[]> {
   const result = await request<{ components: ComponentStatus[] }>('/components', { signal });
@@ -426,6 +498,12 @@ export async function configureSmartDNS(resolvers: SmartDNSResolver[], testDomai
   });
 }
 export async function getDiscovery(signal?: AbortSignal): Promise<DiscoveryStatus> { return request('/discovery', { signal }); }
+export async function applyDiscoverySuggestion(domain: string, route?: string): Promise<{ applied: boolean; domain: string; route: string; route_type: string; post_apply_proof: boolean; post_apply_proof_kind?: string }> {
+  return request(`/discovery/suggestions/${encodeURIComponent(domain)}/apply`, { method: 'POST', body: JSON.stringify(route ? { route } : {}) });
+}
+export async function ignoreDiscoverySuggestion(domain: string): Promise<{ applied: boolean; ignored: boolean; domain: string }> {
+  return request(`/discovery/suggestions/${encodeURIComponent(domain)}/ignore`, { method: 'POST', body: '{}' });
+}
 export async function getTelegram(signal?: AbortSignal): Promise<TelegramOverview> { return request('/telegram', { signal }); }
 export async function configureTelegram(botToken: string, chatID: string, enabled: boolean, eventTypes: string[]): Promise<TelegramStatus> {
   return request('/telegram/configure', { method: 'PUT', body: JSON.stringify({ bot_token: botToken, chat_id: chatID, enabled, event_types: eventTypes }) });
@@ -479,6 +557,15 @@ export async function getSubscriptionSecretStatus(signal?: AbortSignal): Promise
 }
 export async function saveSubscriptionSecrets(urls: string[]): Promise<SubscriptionSecretStatus> {
   return request('/xray/subscription/secret', { method: 'PUT', body: JSON.stringify({ urls }) });
+}
+export async function removeSubscriptionSource(index: number): Promise<SubscriptionSecretStatus> {
+  return request('/xray/subscription/secret', { method: 'DELETE', body: JSON.stringify({ index }) });
+}
+export async function getSubscriptionHWID(signal?: AbortSignal): Promise<SubscriptionHWIDSettings> {
+  return request('/xray/subscription/hwid', { signal });
+}
+export async function saveSubscriptionHWID(settings: { mode: string; source: string; preset?: string; custom_seed?: string }): Promise<SubscriptionHWIDSettings> {
+  return request('/xray/subscription/hwid', { method: 'PUT', body: JSON.stringify(settings) });
 }
 export async function prepareSubscription(baseVersion: number, activateManaged = false): Promise<SubscriptionPreparation> {
   return request('/xray/subscription/prepare', { method: 'POST', body: JSON.stringify({ base_version: baseVersion, activate_managed: activateManaged }) });

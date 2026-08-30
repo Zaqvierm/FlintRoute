@@ -1,6 +1,27 @@
 import type { ChangeSet, SessionInfo } from '../api';
+import { Component, type ComponentChildren } from 'preact';
 import { useState } from 'preact/hooks';
 import { formatDateTime, humanStatus, statusTone, textValue } from '../view-models';
+
+export class ScreenErrorBoundary extends Component<{ children: ComponentChildren }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  render() {
+    if (this.state.failed) {
+      return <section class="screen-error" role="alert" aria-live="assertive">
+        <h1>Экран временно недоступен</h1>
+        <p>FlintRoute не смог отрисовать этот раздел. Сеть и уже сохранённая конфигурация не изменялись.</p>
+        <p class="mono">Код: ui_screen_render_failed</p>
+        <button class="primary" onClick={() => this.setState({ failed: false })}>Повторить</button>
+      </section>;
+    }
+    return this.props.children;
+  }
+}
 
 export function SessionBar({ session, apiError, loading, lastUpdated, onRetry, onLogout }: {
   session: SessionInfo;
@@ -21,8 +42,8 @@ export function SessionBar({ session, apiError, loading, lastUpdated, onRetry, o
 
 export function PrivacyBar({ hidden, onToggle }: { hidden: boolean; onToggle: () => void }) {
   return <div class={`privacy-bar ${hidden ? '' : 'revealed'}`}>
-    <div><b>{hidden ? 'Адреса скрыты' : 'Адреса устройств видны'}</b><span>{hidden ? 'Скрытый режим не запрашивает raw IP и MAC. Раскрытие временное и автоматически отключится через 10 минут.' : 'Можно скрыть IP и MAC одним переключателем.'}</span></div>
-    <button onClick={onToggle}>{hidden ? 'Показать адреса' : 'Скрыть адреса'}</button>
+    <div><b>{hidden ? 'Адреса скрыты' : 'Адреса устройств видны'}</b><span>{hidden ? 'Скрытый режим сохраняется, пока вы не нажмёте «Показать адреса». Raw IP и MAC не запрашиваются.' : 'Режим видимости сохраняется. Если нужна приватность, включите скрытие адресов.'}</span></div>
+    <button onClick={onToggle} aria-pressed={!hidden}>{hidden ? 'Показать адреса' : 'Скрыть адреса'}</button>
   </div>;
 }
 
@@ -74,9 +95,13 @@ export function TopBar({ overview, navigate }: { overview: any; navigate: (scree
           ? (value.length ? `${value.length} критич. ${value.length === 1 ? 'ошибка' : 'ошибки'}` : 'Нет')
           : humanStatus(value);
         const actionable = ['Data plane', 'DNS', 'Ошибки'].includes(label) && (tone === 'bad' || tone === 'warn');
+        const reason = label === 'Data plane' && (tone === 'bad' || tone === 'warn')
+          ? textValue(overview.data_plane_reason, '')
+          : '';
         return <div class={`status-pill ${tone}`} key={label}>
           <span>{label}</span>
           <b>{overview.freshness === 'stale' ? `${text} · данные устарели` : text}</b>
+          {reason && <small class="status-reason">{reason}</small>}
           {actionable && <button type="button" onClick={() => navigate('Диагностика')}>Проверить</button>}
         </div>;
       })}

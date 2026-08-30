@@ -85,6 +85,17 @@ describe('service view model', () => {
     expect(observed.applied).toBe(false);
     expect(observed.sources).toEqual(['automatic']);
   });
+
+  it('keeps a configured service honest when its path was never checked', () => {
+    const [youtube] = groupServices([{
+      id: 'YouTube', category: 'TSPU_RESTRICTED', domains: ['youtube.com'], source: 'configured', applied: true,
+      status: 'CONFIGURED', probe_state: 'not_checked', verification_state: 'not_checked', selected_route_tag: 'zapret'
+    }]);
+    expect(youtube.health).toBe('CONFIGURED');
+    expect(youtube.probe_state).toBe('not_checked');
+    expect(decisionVerificationPresentation({ verified: false, probeState: 'not_checked', policyState: 'applied', details: { verification_state: 'not_checked' } })).toBe('not_checked');
+    expect(verificationPresentationLabel('not_checked')).toBe('Путь ещё не проверен');
+  });
 });
 
 describe('onboarding truthfulness', () => {
@@ -195,6 +206,22 @@ describe('decision cards', () => {
     expect(card.probeLatencyMS).toBe(75);
   });
 
+  it('keeps comparable end-to-end latency separate from verification duration', () => {
+    const card = toDecisionCard({ ...event, details: {
+      end_to_end_latency_ms: 74, end_to_end_latency_available: true,
+      route_latency_ms: 31, route_latency_available: true,
+      verification_duration_ms: 3891, selection_score: 74,
+      classification_state: 'CONFIRMED_GEO_LOCKED', classification_reason: 'direct denial plus alternate pass'
+    } });
+    expect(card.endToEndLatencyAvailable).toBe(true);
+    expect(card.endToEndLatencyMS).toBe(74);
+    expect(card.routeLatencyMS).toBe(31);
+    expect(card.verificationDurationMS).toBe(3891);
+    expect(card.selectionScore).toBe(74);
+    expect(card.classificationState).toBe('CONFIRMED_GEO_LOCKED');
+    expect(card.classificationReason).toContain('alternate');
+  });
+
   it('keeps classification confidence separate from route decision confidence', () => {
     const card = toDecisionCard({
       ...event,
@@ -266,5 +293,14 @@ describe('decision cards', () => {
       details: { ...event.details, path_verified: false, probe_state: 'no_safe_route', status: 'NO_SAFE_ROUTE' }
     });
     expect(decisionVerificationPresentation(malformed)).toBe('checking');
+  });
+
+  it('renders an enforced DROP as a terminal blocked outcome', () => {
+    const blocked = toDecisionCard({
+      ...event,
+      details: { ...event.details, path_verified: false, probe_state: 'drop_enforced', verification_state: 'verified', status: 'DROP' }
+    });
+    expect(decisionVerificationPresentation(blocked)).toBe('blocked');
+    expect(verificationPresentationLabel(decisionVerificationPresentation(blocked))).toBe('Traffic blocked (fail-closed)');
   });
 });
