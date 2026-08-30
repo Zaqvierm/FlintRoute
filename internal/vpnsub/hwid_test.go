@@ -53,6 +53,47 @@ func TestHWIDSourcesPresetAndDisabled(t *testing.T) {
 	}
 }
 
+func TestPresetHWIDSurvivesPersistenceAndDoesNotUseFingerprintProvider(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "subscription.secret.hwid.json")
+	want := "a330268d-7d9d-4343-8672-f6191f80a25c"
+	if err := StoreHWIDSettings(path, HWIDSettings{Mode: HWIDModePreset, Preset: want}); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &countingFingerprintProvider{}
+	settings, err := LoadHWIDSettings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := ResolveHWID(context.Background(), settings, provider)
+	if err != nil || first != want {
+		t.Fatalf("persisted preset changed on first resolve: %q err=%v", first, err)
+	}
+
+	provider.components = FingerprintComponents{DeviceName: "a-different-router"}
+	settings, err = LoadHWIDSettings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ResolveHWID(context.Background(), settings, provider)
+	if err != nil || second != want {
+		t.Fatalf("persisted preset changed after provider change: %q err=%v", second, err)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("preset resolution consulted fingerprint provider %d times", provider.calls)
+	}
+}
+
+type countingFingerprintProvider struct {
+	calls      int
+	components FingerprintComponents
+}
+
+func (p *countingFingerprintProvider) Components(context.Context) (FingerprintComponents, error) {
+	p.calls++
+	return p.components, nil
+}
+
 func TestHWIDHardwareSourcesAreDeterministic(t *testing.T) {
 	components := FingerprintComponents{
 		MACAddress: "AA:BB:CC:DD:EE:FF", MachineIdentifier: "machine-1", RouterSerial: "serial-1",

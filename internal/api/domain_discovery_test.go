@@ -11,7 +11,7 @@ import (
 	"router-policy/internal/probe"
 )
 
-func TestAutomaticServiceUsesVerifiedTSPUFallbackOrder(t *testing.T) {
+func TestAutomaticServiceIncludesSmartDNSForTSPUEligibility(t *testing.T) {
 	check := planner.DomainCheck{
 		Domain: "www.video.example", ETLDPlusOne: "video.example",
 		Category: "DIRECT_PREFERRED", TSPUStatus: "MATCH",
@@ -21,18 +21,20 @@ func TestAutomaticServiceUsesVerifiedTSPUFallbackOrder(t *testing.T) {
 	if !ok || id != "auto_video_example" || service.Category != "TSPU_RESTRICTED" || service.SelectedRouteTag != "zapret" {
 		t.Fatalf("automatic TSPU service mismatch: id=%q service=%+v ok=%v", id, service, ok)
 	}
-	expected := []string{"zapret", "smart_dns", "vless", "drop"}
+	expected := map[string]bool{"zapret": true, "smart_dns": true, "vless": true, "drop": true}
 	if len(service.AllowedPaths) != len(expected) {
 		t.Fatalf("fallback count=%d", len(service.AllowedPaths))
 	}
-	for index := range expected {
-		if service.AllowedPaths[index] != expected[index] {
-			t.Fatalf("fallback order=%v", service.AllowedPaths)
+	seen := make(map[string]bool, len(service.AllowedPaths))
+	for _, path := range service.AllowedPaths {
+		if !expected[path] || seen[path] {
+			t.Fatalf("TSPU eligibility contains unexpected or duplicate path %q: %v", path, service.AllowedPaths)
 		}
+		seen[path] = true
 	}
 }
 
-func TestAutomaticServiceKeepsSmartDNSBeforeVPNForGeoDecision(t *testing.T) {
+func TestAutomaticServiceIncludesSmartDNSAndVLESSForGeoEligibility(t *testing.T) {
 	check := planner.DomainCheck{
 		Domain: "app.example", ETLDPlusOne: "app.example", Category: "GEO_LOCKED",
 		Selected: &probe.RouteResult{Route: "smart-primary", RouteType: "smart_dns"},
@@ -41,8 +43,19 @@ func TestAutomaticServiceKeepsSmartDNSBeforeVPNForGeoDecision(t *testing.T) {
 	if !ok || service.Category != "GEO_LOCKED" || !service.RequireNonRUEgress {
 		t.Fatalf("automatic GEO service mismatch: %+v ok=%v", service, ok)
 	}
-	if len(service.AllowedPaths) < 2 || service.AllowedPaths[0] != "smart_dns" || service.AllowedPaths[1] != "vless" {
-		t.Fatalf("Smart DNS is not checked before VPN: %v", service.AllowedPaths)
+	expected := map[string]bool{"smart_dns": true, "vless": true, "drop": true}
+	if len(service.AllowedPaths) != len(expected) {
+		t.Fatalf("GEO eligibility paths=%v", service.AllowedPaths)
+	}
+	for _, path := range service.AllowedPaths {
+		if !expected[path] {
+			t.Fatalf("GEO eligibility contains forbidden path %q: %v", path, service.AllowedPaths)
+		}
+	}
+	for _, path := range service.ForbiddenPaths {
+		if path != "direct" && path != "zapret" {
+			t.Fatalf("unexpected GEO forbidden path %q: %v", path, service.ForbiddenPaths)
+		}
 	}
 }
 

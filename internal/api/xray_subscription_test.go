@@ -276,6 +276,17 @@ func TestXraySubscriptionSecretAcceptsHappSourceAndMasksIt(t *testing.T) {
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("Happ source update status=%d", response.StatusCode)
 	}
+	stored, err := os.ReadFile(secretPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var storedSources []string
+	if err := json.Unmarshal(stored, &storedSources); err != nil {
+		t.Fatalf("stored source file is not valid JSON: %v", err)
+	}
+	if len(storedSources) != 1 || storedSources[0] != source {
+		t.Fatalf("original source was not retained as refresh source of truth: %q", stored)
+	}
 	var updateEnvelope Envelope
 	updateBody, _ := io.ReadAll(response.Body)
 	response.Body.Close()

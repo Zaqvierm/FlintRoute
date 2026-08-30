@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -37,6 +38,25 @@ func TestFetchSubscriptionHTTPSAndMode0600(t *testing.T) {
 	}
 	if runtimeModeMustBe0600() && info.Mode().Perm() != 0o600 {
 		t.Fatalf("subscription mode=%o", info.Mode().Perm())
+	}
+}
+
+func TestFetchSummaryDoesNotSerializeResolvedSubscriptionCredential(t *testing.T) {
+	summary := FetchSummary{
+		OriginalSourceMasked: "happ://crypt4/redacted",
+		ResolvedSourceMasked: "https://provider.example/sub/ab****yz",
+		ResolvedSource:       "https://provider.example/sub/super-secret-provider-token",
+	}
+	raw, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serialized := string(raw)
+	if strings.Contains(serialized, "super-secret-provider-token") || strings.Contains(serialized, `"resolved_source":"`) {
+		t.Fatalf("resolved subscription credential leaked through summary JSON: %s", serialized)
+	}
+	if !strings.Contains(serialized, "resolved_source_masked") || strings.Contains(serialized, "ab****yz") == false {
+		t.Fatalf("masked source metadata was lost: %s", serialized)
 	}
 }
 
