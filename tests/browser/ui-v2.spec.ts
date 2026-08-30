@@ -243,6 +243,23 @@ test.describe('FlintRoute UI v2', () => {
     await expect(page.locator('.session-bar')).toHaveCount(0);
   });
 
+  test('does not downgrade an optional 401 to a stale-data warning', async ({ page }) => {
+    await mockAPI(page);
+    await page.goto(`/?screen=${encodeURIComponent('\u041e\u0431\u0437\u043e\u0440')}`);
+    await expect(page.locator('.session-bar')).toBeVisible();
+    await page.route('**/api/v1/changes', async (route) => {
+      await route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'unauthorized', message: 'login required' } })
+      });
+    });
+    await page.reload();
+    await expect(page.getByRole('heading', { name: '\u0412\u0445\u043e\u0434' })).toBeVisible();
+    await expect(page.getByText('\u0421\u0435\u0441\u0441\u0438\u044f \u0437\u0430\u0432\u0435\u0440\u0448\u0438\u043b\u0430\u0441\u044c. \u0412\u043e\u0439\u0434\u0438\u0442\u0435 \u0441\u043d\u043e\u0432\u0430.')).toBeVisible();
+    await expect(page.getByText(/\u041d\u0435\u043a\u043e\u0442\u043e\u0440\u044b\u0435 \u0434\u0430\u043d\u043d\u044b\u0435/)).toHaveCount(0);
+  });
+
   test('never renders object statuses as [object Object]', async ({ page }) => {
     await mockAPI(page, { objectStatuses: true });
     await page.goto('/?screen=Discovery');
