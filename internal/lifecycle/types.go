@@ -71,6 +71,7 @@ const (
 type ProcessIdentity struct {
 	PID            int      `json:"pid"`
 	StartTimeTicks uint64   `json:"start_time_ticks"`
+	PGID           int      `json:"pgid,omitempty"`
 	Executable     string   `json:"executable"`
 	ConfigPath     string   `json:"config_path,omitempty"`
 	CommandLine    []string `json:"command_line,omitempty"`
@@ -164,8 +165,16 @@ func (m Manifest) Validate() error {
 		if resource.Owner != m.Owner {
 			return fmt.Errorf("resource %s owner differs from manifest owner", resource.ID)
 		}
-		if resource.Kind == ResourceProcess && resource.Process == nil {
-			return fmt.Errorf("resource %s has no process identity", resource.ID)
+		if resource.Kind == ResourceProcess {
+			if resource.Process == nil {
+				return fmt.Errorf("resource %s has no process identity", resource.ID)
+			}
+			if resource.Process.PID <= 0 || resource.Process.StartTimeTicks == 0 || resource.Process.PGID <= 0 {
+				return fmt.Errorf("resource %s has incomplete process identity", resource.ID)
+			}
+			if resource.Process.Executable == "" {
+				return fmt.Errorf("resource %s has no process executable", resource.ID)
+			}
 		}
 	}
 	return nil

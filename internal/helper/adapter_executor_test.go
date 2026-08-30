@@ -23,14 +23,59 @@ func TestAdapterExecutorUsesOnlyOwnedOperationExecutor(t *testing.T) {
 	}
 }
 
+func TestAdapterExecutorRouteAssignmentRequiresSemanticProof(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("exec adapter fixture requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	adapterPath := filepath.Join(dir, "adapter.sh")
+	request := validRequest("route_assignment.apply")
+	request.TransactionID = "route-assignment"
+	request.RollbackTokenHash = ""
+	request.RouteAssignment = &RouteAssignmentRequest{Operation: "apply", Domain: "youtube.com", RouteTag: "vless-de", RouteType: "vless", RouteSetID: "abc123", AssignmentID: "def456", MappingHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+	lines := []string{
+		"echo operation=route_assignment.apply",
+		"echo generation=" + request.Generation,
+		"echo transaction_id=route-assignment",
+		"echo revision_id=" + request.RevisionID,
+		"echo candidate_hash=" + request.CandidateHash,
+		"echo artifact_manifest_hash=" + request.ArtifactManifestHash,
+		"echo domain=" + request.RouteAssignment.Domain,
+		"echo route_tag=" + request.RouteAssignment.RouteTag,
+		"echo route_type=" + request.RouteAssignment.RouteType,
+		"echo route_set_id=" + request.RouteAssignment.RouteSetID,
+		"echo assignment_id=" + request.RouteAssignment.AssignmentID,
+		"echo mapping_hash=" + request.RouteAssignment.MappingHash,
+		"echo applied=true",
+		"echo verified=true",
+	}
+	if err := os.WriteFile(adapterPath, []byte("#!/bin/sh\n"+strings.Join(lines, "\n")+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executor := AdapterExecutor{AdapterPath: adapterPath, ConfigPath: filepath.Join(dir, "default.json"), InitDir: dir}
+	response := executor.Execute(context.Background(), request)
+	if !response.Accepted || response.ErrorCode != "" || response.RouteAssignment == nil || !response.RouteAssignment.Applied || !response.RouteAssignment.Verified {
+		t.Fatalf("valid route assignment proof was rejected: %+v", response)
+	}
+	bad := strings.Replace(strings.Join(lines, "\n"), "echo mapping_hash="+request.RouteAssignment.MappingHash, "echo mapping_hash=sha256:"+strings.Repeat("d", 64), 1)
+	if err := os.WriteFile(adapterPath, []byte("#!/bin/sh\n"+bad+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	response = executor.Execute(context.Background(), request)
+	if response.Accepted || response.ErrorCode != "route_assignment_binding_mismatch" {
+		t.Fatalf("mismatched route assignment proof was accepted: %+v", response)
+	}
+}
+
 func TestAdapterExecutorTransactionVerbsAreClosed(t *testing.T) {
 	for command, want := range map[string]string{
-		"transaction.prepare":         "prepare",
-		"transaction.apply_candidate": "apply-candidate",
-		"transaction.commit_prepared": "commit-prepared",
-		"transaction.finalize_commit": "finalize-commit",
-		"transaction.rollback":        "rollback",
-		"transaction.reconcile":       "reconcile",
+		"transaction.prepare":          "prepare",
+		"transaction.apply_candidate":  "apply-candidate",
+		"transaction.commit_prepared":  "commit-prepared",
+		"transaction.finalize_commit":  "finalize-commit",
+		"transaction.clear_boot_guard": "clear-boot-guard-bound",
+		"transaction.rollback":         "rollback",
+		"transaction.reconcile":        "reconcile",
 	} {
 		got, ok := transactionVerb(command)
 		if !ok || got != want {
@@ -58,6 +103,119 @@ func TestAdapterExecutorAcceptsOnlySemanticallyProvenReconcile(t *testing.T) {
 		"echo reconcile=ok",
 		"echo generation=" + request.Generation,
 		"echo transaction_id=" + request.TransactionID,
+		"echo revision_id=" + request.RevisionID,
+		"echo candidate_hash=" + request.CandidateHash,
+		"echo artifact_manifest_hash=" + request.ArtifactManifestHash,
+		"echo active_transaction=" + request.TransactionID,
+		"echo active_revision=" + request.RevisionID,
+		"echo active_candidate_hash=" + request.CandidateHash,
+		"echo active_artifact_manifest_hash=" + request.ArtifactManifestHash,
+		"echo rollback_token_hash=" + request.RollbackTokenHash,
+		"echo transaction_state=committed",
+	}, "\n") + "\n"
+	if err := os.WriteFile(adapterPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executor := AdapterExecutor{AdapterPath: adapterPath, ConfigPath: filepath.Join(dir, "default.json"), InitDir: dir}
+	response := executor.Execute(context.Background(), request)
+	if !response.Accepted || response.ErrorCode != "" {
+		t.Fatalf("semantic reconcile proof was rejected: %+v", response)
+	}
+}
+
+func TestAdapterExecutorRejectsSuccessWithoutExactSemanticBinding(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("exec adapter fixture requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	adapterPath := filepath.Join(dir, "adapter.sh")
+	request := validRequest("transaction.prepare")
+	request.Generation = request.RevisionID
+	request.Transaction = &TransactionRequest{Operation: "prepare"}
+	wrongCandidate := "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	script := "#!/bin/sh\n" + strings.Join([]string{
+		"echo protocol_version=1",
+		"echo operation=prepare",
+		"echo generation=" + request.Generation,
+		"echo transaction_id=" + request.TransactionID,
+		"echo revision_id=" + request.RevisionID,
+		"echo candidate_hash=" + wrongCandidate,
+		"echo artifact_manifest_hash=" + request.ArtifactManifestHash,
+		"echo rollback_token_hash=" + request.RollbackTokenHash,
+		"echo transaction_state=prepared",
+		"echo prepared=true",
+	}, "\n") + "\n"
+	if err := os.WriteFile(adapterPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executor := AdapterExecutor{AdapterPath: adapterPath, ConfigPath: filepath.Join(dir, "default.json"), InitDir: dir}
+	response := executor.Execute(context.Background(), request)
+	if response.Accepted || response.ErrorCode != "adapter_response_binding_mismatch" {
+		t.Fatalf("adapter success with mismatched candidate binding was accepted: %+v", response)
+	}
+
+	valid := strings.Replace(script, "echo candidate_hash="+wrongCandidate, "echo candidate_hash="+request.CandidateHash, 1)
+	missing := strings.Replace(valid, "echo rollback_token_hash="+request.RollbackTokenHash+"\n", "", 1)
+	if err := os.WriteFile(adapterPath, []byte(missing), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	response = executor.Execute(context.Background(), request)
+	if response.Accepted || response.ErrorCode != "adapter_response_binding_missing" {
+		t.Fatalf("adapter success without token binding was accepted: %+v", response)
+	}
+}
+
+func TestAdapterExecutorRejectsUnverifiedCandidateWithBoundResponse(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("exec adapter fixture requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	adapterPath := filepath.Join(dir, "adapter.sh")
+	request := validRequest("transaction.validate_candidate")
+	request.Generation = request.RevisionID
+	request.Transaction = &TransactionRequest{Operation: "validate-candidate"}
+	script := "#!/bin/sh\n" + strings.Join([]string{
+		"echo protocol_version=1",
+		"echo operation=validate-candidate",
+		"echo generation=" + request.Generation,
+		"echo transaction_id=" + request.TransactionID,
+		"echo revision_id=" + request.RevisionID,
+		"echo candidate_hash=" + request.CandidateHash,
+		"echo artifact_manifest_hash=" + request.ArtifactManifestHash,
+		"echo rollback_token_hash=" + request.RollbackTokenHash,
+		"echo transaction_state=candidate_requires_device",
+		"echo candidate_valid=false",
+		"echo verification_status=UNVERIFIED",
+		"echo reason=missing_device_diagnostics",
+	}, "\n") + "\n"
+	if err := os.WriteFile(adapterPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executor := AdapterExecutor{AdapterPath: adapterPath, ConfigPath: filepath.Join(dir, "default.json"), InitDir: dir}
+	response := executor.Execute(context.Background(), request)
+	if response.Accepted || response.ErrorCode != "candidate_not_verified" {
+		t.Fatalf("unverified candidate was accepted: %+v", response)
+	}
+}
+
+func TestAdapterExecutorAcceptsOnlyGenerationBoundBootGuardClear(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("exec adapter fixture requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	adapterPath := filepath.Join(dir, "adapter.sh")
+	request := validRequest("transaction.clear_boot_guard")
+	request.Transaction = &TransactionRequest{Operation: "clear-boot-guard"}
+	script := "#!/bin/sh\n" + strings.Join([]string{
+		"echo protocol_version=1",
+		"echo operation=clear-boot-guard",
+		"echo boot_guard=cleared",
+		"echo generation=" + request.Generation,
+		"echo transaction_id=" + request.TransactionID,
+		"echo revision_id=" + request.RevisionID,
+		"echo candidate_hash=" + request.CandidateHash,
+		"echo artifact_manifest_hash=" + request.ArtifactManifestHash,
+		"echo rollback_token_hash=" + request.RollbackTokenHash,
 		"echo active_transaction=" + request.TransactionID,
 		"echo active_revision=" + request.RevisionID,
 		"echo active_candidate_hash=" + request.CandidateHash,
@@ -70,7 +228,103 @@ func TestAdapterExecutorAcceptsOnlySemanticallyProvenReconcile(t *testing.T) {
 	executor := AdapterExecutor{AdapterPath: adapterPath, ConfigPath: filepath.Join(dir, "default.json"), InitDir: dir}
 	response := executor.Execute(context.Background(), request)
 	if !response.Accepted || response.ErrorCode != "" {
-		t.Fatalf("semantic reconcile proof was rejected: %+v", response)
+		t.Fatalf("generation-bound boot guard proof was rejected: %+v", response)
+	}
+
+	badScript := strings.Replace(script, "echo active_revision="+request.RevisionID, "echo active_revision=rev_9_deadbeef0000", 1)
+	if err := os.WriteFile(adapterPath, []byte(badScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	response = executor.Execute(context.Background(), request)
+	if response.Accepted || response.ErrorCode != "boot_guard_binding_mismatch" {
+		t.Fatalf("mismatched boot guard binding was accepted: %+v", response)
+	}
+}
+
+func TestAdapterExecutorAcceptsOnlySemanticallyProvenBaselineBootGuardClear(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("exec adapter fixture requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	adapterPath := filepath.Join(dir, "adapter.sh")
+	request := Request{
+		ProtocolVersion: ProtocolVersion,
+		RequestID:       "req_baseline",
+		Command:         "recovery.clear_boot_guard_baseline",
+		Generation:      "rev_1_001122334455",
+		RevisionID:      "rev_1_001122334455",
+		TransactionID:   "baseline",
+		CandidateHash:   "sha256:" + strings.Repeat("a", 64),
+		Baseline:        &BaselineRequest{Operation: "clear-boot-guard"},
+	}
+	script := "#!/bin/sh\n" + strings.Join([]string{
+		"echo protocol_version=1",
+		"echo operation=clear-boot-guard-baseline",
+		"echo boot_guard=cleared",
+		"echo generation=" + request.Generation,
+		"echo transaction_id=baseline",
+		"echo revision_id=" + request.RevisionID,
+		"echo candidate_hash=" + request.CandidateHash,
+		"echo active_revision=" + request.RevisionID,
+		"echo active_candidate_hash=" + request.CandidateHash,
+		"echo transaction_state=baseline_confirmed",
+	}, "\n") + "\n"
+	if err := os.WriteFile(adapterPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executor := AdapterExecutor{AdapterPath: adapterPath, ConfigPath: filepath.Join(dir, "default.json"), InitDir: dir}
+	response := executor.Execute(context.Background(), request)
+	if !response.Accepted || response.ErrorCode != "" {
+		t.Fatalf("semantic baseline clear proof was rejected: %+v", response)
+	}
+	badScript := strings.Replace(script, "echo active_candidate_hash="+request.CandidateHash, "echo active_candidate_hash=sha256:"+strings.Repeat("b", 64), 1)
+	if err := os.WriteFile(adapterPath, []byte(badScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	response = executor.Execute(context.Background(), request)
+	if response.Accepted || response.ErrorCode != "baseline_boot_guard_binding_mismatch" {
+		t.Fatalf("mismatched baseline binding was accepted: %+v", response)
+	}
+}
+
+func TestAdapterExecutorRequiresManagedServicePostcondition(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("exec service fixture requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "running")
+	servicePath := filepath.Join(dir, "router-policy-zapret-test")
+	script := "#!/bin/sh\n" + strings.Join([]string{
+		"state=" + statePath,
+		"case \"$1\" in",
+		"start|reload) : > \"$state\";;",
+		"stop) rm -f \"$state\";;",
+		"running) test -f \"$state\";;",
+		"*) exit 2;;",
+		"esac",
+	}, "\n") + "\n"
+	if err := os.WriteFile(servicePath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	adapterPath := filepath.Join(dir, "adapter.sh")
+	if err := os.WriteFile(adapterPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executor := AdapterExecutor{AdapterPath: adapterPath, ConfigPath: filepath.Join(dir, "default.json"), InitDir: dir}
+	request := validRequest("service.start")
+	request.Service = &ServiceRequest{Name: filepath.Base(servicePath), Operation: "start"}
+	response := executor.Execute(context.Background(), request)
+	if !response.Accepted || response.SemanticState != "running" || response.ErrorCode != "" {
+		t.Fatalf("running postcondition was not accepted: %+v", response)
+	}
+
+	badScript := "#!/bin/sh\nif [ \"$1\" = \"running\" ]; then exit 1; fi\nexit 0\n"
+	if err := os.WriteFile(servicePath, []byte(badScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	response = executor.Execute(context.Background(), request)
+	if response.Accepted || response.ErrorCode != "service_not_running" {
+		t.Fatalf("false-success service start was accepted: %+v", response)
 	}
 }
 

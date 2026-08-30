@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -77,6 +78,77 @@ type IPStateRule struct {
 	Priority int    `json:"priority"`
 	Mark     string `json:"mark"`
 	Table    int    `json:"table"`
+}
+
+// OwnedIPStateSpec describes the fixed ownership boundary used when no
+// durable transaction binding exists.  It is intentionally conservative: any
+// matching rule/table blocks an uninstall rather than being guessed safe.
+type OwnedIPStateSpec struct {
+	Marks           []string
+	RouteTables     []int
+	MinRulePriority int
+	MaxRulePriority int
+}
+
+// VerifyNoOwnedIPState proves that the fixed FlintRoute IP ownership boundary
+// is empty.  This is used only by the uninstall no-binding path; it never
+// mutates kernel state.  Failure to inspect is a hard failure because an
+// unreadable kernel state cannot justify claiming verified-empty.
+func VerifyNoOwnedIPState(ctx context.Context, runner CommandRunner, ipBinary string, spec OwnedIPStateSpec) error {
+	if runner == nil || ipBinary == "" {
+		return errors.New("runner and ip binary are required")
+	}
+	marks := make(map[string]struct{}, len(spec.Marks))
+	for _, mark := range spec.Marks {
+		mark = strings.TrimSpace(mark)
+		if mark != "" {
+			marks[strings.ToLower(strings.SplitN(mark, "/", 2)[0])] = struct{}{}
+		}
+	}
+	tables := make(map[int]struct{}, len(spec.RouteTables))
+	for _, table := range spec.RouteTables {
+		if table > 0 {
+			tables[table] = struct{}{}
+		}
+	}
+	for _, family := range []string{"ipv4", "ipv6"} {
+		flag, err := familyFlag(family)
+		if err != nil {
+			return err
+		}
+		raw, err := runner.Run(ctx, ipBinary, flag, "-j", "rule", "show")
+		if err != nil {
+			return fmt.Errorf("verify %s rules: %w", family, err)
+		}
+		rows, err := parseRuleRows(raw)
+		if err != nil {
+			return fmt.Errorf("verify %s rules: %w", family, err)
+		}
+		for _, row := range rows {
+			mark := strings.ToLower(ruleMarkValue(row.FwMark))
+			table := ruleTableInt(row.Table)
+			priorityOwned := spec.MinRulePriority > 0 && row.Priority >= spec.MinRulePriority && (spec.MaxRulePriority <= 0 || row.Priority <= spec.MaxRulePriority)
+			_, markOwned := marks[mark]
+			_, tableOwned := tables[table]
+			if priorityOwned || markOwned || tableOwned {
+				return fmt.Errorf("owned %s rule remains: priority=%d mark=%s table=%d", family, row.Priority, mark, table)
+			}
+		}
+		for table := range tables {
+			raw, err := runner.Run(ctx, ipBinary, flag, "-j", "route", "show", "table", strconv.Itoa(table))
+			if err != nil {
+				return fmt.Errorf("verify %s route table %d: %w", family, table, err)
+			}
+			routes, err := parseRouteRows(raw)
+			if err != nil {
+				return fmt.Errorf("verify %s route table %d: %w", family, table, err)
+			}
+			if len(routes) > 0 {
+				return fmt.Errorf("owned %s route table %d is not empty", family, table)
+			}
+		}
+	}
+	return nil
 }
 
 func familyFlag(family string) (string, error) {
@@ -261,6 +333,15 @@ func RollbackIPState(ctx context.Context, runner CommandRunner, ipBinary string,
 				return fmt.Errorf("restore %s rule %d: %w", r.Family, r.Priority, err)
 			}
 		}
+	}
+	// A successful command exit is not enough to claim rollback: the kernel
+	// state is the source of truth.  In particular, an ignored `ip rule del`
+	// or `ip route del` failure can otherwise leave an owned orphan while the
+	// caller reports a successful deactivation.  Re-snapshot the exact owned
+	// boundary before returning success; this is idempotent because a second
+	// rollback against an already-restored state produces the same snapshot.
+	if err := VerifyIPState(ctx, runner, ipBinary, plan, pre); err != nil {
+		return fmt.Errorf("ip rollback verification failed: %w", err)
 	}
 	return nil
 }
@@ -454,8 +535,12 @@ func parseRouteRows(raw []byte) ([]ipRouteRow, error) {
 	if err := dec.Decode(&rows); err != nil {
 		return nil, fmt.Errorf("invalid route json: %w", err)
 	}
-	if dec.More() {
-		return nil, errors.New("trailing route json")
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("trailing route json")
+		}
+		return nil, fmt.Errorf("trailing route json: %w", err)
 	}
 	return rows, nil
 }
@@ -473,8 +558,12 @@ func parseRuleRows(raw []byte) ([]ipRuleRow, error) {
 	if err := dec.Decode(&rows); err != nil {
 		return nil, fmt.Errorf("invalid rule json: %w", err)
 	}
-	if dec.More() {
-		return nil, errors.New("trailing rule json")
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("trailing rule json")
+		}
+		return nil, fmt.Errorf("trailing rule json: %w", err)
 	}
 	return rows, nil
 }

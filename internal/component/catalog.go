@@ -25,7 +25,8 @@ func SupportedCatalog() map[Kind]Release {
 				Architecture: "arm64", PackageType: "tar.gz",
 				URL:    "https://github.com/bol-van/zapret/releases/download/v72.13/zapret-v72.13-openwrt-embedded.tar.gz",
 				SHA256: "b2a9f454523264899e0e7ba19c662e59e29fb20ebb354aa3631cd76885f4c2e6", Size: 3489340,
-				Member: "zapret-v72.13/binaries/linux-arm64/nfqws",
+				BinarySHA256: "75fc3d6352eb9ebf510dfa470797c5ea079c475755ae3c0a79b1e9aaaf0c37a6",
+				Member:       "zapret-v72.13/binaries/linux-arm64/nfqws",
 			}},
 		},
 		KindTGWS: {

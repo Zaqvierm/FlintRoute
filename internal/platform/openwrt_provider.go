@@ -946,13 +946,19 @@ func (p OpenWrtProvider) Overview(cfg *config.Config) map[string]any {
 		"temperature_c":             snapshot.Temperature,
 		"uptime_seconds":            snapshot.System.Uptime,
 		"data_plane":                "UNVERIFIED",
-		"source":                    p.Name(),
-		"status":                    snapshot.Status,
-		"reason":                    nilIfEmpty(snapshot.Reason),
-		"simulation":                false,
-		"freshness":                 snapshotFreshness(snapshot),
-		"collected_at":              snapshot.CollectedAt,
-		"last_confirmed":            nil,
+		// Component installation and a live dataplane proof are deliberately
+		// separate facts.  OpenWrtProvider is a read-only inventory provider;
+		// until a transaction has produced target-side path evidence it must not
+		// claim that managed traffic is confirmed.
+		"data_plane_reason_code": "managed_route_not_applied_or_verified",
+		"data_plane_reason":      "Управляемый маршрут ещё не применён и не прошёл проверку на роутере.",
+		"source":                 p.Name(),
+		"status":                 snapshot.Status,
+		"reason":                 nilIfEmpty(snapshot.Reason),
+		"simulation":             false,
+		"freshness":              snapshotFreshness(snapshot),
+		"collected_at":           snapshot.CollectedAt,
+		"last_confirmed":         nil,
 	}
 }
 

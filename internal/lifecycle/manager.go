@@ -43,6 +43,10 @@ func (LinuxProcessInspector) Inspect(pid int) (ProcessIdentity, error) {
 	if len(fields) <= 19 {
 		return ProcessIdentity{}, fmt.Errorf("proc stat lacks start time")
 	}
+	pgid, err := strconv.Atoi(fields[2])
+	if err != nil || pgid <= 0 {
+		return ProcessIdentity{}, fmt.Errorf("parse process group: %w", err)
+	}
 	start, err := strconv.ParseUint(fields[19], 10, 64)
 	if err != nil {
 		return ProcessIdentity{}, fmt.Errorf("parse process start time: %w", err)
@@ -56,7 +60,7 @@ func (LinuxProcessInspector) Inspect(pid int) (ProcessIdentity, error) {
 		return ProcessIdentity{}, err
 	}
 	args := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
-	return ProcessIdentity{PID: pid, StartTimeTicks: start, Executable: exe, CommandLine: args}, nil
+	return ProcessIdentity{PID: pid, StartTimeTicks: start, PGID: pgid, Executable: exe, CommandLine: args}, nil
 }
 
 func (LinuxProcessInspector) Terminate(pid int) error {
@@ -505,6 +509,7 @@ func verifyProcessIdentity(expected, actual ProcessIdentity, runID string) ([]st
 	}
 	check("PID", expected.PID > 0 && expected.PID == actual.PID)
 	check("start time", expected.StartTimeTicks > 0 && expected.StartTimeTicks == actual.StartTimeTicks)
+	check("process group", expected.PGID > 0 && expected.PGID == actual.PGID)
 	check("executable", expected.Executable != "" && filepath.Clean(expected.Executable) == filepath.Clean(actual.Executable))
 	if expected.ConfigPath != "" {
 		check("config", containsArg(actual.CommandLine, expected.ConfigPath))

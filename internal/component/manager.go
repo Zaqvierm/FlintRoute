@@ -40,7 +40,13 @@ type Manager struct {
 	Releases   ReleaseSource
 	Catalog    map[Kind]Release
 	Now        func() time.Time
-	mu         sync.Mutex
+	// DirectMutationAllowed is an explicit development/test escape hatch.
+	// Production managers must use a helper-backed executor instead of calling
+	// an OpenWrtDriver directly from the controller process.  Keep the default
+	// fail-closed so adding a new production wiring site cannot silently regain
+	// root-owned file/service mutation.
+	DirectMutationAllowed bool
+	mu                    sync.Mutex
 }
 
 func (m *Manager) List(ctx context.Context) ([]Status, error) {
@@ -75,10 +81,27 @@ func (m *Manager) Status(ctx context.Context, kind Kind, checkUpstream bool) (St
 	if inspectErr != nil {
 		health = Health{State: "failed", ServiceState: "unknown", Reason: inspectErr.Error()}
 	}
-	if present && !record.Installed {
-		record = Record{Kind: kind, Installed: true, Version: detectedVersion, Source: "system", Architecture: "detected"}
-	}
 	status := statusFromRecord(record, release, health)
+	status.Detected = present
+	status.Managed = record.Installed
+	switch {
+	case record.Installed:
+		status.Ownership = "flintroute"
+	case present:
+		// A system binary without a FlintRoute registry record is evidence of
+		// an external/foreign installation, not permission to manage it. Do
+		// not expose the driver's managed-service health as a PASS signal.
+		status.Installed = true
+		status.Version = detectedVersion
+		status.Architecture = "detected"
+		status.Ownership = "foreign"
+		status.ServiceState = "foreign"
+		status.HealthState = "foreign"
+		status.HealthReady = false
+		status.HealthReason = "Компонент обнаружен вне FlintRoute; ownership и dataplane не подтверждены"
+	default:
+		status.Ownership = "absent"
+	}
 	if checkUpstream && m.Releases != nil {
 		latest, latestErr := m.Releases.Latest(ctx, release)
 		if latestErr != nil {
@@ -98,6 +121,9 @@ func (m *Manager) Execute(ctx context.Context, request Request) (Result, error) 
 	if !request.Kind.Valid() || !request.Action.Valid() {
 		return Result{}, errors.New("unsupported component action")
 	}
+	if isMutationAction(request.Action) && !m.DirectMutationAllowed {
+		return Result{}, errors.New("component mutation requires a helper-backed privileged executor")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := m.validate(); err != nil {
@@ -107,6 +133,19 @@ func (m *Manager) Execute(ctx context.Context, request Request) (Result, error) 
 	record, err := m.loadRecord(request.Kind)
 	if err != nil {
 		return Result{}, err
+	}
+	if !record.Installed && request.Action != ActionCheck && request.Action != ActionCheckUpdates {
+		// Never let an install/update/uninstall-style operation overwrite a
+		// binary that exists without a FlintRoute registry record. The UI also
+		// hides mutation controls for this state, but the backend must enforce
+		// the ownership fence for direct API callers and stale clients too.
+		_, present, _, inspectErr := m.Driver.Inspect(ctx, request.Kind)
+		if inspectErr != nil {
+			return Result{}, fmt.Errorf("component ownership check failed: %w", inspectErr)
+		}
+		if present {
+			return Result{}, errors.New("component resource is detected outside FlintRoute; ownership handoff is required before mutation")
+		}
 	}
 	result := Result{Action: request.Action}
 	switch request.Action {
@@ -162,6 +201,15 @@ func (m *Manager) Execute(ctx context.Context, request Request) (Result, error) 
 	}
 	result.Status, err = m.Status(ctx, request.Kind, false)
 	return result, err
+}
+
+func isMutationAction(action Action) bool {
+	switch action {
+	case ActionInstall, ActionUpdate, ActionRestart, ActionRollback, ActionUninstall:
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *Manager) install(ctx context.Context, request Request, release Release, previous Record) (Result, error) {
@@ -392,9 +440,25 @@ func (m *Manager) removeRecord(kind Kind) error {
 }
 
 func statusFromRecord(record Record, release Release, health Health) Status {
+	checksum := canonicalDigest(record.Checksum)
+	binaryChecksum := canonicalDigest(record.BinaryChecksum)
+	asset, hasAsset := pinnedAsset(record, release)
+	// A component discovered on the host has no registry record yet.  If its
+	// detected version matches the vetted release, expose the catalog digest as
+	// the expected setup pin.  The setup checker still hashes the actual binary
+	// and rejects a mismatch; this is metadata for preflight, not proof that the
+	// file is trusted.
+	if checksum == "" && sameReleaseVersion(record.Version, release.Version) {
+		if hasAsset {
+			checksum = canonicalDigest(asset.SHA256)
+		}
+	}
+	if binaryChecksum == "" && sameReleaseVersion(record.Version, release.Version) && hasAsset {
+		binaryChecksum = canonicalDigest(asset.BinarySHA256)
+	}
 	status := Status{
 		Kind: record.Kind, Installed: record.Installed, Version: record.Version, LatestSupported: release.Version,
-		Architecture: record.Architecture, Source: release.Source, Checksum: record.Checksum,
+		Architecture: record.Architecture, Source: release.Source, PinnedAssetURL: pinnedAssetURL(record, release), Checksum: checksum, BinaryChecksum: binaryChecksum,
 		ServiceState: health.ServiceState, HealthState: health.State, HealthReady: health.Ready,
 		HealthReason: health.Reason, LastSuccessfulCheck: health.LastSuccessful, LastCheckedAt: record.LastCheckedAt,
 		RollbackVersion: record.RollbackVersion,
@@ -408,6 +472,45 @@ func statusFromRecord(record Record, release Release, health Health) Status {
 		status.NextActions = []string{"configure_proxy", "verify_telegram_transport"}
 	}
 	return status
+}
+
+func pinnedAssetURL(record Record, release Release) string {
+	asset, ok := pinnedAsset(record, release)
+	if ok {
+		return asset.URL
+	}
+	return ""
+}
+
+func pinnedAsset(record Record, release Release) (Asset, bool) {
+	for _, asset := range release.Assets {
+		if record.Architecture != "" && asset.Architecture == record.Architecture {
+			return asset, true
+		}
+	}
+	if len(release.Assets) == 1 {
+		return release.Assets[0], true
+	}
+	return Asset{}, false
+}
+
+func sameReleaseVersion(left, right string) bool {
+	left = strings.TrimPrefix(strings.TrimSpace(left), "v")
+	right = strings.TrimPrefix(strings.TrimSpace(right), "v")
+	return left != "" && left == right
+}
+
+func canonicalDigest(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if strings.HasPrefix(value, "sha256:") {
+		return value
+	}
+	if len(value) == sha256.Size*2 {
+		if _, err := hex.DecodeString(value); err == nil {
+			return "sha256:" + value
+		}
+	}
+	return value
 }
 
 type GitHubReleaseSource struct{ Client *http.Client }
@@ -427,6 +530,7 @@ func (s GitHubReleaseSource) Latest(ctx context.Context, release Release) (strin
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
+	defer client.CloseIdleConnections()
 	response, err := client.Do(request)
 	if err != nil {
 		return "", errors.New("upstream release metadata is unavailable")

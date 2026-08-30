@@ -310,6 +310,9 @@ func (d OpenWrtDriver) installZapretRuntime(artifact string, release Release) er
 	if err := extractZapretRuntime(artifact, archivePrefix, staging); err != nil {
 		return err
 	}
+	if err := normalizeZapretRuntimeModes(staging); err != nil {
+		return err
+	}
 	if info, statErr := os.Lstat(target); statErr == nil {
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return errors.New("existing Zapret runtime is unsafe")
@@ -433,18 +436,47 @@ func zapretVersionRuntimeReady(target string) (bool, error) {
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return false, errors.New("unsafe Zapret version runtime")
 	}
+	if info.Mode().Perm()&0o555 != 0o555 {
+		// A root-owned tree created under umask 077 is repairable by the
+		// component installer; it is not a reason to reject the replacement.
+		return false, nil
+	}
 	for _, relative := range zapretRuntimeMembers() {
 		member, memberErr := os.Lstat(filepath.Join(target, filepath.FromSlash(relative)))
 		executableRequired := relative != "config.default"
 		if errors.Is(memberErr, os.ErrNotExist) {
 			return false, nil
 		}
-		if memberErr != nil || !member.Mode().IsRegular() || member.Mode()&os.ModeSymlink != 0 ||
-			(executableRequired && member.Mode()&0o111 == 0) {
+		if memberErr != nil || !member.Mode().IsRegular() || member.Mode()&os.ModeSymlink != 0 {
 			return false, errors.New("unsafe Zapret runtime member")
+		}
+		if member.Mode().Perm()&0o444 != 0o444 || (executableRequired && member.Mode()&0o111 == 0) {
+			return false, nil
 		}
 	}
 	return true, nil
+}
+
+func normalizeZapretRuntimeModes(root string) error {
+	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("Zapret runtime contains a symlink")
+		}
+		if info.IsDir() {
+			return os.Chmod(path, 0o755)
+		}
+		if !info.Mode().IsRegular() {
+			return errors.New("Zapret runtime contains a non-regular member")
+		}
+		perm := os.FileMode(0o755)
+		if filepath.Base(path) == "config.default" {
+			perm = 0o644
+		}
+		return os.Chmod(path, perm)
+	})
 }
 
 func removeOwnedTree(root string) error {
@@ -475,6 +507,14 @@ func (d OpenWrtDriver) healthFor(ctx context.Context, kind Kind, binary, service
 		return Health{State: "failed", ServiceState: "unknown", Reason: "component version check failed"}, nil
 	}
 	running := d.serviceRunning(ctx, service)
+	if !running {
+		// The production controller is non-root.  OpenWrt's rc.common status
+		// command may be unreadable to it because procd tries to create a
+		// root-only lock file.  A read-only /proc check for the exact executable
+		// keeps component status truthful without granting the controller a
+		// privileged init-script execution path.
+		running = processBinaryRunning(binary)
+	}
 	state := "ready"
 	reason := ""
 	if !running {
@@ -567,6 +607,38 @@ func (d OpenWrtDriver) serviceRunning(ctx context.Context, service string) bool 
 	}
 	_, err = d.runner().Run(ctx, service, "status")
 	return err == nil
+}
+
+func processBinaryRunning(binary string) bool {
+	if runtime.GOOS == "windows" || strings.TrimSpace(binary) == "" {
+		return false
+	}
+	want := filepath.Clean(binary)
+	if resolved, err := filepath.EvalSymlinks(binary); err == nil {
+		want = filepath.Clean(resolved)
+	}
+	wantBase := filepath.Base(want)
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if _, err := strconv.Atoi(entry.Name()); err != nil {
+			continue
+		}
+		cmdline, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		if err != nil || len(cmdline) == 0 {
+			continue
+		}
+		first := strings.TrimSpace(strings.SplitN(string(cmdline), "\x00", 2)[0])
+		if first == want || filepath.Base(first) == wantBase {
+			return true
+		}
+	}
+	return false
 }
 
 func (d OpenWrtDriver) detectVersion(ctx context.Context, kind Kind, binary string) string {

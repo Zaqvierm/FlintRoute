@@ -4,10 +4,12 @@ umask 077
 
 bootstrap="${ROUTER_POLICY_DNS_OBSERVER_BOOTSTRAP:-/usr/lib/router-policy/openwrt/dnsmasq/router-policy.conf}"
 confdir="${ROUTER_POLICY_DNSMASQ_CONFDIR:-$(uci -q get 'dhcp.@dnsmasq[0].confdir' 2>/dev/null || true)}"
+system_root="${ROUTER_POLICY_SYSTEM_ROOT:-}"
 dnsmasq_init="${DNSMASQ_INIT:-/etc/init.d/dnsmasq}"
 dnsmasq_bin="${DNSMASQ_BIN:-dnsmasq}"
 nslookup_bin="${NSLOOKUP_BIN:-nslookup}"
 sleep_bin="${SLEEP_BIN:-sleep}"
+observation_log="${ROUTER_POLICY_DNS_OBSERVATION_LOG:-$system_root/var/run/dnsmasq/router-policy-observations.log}"
 reload_if_needed=0
 
 case "${1:-}" in
@@ -19,10 +21,65 @@ case "${1:-}" in
     ;;
 esac
 
+validate_no_symlink_path() {
+  candidate="$1"
+  case "$candidate" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  [ "$candidate" != "/" ] || return 1
+  remainder=${candidate#/}
+  current=""
+  while [ -n "$remainder" ]; do
+    case "$remainder" in
+      */*) component=${remainder%%/*}; remainder=${remainder#*/} ;;
+      *) component=$remainder; remainder= ;;
+    esac
+    case "$component" in
+      ""|.|..) return 1 ;;
+    esac
+    current="$current/$component"
+    [ ! -L "$current" ] || return 1
+  done
+}
+
+normalize_observation_log_permissions() {
+  [ -e "$observation_log" ] || return 0
+  [ -f "$observation_log" ] && [ ! -L "$observation_log" ] || {
+    echo "dns_observer=error" >&2
+    echo "reason=observation_log_not_regular" >&2
+    return 1
+  }
+  # dnsmasq owns the writer fd, but the controller must be able to consume
+  # the same file without running privileged.  Adjust only this exact
+  # FlintRoute-owned log; never truncate or replace it while dnsmasq writes.
+  chown root:daemon "$observation_log" || {
+    echo "dns_observer=error" >&2
+    echo "reason=observation_log_owner" >&2
+    return 1
+  }
+  chmod 640 "$observation_log" || {
+    echo "dns_observer=error" >&2
+    echo "reason=observation_log_mode" >&2
+    return 1
+  }
+}
+
 [ -n "$confdir" ] || {
   echo "dns_observer=skipped"
   echo "reason=dnsmasq_confdir_unknown"
   exit 0
+}
+[ "$confdir" = "$system_root/tmp/dnsmasq.d" ] ||
+  [ "$confdir" = "$system_root/etc/dnsmasq.d" ] || {
+  echo "dns_observer=error" >&2
+  echo "reason=dnsmasq_confdir_unowned" >&2
+  exit 1
+}
+validate_no_symlink_path "$confdir" || {
+  echo "dns_observer=error" >&2
+  echo "reason=dnsmasq_confdir_symlink" >&2
+  exit 1
 }
 [ -f "$bootstrap" ] && [ ! -L "$bootstrap" ] || {
   echo "dns_observer=error" >&2
@@ -45,6 +102,7 @@ target="$confdir/router-policy.conf"
 
 if [ -f "$target" ]; then
   echo "dns_observer=present"
+  normalize_observation_log_permissions
   if [ "$reload_if_needed" = 1 ] && [ -x "$dnsmasq_init" ] && "$dnsmasq_init" running >/dev/null 2>&1; then
     "$dnsmasq_init" restart
     attempt=0
@@ -63,6 +121,7 @@ if [ -f "$target" ]; then
       echo "reason=dnsmasq_not_ready_after_restart" >&2
       exit 1
     }
+    normalize_observation_log_permissions
   else
     echo "dnsmasq_restart=not-needed"
   fi
@@ -95,6 +154,7 @@ if [ "$reload_if_needed" = 1 ] && [ -x "$dnsmasq_init" ] && "$dnsmasq_init" runn
     echo "reason=dnsmasq_not_ready_after_restart" >&2
     exit 1
   }
+  normalize_observation_log_permissions
 else
   echo "dnsmasq_restart=not-requested"
 fi

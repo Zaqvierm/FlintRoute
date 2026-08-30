@@ -45,6 +45,9 @@ type Asset struct {
 	PackageType  string `json:"package_type"`
 	URL          string `json:"url"`
 	SHA256       string `json:"sha256"`
+	// BinarySHA256 pins the extracted executable when the asset is an archive.
+	// SHA256 remains the checksum of the downloaded asset itself.
+	BinarySHA256 string `json:"binary_sha256,omitempty"`
 	Size         int64  `json:"size"`
 	Member       string `json:"member,omitempty"`
 }
@@ -91,6 +94,7 @@ type Record struct {
 	Version         string    `json:"version,omitempty"`
 	Source          string    `json:"source,omitempty"`
 	Checksum        string    `json:"checksum,omitempty"`
+	BinaryChecksum  string    `json:"binary_checksum,omitempty"`
 	Architecture    string    `json:"architecture,omitempty"`
 	PackageType     string    `json:"package_type,omitempty"`
 	InstalledAt     time.Time `json:"installed_at,omitempty"`
@@ -100,16 +104,27 @@ type Record struct {
 }
 
 type Status struct {
-	Kind                 Kind       `json:"kind"`
-	Installed            bool       `json:"installed"`
-	Version              string     `json:"version,omitempty"`
-	LatestSupported      string     `json:"latest_supported_version"`
-	LatestUpstream       string     `json:"latest_upstream_version,omitempty"`
-	UpdateAvailable      bool       `json:"update_available"`
-	UpdateBlockedReason  string     `json:"update_blocked_reason,omitempty"`
-	Architecture         string     `json:"architecture,omitempty"`
-	Source               string     `json:"source"`
+	Kind      Kind `json:"kind"`
+	Installed bool `json:"installed"`
+	// Detected means that a compatible executable/package was found on the
+	// platform. It is intentionally independent from Managed: a binary found
+	// outside FlintRoute must never be presented as a FlintRoute-owned service.
+	Detected            bool   `json:"detected"`
+	Managed             bool   `json:"managed"`
+	Ownership           string `json:"ownership"` // flintroute, foreign, absent
+	Version             string `json:"version,omitempty"`
+	LatestSupported     string `json:"latest_supported_version"`
+	LatestUpstream      string `json:"latest_upstream_version,omitempty"`
+	UpdateAvailable     bool   `json:"update_available"`
+	UpdateBlockedReason string `json:"update_blocked_reason,omitempty"`
+	Architecture        string `json:"architecture,omitempty"`
+	Source              string `json:"source"`
+	// PinnedAssetURL is the immutable release artifact used for the installed
+	// component. Source remains the human-facing upstream repository; setup
+	// flows must use this URL when they need a version-bound source.
+	PinnedAssetURL       string     `json:"pinned_asset_url,omitempty"`
 	Checksum             string     `json:"checksum,omitempty"`
+	BinaryChecksum       string     `json:"binary_sha256,omitempty"`
 	ServiceState         string     `json:"service_state"`
 	HealthState          string     `json:"health_state"`
 	HealthReady          bool       `json:"health_ready"`

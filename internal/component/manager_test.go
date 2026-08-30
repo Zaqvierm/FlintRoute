@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -86,9 +87,29 @@ func testManager(t *testing.T, body []byte, driver *fakeDriver) *Manager {
 	}
 	return &Manager{
 		StateDir: t.TempDir(), RuntimeDir: t.TempDir(), Driver: driver,
-		HTTP:    &http.Client{Transport: staticTransport{body: body, status: http.StatusOK}},
-		Catalog: map[Kind]Release{KindXray: release},
-		Now:     func() time.Time { return time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC) },
+		HTTP:                  &http.Client{Transport: staticTransport{body: body, status: http.StatusOK}},
+		Catalog:               map[Kind]Release{KindXray: release},
+		DirectMutationAllowed: true,
+		Now:                   func() time.Time { return time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC) },
+	}
+}
+
+func TestManagerRejectsDirectMutationWithoutPrivilegedExecutor(t *testing.T) {
+	driver := &fakeDriver{
+		platform: Platform{GOARCH: "arm64"}, preflight: Preflight{Ready: true},
+		health: Health{State: "ready", ServiceState: "running", Ready: true},
+	}
+	manager := testManager(t, []byte("verified-archive"), driver)
+	manager.DirectMutationAllowed = false
+
+	for _, action := range []Action{ActionInstall, ActionUpdate, ActionRestart, ActionRollback, ActionUninstall} {
+		_, err := manager.Execute(context.Background(), Request{Kind: KindXray, Action: action, ConfirmDisruption: true})
+		if err == nil || !strings.Contains(err.Error(), "helper-backed privileged executor") {
+			t.Fatalf("action %s was not fenced: %v", action, err)
+		}
+	}
+	if driver.installCalls != 0 || driver.restartCalls != 0 || driver.rollbackCalls != 0 || driver.uninstallCalls != 0 {
+		t.Fatalf("direct driver was called despite privilege fence: install=%d restart=%d rollback=%d uninstall=%d", driver.installCalls, driver.restartCalls, driver.rollbackCalls, driver.uninstallCalls)
 	}
 }
 
@@ -206,6 +227,63 @@ func TestManagerKeepsInstalledTGWSPendingExplicitConfiguration(t *testing.T) {
 	}
 }
 
+func TestManagerMarksDetectedUnmanagedComponentAsForeign(t *testing.T) {
+	driver := &fakeDriver{
+		platform: Platform{GOARCH: "arm64"},
+		health:   Health{State: "ready", ServiceState: "running", Ready: true},
+		present:  true,
+		detected: "Xray 26.3.27",
+	}
+	manager := testManager(t, []byte("archive"), driver)
+	status, err := manager.Status(context.Background(), KindXray, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Installed || !status.Detected || status.Managed || status.Ownership != "foreign" {
+		t.Fatalf("detected external component was not classified as foreign: %+v", status)
+	}
+	if status.HealthReady || status.HealthState != "foreign" || status.ServiceState != "foreign" {
+		t.Fatalf("foreign component leaked managed health: %+v", status)
+	}
+}
+
+func TestManagerRejectsMutationOfDetectedForeignComponent(t *testing.T) {
+	driver := &fakeDriver{
+		platform:  Platform{GOARCH: "arm64"},
+		preflight: Preflight{Ready: true},
+		health:    Health{State: "ready", ServiceState: "running", Ready: true},
+		present:   true,
+		detected:  "Xray 26.3.27",
+	}
+	manager := testManager(t, []byte("archive"), driver)
+	if _, err := manager.Execute(context.Background(), Request{Kind: KindXray, Action: ActionInstall}); err == nil {
+		t.Fatal("install was allowed to overwrite a foreign component")
+	}
+	if driver.installCalls != 0 {
+		t.Fatalf("foreign component reached install: calls=%d", driver.installCalls)
+	}
+}
+
+func TestManagerMarksRegisteredComponentAsFlintRouteOwned(t *testing.T) {
+	driver := &fakeDriver{
+		platform: Platform{GOARCH: "arm64"},
+		health:   Health{State: "ready", ServiceState: "running", Ready: true},
+		present:  true,
+		detected: "Xray 26.3.27",
+	}
+	manager := testManager(t, []byte("archive"), driver)
+	if err := manager.saveRecord(Record{Kind: KindXray, Installed: true, Version: "Xray 26.3.27"}); err != nil {
+		t.Fatal(err)
+	}
+	status, err := manager.Status(context.Background(), KindXray, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Installed || !status.Detected || !status.Managed || status.Ownership != "flintroute" || !status.HealthReady {
+		t.Fatalf("registered component was not classified as owned: %+v", status)
+	}
+}
+
 func TestManagerUninstallRequiresManagedRecordAndConfirmation(t *testing.T) {
 	driver := &fakeDriver{platform: Platform{GOARCH: "arm64"}, health: Health{Ready: true}}
 	manager := testManager(t, []byte("archive"), driver)
@@ -238,6 +316,22 @@ func TestManagerDownloadDoesNotExposeTransportErrors(t *testing.T) {
 	_, err := manager.Execute(context.Background(), Request{Kind: KindXray, Action: ActionInstall})
 	if err == nil || err.Error() != "component download failed" {
 		t.Fatalf("transport error leaked or was lost: %v", err)
+	}
+}
+
+func TestStatusIncludesImmutablePinnedAssetURL(t *testing.T) {
+	release := Release{Kind: KindZapret, Version: "v72.13", Source: "https://github.com/bol-van/zapret", Assets: []Asset{
+		{Architecture: "arm64", URL: "https://github.com/bol-van/zapret/releases/download/v72.13/zapret.tar.gz", SHA256: strings.Repeat("a", 64), BinarySHA256: strings.Repeat("b", 64)},
+	}}
+	status := statusFromRecord(Record{Kind: KindZapret, Installed: true, Version: "72.13", Architecture: "arm64"}, release, Health{})
+	if status.PinnedAssetURL != release.Assets[0].URL {
+		t.Fatalf("pinned asset URL = %q, want %q", status.PinnedAssetURL, release.Assets[0].URL)
+	}
+	if status.Checksum != "sha256:"+strings.Repeat("a", 64) {
+		t.Fatalf("detected release checksum = %q, want catalog digest", status.Checksum)
+	}
+	if status.BinaryChecksum != "sha256:"+strings.Repeat("b", 64) {
+		t.Fatalf("detected binary checksum = %q, want executable digest", status.BinaryChecksum)
 	}
 }
 

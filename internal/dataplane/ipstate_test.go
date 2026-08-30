@@ -228,6 +228,74 @@ func (s *stateRunner) routeCount() int {
 
 type applyRunner struct{ inner *stateRunner }
 
+func TestVerifyNoOwnedIPStateAcceptsEmptyKernelBoundary(t *testing.T) {
+	runner := newStateRunner()
+	if err := VerifyNoOwnedIPState(context.Background(), runner, "ip", OwnedIPStateSpec{
+		Marks:           []string{"0x41", "0x42", "0x43", "0x7f", "0x100", "0x200"},
+		RouteTables:     []int{100, 101, 102},
+		MinRulePriority: 10000,
+		MaxRulePriority: 20099,
+	}); err != nil {
+		t.Fatalf("empty owned boundary rejected: %v", err)
+	}
+}
+
+func TestVerifyNoOwnedIPStateRejectsOwnedRuleOrRoute(t *testing.T) {
+	tests := []struct {
+		name string
+		seed func(*stateRunner)
+	}{
+		{
+			name: "rule",
+			seed: func(r *stateRunner) { r.rules["ipv4"] = map[int]stateRule{10010: {mark: "0x41", table: 100}} },
+		},
+		{
+			name: "route",
+			seed: func(r *stateRunner) {
+				r.ensureRouteTable("ipv4", 101)
+				r.routes["ipv4"][101]["default"] = stateRoute{via: "192.0.2.1", dev: "wan"}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := newStateRunner()
+			tc.seed(runner)
+			err := VerifyNoOwnedIPState(context.Background(), runner, "ip", OwnedIPStateSpec{
+				Marks:           []string{"0x41"},
+				RouteTables:     []int{100, 101},
+				MinRulePriority: 10000,
+				MaxRulePriority: 20099,
+			})
+			if err == nil {
+				t.Fatal("owned IP state was incorrectly accepted as empty")
+			}
+		})
+	}
+}
+
+func TestVerifyNoOwnedIPStateIgnoresForeignBoundary(t *testing.T) {
+	runner := newStateRunner()
+	runner.rules["ipv4"] = map[int]stateRule{9000: {mark: "0x99", table: 200}}
+	runner.ensureRouteTable("ipv4", 200)
+	runner.routes["ipv4"][200]["default"] = stateRoute{via: "192.0.2.1", dev: "wan"}
+	if err := VerifyNoOwnedIPState(context.Background(), runner, "ip", OwnedIPStateSpec{
+		Marks:           []string{"0x41"},
+		RouteTables:     []int{100},
+		MinRulePriority: 10000,
+		MaxRulePriority: 20099,
+	}); err != nil {
+		t.Fatalf("foreign IP state should not block owned-empty proof: %v", err)
+	}
+}
+
+func TestVerifyNoOwnedIPStateFailsClosedOnUnreadableState(t *testing.T) {
+	runner := snapshotRulesRunner{rules: []byte("not-json")}
+	if err := VerifyNoOwnedIPState(context.Background(), runner, "ip", OwnedIPStateSpec{RouteTables: []int{100}}); err == nil {
+		t.Fatal("unreadable kernel state was incorrectly accepted as empty")
+	}
+}
+
 func (a applyRunner) Run(ctx context.Context, name string, args ...string) error {
 	_, err := a.inner.Run(ctx, name, args...)
 	return err
@@ -391,8 +459,8 @@ func TestVerifyDetectsOrphanedRuleWhenRollbackIncomplete(t *testing.T) {
 	if err := ApplyIPPlanWithUCI(context.Background(), applyRunner{st}, "ip", "", plan); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if err := RollbackIPState(context.Background(), st, "ip", plan, pre); err != nil {
-		t.Fatalf("rollback should tolerate failed del: %v", err)
+	if err := RollbackIPState(context.Background(), st, "ip", plan, pre); err == nil {
+		t.Fatal("rollback reported success with orphaned rules left by incomplete rollback")
 	}
 	if err := VerifyIPState(context.Background(), st, "ip", plan, pre); err == nil {
 		t.Fatal("verify accepted orphaned rules left by incomplete rollback")
@@ -466,5 +534,14 @@ func TestTouchedRulesMirrorsApplyDecision(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("legacy touched rules: %+v", got)
+	}
+}
+
+func TestIPStateParsersRejectTrailingJSON(t *testing.T) {
+	if _, err := parseRouteRows([]byte(`[{"dst":"203.0.113.10","dev":"wan","table":100}] {"extra":true}`)); err == nil {
+		t.Fatal("route parser accepted trailing JSON")
+	}
+	if _, err := parseRuleRows([]byte(`[{"priority":10010,"fwmark":"0x41","table":100}] []`)); err == nil {
+		t.Fatal("rule parser accepted trailing JSON")
 	}
 }
