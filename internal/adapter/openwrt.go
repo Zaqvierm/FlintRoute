@@ -46,12 +46,55 @@ func NewOpenWrt(cfg *config.Config, configPath string) (*OpenWrt, error) {
 	if stateDir == "." || !filepath.IsAbs(stateDir) {
 		return nil, fmt.Errorf("production state_dir must be absolute")
 	}
-	return &OpenWrt{helperPath: helper, configPath: cleanConfig, stateDir: stateDir, helperSocket: os.Getenv("ROUTER_POLICY_HELPER_SOCKET")}, nil
+	helperSocket := strings.TrimSpace(os.Getenv("ROUTER_POLICY_HELPER_SOCKET"))
+	if helperSocket != "/var/run/router-policy/helper.sock" {
+		return nil, fmt.Errorf("production helper socket must be /var/run/router-policy/helper.sock")
+	}
+	return &OpenWrt{helperPath: helper, configPath: cleanConfig, stateDir: stateDir, helperSocket: helperSocket}, nil
 }
 
 func (a *OpenWrt) Diagnose(ctx context.Context) StepResult { return a.runGlobal(ctx, "diagnose") }
 func (a *OpenWrt) ClearBootGuard(ctx context.Context) StepResult {
 	return a.runGlobal(ctx, "clear-boot-guard")
+}
+func (a *OpenWrt) ClearBootGuardForTransaction(ctx context.Context, tx Transaction) StepResult {
+	return a.runTransaction(ctx, "clear-boot-guard", tx)
+}
+func (a *OpenWrt) ClearBootGuardForBaseline(ctx context.Context, revisionID, candidateHash string) StepResult {
+	start := time.Now().UTC()
+	if !revisionIDPattern.MatchString(revisionID) || !sha256Pattern.MatchString(candidateHash) {
+		return failedStep("clear-boot-guard-baseline", start, fmt.Errorf("baseline boot guard binding failed strict validation"))
+	}
+	if a.helperSocket != "" {
+		requestID, err := secureRandomHex(8)
+		if err != nil {
+			return failedStep("clear-boot-guard-baseline", start, err)
+		}
+		request := helper.Request{
+			ProtocolVersion: helper.ProtocolVersion,
+			RequestID:       "req_" + requestID,
+			Command:         "recovery.clear_boot_guard_baseline",
+			Generation:      revisionID,
+			RevisionID:      revisionID,
+			TransactionID:   "baseline",
+			CandidateHash:   candidateHash,
+			Baseline:        &helper.BaselineRequest{Operation: "clear-boot-guard"},
+		}
+		result := a.executeHelperRequest(ctx, "clear-boot-guard-baseline", start, request)
+		if result.OK && (result.Evidence["boot_guard"] != "cleared" || result.SemanticState != "baseline_confirmed" || result.Evidence["active_revision"] != revisionID || result.Evidence["active_candidate_hash"] != candidateHash) {
+			result.OK = false
+			result.Status = "ERROR"
+			result.Reason = "adapter did not prove baseline-bound boot guard removal"
+		}
+		return result
+	}
+	result := a.execute(ctx, "clear-boot-guard-baseline", start, a.configPath, "baseline", revisionID, candidateHash)
+	if result.OK && (result.Evidence["boot_guard"] != "cleared" || result.SemanticState != "baseline_confirmed" || result.Evidence["active_revision"] != revisionID || result.Evidence["active_candidate_hash"] != candidateHash) {
+		result.OK = false
+		result.Status = "ERROR"
+		result.Reason = "adapter did not prove baseline-bound boot guard removal"
+	}
+	return result
 }
 func (a *OpenWrt) Reconcile(ctx context.Context, target RecoveryTarget) StepResult {
 	start := time.Now().UTC()
@@ -101,7 +144,27 @@ func (a *OpenWrt) runGlobal(ctx context.Context, command string) StepResult {
 	if !allowedGlobalCommand(command) {
 		return failedStep(command, start, fmt.Errorf("command is not allowlisted"))
 	}
+	if a.helperSocket != "" {
+		return a.executeHelperGlobal(ctx, command, start)
+	}
 	return a.execute(ctx, command, start, a.configPath)
+}
+
+func (a *OpenWrt) executeHelperGlobal(ctx context.Context, command string, start time.Time) StepResult {
+	requestID, err := secureRandomHex(8)
+	if err != nil {
+		return failedStep(command, start, err)
+	}
+	request := helper.Request{
+		ProtocolVersion: helper.ProtocolVersion,
+		RequestID:       "req_" + requestID,
+		Command:         "global." + strings.ReplaceAll(command, "-", "_"),
+		Generation:      "global",
+		RevisionID:      "global",
+		TransactionID:   "global",
+		Global:          &helper.GlobalRequest{Operation: command},
+	}
+	return a.executeHelperRequest(ctx, command, start, request)
 }
 
 func (a *OpenWrt) runTransaction(ctx context.Context, command string, tx Transaction) StepResult {
@@ -272,6 +335,14 @@ func (a *OpenWrt) execute(ctx context.Context, command string, start time.Time, 
 			res.Reason = "data plane was not verified"
 		}
 	}
+	if command == "validate-candidate" && evidence["candidate_valid"] != true {
+		res.OK = false
+		res.Status = "UNVERIFIED"
+		res.Reason = "candidate is not deployable on the current device"
+		if reason, ok := evidence["reason"].(string); ok && reason != "" {
+			res.Reason = reason
+		}
+	}
 	return res
 }
 
@@ -302,7 +373,7 @@ func allowedGlobalCommand(command string) bool {
 
 func allowedTransactionCommand(command string) bool {
 	switch command {
-	case "prepare", "validate-candidate", "snapshot-current", "apply-candidate", "verify-management", "verify-data-plane", "commit", "commit-prepared", "finalize-commit", "rollback":
+	case "prepare", "validate-candidate", "snapshot-current", "apply-candidate", "verify-management", "verify-data-plane", "commit", "commit-prepared", "finalize-commit", "rollback", "clear-boot-guard":
 		return true
 	default:
 		return false

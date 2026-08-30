@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -147,26 +148,60 @@ func preserveRescueArtifact(path, stateDir string) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}
-	name := filepath.Join(dir, "router-policy-corrupt-"+time.Now().UTC().Format("20060102T150405.000000000Z")+".bbolt")
 	source, err := os.Open(path)
 	if err != nil {
 		return
 	}
 	defer source.Close()
-	target, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	temporaryPrefix := ".router-policy-corrupt-" + time.Now().UTC().Format("20060102T150405.000000000Z") + "-"
+	target, err := os.CreateTemp(dir, temporaryPrefix+"*.tmp")
 	if err != nil {
+		return
+	}
+	temporary := target.Name()
+	finalName := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(temporary), "."), ".tmp") + ".bbolt"
+	name := filepath.Join(dir, finalName)
+	removeTemporary := true
+	defer func() {
+		_ = target.Close()
+		if removeTemporary {
+			_ = os.Remove(temporary)
+		}
+	}()
+	if err := target.Chmod(0o600); err != nil {
 		return
 	}
 	keep := true
 	if copied, err := io.Copy(target, io.LimitReader(source, maxRescueArtifactBytes+1)); err != nil || copied > maxRescueArtifactBytes {
 		keep = false
 	}
+	if keep {
+		if err := target.Sync(); err != nil {
+			keep = false
+		}
+	}
 	if err := target.Close(); err != nil {
 		keep = false
 	}
 	if !keep {
-		_ = os.Remove(name)
 		return
+	}
+	if err := os.Rename(temporary, name); err != nil {
+		return
+	}
+	removeTemporary = false
+	if runtime.GOOS != "windows" {
+		parent, err := os.Open(dir)
+		if err != nil {
+			_ = os.Remove(name)
+			return
+		}
+		syncErr := parent.Sync()
+		closeErr := parent.Close()
+		if syncErr != nil || closeErr != nil {
+			_ = os.Remove(name)
+			return
+		}
 	}
 	pruneRescueArtifacts(dir)
 }

@@ -49,6 +49,22 @@ type BootGuardClearer interface {
 	ClearBootGuard(context.Context) StepResult
 }
 
+// BoundBootGuardClearer removes the guard only after proving that the exact
+// committed transaction is still active. Production adapters implement this
+// stronger interface; the legacy interface remains for development fakes and
+// the boot-guard init service's idempotent stop path.
+type BoundBootGuardClearer interface {
+	ClearBootGuardForTransaction(context.Context, Transaction) StepResult
+}
+
+// BaselineBootGuardClearer removes the early forwarding fence only after the
+// controller has validated the immutable baseline revision and its candidate
+// hash. It is separate from the transaction-bound clear because a baseline has
+// no rollback transaction or artifact manifest.
+type BaselineBootGuardClearer interface {
+	ClearBootGuardForBaseline(context.Context, string, string) StepResult
+}
+
 type RecoveryTarget struct {
 	TransactionID        string `json:"transaction_id"`
 	RevisionID           string `json:"revision_id"`

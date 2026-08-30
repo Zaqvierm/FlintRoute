@@ -23,6 +23,15 @@
   },
   "policy": {
     "unknown_domain_first_path": "direct",
+    "route_selection_strategy": "balanced",
+    "route_selection_hysteresis_percent": 15,
+    "route_selection_cooldown_seconds": 60,
+    "route_selection_weights": {
+      "end_to_end_latency": 1,
+      "availability": 0.25,
+      "error_rate": 0.1,
+      "privacy": 0.25
+    },
     "unknown_domain_background_check": true,
     "route_hold_seconds": 600,
     "fail_after_consecutive_errors": 3,
@@ -35,7 +44,7 @@
     "subscription_update_interval_seconds": 21600,
     "tspu_list_update_interval_seconds": 21600,
     "tspu_stale_policy": "zapret_first",
-    "max_subscription_bytes": 2097152,
+    "max_subscription_bytes": 4194304,
     "max_tspu_list_bytes": 10485760,
     "max_probe_seconds": 15,
     "parallel_server_checks": 4,

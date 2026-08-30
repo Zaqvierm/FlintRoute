@@ -3,9 +3,48 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
+
+	"router-policy/internal/zapretprofile"
 )
+
+func TestValidateRouteSelectionWeights(t *testing.T) {
+	cfg := validConfig()
+	cfg.Policy.RouteSelectionWeights.EndToEndLatency = -1
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "route_selection_weights.end_to_end_latency") {
+		t.Fatalf("negative route-selection weight was accepted: %v", err)
+	}
+	cfg = validConfig()
+	cfg.Policy.RouteSelectionWeights.Availability = math.NaN()
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "route_selection_weights.availability") {
+		t.Fatalf("NaN route-selection weight was accepted: %v", err)
+	}
+}
+
+func TestPolicyCanonicalJSONPreservesLegacyOmittedWeights(t *testing.T) {
+	var policy Policy
+	legacy := []byte(`{"unknown_domain_first_path":"direct","unknown_domain_background_check":true}`)
+	if err := json.Unmarshal(legacy, &policy); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(canonical), `"route_selection_weights"`) {
+		t.Fatalf("zero legacy weights changed canonical JSON: %s", canonical)
+	}
+	policy.RouteSelectionWeights.EndToEndLatency = 1
+	canonical, err = json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(canonical), `"route_selection_weights":{"end_to_end_latency":1}`) {
+		t.Fatalf("non-zero route-selection weights were omitted: %s", canonical)
+	}
+}
 
 func TestPlatformIPv6FalseKeepsLegacyCanonicalJSON(t *testing.T) {
 	legacy := []byte(`{"target":"glinet-flint2","require_confirmed_diagnostics":true,"unsupported_apply_policy":"fail_closed"}`)
@@ -147,6 +186,21 @@ func TestValidateBoundsRouteCheckFanout(t *testing.T) {
 	}
 }
 
+func TestValidateUnknownDomainFirstPathIsExplicit(t *testing.T) {
+	for _, mode := range []string{"", "direct", "balanced", "vless", "privacy_first", "drop", "fail_closed"} {
+		cfg := validConfig()
+		cfg.Policy.UnknownDomainFirstPath = mode
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("unknown-domain mode %q was rejected: %v", mode, err)
+		}
+	}
+	cfg := validConfig()
+	cfg.Policy.UnknownDomainFirstPath = "proxy_everything"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "unknown_domain_first_path") {
+		t.Fatalf("invalid unknown-domain mode was accepted: %v", err)
+	}
+}
+
 func TestValidateRejectsPathThatIsAllowedAndForbidden(t *testing.T) {
 	cfg := validConfig()
 	service := cfg.Services["site"]
@@ -267,6 +321,58 @@ func TestValidateRejectsMutableOrPartialZapretPins(t *testing.T) {
 	cfg.Zapret.ProviderSource = "https://downloads.example/nfqws/72.12/nfqws"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("immutable Zapret pins were rejected: %v", err)
+	}
+}
+
+func TestValidateAcceptsDeviceScopedZapretProfilesForManagedLifecycle(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes = append(cfg.Routes, Route{Type: "zapret", Tag: "zapret", Mark: "0x42", Status: "CONFIGURED"})
+	cfg.Zapret = Zapret{Binary: "/usr/bin/nfqws", InitScript: "/etc/init.d/router-policy-zapret", ActiveConfig: "/etc/router-policy/zapret/nfqws.conf", ActivationMode: "managed", Strategy: "tls-fake-ttl3-v1", QueueNum: 200}
+	cfg.Zapret.DeviceProfiles = []zapretprofile.Profile{{
+		ID: "tv-q208", Scope: zapretprofile.Scope{IPv4: "192.168.0.162"}, QueueNum: 208,
+		Strategy: zapretprofile.StrategyTVFakeMultidisorder, Binary: "/usr/bin/nfqws",
+		ActiveConfig: "/etc/router-policy/zapret/profiles/tv-q208.conf",
+		InitScript:   "/etc/init.d/router-policy-zapret-tv-q208",
+		Rules: []zapretprofile.Rule{
+			{Protocol: "tcp", Ports: []zapretprofile.PortRange{{Start: 443, End: 443}}, Verdict: "queue", ConntrackFirstPack: 32},
+			{Protocol: "udp", Ports: []zapretprofile.PortRange{{Start: 443, End: 443}}, Verdict: "drop"},
+		},
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("device-scoped profile was rejected after lifecycle support: %v", err)
+	}
+}
+
+func TestValidateRejectsDeviceScopedZapretProfilesWithoutManagedLifecycle(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes = append(cfg.Routes, Route{Type: "zapret", Tag: "zapret", Mark: "0x42", Status: "CONFIGURED"})
+	cfg.Zapret = Zapret{Binary: "/usr/bin/nfqws", InitScript: "/etc/init.d/router-policy-zapret", ActiveConfig: "/etc/router-policy/zapret/nfqws.conf", ActivationMode: "candidate_only", Strategy: "tls-fake-ttl3-v1", QueueNum: 205}
+	cfg.Zapret.DeviceProfiles = []zapretprofile.Profile{{
+		ID: "tv-q208", Scope: zapretprofile.Scope{IPv4: "192.168.0.162"}, QueueNum: 208,
+		Strategy: zapretprofile.StrategyTVFakeMultidisorder, Binary: "/usr/bin/nfqws",
+		ActiveConfig: "/etc/router-policy/zapret/profiles/tv-q208.conf",
+		InitScript:   "/etc/init.d/router-policy-zapret-tv-q208",
+		Rules: []zapretprofile.Rule{{
+			Protocol: "tcp", Ports: []zapretprofile.PortRange{{Start: 443, End: 443}}, Verdict: "queue",
+		}},
+	}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "enabled zapret route requires managed zapret activation") {
+		t.Fatalf("device-scoped profile escaped the managed lifecycle gate: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidDeviceScopedZapretProfilesBeforeActivationGate(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes = append(cfg.Routes, Route{Type: "zapret", Tag: "zapret", Mark: "0x42", Status: "CONFIGURED"})
+	cfg.Zapret = Zapret{Binary: "/usr/bin/nfqws", InitScript: "/etc/init.d/router-policy-zapret", ActiveConfig: "/etc/router-policy/zapret/nfqws.conf", ActivationMode: "managed", Strategy: "tls-fake-ttl3-v1", QueueNum: 200}
+	cfg.Zapret.DeviceProfiles = []zapretprofile.Profile{{
+		ID: "tv-q208", Scope: zapretprofile.Scope{IPv4: "192.168.0.162"}, QueueNum: 1,
+		Strategy: zapretprofile.StrategyTVFakeMultidisorder, Binary: "/usr/bin/nfqws",
+		ActiveConfig: "/etc/router-policy/zapret/profiles/tv-q208.conf",
+		InitScript:   "/etc/init.d/router-policy-zapret-tv-q208",
+	}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "profiles are invalid") {
+		t.Fatalf("invalid device-scoped profile was not rejected before activation: %v", err)
 	}
 }
 

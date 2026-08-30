@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 	"golang.org/x/net/idna"
 
 	"router-policy/internal/netpolicy"
+	"router-policy/internal/zapretprofile"
 )
 
 var sha256ReferencePattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -72,30 +74,118 @@ type Storage struct {
 }
 
 type Policy struct {
-	UnknownDomainFirstPath           string `json:"unknown_domain_first_path"`
-	UnknownDomainBackgroundCheck     bool   `json:"unknown_domain_background_check"`
-	RouteHoldSeconds                 int    `json:"route_hold_seconds"`
-	FailAfterConsecutiveErrors       int    `json:"fail_after_consecutive_errors"`
-	RecoverAfterConsecutiveSuccess   int    `json:"recover_after_consecutive_successes"`
-	HealthCheckIntervalSeconds       int    `json:"health_check_interval_seconds"`
-	InventoryHealthIntervalSeconds   int    `json:"inventory_health_interval_seconds,omitempty"`
-	ProbeBudget                      int    `json:"probe_budget,omitempty"`
-	DiscoveryQueueLimit              int    `json:"discovery_queue_limit,omitempty"`
-	DomainDecisionTTLSeconds         int    `json:"domain_decision_ttl_seconds"`
-	SubscriptionUpdateIntervalSecs   int    `json:"subscription_update_interval_seconds"`
-	TSPUListUpdateIntervalSeconds    int    `json:"tspu_list_update_interval_seconds"`
-	TSPUStalePolicy                  string `json:"tspu_stale_policy"`
-	MaxSubscriptionBytes             int64  `json:"max_subscription_bytes"`
-	MaxTSPUListBytes                 int64  `json:"max_tspu_list_bytes"`
-	MaxProbeSeconds                  int    `json:"max_probe_seconds"`
-	ParallelServerChecks             int    `json:"parallel_server_checks"`
-	GeoLockedUnknownCountryIsSafe    bool   `json:"geo_locked_unknown_country_is_safe"`
-	GeoLockedAllowDirect             bool   `json:"geo_locked_allow_direct"`
-	GeoLockedAllowZapret             bool   `json:"geo_locked_allow_zapret"`
-	DirectOnlyAllowForeignProxy      bool   `json:"direct_only_allow_foreign_proxy"`
-	DiscoveryMode                    string `json:"discovery_mode,omitempty"`
-	DiscoveryMaxNewRulesPerHour      int    `json:"discovery_max_new_rules_per_hour,omitempty"`
-	DiscoveryMaxConsecutiveRollbacks int    `json:"discovery_max_consecutive_rollbacks,omitempty"`
+	UnknownDomainFirstPath string `json:"unknown_domain_first_path"`
+	// RouteSelectionStrategy controls scoring after the hard evidence filter.
+	// It never changes route eligibility or safety constraints.
+	RouteSelectionStrategy          string `json:"route_selection_strategy,omitempty"`
+	RouteSelectionHysteresisPercent int    `json:"route_selection_hysteresis_percent,omitempty"`
+	RouteSelectionCooldownSeconds   int    `json:"route_selection_cooldown_seconds,omitempty"`
+	// RouteSelectionWeights controls the relative penalties used after the
+	// hard evidence filter. Zero values use documented defaults so legacy
+	// configs remain deterministic; invalid numeric values fail validation.
+	RouteSelectionWeights            RouteSelectionWeights `json:"route_selection_weights,omitempty"`
+	UnknownDomainBackgroundCheck     bool                  `json:"unknown_domain_background_check"`
+	RouteHoldSeconds                 int                   `json:"route_hold_seconds"`
+	FailAfterConsecutiveErrors       int                   `json:"fail_after_consecutive_errors"`
+	RecoverAfterConsecutiveSuccess   int                   `json:"recover_after_consecutive_successes"`
+	HealthCheckIntervalSeconds       int                   `json:"health_check_interval_seconds"`
+	InventoryHealthIntervalSeconds   int                   `json:"inventory_health_interval_seconds,omitempty"`
+	ProbeBudget                      int                   `json:"probe_budget,omitempty"`
+	DiscoveryQueueLimit              int                   `json:"discovery_queue_limit,omitempty"`
+	DomainDecisionTTLSeconds         int                   `json:"domain_decision_ttl_seconds"`
+	SubscriptionUpdateIntervalSecs   int                   `json:"subscription_update_interval_seconds"`
+	TSPUListUpdateIntervalSeconds    int                   `json:"tspu_list_update_interval_seconds"`
+	TSPUStalePolicy                  string                `json:"tspu_stale_policy"`
+	MaxSubscriptionBytes             int64                 `json:"max_subscription_bytes"`
+	MaxTSPUListBytes                 int64                 `json:"max_tspu_list_bytes"`
+	MaxProbeSeconds                  int                   `json:"max_probe_seconds"`
+	ParallelServerChecks             int                   `json:"parallel_server_checks"`
+	GeoLockedUnknownCountryIsSafe    bool                  `json:"geo_locked_unknown_country_is_safe"`
+	GeoLockedAllowDirect             bool                  `json:"geo_locked_allow_direct"`
+	GeoLockedAllowZapret             bool                  `json:"geo_locked_allow_zapret"`
+	DirectOnlyAllowForeignProxy      bool                  `json:"direct_only_allow_foreign_proxy"`
+	DiscoveryMode                    string                `json:"discovery_mode,omitempty"`
+	DiscoveryMaxNewRulesPerHour      int                   `json:"discovery_max_new_rules_per_hour,omitempty"`
+	DiscoveryMaxConsecutiveRollbacks int                   `json:"discovery_max_consecutive_rollbacks,omitempty"`
+}
+
+// MarshalJSON keeps canonical hashes stable for configurations written before
+// route-selection weights were introduced.  encoding/json does not consider a
+// zero-valued struct empty for omitempty, so the plain struct tag would add an
+// empty route_selection_weights object and make an otherwise unchanged legacy
+// committed revision look divergent during recovery.
+func (p Policy) MarshalJSON() ([]byte, error) {
+	type policyJSON struct {
+		UnknownDomainFirstPath           string                 `json:"unknown_domain_first_path"`
+		RouteSelectionStrategy           string                 `json:"route_selection_strategy,omitempty"`
+		RouteSelectionHysteresisPercent  int                    `json:"route_selection_hysteresis_percent,omitempty"`
+		RouteSelectionCooldownSeconds    int                    `json:"route_selection_cooldown_seconds,omitempty"`
+		RouteSelectionWeights            *RouteSelectionWeights `json:"route_selection_weights,omitempty"`
+		UnknownDomainBackgroundCheck     bool                   `json:"unknown_domain_background_check"`
+		RouteHoldSeconds                 int                    `json:"route_hold_seconds"`
+		FailAfterConsecutiveErrors       int                    `json:"fail_after_consecutive_errors"`
+		RecoverAfterConsecutiveSuccess   int                    `json:"recover_after_consecutive_successes"`
+		HealthCheckIntervalSeconds       int                    `json:"health_check_interval_seconds"`
+		InventoryHealthIntervalSeconds   int                    `json:"inventory_health_interval_seconds,omitempty"`
+		ProbeBudget                      int                    `json:"probe_budget,omitempty"`
+		DiscoveryQueueLimit              int                    `json:"discovery_queue_limit,omitempty"`
+		DomainDecisionTTLSeconds         int                    `json:"domain_decision_ttl_seconds"`
+		SubscriptionUpdateIntervalSecs   int                    `json:"subscription_update_interval_seconds"`
+		TSPUListUpdateIntervalSeconds    int                    `json:"tspu_list_update_interval_seconds"`
+		TSPUStalePolicy                  string                 `json:"tspu_stale_policy"`
+		MaxSubscriptionBytes             int64                  `json:"max_subscription_bytes"`
+		MaxTSPUListBytes                 int64                  `json:"max_tspu_list_bytes"`
+		MaxProbeSeconds                  int                    `json:"max_probe_seconds"`
+		ParallelServerChecks             int                    `json:"parallel_server_checks"`
+		GeoLockedUnknownCountryIsSafe    bool                   `json:"geo_locked_unknown_country_is_safe"`
+		GeoLockedAllowDirect             bool                   `json:"geo_locked_allow_direct"`
+		GeoLockedAllowZapret             bool                   `json:"geo_locked_allow_zapret"`
+		DirectOnlyAllowForeignProxy      bool                   `json:"direct_only_allow_foreign_proxy"`
+		DiscoveryMode                    string                 `json:"discovery_mode,omitempty"`
+		DiscoveryMaxNewRulesPerHour      int                    `json:"discovery_max_new_rules_per_hour,omitempty"`
+		DiscoveryMaxConsecutiveRollbacks int                    `json:"discovery_max_consecutive_rollbacks,omitempty"`
+	}
+	wire := policyJSON{
+		UnknownDomainFirstPath:           p.UnknownDomainFirstPath,
+		RouteSelectionStrategy:           p.RouteSelectionStrategy,
+		RouteSelectionHysteresisPercent:  p.RouteSelectionHysteresisPercent,
+		RouteSelectionCooldownSeconds:    p.RouteSelectionCooldownSeconds,
+		UnknownDomainBackgroundCheck:     p.UnknownDomainBackgroundCheck,
+		RouteHoldSeconds:                 p.RouteHoldSeconds,
+		FailAfterConsecutiveErrors:       p.FailAfterConsecutiveErrors,
+		RecoverAfterConsecutiveSuccess:   p.RecoverAfterConsecutiveSuccess,
+		HealthCheckIntervalSeconds:       p.HealthCheckIntervalSeconds,
+		InventoryHealthIntervalSeconds:   p.InventoryHealthIntervalSeconds,
+		ProbeBudget:                      p.ProbeBudget,
+		DiscoveryQueueLimit:              p.DiscoveryQueueLimit,
+		DomainDecisionTTLSeconds:         p.DomainDecisionTTLSeconds,
+		SubscriptionUpdateIntervalSecs:   p.SubscriptionUpdateIntervalSecs,
+		TSPUListUpdateIntervalSeconds:    p.TSPUListUpdateIntervalSeconds,
+		TSPUStalePolicy:                  p.TSPUStalePolicy,
+		MaxSubscriptionBytes:             p.MaxSubscriptionBytes,
+		MaxTSPUListBytes:                 p.MaxTSPUListBytes,
+		MaxProbeSeconds:                  p.MaxProbeSeconds,
+		ParallelServerChecks:             p.ParallelServerChecks,
+		GeoLockedUnknownCountryIsSafe:    p.GeoLockedUnknownCountryIsSafe,
+		GeoLockedAllowDirect:             p.GeoLockedAllowDirect,
+		GeoLockedAllowZapret:             p.GeoLockedAllowZapret,
+		DirectOnlyAllowForeignProxy:      p.DirectOnlyAllowForeignProxy,
+		DiscoveryMode:                    p.DiscoveryMode,
+		DiscoveryMaxNewRulesPerHour:      p.DiscoveryMaxNewRulesPerHour,
+		DiscoveryMaxConsecutiveRollbacks: p.DiscoveryMaxConsecutiveRollbacks,
+	}
+	if p.RouteSelectionWeights != (RouteSelectionWeights{}) {
+		weights := p.RouteSelectionWeights
+		wire.RouteSelectionWeights = &weights
+	}
+	return json.Marshal(wire)
+}
+
+type RouteSelectionWeights struct {
+	EndToEndLatency float64 `json:"end_to_end_latency,omitempty"`
+	Availability    float64 `json:"availability,omitempty"`
+	ErrorRate       float64 `json:"error_rate,omitempty"`
+	Privacy         float64 `json:"privacy,omitempty"`
 }
 
 type Xray struct {
@@ -127,6 +217,11 @@ type Zapret struct {
 	AdaptiveEnabled     bool                      `json:"adaptive_enabled,omitempty"`
 	AdaptiveCatalogFile string                    `json:"adaptive_catalog_file,omitempty"`
 	AdaptiveAssignments []ZapretProfileAssignment `json:"adaptive_assignments,omitempty"`
+	// DeviceProfiles is deliberately typed in the config schema so an imported
+	// host-scoped profile cannot disappear during JSON decoding. Activation is
+	// allowed only after the adapter/helper lifecycle and ownership manifest bind
+	// every profile to a fixed queue, config and service path.
+	DeviceProfiles []zapretprofile.Profile `json:"device_profiles,omitempty"`
 }
 
 type ZapretProfileAssignment struct {
@@ -190,6 +285,7 @@ type Route struct {
 
 type Service struct {
 	Category           string       `json:"category"`
+	ClassificationSeed string       `json:"classification_seed,omitempty"`
 	Domains            []string     `json:"domains"`
 	AllowedPaths       []string     `json:"allowed_paths"`
 	ForbiddenPaths     []string     `json:"forbidden_paths"`
@@ -218,6 +314,7 @@ type ProbeCheck struct {
 	SuccessMarkers       []string `json:"success_markers"`
 	RegionalBlockMarkers []string `json:"regional_block_markers"`
 	BlockMarkers         []string `json:"block_markers"`
+	AllowUnauthenticated bool     `json:"allow_unauthenticated,omitempty"`
 }
 
 func (p *ProbeCheck) UnmarshalJSON(data []byte) error {
@@ -449,6 +546,22 @@ func (c *Config) Validate() error {
 	if !hasZapret && (c.Zapret.AdaptiveEnabled || c.Zapret.AdaptiveCatalogFile != "" || len(c.Zapret.AdaptiveAssignments) != 0) {
 		return fmt.Errorf("adaptive Zapret requires an enabled zapret route")
 	}
+	if len(c.Zapret.DeviceProfiles) > 0 {
+		if !hasZapret {
+			return fmt.Errorf("device-scoped Zapret profiles require an enabled zapret route")
+		}
+		if c.Zapret.ActivationMode != "managed" {
+			return fmt.Errorf("device-scoped Zapret profiles require managed zapret activation")
+		}
+		if err := zapretprofile.ValidateProfiles(c.Zapret.DeviceProfiles); err != nil {
+			return fmt.Errorf("device-scoped Zapret profiles are invalid: %w", err)
+		}
+		for _, profile := range c.Zapret.DeviceProfiles {
+			if profile.QueueNum == c.Zapret.QueueNum {
+				return fmt.Errorf("device-scoped Zapret profile %s collides with base queue %d", profile.ID, c.Zapret.QueueNum)
+			}
+		}
+	}
 	if !hasVLESS && c.Xray.OutboundBundleSHA256 != "" {
 		return fmt.Errorf("Xray outbound bundle is set without enabled vless routes")
 	}
@@ -620,6 +733,13 @@ func (c *Config) Validate() error {
 	if c.Policy.DomainDecisionTTLSeconds < 0 {
 		return fmt.Errorf("domain_decision_ttl_seconds cannot be negative")
 	}
+	switch strings.ToLower(strings.TrimSpace(c.Policy.UnknownDomainFirstPath)) {
+	case "", "direct", "balanced", "vless", "privacy_first", "drop", "fail_closed":
+		// Keep the user's spelling for compatibility; the planner canonicalizes
+		// these aliases to one of three bounded modes.
+	default:
+		return fmt.Errorf("invalid unknown_domain_first_path")
+	}
 	if c.Storage.MaxAutoDomains < 0 || c.Storage.MaxAutoDomains > 100000 {
 		return fmt.Errorf("max_auto_domains must be between 0 and 100000")
 	}
@@ -632,6 +752,28 @@ func (c *Config) Validate() error {
 	case "observe_only", "suggest", "auto_apply_verified", "locked":
 	default:
 		return fmt.Errorf("invalid discovery_mode")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Policy.RouteSelectionStrategy)) {
+	case "", "balanced", "fastest", "privacy_first", "fail_closed":
+	default:
+		return fmt.Errorf("invalid route_selection_strategy")
+	}
+	if c.Policy.RouteSelectionHysteresisPercent < 0 || c.Policy.RouteSelectionHysteresisPercent > 90 {
+		return fmt.Errorf("route_selection_hysteresis_percent must be between 0 and 90")
+	}
+	if c.Policy.RouteSelectionCooldownSeconds < 0 || c.Policy.RouteSelectionCooldownSeconds > 86400 {
+		return fmt.Errorf("route_selection_cooldown_seconds must be between 0 and 86400")
+	}
+	weights := c.Policy.RouteSelectionWeights
+	for name, value := range map[string]float64{
+		"end_to_end_latency": weights.EndToEndLatency,
+		"availability":       weights.Availability,
+		"error_rate":         weights.ErrorRate,
+		"privacy":            weights.Privacy,
+	} {
+		if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 100 {
+			return fmt.Errorf("route_selection_weights.%s must be between 0 and 100", name)
+		}
 	}
 	if c.Policy.DiscoveryMaxNewRulesPerHour < 0 || c.Policy.DiscoveryMaxNewRulesPerHour > 1000 {
 		return fmt.Errorf("discovery_max_new_rules_per_hour must be between 0 and 1000")

@@ -21,6 +21,7 @@ import (
 	policyengine "router-policy/internal/policy"
 	"router-policy/internal/writebudget"
 	"router-policy/internal/xraybundle"
+	"router-policy/internal/zapretprofile"
 )
 
 const ManifestVersion = 6
@@ -28,14 +29,15 @@ const ManifestVersion = 6
 const networkDiagnosticsMaxBytes = 64 * 1024
 
 const (
-	NFTFile          = "router-policy.nft"
-	DNSMasqFile      = "router-policy-dnsmasq.conf"
-	XrayFile         = "xray.json"
-	ZapretFile       = "nfqws.conf"
-	IPPlanFile       = "ip-plan.json"
-	VerifyPlanFile   = "verification-plan.json"
-	ManifestFile     = "manifest.json"
-	ManifestHashFile = "manifest.sha256"
+	NFTFile                    = "router-policy.nft"
+	DNSMasqFile                = "router-policy-dnsmasq.conf"
+	XrayFile                   = "xray.json"
+	ZapretFile                 = "nfqws.conf"
+	ZapretProfilesManifestFile = "zapret-profiles.manifest"
+	IPPlanFile                 = "ip-plan.json"
+	VerifyPlanFile             = "verification-plan.json"
+	ManifestFile               = "manifest.json"
+	ManifestHashFile           = "manifest.sha256"
 )
 
 const (
@@ -143,14 +145,15 @@ type TransparentProxyPlan struct {
 }
 
 type ZapretPlan struct {
-	Enabled       bool   `json:"enabled"`
-	CandidateOnly bool   `json:"candidate_only"`
-	Status        string `json:"status"`
-	QueueNum      int    `json:"queue_num,omitempty"`
-	Strategy      string `json:"strategy,omitempty"`
-	Binary        string `json:"binary,omitempty"`
-	ActiveConfig  string `json:"active_config,omitempty"`
-	InitScript    string `json:"init_script,omitempty"`
+	Enabled        bool                    `json:"enabled"`
+	CandidateOnly  bool                    `json:"candidate_only"`
+	Status         string                  `json:"status"`
+	QueueNum       int                     `json:"queue_num,omitempty"`
+	Strategy       string                  `json:"strategy,omitempty"`
+	Binary         string                  `json:"binary,omitempty"`
+	ActiveConfig   string                  `json:"active_config,omitempty"`
+	InitScript     string                  `json:"init_script,omitempty"`
+	DeviceProfiles []zapretprofile.Profile `json:"device_profiles,omitempty"`
 }
 
 type IPRoute struct {
@@ -220,6 +223,7 @@ type generatedFile struct {
 	required     bool
 	projectOwned bool
 	content      []byte
+	mode         os.FileMode
 }
 
 func Generate(cfg *config.Config, root string, binding Binding, generatedAt time.Time) (Manifest, string, error) {
@@ -244,7 +248,14 @@ func Generate(cfg *config.Config, root string, binding Binding, generatedAt time
 		return Manifest{}, "", err
 	}
 	allProofs := buildProofPlan(cfg, routes)
-	proofs := buildProofPlan(cfg, routesUsedByPolicies(routes, domainPolicies))
+	// The IP plan installs rules for every enabled route, while the manifest
+	// only carries proofs for routes referenced by a policy.  Select those
+	// proofs from the already-built full plan so the rule priority remains
+	// identical to the rule that will actually be installed.  Rebuilding the
+	// plan from the subset re-indexes priorities and makes a valid route look
+	// unverified at apply time (for example zapret becoming 10010 in the
+	// manifest while the kernel rule is 10020).
+	proofs := selectProofs(allProofs, routesUsedByPolicies(routes, domainPolicies))
 	ipPlan := buildIPPlan(cfg, binding, allProofs, hasPolicyTraffic(domainPolicies), generatedAt.UTC())
 	dnsProxies, err := buildDNSProxyPlans(cfg, routes, domainPolicies)
 	if err != nil {
@@ -294,7 +305,11 @@ func Generate(cfg *config.Config, root string, binding Binding, generatedAt time
 	}
 	for _, file := range files {
 		path := filepath.Join(root, file.name)
-		if err := writeAtomic(path, file.content, 0o600); err != nil {
+		mode := file.mode
+		if mode == 0 {
+			mode = 0o600
+		}
+		if err := writeAtomic(path, file.content, mode); err != nil {
 			return Manifest{}, "", err
 		}
 		manifest.Artifacts = append(manifest.Artifacts, Entry{
@@ -326,6 +341,23 @@ func routesUsedByPolicies(routes []config.Route, policies []domainPolicy) []conf
 	for _, route := range routes {
 		if used[route.Tag] {
 			selected = append(selected, route)
+		}
+	}
+	return selected
+}
+
+// selectProofs returns the required route proofs without changing their
+// identity or installed-rule priority.  Proofs are generated once from the
+// complete enabled-route plan; filtering is intentionally by route tag only.
+func selectProofs(all []RouteProof, routes []config.Route) []RouteProof {
+	used := make(map[string]bool, len(routes))
+	for _, route := range routes {
+		used[route.Tag] = true
+	}
+	selected := make([]RouteProof, 0, len(used))
+	for _, proof := range all {
+		if used[proof.Tag] {
+			selected = append(selected, proof)
 		}
 	}
 	return selected
@@ -410,14 +442,54 @@ func renderFiles(cfg *config.Config, binding Binding, routes []config.Route, pro
 	if err != nil {
 		return nil, err
 	}
-	return []generatedFile{
+	files := []generatedFile{
 		{kind: "nft", name: NFTFile, target: cfg.OpenWrt.FirewallInclude, required: true, projectOwned: true, content: []byte(nft)},
 		{kind: "dnsmasq", name: DNSMasqFile, target: cfg.OpenWrt.DNSMasqInclude, required: true, projectOwned: true, content: []byte(dnsmasq)},
 		{kind: "xray", name: XrayFile, target: cfg.Xray.ActiveConfig, required: true, projectOwned: true, content: append(xray, '\n')},
 		{kind: "zapret", name: ZapretFile, target: firstNonEmpty(cfg.Zapret.ActiveConfig, "/etc/router-policy/zapret/nfqws.conf"), required: true, projectOwned: true, content: zapret},
 		{kind: "ip_plan", name: IPPlanFile, required: true, projectOwned: false, content: append(ipPlan, '\n')},
 		{kind: "verification_plan", name: VerifyPlanFile, required: true, projectOwned: false, content: append(verifyPlan, '\n')},
-	}, nil
+	}
+	profileFiles, err := renderZapretProfiles(cfg.Zapret.DeviceProfiles)
+	if err != nil {
+		return nil, err
+	}
+	return append(files, profileFiles...), nil
+}
+
+func renderZapretProfiles(profiles []zapretprofile.Profile) ([]generatedFile, error) {
+	if len(profiles) > 0 {
+		if err := zapretprofile.ValidateProfiles(profiles); err != nil {
+			return nil, err
+		}
+	}
+	ordered := append([]zapretprofile.Profile(nil), profiles...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
+	var manifest strings.Builder
+	files := make([]generatedFile, 0, len(ordered)*2+1)
+	for _, profile := range ordered {
+		config, err := zapretprofile.RenderConfig(profile)
+		if err != nil {
+			return nil, err
+		}
+		service, err := zapretprofile.RenderInitScript(profile)
+		if err != nil {
+			return nil, err
+		}
+		configName := "zapret-profile-" + profile.ID + ".conf"
+		serviceName := "zapret-service-" + profile.ID
+		fmt.Fprintf(&manifest, "%s|%s|%s|%d\n", profile.ID, profile.ActiveConfig, profile.InitScript, profile.QueueNum)
+		files = append(files,
+			generatedFile{kind: "zapret_profile", name: configName, target: profile.ActiveConfig, projectOwned: true, content: config, mode: 0o600},
+			generatedFile{kind: "zapret_profile_service", name: serviceName, target: profile.InitScript, projectOwned: true, content: service, mode: 0o755},
+		)
+	}
+	files = append(files, generatedFile{
+		kind: "zapret_profile_manifest", name: ZapretProfilesManifestFile,
+		target: "/etc/router-policy/zapret/profiles.manifest", projectOwned: true,
+		content: []byte(manifest.String()), mode: 0o600,
+	})
+	return files, nil
 }
 
 type routeAssignment struct {
@@ -549,6 +621,13 @@ func renderNFT(cfg *config.Config, binding Binding, routes []config.Route, plan 
 	fmt.Fprintf(&b, "    meta mark %s counter drop comment \"rp action=drop_guard source=meta\"\n", dropMark)
 	fmt.Fprintf(&b, "    ct mark %s counter drop comment \"rp action=drop_guard source=conntrack\"\n", dropMark)
 	b.WriteString("  }\n")
+	if len(cfg.Zapret.DeviceProfiles) > 0 {
+		profileRules, err := zapretprofile.RenderRules(cfg.Zapret.DeviceProfiles)
+		if err != nil {
+			return "", fmt.Errorf("render device-scoped Zapret rules: %w", err)
+		}
+		b.WriteString(profileRules)
+	}
 	b.WriteString("}\n")
 	return b.String(), nil
 }
@@ -996,6 +1075,7 @@ func buildIPPlan(cfg *config.Config, binding Binding, proofs []RouteProof, polic
 				Enabled: true, CandidateOnly: cfg.Zapret.ActivationMode != "managed", Status: "UNVERIFIED",
 				QueueNum: cfg.Zapret.QueueNum, Strategy: cfg.Zapret.Strategy, Binary: cfg.Zapret.Binary,
 				ActiveConfig: cfg.Zapret.ActiveConfig, InitScript: cfg.Zapret.InitScript,
+				DeviceProfiles: append([]zapretprofile.Profile(nil), cfg.Zapret.DeviceProfiles...),
 			}
 		}
 	}
@@ -1861,6 +1941,16 @@ func validateZapretPlan(plan ZapretPlan) error {
 	}
 	if plan.QueueNum < 1 || plan.QueueNum > 65535 || plan.Strategy != "tls-fake-ttl3-v1" || plan.Binary != "/usr/bin/nfqws" || plan.ActiveConfig != "/etc/router-policy/zapret/nfqws.conf" || plan.InitScript != "/etc/init.d/router-policy-zapret" {
 		return fmt.Errorf("invalid managed Zapret plan")
+	}
+	if len(plan.DeviceProfiles) > 0 {
+		if err := zapretprofile.ValidateProfiles(plan.DeviceProfiles); err != nil {
+			return fmt.Errorf("invalid device-scoped Zapret plan: %w", err)
+		}
+		for _, profile := range plan.DeviceProfiles {
+			if profile.QueueNum == plan.QueueNum {
+				return fmt.Errorf("device-scoped Zapret profile %s collides with base queue %d", profile.ID, plan.QueueNum)
+			}
+		}
 	}
 	switch plan.Status {
 	case "UNVERIFIED":

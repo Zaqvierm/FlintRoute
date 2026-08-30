@@ -15,6 +15,7 @@ import (
 
 	"router-policy/internal/config"
 	"router-policy/internal/xraybundle"
+	"router-policy/internal/zapretprofile"
 )
 
 func TestGenerateVerifyAndRejectTamper(t *testing.T) {
@@ -25,8 +26,11 @@ func TestGenerateVerifyAndRejectTamper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(manifest.Artifacts) != 6 || manifestHash == "" {
+	if len(manifest.Artifacts) != 7 || manifestHash == "" {
 		t.Fatalf("incomplete artifact set: %+v", manifest)
+	}
+	if _, err := os.Stat(filepath.Join(root, ZapretProfilesManifestFile)); err != nil {
+		t.Fatalf("profile manifest was not generated: %v", err)
 	}
 	if manifest.DeploymentReady || manifest.BlockReason != "transparent_activation_unverified" {
 		t.Fatalf("candidate-only transparent artifacts were marked deployable: %+v", manifest)
@@ -862,6 +866,39 @@ func TestRoutesUsedByPoliciesExcludesConfiguredButUnusedRoutes(t *testing.T) {
 	}
 }
 
+func TestRequiredProofsKeepInstalledRulePriority(t *testing.T) {
+	cfg := testConfig(t, t.TempDir())
+	routes := []config.Route{
+		{Type: "direct", Tag: "direct", Priority: 10, Mark: "0x41"},
+		{Type: "zapret", Tag: "zapret", Priority: 20, Mark: "0x42"},
+		{Type: "drop", Tag: "drop", Priority: 100, Mark: "0x4f"},
+	}
+	allProofs := buildProofPlan(cfg, routes)
+	used := routesUsedByPolicies(routes, []domainPolicy{{Domain: "youtube.com", Route: routes[1]}})
+	required := selectProofs(allProofs, used)
+	if len(required) != 1 || required[0].Tag != "zapret" {
+		t.Fatalf("unexpected required proof selection: %+v", required)
+	}
+	installed := buildIPRules(cfg, allProofs)
+	if required[0].RulePriority != allProofs[1].RulePriority {
+		t.Fatalf("required proof was re-indexed: required=%+v all=%+v", required[0], allProofs[1])
+	}
+	matched := false
+	for _, rule := range installed {
+		if rule.Family == "ipv4" && rule.Mark == required[0].Mark && rule.Table == required[0].Table && rule.Priority == required[0].RulePriority {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		t.Fatalf("required proof does not match the installed IPv4 rule: proof=%+v rules=%+v", required[0], installed)
+	}
+	legacy := buildProofPlan(cfg, used)
+	if legacy[0].RulePriority == required[0].RulePriority {
+		t.Fatalf("regression fixture did not expose subset re-indexing: legacy=%+v required=%+v", legacy[0], required[0])
+	}
+}
+
 func writeFlowDiagnostics(t *testing.T, root, status string, software, hardware bool) {
 	t.Helper()
 	diagnostics := fmt.Sprintf(`{"status":"VERIFIED","source":"flow-offload-fixture","simulation":true,"wan_interface":"wan","lan_interfaces":["br-lan"],"ipv4_gateway":"192.0.2.1","ipv6_gateway":"2001:db8::1","ipv6_available":true,"transparent_proxy_mode":"tproxy","flow_offloading_status":%q,"software_flow_offloading":%t,"hardware_flow_offloading":%t,"collected_at":"1969-01-01T00:00:00Z","expires_at":"2999-01-01T00:00:00Z"}`, status, software, hardware)
@@ -941,6 +978,54 @@ func TestDeviceOverrideBlocksApplyUntilDeviceMatchingIsProven(t *testing.T) {
 	}
 	if plan.DeploymentReady || len(plan.Routes) != 0 || plan.BlockReason != "device_policy_data_plane_unverified" {
 		t.Fatalf("device policy produced executable unverified plan: %+v", plan)
+	}
+}
+
+func TestGenerateRendersOwnedDeviceScopedZapretArtifacts(t *testing.T) {
+	root := t.TempDir()
+	cfg := testConfig(t, root)
+	cfg.Zapret = config.Zapret{Binary: "/usr/bin/nfqws", InitScript: "/etc/init.d/router-policy-zapret", ActiveConfig: "/etc/router-policy/zapret/nfqws.conf", ActivationMode: "managed", Strategy: "tls-fake-ttl3-v1", QueueNum: 205}
+	cfg.Routes = append(cfg.Routes, config.Route{Type: "zapret", Tag: "zapret", Priority: 30, Mark: "0x42", Status: "CONFIGURED"})
+	cfg.Zapret.DeviceProfiles = []zapretprofile.Profile{{
+		ID: "tv-q208", Scope: zapretprofile.Scope{IPv4: "192.168.0.162"}, QueueNum: 208,
+		Strategy: zapretprofile.StrategyTVFakeMultidisorder, Binary: "/usr/bin/nfqws",
+		ActiveConfig: "/etc/router-policy/zapret/profiles/tv-q208.conf",
+		InitScript:   "/etc/init.d/router-policy-zapret-tv-q208",
+		Rules: []zapretprofile.Rule{
+			{Protocol: "udp", Ports: []zapretprofile.PortRange{{Start: 443, End: 443}}, Verdict: "drop"},
+			{Protocol: "tcp", Ports: []zapretprofile.PortRange{{Start: 443, End: 443}}, Verdict: "queue", ConntrackFirstPack: 32},
+		},
+	}}
+	binding := Binding{TransactionID: "tx_0011223344556677", RevisionID: "rev_2_001122334455", CandidateHash: "sha256:candidate"}
+	_, manifestHash, err := Generate(cfg, filepath.Join(root, "generated"), binding, time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify(filepath.Join(root, "generated"), binding, manifestHash); err != nil {
+		t.Fatal(err)
+	}
+	profileManifest, err := os.ReadFile(filepath.Join(root, "generated", ZapretProfilesManifestFile))
+	if err != nil || !strings.Contains(string(profileManifest), "tv-q208|/etc/router-policy/zapret/profiles/tv-q208.conf|/etc/init.d/router-policy-zapret-tv-q208|208") {
+		t.Fatalf("profile manifest is missing typed ownership row: %q (%v)", profileManifest, err)
+	}
+	profileConfig, err := os.ReadFile(filepath.Join(root, "generated", "zapret-profile-tv-q208.conf"))
+	if err != nil || !strings.Contains(string(profileConfig), "--qnum=208") {
+		t.Fatalf("profile config is missing q208: %q (%v)", profileConfig, err)
+	}
+	profileService, err := os.ReadFile(filepath.Join(root, "generated", "zapret-service-tv-q208"))
+	if err != nil || !strings.Contains(string(profileService), "router-policy-zapret-tv-q208") || strings.Contains(string(profileService), "127.0.0.1:1180") {
+		t.Fatalf("profile service is not fixed/owned: %q (%v)", profileService, err)
+	}
+	nft, err := os.ReadFile(filepath.Join(root, "generated", NFTFile))
+	if err != nil || !strings.Contains(string(nft), "chain rp_zapret_device") || !strings.Contains(string(nft), "queue flags bypass to 208") {
+		t.Fatalf("owned nft table is missing q208 chain: %q (%v)", nft, err)
+	}
+	plan, err := LoadIPPlan(filepath.Join(root, "generated", IPPlanFile), binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Zapret.DeviceProfiles) != 1 || plan.Zapret.DeviceProfiles[0].ID != "tv-q208" {
+		t.Fatalf("IP plan lost device-scoped profile metadata: %+v", plan.Zapret.DeviceProfiles)
 	}
 }
 

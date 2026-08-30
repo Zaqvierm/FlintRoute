@@ -31,9 +31,10 @@ DF_BIN="${DF_BIN:-df}"
 DU_BIN="${DU_BIN:-du}"
 SERVICES="router-policy-helper router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
 ENABLE_SERVICES="router-policy-dns-observer router-policy-boot-guard $SERVICES"
-INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $ROUTER_POLICY_HELPER_BIN $INIT_DIR/router-policy-helper $INIT_DIR/router-policy $INIT_DIR/router-policy-dns-observer $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/config/listener.conf $ETC_DIR/secrets $DNSMASQ_DIR/router-policy.conf $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
+INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $ROUTER_POLICY_HELPER_BIN $INIT_DIR/router-policy-helper $INIT_DIR/router-policy $INIT_DIR/router-policy-dns-observer $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/config/listener.conf $ETC_DIR/helper.env $ETC_DIR/secrets/vpn-subscription-url $ETC_DIR/secrets/vpn-subscription-url.hwid.json $ETC_DIR/secrets/happ-crypt4-private-key.pem $ETC_DIR/secrets/telegram.json $ETC_DIR/secrets/webhook.env $ETC_DIR/secrets $DNSMASQ_DIR/router-policy.conf $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
 
 PREFIX_SWITCH_MARKER="$STATE_DIR/prefix-switch.env"
+MANAGED_FILE_MANIFEST="$PREFIX/.managed-files.manifest"
 
 # These directories belong to OpenWrt, not to FlintRoute.  They must never be
 # represented by a rollback archive entry: restoring synthetic staging
@@ -78,8 +79,10 @@ refresh_install_targets() {
     detected_confdir="$($UCI_BIN -q get 'dhcp.@dnsmasq[0].confdir' 2>/dev/null || true)"
   fi
   if [ -n "$detected_confdir" ]; then
+    validate_dnsmasq_confdir "$detected_confdir" || return 1
     DNSMASQ_DIR="$detected_confdir"
   fi
+  validate_dnsmasq_confdir "$DNSMASQ_DIR" || return 1
   observer_target="$DNSMASQ_DIR/router-policy.conf"
   case " $INSTALL_TARGETS " in
     *" $observer_target "*) ;;
@@ -161,9 +164,10 @@ preflight_disk_space() {
 
 preflight_install() {
   refresh_install_targets
+  validate_managed_roots || return 1
   [ -f "$SOURCE_BINARY" ] || { echo "missing $SOURCE_BINARY; run scripts/build-go.sh before install" >&2; return 1; }
   [ -f "$SOURCE_HELPER_BINARY" ] || { echo "missing $SOURCE_HELPER_BINARY; run scripts/build-go.sh before install" >&2; return 1; }
-  for p in "$ROOT/scripts" "$ROOT/openwrt" "$ROOT/config/default.json" "$ROOT/config/schema.json"; do
+  for p in "$ROOT/scripts" "$ROOT/openwrt" "$ROOT/config/default.json" "$ROOT/config/schema.json" "$ROOT/config/router-policy-helper.env"; do
     [ -e "$p" ] || { echo "missing install source: $p" >&2; return 1; }
   done
   if [ -f "$ROOT/SHA256SUMS" ]; then
@@ -196,6 +200,59 @@ hash_file() {
   fi
 }
 
+managed_static_paths() {
+  printf '%s\n' \
+    "$ROUTER_POLICY_BIN" \
+    "$ROUTER_POLICY_HELPER_BIN" \
+    "$INIT_DIR/router-policy-helper" \
+    "$INIT_DIR/router-policy" \
+    "$INIT_DIR/router-policy-dns-observer" \
+    "$INIT_DIR/router-policy-boot-guard" \
+    "$INIT_DIR/router-policy-watchdog" \
+    "$INIT_DIR/router-policy-xray" \
+    "$INIT_DIR/router-policy-zapret" \
+    "$HOTPLUG_IFACE_DIR/95-router-policy" \
+    "$HOTPLUG_FIREWALL_DIR/95-router-policy"
+}
+
+write_managed_file_manifest() {
+  [ -d "$PREFIX" ] && [ ! -L "$PREFIX" ] || {
+    echo "install blocked: managed prefix is not a directory" >&2
+    return 1
+  }
+  manifest_tmp="$MANAGED_FILE_MANIFEST.tmp"
+  if [ -e "$manifest_tmp" ] || [ -L "$manifest_tmp" ]; then
+    echo "install blocked: managed-file manifest temp path already exists" >&2
+    return 1
+  fi
+  : > "$manifest_tmp"
+  while IFS= read -r managed_path; do
+    [ -n "$managed_path" ] || continue
+    [ -f "$managed_path" ] && [ ! -L "$managed_path" ] || {
+      echo "install blocked: managed static file is missing or unsafe: $managed_path" >&2
+      rm -f "$manifest_tmp"
+      return 1
+    }
+    managed_hash="$(hash_file "$managed_path")" || {
+      rm -f "$manifest_tmp"
+      return 1
+    }
+    printf '%s|%s\n' "$managed_path" "$managed_hash" >> "$manifest_tmp"
+  done <<EOF
+$(managed_static_paths)
+EOF
+  chmod 600 "$manifest_tmp"
+  if [ -z "$SYSTEM_ROOT" ]; then
+    chown 0:0 "$manifest_tmp" || {
+      rm -f "$manifest_tmp"
+      echo "install blocked: cannot assign managed-file manifest ownership" >&2
+      return 1
+    }
+  fi
+  mv "$manifest_tmp" "$MANAGED_FILE_MANIFEST"
+  sync_file_and_parent "$MANAGED_FILE_MANIFEST"
+}
+
 is_install_target() {
   candidate_path="$1"
   for allowed_path in $INSTALL_TARGETS; do
@@ -210,6 +267,24 @@ is_critical_system_dir() {
     [ -n "$critical_path" ] && [ "$candidate_path" = "$critical_path" ] && return 0
   done
   return 1
+}
+
+validate_dnsmasq_confdir() {
+  candidate_dir="$1"
+  # The observer owns one exact fragment in a штатный dnsmasq include
+  # directory. Never let a UCI value turn installation into a generic root
+  # file writer; custom directories need a reviewed ownership contract.
+  case "$candidate_dir" in
+    "${SYSTEM_ROOT:-}/tmp/dnsmasq.d"|"${SYSTEM_ROOT:-}/etc/dnsmasq.d") ;;
+    *)
+      echo "install blocked: dnsmasq confdir is outside the owned allowlist: $candidate_dir" >&2
+      return 1
+      ;;
+  esac
+  validate_no_symlink_path "$candidate_dir" || {
+    echo "install blocked: unsafe dnsmasq confdir path: $candidate_dir" >&2
+    return 1
+  }
 }
 
 validate_no_symlink_path() {
@@ -243,6 +318,34 @@ validate_no_symlink_path() {
   done
 }
 
+validate_managed_roots() {
+  # mkdir -p follows an existing symlink. Re-check every managed root at the
+  # mutation boundary so an environment override or path replacement cannot
+  # redirect writes into a foreign tree between preflight and install_files.
+  for managed_root in \
+    "$PREFIX" \
+    "$ETC_DIR" \
+    "$ETC_DIR/config" \
+    "$ETC_DIR/secrets" \
+    "$ETC_DIR/xray" \
+    "$ETC_DIR/zapret" \
+    "$ETC_DIR/firewall" \
+    "$STATE_DIR" \
+    "$RUNTIME_DIR" \
+    "$BIN_DIR" \
+    "$INIT_DIR" \
+    "$RC_DIR" \
+    "$HOTPLUG_IFACE_DIR" \
+    "$HOTPLUG_FIREWALL_DIR" \
+    "$DNSMASQ_DIR"; do
+    [ -n "$managed_root" ] || continue
+    validate_no_symlink_path "$managed_root" || {
+      echo "install blocked: managed path contains a symlink or unsafe component: $managed_root" >&2
+      return 1
+    }
+  done
+}
+
 validate_backup_paths() {
   case "$BACKUP_ROOT:$BACKUP_DIR" in
     "":*|*:|/:*|*:/) echo "install blocked: invalid backup root" >&2; return 1 ;;
@@ -265,6 +368,11 @@ validate_backup_paths() {
 
 is_managed_service() {
   candidate_service="$1"
+  # dnsmasq is not a FlintRoute-owned service and is never enabled/disabled
+  # by the normal install path.  It is nevertheless recorded as a separate
+  # runtime dependency so rollback can restore the state of a dnsmasq restart
+  # triggered by observer activation.
+  [ "$candidate_service" = "dnsmasq" ] && return 0
   for allowed_service in $ENABLE_SERVICES; do
     [ "$candidate_service" != "$allowed_service" ] || return 0
   done
@@ -529,10 +637,12 @@ backup() {
   done
   [ "$backup_items" -gt 0 ] || { echo "backup has no source files" >&2; return 1; }
   # Do not store the synthetic staging root or its umask-derived parents.
-  # This archive is an export backup, but keeping only allowlisted descendants
+  # This archive is an export backup, but keeping only non-directory members
   # makes accidental future restore code unable to replay /etc or /usr modes.
+  # Parent directories are created by the restoring filesystem with its own
+  # permissions; directory metadata from a 077 staging umask is never carried.
   file_list="$BACKUP_DIR/files.list"
-  (cd "$staging" && find . -mindepth 1 -print | sed 's#^\./##' > "$file_list") || {
+  (cd "$staging" && find . -mindepth 1 ! -type d -print | sed 's#^\./##' > "$file_list") || {
     rm -f "$file_list"
     return 1
   }
@@ -590,12 +700,19 @@ snapshot_installation() {
     validate_no_symlink_path "$p" || { echo "unsafe symlink in install target path: $p" >&2; return 1; }
     if [ -e "$p" ]; then
       [ ! -L "$p" ] || { echo "unsafe symlink install target: $p" >&2; return 1; }
-      relative="${p#/}"
-      mkdir -p "$staging/$(dirname "$relative")"
-      copy_preserving_metadata "$p" "$staging/$relative"
       metadata=$(path_metadata "$p") || { echo "unable to snapshot metadata: $p" >&2; return 1; }
       target_mode=${metadata%%|*}; ownership=${metadata#*|}; uid=${ownership%%|*}; gid=${ownership#*|}
       echo "present|$p|$target_mode|$uid|$gid" >> "$manifest"
+      # The secrets directory is metadata-only.  Recursively copying it would
+      # capture foreign children and make rollback delete/recreate resources
+      # FlintRoute does not own.  Exact files (including managed secret files)
+      # are listed separately below.  Other owned directory targets (notably
+      # the code prefix) retain their existing recursive snapshot semantics.
+      if [ "$p" != "$ETC_DIR/secrets" ] || [ ! -d "$p" ]; then
+        relative="${p#/}"
+        mkdir -p "$staging/$(dirname "$relative")"
+        copy_preserving_metadata "$p" "$staging/$relative"
+      fi
     else
       echo "absent|$p" >> "$manifest"
     fi
@@ -612,6 +729,18 @@ snapshot_installation() {
     fi
     echo "$service|$enabled|$running" >> "$services"
   done
+  # Observer activation may restart dnsmasq after the file snapshot is taken.
+  # Keep its pre-install enabled/running state in the same integrity-checked
+  # service manifest, but do not include it in ENABLE_SERVICES: successful
+  # installs must not alter an unrelated service's enablement.
+  dnsmasq_init="$INIT_DIR/dnsmasq"
+  dnsmasq_enabled=0
+  dnsmasq_running=0
+  if [ -z "$SYSTEM_ROOT" ] && [ -x "$dnsmasq_init" ]; then
+    run_bounded "$dnsmasq_init" enabled >/dev/null 2>&1 && dnsmasq_enabled=1
+    run_bounded "$dnsmasq_init" running >/dev/null 2>&1 && dnsmasq_running=1
+  fi
+  echo "dnsmasq|$dnsmasq_enabled|$dnsmasq_running" >> "$services"
   # Archive only the exact allowlisted targets recorded in the manifest.  Do
   # not feed find(1) the staging tree: synthetic parents such as usr/ and
   # usr/lib/ inherit umask 077 and must never become archive members, even if
@@ -620,6 +749,10 @@ snapshot_installation() {
   : > "$file_list"
   while IFS='|' read -r presence p target_mode uid gid; do
     [ "$presence" = "present" ] || continue
+    # The secrets directory entry carries metadata only; its exact managed
+    # files are separate archive members.  Other owned directory targets keep
+    # recursive archive semantics (for example the active code prefix).
+    [ "$p" != "$ETC_DIR/secrets" ] || continue
     relative="${p#/}"
     [ -n "$relative" ] || { rm -f "$file_list"; return 1; }
     printf '%s\n' "$relative" >> "$file_list"
@@ -677,7 +810,9 @@ restore_installation() {
   }
   service_restore_ok=1
   if [ -z "$SYSTEM_ROOT" ]; then
-    for service in router-policy-watchdog router-policy; do
+    # Stop the non-root controller before the privileged helper so rollback
+    # cannot restore a mixed binary/config generation underneath a live peer.
+    for service in router-policy-watchdog router-policy router-policy-helper; do
       init="$INIT_DIR/$service"
       if [ -x "$init" ] && run_bounded "$init" running >/dev/null 2>&1; then
         run_bounded "$init" stop >/dev/null 2>&1 || service_restore_ok=0
@@ -708,7 +843,92 @@ restore_installation() {
   }
   while IFS='|' read -r presence p target_mode uid gid; do
     [ "$presence" = "present" ] || [ "$presence" = "absent" ] || continue
-    rm -rf "$p"
+    if [ "$p" = "$ETC_DIR/secrets" ]; then
+      # The secrets directory itself is an owned container, but its children
+      # are not all FlintRoute-owned. Restore only the container metadata and
+      # exact managed secret entries; never recursively remove it.
+      validate_no_symlink_path "$p" || {
+        rm -rf "$restore_staging"
+        echo "automatic install rollback blocked: symlink in secrets directory path: $p" >&2
+        return 1
+      }
+      if [ "$presence" = "present" ]; then
+        if [ -e "$p" ] && [ ! -d "$p" ]; then
+          [ ! -L "$p" ] || {
+            rm -rf "$restore_staging"
+            echo "automatic install rollback blocked: secrets directory became a symlink" >&2
+            return 1
+          }
+          rm -f "$p" || {
+            rm -rf "$restore_staging"
+            return 1
+          }
+        fi
+        [ -d "$p" ] || mkdir -p "$p" || {
+          rm -rf "$restore_staging"
+          return 1
+        }
+        chmod "$target_mode" "$p" || {
+          rm -rf "$restore_staging"
+          return 1
+        }
+        if [ "$(id -u)" = "0" ] && command -v chown >/dev/null 2>&1; then
+          chown "$uid:$gid" "$p" || {
+            rm -rf "$restore_staging"
+            return 1
+          }
+        fi
+      else
+        if [ -d "$p" ]; then
+          # Managed secret-file entries are processed before this directory
+          # entry. A non-empty directory therefore contains an unowned file;
+          # refuse to delete it instead of using rm -rf.
+          rmdir "$p" || {
+            rm -rf "$restore_staging"
+            echo "automatic install rollback blocked: secrets directory contains unowned entries" >&2
+            return 1
+          }
+        elif [ -L "$p" ]; then
+          rm -rf "$restore_staging"
+          echo "automatic install rollback blocked: refusing to remove foreign secrets symlink" >&2
+          return 1
+        elif [ -e "$p" ]; then
+          rm -rf "$restore_staging"
+          echo "automatic install rollback blocked: secrets target changed type" >&2
+          return 1
+        fi
+      fi
+      continue
+    fi
+    if [ -d "$p" ]; then
+      # The only recursive install target is the FlintRoute prefix.  Never
+      # treat an arbitrary directory from a manifest as owned: validate its
+      # bounded prefix shape and every nested object before removing it.
+      case "$p" in
+        "$PREFIX")
+          remove_owned_prefix_switch_tree "$p" || {
+            rm -rf "$restore_staging"
+            echo "automatic install rollback blocked: prefix ownership is unproven: $p" >&2
+            return 1
+          }
+          ;;
+        *)
+          rm -rf "$restore_staging"
+          echo "automatic install rollback blocked: recursive target is not the owned prefix: $p" >&2
+          return 1
+          ;;
+      esac
+    elif [ -L "$p" ]; then
+      rm -rf "$restore_staging"
+      echo "automatic install rollback blocked: refusing to remove symlink target: $p" >&2
+      return 1
+    elif [ -e "$p" ]; then
+      rm -f "$p" || {
+        rm -rf "$restore_staging"
+        echo "automatic install rollback blocked: target could not be removed: $p" >&2
+        return 1
+      }
+    fi
     if [ "$presence" = "present" ]; then
       relative="${p#/}"
       source="$restore_staging/$relative"
@@ -745,13 +965,29 @@ restore_installation() {
   if [ -z "$SYSTEM_ROOT" ] && [ -s "$services" ]; then
     while IFS='|' read -r service enabled running; do
       init="$INIT_DIR/$service"
-      [ -x "$init" ] || continue
+      if [ ! -x "$init" ]; then
+        [ "$service" = "dnsmasq" ] && service_restore_ok=0
+        continue
+      fi
       if [ "$enabled" = "1" ]; then
         run_bounded "$init" enable >/dev/null 2>&1 || service_restore_ok=0
       else
         run_bounded "$init" disable >/dev/null 2>&1 || service_restore_ok=0
       fi
+      if [ "$service" = "dnsmasq" ]; then
+        if [ "$running" = "1" ]; then
+          run_bounded "$init" start >/dev/null 2>&1 || service_restore_ok=0
+          [ "$service_restore_ok" != "1" ] || run_bounded "$init" running >/dev/null 2>&1 || service_restore_ok=0
+        else
+          run_bounded "$init" stop >/dev/null 2>&1 || service_restore_ok=0
+          [ "$service_restore_ok" != "1" ] || wait_service_stopped "$init" || service_restore_ok=0
+        fi
+      fi
     done < "$services"
+    if [ "$service_restore_ok" = "1" ] && service_was_running router-policy-helper; then
+      run_bounded "$INIT_DIR/router-policy-helper" start >/dev/null 2>&1 || service_restore_ok=0
+      [ "$service_restore_ok" != "1" ] || run_bounded "$INIT_DIR/router-policy-helper" running >/dev/null 2>&1 || service_restore_ok=0
+    fi
     if [ "$service_restore_ok" = "1" ] && service_was_running router-policy; then
       run_bounded "$INIT_DIR/router-policy" start >/dev/null 2>&1 || service_restore_ok=0
       [ "$service_restore_ok" != "1" ] || wait_control_health || service_restore_ok=0
@@ -853,7 +1089,79 @@ service_was_running() {
 health_json_field() {
   field="$1"
   file="$2"
-  tr '{},' '\n' < "$file" | sed -n "s/^[[:space:]]*\"$field\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\"[[:space:]]*$/\1/p" | head -n 1
+  health_parser_bin="$ROUTER_POLICY_BIN"
+  # Parse with the candidate binary when available.  This keeps upgrades from
+  # depending on an older controller that predates the typed parser, while
+  # still failing closed if neither side can provide the command.
+  if [ -x "$SOURCE_BINARY" ]; then
+    health_parser_bin="$SOURCE_BINARY"
+  fi
+  [ -x "$health_parser_bin" ] || {
+    echo "install blocked: typed health parser is unavailable: $ROUTER_POLICY_BIN" >&2
+    return 1
+  }
+  run_bounded "$health_parser_bin" internal-health-field --path "$file" --field "$field"
+}
+
+resolve_control_health_url() {
+  # The controller may be intentionally exposed on a private LAN address.
+  # Never accept an arbitrary URL here: installer health checks must stay on
+  # the local router and must follow the same owned listener configuration as
+  # the init script.  The test-only SYSTEM_ROOT path is accepted without an
+  # address lookup because it has no real network namespace.
+  health_host="127.0.0.1"
+  health_port="8787"
+  listener_config="$ETC_DIR/config/listener.conf"
+  if [ -f "$listener_config" ] && [ ! -L "$listener_config" ]; then
+    configured_listener="$(sed -n 's/^listen_address=//p' "$listener_config" | head -n 1)"
+    if [ -n "$configured_listener" ]; then
+      case "$configured_listener" in
+        *:*:*|*/*|*\ *|*[!A-Za-z0-9.:-]*)
+          echo "install blocked: invalid controller listener address in $listener_config" >&2
+          return 1
+          ;;
+        *:*)
+          health_host="${configured_listener%:*}"
+          health_port="${configured_listener##*:}"
+          ;;
+        *)
+          echo "install blocked: controller listener has no port in $listener_config" >&2
+          return 1
+          ;;
+      esac
+    fi
+  fi
+  case "$health_host" in
+    127.0.0.1)
+      ;;
+    ''|0.0.0.0|::|\[::*\]|*.*.*.*.*|*[!0-9.]*)
+      echo "install blocked: controller health listener is not a supported local IPv4 address: $health_host" >&2
+      return 1
+      ;;
+    *)
+      if [ -z "$SYSTEM_ROOT" ]; then
+        command -v ip >/dev/null 2>&1 || {
+          echo "install blocked: ip is required to verify the controller listener address" >&2
+          return 1
+        }
+        if ! ip -4 addr show 2>/dev/null | awk -v wanted="$health_host" '$1 == "inet" {sub("/.*", "", $2); if ($2 == wanted) found=1} END {exit(found ? 0 : 1)}'; then
+          echo "install blocked: controller listener address is not assigned locally: $health_host" >&2
+          return 1
+        fi
+      fi
+      ;;
+  esac
+  case "$health_port" in
+    ''|*[!0-9]*)
+      echo "install blocked: invalid controller listener port: $health_port" >&2
+      return 1
+      ;;
+  esac
+  [ "$health_port" -ge 1 ] 2>/dev/null && [ "$health_port" -le 65535 ] 2>/dev/null || {
+    echo "install blocked: controller listener port out of range: $health_port" >&2
+    return 1
+  }
+  printf 'http://%s:%s/api/v1/health\n' "$health_host" "$health_port"
 }
 
 valid_health_hash() {
@@ -869,9 +1177,10 @@ wait_control_health() {
   case "$max_attempts" in *[!0-9]*|'') max_attempts=120 ;; esac
   [ "$max_attempts" -ge 1 ] && [ "$max_attempts" -le 120 ] || max_attempts=120
   command -v wget >/dev/null 2>&1 || { echo "wget is required to verify the control plane" >&2; return 1; }
+  health_url="$(resolve_control_health_url)" || return 1
   attempt=0
   while [ "$attempt" -lt "$max_attempts" ]; do
-    if wget -q -O "$RUNTIME_DIR/install-health.json" http://127.0.0.1:8787/api/v1/health; then
+    if wget -q -O "$RUNTIME_DIR/install-health.json" "$health_url"; then
       health_status="$(health_json_field status "$RUNTIME_DIR/install-health.json")"
       recovery_status="$(health_json_field recovery_status "$RUNTIME_DIR/install-health.json")"
       recovery_commit_phase="$(health_json_field recovery_commit_phase "$RUNTIME_DIR/install-health.json")"
@@ -911,7 +1220,10 @@ wait_control_health() {
 
 stop_control_services_for_upgrade() {
   [ -z "$SYSTEM_ROOT" ] || return 0
-  for service in router-policy-watchdog router-policy; do
+  # Stop the controller before its privileged helper.  Replacing helper
+  # artifacts while the old process is serving requests would leave a mixed
+  # generation; a fresh controller must never race an old helper.
+  for service in router-policy-watchdog router-policy router-policy-helper; do
     service_was_running "$service" || continue
     init="$INIT_DIR/$service"
     run_bounded "$init" stop >/dev/null
@@ -924,6 +1236,18 @@ stop_control_services_for_upgrade() {
 
 restart_running_services() {
   [ -z "$SYSTEM_ROOT" ] || return 0
+  if service_was_running router-policy; then
+    # A production controller is only valid with the pinned helper peer.  Do
+    # not resurrect the controller against a missing/stopped helper after an
+    # upgrade; that would turn a safe install into a root/direct-mutation
+    # fallback instead of failing closed.
+    if ! service_was_running router-policy-helper; then
+      echo "install blocked: controller was running without its helper service" >&2
+      return 1
+    fi
+    run_bounded "$INIT_DIR/router-policy-helper" start
+    run_bounded "$INIT_DIR/router-policy-helper" running
+  fi
   if service_was_running router-policy; then
     # The controller was intentionally stopped before files were replaced.
     # Calling rc.common restart here issues a second procd delete; some OpenWrt
@@ -956,7 +1280,10 @@ restart_running_services() {
 
 start_control_services() {
   [ -z "$SYSTEM_ROOT" ] || return 0
-  for service in router-policy router-policy-watchdog; do
+  # The helper is the dependency boundary: it must be running before the
+  # non-root controller is started.  Starting the controller first creates a
+  # deterministic health failure on a clean install.
+  for service in router-policy-helper router-policy router-policy-watchdog; do
     if ! "$INIT_DIR/$service" running >/dev/null 2>&1; then
       run_bounded "$INIT_DIR/$service" start
     fi
@@ -1038,7 +1365,15 @@ atomic_copy() {
   # boundary.  Avoid flushing the host filesystem for every copied file; real
   # OpenWrt installs keep the durable sync below.
   if [ -z "$SYSTEM_ROOT" ]; then
-    sync -f "$(dirname "$target")" 2>/dev/null || true
+    if ! sync -f "$(dirname "$target")" 2>/dev/null; then
+      # BusyBox implementations may not support sync -f.  A global sync is a
+      # valid fallback, but a failed fallback is a durability failure, not a
+      # warning we can hide: the caller must abort before reporting success.
+      if ! sync 2>/dev/null; then
+        echo "install failed: unable to durably sync target directory: $target" >&2
+        return 1
+      fi
+    fi
   fi
 }
 
@@ -1050,6 +1385,16 @@ sync_file_and_parent() {
   else
     sync
   fi
+}
+
+durable_rename() {
+  rename_source="$1"
+  rename_target="$2"
+  mv "$rename_source" "$rename_target" || return 1
+  # A successful rename is not durable until the containing directory is
+  # flushed.  This closes the power-loss window between prefix moves; the
+  # durable marker still records the phase for restart recovery.
+  sync_file_and_parent "$(dirname "$rename_target")"
 }
 
 write_prefix_switch_marker() {
@@ -1076,6 +1421,96 @@ clear_prefix_switch_marker() {
   [ ! -e "$PREFIX_SWITCH_MARKER" ] || return 1
 }
 
+prefix_switch_top_entry_allowed() {
+  case "$1" in
+    scripts|openwrt|components|.managed-files.manifest) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+remove_owned_prefix_switch_tree() {
+  cleanup_tree="$1"
+  [ -e "$cleanup_tree" ] || [ -L "$cleanup_tree" ] || return 0
+  case "$cleanup_tree" in
+    "$PREFIX"|"$PREFIX.install."*|"$PREFIX.old."*) ;;
+    *)
+      echo "install blocked: invalid prefix switch cleanup path: $cleanup_tree" >&2
+      return 1
+      ;;
+  esac
+  [ -d "$cleanup_tree" ] && [ ! -L "$cleanup_tree" ] || {
+    echo "install blocked: prefix switch cleanup target is not an owned directory: $cleanup_tree" >&2
+    return 1
+  }
+  command -v find >/dev/null 2>&1 || {
+    echo "install blocked: find is required to validate prefix switch cleanup" >&2
+    return 1
+  }
+  for entry in "$cleanup_tree"/* "$cleanup_tree"/.[!.]* "$cleanup_tree"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    cleanup_name="${entry##*/}"
+    prefix_switch_top_entry_allowed "$cleanup_name" || {
+      echo "install blocked: unowned prefix switch entry: $entry" >&2
+      return 1
+    }
+    case "$cleanup_name" in
+      .managed-files.manifest)
+        [ -f "$entry" ] && [ ! -L "$entry" ] || {
+          echo "install blocked: prefix switch manifest is not regular" >&2
+          return 1
+        }
+        ;;
+      scripts|openwrt|components)
+        [ -d "$entry" ] && [ ! -L "$entry" ] || {
+          echo "install blocked: prefix switch tree is not a directory: $entry" >&2
+          return 1
+        }
+        # BusyBox find on OpenWrt does not implement GNU's `-quit`. Capture
+        # the bounded result and inspect its first line instead; the command
+        # status is still checked so an unsupported/failed traversal fences
+        # cleanup rather than silently accepting an unverified tree.
+        if ! cleanup_unsafe_all="$(find "$entry" \( -type l -o ! -type f -a ! -type d \) -print 2>/dev/null)"; then
+          echo "install blocked: could not validate prefix switch entry: $entry" >&2
+          return 1
+        fi
+        cleanup_unsafe="$(printf '%s\n' "$cleanup_unsafe_all" | head -n 1)"
+        [ -z "$cleanup_unsafe" ] || {
+          echo "install blocked: unsafe prefix switch entry: $cleanup_unsafe" >&2
+          return 1
+        }
+        ;;
+    esac
+  done
+  cleanup_list="$STATE_DIR/prefix-cleanup.$$"
+  [ ! -e "$cleanup_list" ] && [ ! -L "$cleanup_list" ] || {
+    echo "install blocked: prefix cleanup list already exists: $cleanup_list" >&2
+    return 1
+  }
+  if ! find "$cleanup_tree" -depth -print > "$cleanup_list"; then
+    rm -f "$cleanup_list"
+    echo "install blocked: could not enumerate prefix switch cleanup: $cleanup_tree" >&2
+    return 1
+  fi
+  cleanup_failed=0
+  while IFS= read -r entry; do
+    [ "$entry" != "$cleanup_tree" ] || continue
+    if [ -d "$entry" ] && [ ! -L "$entry" ]; then
+      rmdir "$entry" || cleanup_failed=1
+    else
+      rm -f "$entry" || cleanup_failed=1
+    fi
+  done < "$cleanup_list"
+  rm -f "$cleanup_list"
+  if [ "$cleanup_failed" -ne 0 ]; then
+    echo "install blocked: could not remove owned prefix switch tree: $cleanup_tree" >&2
+    return 1
+  fi
+  rmdir "$cleanup_tree" || {
+    echo "install blocked: prefix switch cleanup tree is not empty: $cleanup_tree" >&2
+    return 1
+  }
+}
+
 recover_prefix_switch() {
   [ -f "$PREFIX_SWITCH_MARKER" ] || return 0
   marker_version="$(sed -n 's/^version=//p' "$PREFIX_SWITCH_MARKER" | head -n 1)"
@@ -1092,9 +1527,9 @@ recover_prefix_switch() {
   case "$marker_phase" in
     prepared)
       if [ -e "$PREFIX" ] && [ ! -e "$marker_old" ]; then
-        rm -rf "$marker_staged"
+        remove_owned_prefix_switch_tree "$marker_staged"
       elif [ ! -e "$PREFIX" ] && [ -e "$marker_old" ] && [ -e "$marker_staged" ]; then
-        mv "$marker_staged" "$PREFIX"
+        durable_rename "$marker_staged" "$PREFIX"
       else
         echo "install blocked: prefix switch marker has ambiguous prepared state" >&2
         return 1
@@ -1102,13 +1537,32 @@ recover_prefix_switch() {
       ;;
     old_moved)
       if [ ! -e "$PREFIX" ] && [ -e "$marker_staged" ]; then
-        mv "$marker_staged" "$PREFIX"
+        durable_rename "$marker_staged" "$PREFIX"
       elif [ ! -e "$PREFIX" ] && [ ! -e "$marker_staged" ] && [ -e "$marker_old" ]; then
-        mv "$marker_old" "$PREFIX"
-      elif [ -e "$PREFIX" ] && [ -e "$marker_staged" ]; then
-        rm -rf "$marker_staged"
+        durable_rename "$marker_old" "$PREFIX"
+      elif [ -e "$PREFIX" ] && [ ! -e "$marker_staged" ] && [ -e "$marker_old" ]; then
+        # Legacy v1 marker: an older installer could persist old_moved and
+        # lose power immediately after the final staged->prefix rename. The
+        # atomic directory rename leaves the new prefix and old backup; keep
+        # the active prefix and continue recovery instead of fencing a safe
+        # completed switch.
+        :
       else
         echo "install blocked: prefix switch marker has ambiguous old_moved state" >&2
+        return 1
+      fi
+      ;;
+    ready_to_activate)
+      # This phase is persisted before the final rename. Therefore a restart
+      # can distinguish both sides of the rename without guessing: either the
+      # staged tree is still present (perform the rename), or the active tree
+      # is present and the rename already committed.
+      if [ ! -e "$PREFIX" ] && [ -e "$marker_staged" ] && [ -e "$marker_old" ]; then
+        durable_rename "$marker_staged" "$PREFIX"
+      elif [ -e "$PREFIX" ] && [ ! -e "$marker_staged" ] && [ -e "$marker_old" ]; then
+        :
+      else
+        echo "install blocked: prefix switch marker has ambiguous ready_to_activate state" >&2
         return 1
       fi
       ;;
@@ -1117,7 +1571,7 @@ recover_prefix_switch() {
         echo "install blocked: durable prefix marker says new generation is active but prefix is missing" >&2
         return 1
       }
-      [ ! -e "$marker_staged" ] || rm -rf "$marker_staged"
+      remove_owned_prefix_switch_tree "$marker_staged"
       ;;
     *)
       echo "install blocked: unknown durable prefix switch phase" >&2
@@ -1131,17 +1585,34 @@ recover_prefix_switch() {
 finalize_prefix_switch() {
   if [ -n "${old_prefix:-}" ]; then
     case "$old_prefix" in "$PREFIX.old."*) ;; *) echo "install blocked: refusing unknown old prefix cleanup" >&2; return 1 ;; esac
-    [ ! -e "$old_prefix" ] || rm -rf "$old_prefix"
+    # The previous generation is an owned prefix, but its path alone is not
+    # proof that every child is owned. Reuse the same bounded shape/type
+    # validation as crash recovery; never recursively delete an injected or
+    # foreign top-level entry.
+    remove_owned_prefix_switch_tree "$old_prefix" || return 1
   fi
   clear_prefix_switch_marker
 }
 
 install_files() {
   recover_prefix_switch
+  # Re-check the secrets path immediately before mkdir/copy operations.  The
+  # preflight snapshot rejects symlinks too, but this local guard closes the
+  # TOCTOU window where a replaced directory could otherwise redirect the
+  # first subscription-file write into a foreign tree.
+  validate_managed_roots || return 1
+  validate_no_symlink_path "$ETC_DIR/secrets" || {
+    echo "install blocked: secrets path contains a symlink" >&2
+    return 1
+  }
+  validate_managed_secret_paths || return 1
   mkdir -p "$(dirname "$PREFIX")" "$ETC_DIR/config" "$ETC_DIR/secrets" "$ETC_DIR/xray" "$ETC_DIR/zapret" "$ETC_DIR/firewall" "$STATE_DIR/last-good" "$RUNTIME_DIR" "$BIN_DIR" "$INIT_DIR" "$RC_DIR" "$HOTPLUG_IFACE_DIR" "$HOTPLUG_FIREWALL_DIR" "$DNSMASQ_DIR"
   staged_prefix="$PREFIX.install.$$"
   old_prefix="$PREFIX.old.$$"
-  rm -rf "$staged_prefix" "$old_prefix"
+  if [ -e "$staged_prefix" ] || [ -L "$staged_prefix" ] || [ -e "$old_prefix" ] || [ -L "$old_prefix" ]; then
+    echo "install blocked: untracked prefix switch path already exists" >&2
+    return 1
+  fi
   mkdir -p "$staged_prefix"
   cp -R "$ROOT/scripts" "$staged_prefix/"
   cp -R "$ROOT/openwrt" "$staged_prefix/"
@@ -1162,13 +1633,17 @@ install_files() {
   fi
   write_prefix_switch_marker prepared "$staged_prefix" "$old_prefix"
   if [ -e "$PREFIX" ]; then
-    mv "$PREFIX" "$old_prefix"
+    durable_rename "$PREFIX" "$old_prefix"
     write_prefix_switch_marker old_moved "$staged_prefix" "$old_prefix"
   fi
   if [ -d "$old_prefix/components" ]; then
-    mv "$old_prefix/components" "$staged_prefix/components"
+    durable_rename "$old_prefix/components" "$staged_prefix/components"
   fi
-  mv "$staged_prefix" "$PREFIX"
+  # Persist a phase before the final directory rename. If power is lost after
+  # the rename but before new_active is written, recovery can still identify
+  # the committed side deterministically.
+  write_prefix_switch_marker ready_to_activate "$staged_prefix" "$old_prefix"
+  durable_rename "$staged_prefix" "$PREFIX"
   write_prefix_switch_marker new_active "$staged_prefix" "$old_prefix"
   atomic_copy "$SOURCE_BINARY" "$ROUTER_POLICY_BIN" 755
   atomic_copy "$SOURCE_HELPER_BINARY" "$ROUTER_POLICY_HELPER_BIN" 755
@@ -1185,6 +1660,11 @@ install_files() {
   if [ ! -f "$ETC_DIR/config/listener.conf" ]; then
     atomic_copy "$ROOT/config/listener.conf" "$ETC_DIR/config/listener.conf" 600
   fi
+  if [ -L "$ETC_DIR/helper.env" ]; then
+    echo "refusing symlink helper environment: $ETC_DIR/helper.env" >&2
+    return 1
+  fi
+  atomic_copy "$ROOT/config/router-policy-helper.env" "$ETC_DIR/helper.env" 600
   if [ ! -f "$ETC_DIR/secrets/vpn-subscription-url" ]; then
     : > "$ETC_DIR/secrets/vpn-subscription-url"
   fi
@@ -1202,6 +1682,197 @@ install_files() {
   atomic_copy "$ROOT/openwrt/init.d/router-policy-zapret" "$INIT_DIR/router-policy-zapret" 755
   atomic_copy "$ROOT/openwrt/hotplug/iface/95-router-policy" "$HOTPLUG_IFACE_DIR/95-router-policy" 755
   atomic_copy "$ROOT/openwrt/hotplug/firewall/95-router-policy" "$HOTPLUG_FIREWALL_DIR/95-router-policy" 755
+  write_managed_file_manifest
+}
+
+prepare_controller_identity() {
+  [ -z "$SYSTEM_ROOT" ] || return 0
+  command -v id >/dev/null 2>&1 || { echo "install blocked: id is required for controller identity" >&2; return 1; }
+  controller_uid="$(id -u daemon 2>/dev/null)" || {
+    echo "install blocked: OpenWrt daemon account is unavailable" >&2
+    return 1
+  }
+  controller_gid="$(id -g daemon 2>/dev/null)" || {
+    echo "install blocked: OpenWrt daemon group is unavailable" >&2
+    return 1
+  }
+  [ "$controller_uid" = 1 ] || {
+    echo "install blocked: daemon UID is not the pinned helper peer UID: $controller_uid" >&2
+    return 1
+  }
+  command -v chown >/dev/null 2>&1 || { echo "install blocked: chown is required for non-root controller" >&2; return 1; }
+  # These roots are FlintRoute-owned, but their contents may survive an
+  # upgrade. Never use chown -R here: it would silently take ownership of a
+  # nested operator/foreign file. Validate every existing entry first, then
+  # assign ownership entry-by-entry. Root-owned entries are accepted as
+  # migration input; any other owner fences the install instead of being
+  # silently rewritten.
+  chown_owned_tree() {
+    owned_root="$1"
+    [ -e "$owned_root" ] || return 0
+    [ -d "$owned_root" ] && [ ! -L "$owned_root" ] || {
+      echo "install blocked: owned root is not a directory: $owned_root" >&2
+      return 1
+    }
+    command -v find >/dev/null 2>&1 || {
+      echo "install blocked: find is required to validate owned paths: $owned_root" >&2
+      return 1
+    }
+    ownership_list="$RUNTIME_DIR/.ownership-check.$$"
+    find "$owned_root" -print > "$ownership_list" || {
+      rm -f "$ownership_list"
+      echo "install blocked: cannot enumerate controller-owned paths: $owned_root" >&2
+      return 1
+    }
+    ownership_error=""
+    while IFS= read -r owned_entry; do
+      [ -n "$owned_entry" ] || continue
+      if [ -L "$owned_entry" ]; then
+        ownership_error="symlink in controller-owned tree: $owned_entry"
+        break
+      fi
+      if ! metadata="$(path_metadata "$owned_entry")"; then
+        ownership_error="cannot inspect controller-owned path: $owned_entry"
+        break
+      fi
+      ownership="${metadata#*|}"
+      entry_uid="${ownership%%|*}"
+      entry_gid="${ownership#*|}"
+      case "$entry_uid:$entry_gid" in
+        "0:0"|"$controller_uid:$controller_gid") ;;
+        *)
+          ownership_error="foreign owner in controller-owned tree: $owned_entry uid=$entry_uid gid=$entry_gid"
+          break
+          ;;
+      esac
+    done < "$ownership_list"
+    if [ -n "$ownership_error" ]; then
+      rm -f "$ownership_list"
+      echo "install blocked: $ownership_error" >&2
+      return 1
+    fi
+    ownership_error=""
+    while IFS= read -r owned_entry; do
+      [ -n "$owned_entry" ] || continue
+      if ! chown "$controller_uid:$controller_gid" "$owned_entry"; then
+        ownership_error="cannot assign controller-owned path: $owned_entry"
+        break
+      fi
+    done < "$ownership_list"
+    rm -f "$ownership_list" || {
+      echo "install blocked: cannot remove ownership validation artifact: $ownership_list" >&2
+      return 1
+    }
+    [ -z "$ownership_error" ] || {
+      echo "install blocked: $ownership_error" >&2
+      return 1
+    }
+  }
+  for owned_root in "$ETC_DIR/config" "$STATE_DIR" "$RUNTIME_DIR"; do
+    chown_owned_tree "$owned_root" || return 1
+  done
+  # The controller runs as daemon and must be able to traverse its
+  # configuration root.  install_files() creates this directory under the
+  # installer's umask, so normalize only this exact FlintRoute-owned
+  # container.  Keep it root-owned; the daemon group gets traversal while
+  # secret/config permissions remain enforced below.
+  chown "0:$controller_gid" "$ETC_DIR" || {
+    echo "install blocked: cannot assign controller config root" >&2
+    return 1
+  }
+  chmod 750 "$ETC_DIR" || {
+    echo "install blocked: cannot make controller config root traversable" >&2
+    return 1
+  }
+  # Adaptive Zapret metadata is read by the non-root controller and may be
+  # refreshed by its bounded calibration runner.  Normalize only this exact
+  # owned directory and catalog file; never recurse into profiles or active
+  # nfqws configuration, which remain root/helper-owned.
+  if [ -e "$ETC_DIR/zapret" ]; then
+    [ -d "$ETC_DIR/zapret" ] && [ ! -L "$ETC_DIR/zapret" ] || {
+      echo "install blocked: Zapret metadata root is not a directory" >&2
+      return 1
+    }
+    chown "0:$controller_gid" "$ETC_DIR/zapret" || {
+      echo "install blocked: cannot assign Zapret metadata root" >&2
+      return 1
+    }
+    chmod 750 "$ETC_DIR/zapret" || {
+      echo "install blocked: cannot make Zapret metadata root traversable" >&2
+      return 1
+    }
+  fi
+  if [ -e "$ETC_DIR/zapret/catalog.json" ]; then
+    [ -f "$ETC_DIR/zapret/catalog.json" ] && [ ! -L "$ETC_DIR/zapret/catalog.json" ] || {
+      echo "install blocked: Zapret catalog is not a regular file" >&2
+      return 1
+    }
+    chown "0:$controller_gid" "$ETC_DIR/zapret/catalog.json" || {
+      echo "install blocked: cannot assign Zapret catalog" >&2
+      return 1
+    }
+    chmod 660 "$ETC_DIR/zapret/catalog.json" || {
+      echo "install blocked: cannot make Zapret catalog writable" >&2
+      return 1
+    }
+  fi
+  validate_managed_secret_paths || return 1
+  chown "$controller_uid:$controller_gid" "$ETC_DIR/secrets" || {
+    echo "install blocked: cannot assign secrets directory" >&2
+    return 1
+  }
+  chmod 750 "$ETC_DIR/config" "$ETC_DIR/secrets" "$STATE_DIR" "$RUNTIME_DIR"
+  # The staged prefix is immutable code/assets, not controller state. Only the
+  # two trees copied from this release are normalized here. The preserved
+  # components runtime is a separate lifecycle-owned resource and must not be
+  # recursively chmod'ed as a side effect of an installer upgrade.
+  chmod a+rx "$PREFIX" || {
+    echo "install blocked: cannot make managed prefix traversable" >&2
+    return 1
+  }
+  for code_root in "$PREFIX/scripts" "$PREFIX/openwrt"; do
+    [ -d "$code_root" ] || continue
+    find "$code_root" -type d -exec chmod a+rx {} \; || {
+      echo "install blocked: cannot make managed code directories readable: $code_root" >&2
+      return 1
+    }
+    find "$code_root" -type f -exec chmod a+rX {} \; || {
+      echo "install blocked: cannot make managed code files readable: $code_root" >&2
+      return 1
+    }
+  done
+  chmod 640 "$ETC_DIR/config/default.json" "$ETC_DIR/config/schema.json" "$ETC_DIR/config/listener.conf" "$ETC_DIR/helper.env"
+  for secret_file in \
+    "$ETC_DIR/secrets/vpn-subscription-url" \
+    "$ETC_DIR/secrets/vpn-subscription-url.hwid.json" \
+    "$ETC_DIR/secrets/happ-crypt4-private-key.pem" \
+    "$ETC_DIR/secrets/telegram.json" \
+    "$ETC_DIR/secrets/webhook.env"; do
+    [ -e "$secret_file" ] || continue
+    chown "$controller_uid:$controller_gid" "$secret_file" || {
+      echo "install blocked: cannot assign managed secret: $secret_file" >&2
+      return 1
+    }
+    chmod 600 "$secret_file"
+  done
+}
+
+validate_managed_secret_paths() {
+  [ ! -L "$ETC_DIR/secrets" ] || {
+    echo "install blocked: secrets directory is a symlink" >&2
+    return 1
+  }
+  for secret_file in \
+    "$ETC_DIR/secrets/vpn-subscription-url" \
+    "$ETC_DIR/secrets/vpn-subscription-url.hwid.json" \
+    "$ETC_DIR/secrets/happ-crypt4-private-key.pem" \
+    "$ETC_DIR/secrets/telegram.json" \
+    "$ETC_DIR/secrets/webhook.env"; do
+    [ ! -L "$secret_file" ] || {
+      echo "install blocked: managed secret is a symlink: $secret_file" >&2
+      return 1
+    }
+  done
 }
 
 activate_dns_observer() {
@@ -1270,41 +1941,59 @@ case "$mode" in
     "$ROUTER_POLICY_BIN" backup register --root "$BACKUP_DIR" --operation "$(basename "$BACKUP_DIR")" --version "$ROUTER_POLICY_VERSION" --reason install --retention-class installer-fallback >/dev/null
     echo "== setup token =="
     ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$ROUTER_POLICY_BIN" auth setup-token --if-needed
+    # The root-side backup/auth commands above may create or replace files in
+    # the state tree. Normalize controller ownership only after the final
+    # privileged write, immediately before any service can start.
+    prepare_controller_identity
     restart_running_services
     if [ "$enable_services" = "1" ]; then
       run_bounded "$INIT_DIR/router-policy-dns-observer" enable
       run_bounded "$INIT_DIR/router-policy-boot-guard" enable
+      run_bounded "$INIT_DIR/router-policy-helper" enable
       run_bounded "$INIT_DIR/router-policy" enable
       run_bounded "$INIT_DIR/router-policy-watchdog" enable
       start_control_services
-      echo "services_enabled=router-policy-dns-observer router-policy-boot-guard router-policy router-policy-watchdog"
-      echo "control_services_running=router-policy router-policy-watchdog"
+      echo "services_enabled=router-policy-dns-observer router-policy-boot-guard router-policy-helper router-policy router-policy-watchdog"
+      echo "control_services_running=router-policy-helper router-policy router-policy-watchdog"
       echo "dataplane_services_boot_enabled=false"
     else
       echo "services_enabled=false"
       echo "enable_services_with=install.sh --install --enable-services"
     fi
-    INSTALL_ROLLBACK_ARMED=0
+    post_install_ok=1
     if [ "$enable_services" = "1" ]; then
       if reload_dns_observer_after_success; then
         echo "dns_observer_reload=ok"
       else
+        post_install_ok=0
         echo "dns_observer_reload=failed" >&2
         echo "dns_observer_action=retry_from_UI_or_restart_dnsmasq"
       fi
     fi
-    finalize_prefix_switch || {
+    if finalize_prefix_switch; then
+      echo "prefix_switch_finalize=ok"
+    else
+      post_install_ok=0
       echo "install warning: previous prefix generation could not be cleaned" >&2
-    }
+    fi
     # Retention pruning is deliberately last.  Until the new generation has
     # passed validation, service recovery and control-plane health checks, the
     # previous backup is part of the rollback contract and must not disappear.
-    if "$ROUTER_POLICY_BIN" backup prune --root "$BACKUP_ROOT" --max 2 --max-bytes 134217728 --apply >/dev/null; then
-      echo "backup_prune=ok"
+    if [ "$post_install_ok" = "1" ]; then
+      if "$ROUTER_POLICY_BIN" backup prune --root "$BACKUP_ROOT" --max 2 --max-bytes 134217728 --apply >/dev/null; then
+        echo "backup_prune=ok"
+      else
+        echo "backup_prune=failed" >&2
+        echo "backup_prune_action=retry_after_install" >&2
+      fi
     else
-      echo "backup_prune=failed" >&2
-      echo "backup_prune_action=retry_after_install" >&2
+      echo "backup_prune=skipped_post_install_verification_incomplete" >&2
     fi
+    if [ "$post_install_ok" != "1" ]; then
+      echo "install failed: post-install verification did not complete; automatic rollback is being attempted" >&2
+      exit 1
+    fi
+    INSTALL_ROLLBACK_ARMED=0
     end_maintenance
     trap - EXIT INT HUP TERM
     echo "installed=true"

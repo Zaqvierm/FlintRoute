@@ -4,6 +4,7 @@ umask 077
 
 SYSTEM_ROOT="${ROUTER_POLICY_SYSTEM_ROOT:-}"
 PREFIX="${PREFIX:-$SYSTEM_ROOT/usr/lib/router-policy}"
+MANAGED_FILE_MANIFEST="$PREFIX/.managed-files.manifest"
 ETC_DIR="${ETC_DIR:-$SYSTEM_ROOT/etc/router-policy}"
 STATE_DIR="${STATE_DIR:-$ETC_DIR/state}"
 BIN_DIR="${BIN_DIR:-$SYSTEM_ROOT/usr/bin}"
@@ -13,6 +14,8 @@ HOTPLUG_IFACE_DIR="${HOTPLUG_IFACE_DIR:-$SYSTEM_ROOT/etc/hotplug.d/iface}"
 HOTPLUG_FIREWALL_DIR="${HOTPLUG_FIREWALL_DIR:-$SYSTEM_ROOT/etc/hotplug.d/firewall}"
 DNSMASQ_DIR="${DNSMASQ_DIR:-$SYSTEM_ROOT/tmp/dnsmasq.d}"
 NFTABLES_DIR="${NFTABLES_DIR:-$SYSTEM_ROOT/etc/nftables.d}"
+ZAPRET_PROFILE_DIR="${ZAPRET_PROFILE_DIR:-$ETC_DIR/zapret/profiles}"
+ZAPRET_PROFILE_MANIFEST="${ZAPRET_PROFILE_MANIFEST:-$ETC_DIR/zapret/profiles.manifest}"
 BACKUP_ROOT="${BACKUP_ROOT:-$SYSTEM_ROOT/root/router-policy-backups}"
 BACKUP_DIR="${BACKUP_DIR:-$BACKUP_ROOT/uninstall-$(date -u +%Y%m%dT%H%M%SZ)}"
 ROUTER_POLICY_VERSION="${ROUTER_POLICY_VERSION:-unknown}"
@@ -22,6 +25,7 @@ PIDOF_BIN="${PIDOF_BIN:-pidof}"
 NSLOOKUP_BIN="${NSLOOKUP_BIN:-nslookup}"
 SLEEP_BIN="${SLEEP_BIN:-sleep}"
 NFT_BIN="${NFT_BIN:-nft}"
+IP_BIN="${ROUTER_POLICY_IP_BIN:-ip}"
 SERVICES="router-policy-dns-observer router-policy-boot-guard router-policy-helper router-policy-watchdog router-policy router-policy-xray router-policy-zapret"
 mode="${1:---dry-run}"
 
@@ -113,12 +117,126 @@ validate_backup_paths() {
   done
 }
 
+runtime_top_entry_allowed() {
+  case "$1" in
+    active-transaction.env|pending-transaction.env|boot-guard.nft|dns-observations.log|install-health.json|write-events.log|uninstall-empty-ip-state.json)
+      return 0 ;;
+    nft-transition-tx_*.nft|nft-boot-guard-transition-tx_*.nft|management-proof-*.error)
+      printf '%s\n' "$1" | grep -Eq '^(nft-transition|nft-boot-guard-transition)-tx_[0-9a-f]{16}\.nft$|^management-proof-rev_[0-9]+_[0-9a-f]{12}-tx_[0-9a-f]{16}\.error$'
+      ;;
+    transaction.lock|rollback-timers|management-proofs)
+      return 0 ;;
+    *)
+      return 1 ;;
+  esac
+}
+
+validate_runtime_contents() {
+  [ -e "$RUNTIME_DIR" ] || return 0
+  [ -d "$RUNTIME_DIR" ] && [ ! -L "$RUNTIME_DIR" ] || {
+    echo "uninstall blocked: runtime root is not an owned directory" >&2
+    return 1
+  }
+  for entry in "$RUNTIME_DIR"/* "$RUNTIME_DIR"/.[!.]* "$RUNTIME_DIR"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    name="${entry##*/}"
+    runtime_top_entry_allowed "$name" || {
+      echo "uninstall blocked: unowned runtime entry: $entry" >&2
+      return 1
+    }
+    case "$name" in
+      transaction.lock|rollback-timers|management-proofs)
+        [ -d "$entry" ] && [ ! -L "$entry" ] || {
+          echo "uninstall blocked: owned runtime directory is invalid: $entry" >&2
+          return 1
+        }
+        for nested in "$entry"/* "$entry"/.[!.]* "$entry"/..?*; do
+          [ -e "$nested" ] || [ -L "$nested" ] || continue
+          [ -f "$nested" ] && [ ! -L "$nested" ] || {
+            echo "uninstall blocked: unowned runtime child: $nested" >&2
+            return 1
+          }
+          nested_name="${nested##*/}"
+          case "$name:$nested_name" in
+            transaction.lock:metadata.env)
+              ;;
+            rollback-timers:*)
+              printf '%s\n' "$nested_name" | grep -Eq '^rev_[0-9]+_[0-9a-f]{12}-tx_[0-9a-f]{16}\.env(\.bootstrap(\.tmp)?)?$' || {
+                echo "uninstall blocked: unowned rollback timer: $nested" >&2
+                return 1
+              }
+              ;;
+            management-proofs:*)
+              printf '%s\n' "$nested_name" | grep -Eq '^rev_[0-9]+_[0-9a-f]{12}-tx_[0-9a-f]{16}\.json$' || {
+                echo "uninstall blocked: unowned management proof: $nested" >&2
+                return 1
+              }
+              ;;
+            *)
+              echo "uninstall blocked: unowned runtime child: $nested" >&2
+              return 1
+              ;;
+          esac
+        done
+        ;;
+      *)
+        [ -f "$entry" ] && [ ! -L "$entry" ] || {
+          echo "uninstall blocked: owned runtime file is invalid: $entry" >&2
+          return 1
+        }
+        ;;
+    esac
+  done
+}
+
+remove_owned_runtime() {
+  validate_runtime_contents || return 1
+  [ -e "$RUNTIME_DIR" ] || return 0
+  for entry in "$RUNTIME_DIR"/* "$RUNTIME_DIR"/.[!.]* "$RUNTIME_DIR"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    name="${entry##*/}"
+    case "$name" in
+      transaction.lock|rollback-timers|management-proofs)
+        for nested in "$entry"/* "$entry"/.[!.]* "$entry"/..?*; do
+          [ -e "$nested" ] || [ -L "$nested" ] || continue
+          rm -f "$nested"
+        done
+        rmdir "$entry" || return 1
+        ;;
+      *)
+        rm -f "$entry"
+        ;;
+    esac
+  done
+  rmdir "$RUNTIME_DIR" || {
+    echo "uninstall failed: owned runtime directory is not empty" >&2
+    return 1
+  }
+}
+
 deactivate_committed_dataplane() {
   binding="$STATE_DIR/last-good/active-transaction.env"
   [ -f "$binding" ] || binding="$STATE_DIR/last-good/transaction.env"
   [ -f "$binding" ] || {
+    # Absence of last-good is not proof that no dataplane was ever committed.
+    # A crash can leave transaction journals while the binding write is still
+    # missing.  Never claim a safe empty state in that case: without the
+    # journal's exact IP plan there is no ownership proof for cleanup.
+    if [ -d "$STATE_DIR/transactions" ] && [ -n "$(ls -A "$STATE_DIR/transactions" 2>/dev/null)" ]; then
+      echo "uninstall blocked: committed transaction binding is missing while transaction journals remain" >&2
+      return 1
+    fi
+    [ -x "$BIN_DIR/router-policy" ] || {
+      echo "uninstall blocked: controller is unavailable to prove owned IP state is empty" >&2
+      return 1
+    }
+    if ! ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" ROUTER_POLICY_IP_BIN="$IP_BIN" \
+      "$BIN_DIR/router-policy" internal-verify-no-owned-ip-state >/dev/null; then
+      echo "uninstall blocked: owned IP state is not proven empty" >&2
+      return 1
+    fi
     restore_flow_offloading_baseline
-    echo "dataplane_deactivation=skipped-no-last-good"
+    echo "dataplane_deactivation=verified-empty"
     return 0
   }
   transaction_id="$(sed -n 's/^transaction_id=//p' "$binding" | head -n 1)"
@@ -176,6 +294,173 @@ file_owner_id() {
   target="$1"
   # shellcheck disable=SC2012
   LC_ALL=C ls -ldn "$target" 2>/dev/null | awk '{print $3}'
+}
+
+hash_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$1" | awk '{print $NF}'
+  else
+    echo "uninstall blocked: neither sha256sum nor openssl is available" >&2
+    return 1
+  fi
+}
+
+managed_static_paths() {
+  printf '%s\n' \
+    "$BIN_DIR/router-policy" \
+    "$BIN_DIR/router-policy-helper" \
+    "$INIT_DIR/router-policy-helper" \
+    "$INIT_DIR/router-policy" \
+    "$INIT_DIR/router-policy-dns-observer" \
+    "$INIT_DIR/router-policy-boot-guard" \
+    "$INIT_DIR/router-policy-watchdog" \
+    "$INIT_DIR/router-policy-xray" \
+    "$INIT_DIR/router-policy-zapret" \
+    "$HOTPLUG_IFACE_DIR/95-router-policy" \
+    "$HOTPLUG_FIREWALL_DIR/95-router-policy"
+}
+
+prefix_top_entry_allowed() {
+  case "$1" in
+    scripts|openwrt|components|.managed-files.manifest) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_prefix_contents() {
+  [ -e "$PREFIX" ] || return 0
+  [ -d "$PREFIX" ] && [ ! -L "$PREFIX" ] || {
+    echo "uninstall blocked: project prefix is not an owned directory" >&2
+    return 1
+  }
+  command -v find >/dev/null 2>&1 || {
+    echo "uninstall blocked: find is required to validate project prefix" >&2
+    return 1
+  }
+  for entry in "$PREFIX"/* "$PREFIX"/.[!.]* "$PREFIX"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    name="${entry##*/}"
+    prefix_top_entry_allowed "$name" || {
+      echo "uninstall blocked: unowned project-prefix entry: $entry" >&2
+      return 1
+    }
+    case "$name" in
+      .managed-files.manifest)
+        [ -f "$entry" ] && [ ! -L "$entry" ] || {
+          echo "uninstall blocked: project-prefix manifest is not regular" >&2
+          return 1
+        }
+        ;;
+      scripts|openwrt|components)
+        [ -d "$entry" ] && [ ! -L "$entry" ] || {
+          echo "uninstall blocked: project-prefix tree is not a directory: $entry" >&2
+          return 1
+        }
+        # OpenWrt BusyBox find has no GNU `-quit`; keep the traversal
+        # portable while preserving the fail-closed command-status check.
+        if ! nested_unsafe_all="$(find "$entry" \( -type l -o ! -type f -a ! -type d \) -print 2>/dev/null)"; then
+          echo "uninstall blocked: could not validate project-prefix entry: $entry" >&2
+          return 1
+        fi
+        nested_unsafe="$(printf '%s\n' "$nested_unsafe_all" | head -n 1)"
+        [ -z "$nested_unsafe" ] || {
+          echo "uninstall blocked: unsafe project-prefix entry: $nested_unsafe" >&2
+          return 1
+        }
+        ;;
+    esac
+  done
+}
+
+remove_owned_prefix() {
+  [ -e "$PREFIX" ] || return 0
+  validate_prefix_contents || return 1
+  prefix_entries="$BACKUP_DIR/prefix-entries.txt"
+  find "$PREFIX" -depth -print > "$prefix_entries" || {
+    echo "uninstall failed: could not enumerate owned project prefix" >&2
+    return 1
+  }
+  while IFS= read -r entry; do
+    [ "$entry" != "$PREFIX" ] || continue
+    if [ -d "$entry" ] && [ ! -L "$entry" ]; then
+      rmdir "$entry" || {
+        echo "uninstall failed: owned project-prefix directory is not empty: $entry" >&2
+        return 1
+      }
+    else
+      rm -f "$entry" || {
+        echo "uninstall failed: could not remove owned project-prefix file: $entry" >&2
+        return 1
+      }
+    fi
+  done < "$prefix_entries"
+  rmdir "$PREFIX" || {
+    echo "uninstall failed: owned project prefix is not empty" >&2
+    return 1
+  }
+  rm -f "$prefix_entries"
+}
+
+validate_managed_file_manifest() {
+  [ -f "$MANAGED_FILE_MANIFEST" ] && [ ! -L "$MANAGED_FILE_MANIFEST" ] || {
+    echo "uninstall blocked: managed-file ownership manifest is missing" >&2
+    return 1
+  }
+  [ "$(file_mode_bits "$MANAGED_FILE_MANIFEST")" = 600 ] || {
+    echo "uninstall blocked: managed-file ownership manifest mode is invalid" >&2
+    return 1
+  }
+  if [ -z "$SYSTEM_ROOT" ]; then
+    [ "$(file_owner_id "$MANAGED_FILE_MANIFEST")" = 0 ] || {
+      echo "uninstall blocked: managed-file ownership manifest is not root-owned" >&2
+      return 1
+    }
+  fi
+  while IFS='|' read -r managed_path expected_hash extra; do
+    [ -n "${managed_path:-}" ] || continue
+    [ -z "${extra:-}" ] || {
+      echo "uninstall blocked: malformed managed-file ownership manifest" >&2
+      return 1
+    }
+    printf '%s\n' "$expected_hash" | grep -Eq '^[0-9a-f]{64}$' || {
+      echo "uninstall blocked: malformed managed-file hash" >&2
+      return 1
+    }
+    is_known=0
+    while IFS= read -r known_path; do
+      [ "$managed_path" = "$known_path" ] && is_known=1
+    done <<EOF
+$(managed_static_paths)
+EOF
+    [ "$is_known" = 1 ] || {
+      echo "uninstall blocked: unknown managed-file manifest path: $managed_path" >&2
+      return 1
+    }
+    if [ -e "$managed_path" ] || [ -L "$managed_path" ]; then
+      [ -f "$managed_path" ] && [ ! -L "$managed_path" ] || {
+        echo "uninstall blocked: managed static file is not regular: $managed_path" >&2
+        return 1
+      }
+      actual_hash="$(hash_file "$managed_path")" || return 1
+      [ "$actual_hash" = "$expected_hash" ] || {
+        echo "uninstall blocked: managed static file ownership/content is unproven: $managed_path" >&2
+        return 1
+      }
+    fi
+  done < "$MANAGED_FILE_MANIFEST"
+  while IFS= read -r known_path; do
+    [ -e "$known_path" ] || [ -L "$known_path" ] || continue
+    grep -F -e "$known_path|" "$MANAGED_FILE_MANIFEST" >/dev/null 2>&1 || {
+      # The manifest is the authority for deleting a present static path.  A
+      # missing entry is treated as foreign rather than guessed away.
+      echo "uninstall blocked: present managed path is not in ownership manifest: $known_path" >&2
+      return 1
+    }
+  done <<EOF
+$(managed_static_paths)
+EOF
 }
 
 restore_flow_offloading_baseline() {
@@ -248,6 +533,67 @@ wait_dnsmasq_ready() {
   return 1
 }
 
+profile_id_valid() {
+  printf '%s\n' "$1" | grep -Eq '^[a-z0-9][a-z0-9-]{0,31}$'
+}
+
+profile_manifest_validate() {
+  manifest="$1"
+  [ -f "$manifest" ] && [ ! -L "$manifest" ] || return 1
+  # Stop and disable every owned profile first. Do not remove the first
+  # profile's files while a later profile can still fail to stop; otherwise a
+  # partial teardown would destroy metadata needed to recover it.
+  while IFS='|' read -r profile_id profile_config profile_init profile_queue extra; do
+    [ -z "${profile_id:-}" ] && continue
+    [ -z "${extra:-}" ] || return 1
+    profile_id_valid "$profile_id" || return 1
+    [ "$profile_config" = "$ZAPRET_PROFILE_DIR/$profile_id.conf" ] || return 1
+    [ "$profile_init" = "$INIT_DIR/router-policy-zapret-$profile_id" ] || return 1
+    case "$profile_queue" in ''|*[!0-9]*) return 1;; esac
+    [ "$profile_queue" -ge 2 ] || return 1
+  done < "$manifest"
+}
+
+remove_owned_profile_resources() {
+  [ "$ZAPRET_PROFILE_DIR" = "$ETC_DIR/zapret/profiles" ] || {
+    echo "uninstall blocked: non-standard Zapret profile directory" >&2
+    return 1
+  }
+  [ "$ZAPRET_PROFILE_MANIFEST" = "$ETC_DIR/zapret/profiles.manifest" ] || {
+    echo "uninstall blocked: non-standard Zapret profile manifest" >&2
+    return 1
+  }
+  [ -e "$ZAPRET_PROFILE_MANIFEST" ] || return 0
+  validate_no_symlink_path "$ZAPRET_PROFILE_MANIFEST" || {
+    echo "uninstall blocked: unsafe Zapret profile manifest path" >&2
+    return 1
+  }
+  profile_manifest_validate "$ZAPRET_PROFILE_MANIFEST" || {
+    echo "uninstall blocked: invalid Zapret profile ownership manifest" >&2
+    return 1
+  }
+  while IFS='|' read -r profile_id profile_config profile_init profile_queue extra; do
+    [ -z "${profile_id:-}" ] && continue
+    validate_no_symlink_path "$profile_config" || return 1
+    validate_no_symlink_path "$profile_init" || return 1
+    if [ -z "$SYSTEM_ROOT" ] && [ -x "$profile_init" ]; then
+      "$profile_init" stop || {
+        echo "uninstall failed: could not stop router-policy-zapret-$profile_id" >&2
+        return 1
+      }
+      "$profile_init" disable || {
+        echo "uninstall failed: could not disable router-policy-zapret-$profile_id" >&2
+        return 1
+      }
+    fi
+  done < "$ZAPRET_PROFILE_MANIFEST"
+  while IFS='|' read -r profile_id profile_config profile_init profile_queue extra; do
+    [ -z "${profile_id:-}" ] && continue
+    rm -f "$profile_config" "$profile_init"
+  done < "$ZAPRET_PROFILE_MANIFEST"
+  rm -f "$ZAPRET_PROFILE_MANIFEST"
+}
+
 if [ "${ROUTER_POLICY_UNINSTALL_LIB_ONLY:-0}" = "1" ]; then
   return 0
 fi
@@ -256,6 +602,7 @@ if [ "$mode" = "--dry-run" ]; then
   echo "would_stop_services=router-policy-dns-observer router-policy-boot-guard router-policy-helper router-policy-watchdog router-policy router-policy-xray router-policy-zapret"
   echo "would_remove_prefix=$PREFIX"
   echo "would_keep_backup=$BACKUP_DIR"
+  echo "would_remove_owned_zapret_profiles=$ZAPRET_PROFILE_MANIFEST"
   exit 0
 fi
 
@@ -279,12 +626,16 @@ for owned_path in "$PREFIX" "$BIN_DIR/router-policy" "$INIT_DIR/router-policy" \
   "$INIT_DIR/router-policy-dns-observer" "$INIT_DIR/router-policy-boot-guard" \
   "$INIT_DIR/router-policy-watchdog" "$INIT_DIR/router-policy-xray" \
   "$INIT_DIR/router-policy-zapret" "$HOTPLUG_IFACE_DIR/95-router-policy" \
-  "$HOTPLUG_FIREWALL_DIR/95-router-policy" "$ETC_DIR" "$RUNTIME_DIR"; do
+  "$HOTPLUG_FIREWALL_DIR/95-router-policy" "$ETC_DIR" "$RUNTIME_DIR" \
+  "$ZAPRET_PROFILE_MANIFEST" "$ZAPRET_PROFILE_DIR"; do
   validate_no_symlink_path "$owned_path" || {
     echo "uninstall blocked: symlink in owned path: $owned_path" >&2
     exit 1
   }
 done
+validate_runtime_contents || exit 1
+validate_managed_file_manifest || exit 1
+validate_prefix_contents || exit 1
 
 mkdir -p "$BACKUP_DIR"
 manifest="$BACKUP_DIR/manifest.txt"
@@ -321,9 +672,10 @@ if [ -z "$SYSTEM_ROOT" ]; then
   fi
 fi
 
+remove_owned_profile_resources
+
 if [ -x "$BIN_DIR/router-policy" ]; then
   "$BIN_DIR/router-policy" backup register --root "$BACKUP_DIR" --operation "$(basename "$BACKUP_DIR")" --version "$ROUTER_POLICY_VERSION" --reason uninstall --retention-class uninstall-fallback >/dev/null
-  "$BIN_DIR/router-policy" backup prune --root "$BACKUP_ROOT" --max 2 --max-bytes 134217728 --apply >/dev/null
 fi
 
 if [ -z "$SYSTEM_ROOT" ]; then
@@ -342,13 +694,17 @@ if [ -z "$SYSTEM_ROOT" ]; then
   done
 fi
 
-rm -f "$INIT_DIR/router-policy-helper" "$INIT_DIR/router-policy" "$INIT_DIR/router-policy-dns-observer" "$INIT_DIR/router-policy-boot-guard" "$INIT_DIR/router-policy-watchdog" "$INIT_DIR/router-policy-xray" "$INIT_DIR/router-policy-zapret"
-rm -f "$BIN_DIR/router-policy-helper"
-rm -f "$HOTPLUG_IFACE_DIR/95-router-policy" "$HOTPLUG_FIREWALL_DIR/95-router-policy"
+while IFS= read -r managed_path; do
+  [ -n "$managed_path" ] || continue
+  # Keep the controller binary alive until final backup pruning; it is the
+  # executable that performs the pruning operation itself.
+  [ "$managed_path" = "$BIN_DIR/router-policy" ] && continue
+  rm -f "$managed_path"
+done <<EOF
+$(managed_static_paths)
+EOF
 rm -f "$ETC_DIR/firewall/router-policy.nft" "$NFTABLES_DIR/router-policy.nft" "$DNSMASQ_DIR/router-policy.conf"
-rm -f "$BIN_DIR/router-policy"
-rm -rf "$PREFIX"
-rm -rf "$RUNTIME_DIR"
+remove_owned_prefix || exit 1
 
 if [ -z "$SYSTEM_ROOT" ] && [ -x "$INIT_DIR/dnsmasq" ]; then
   "$INIT_DIR/dnsmasq" restart
@@ -357,6 +713,16 @@ if [ -z "$SYSTEM_ROOT" ] && [ -x "$INIT_DIR/dnsmasq" ]; then
     exit 1
   }
 fi
+
+remove_owned_runtime || exit 1
+
+# Keep older fallback backups until every teardown and the final dnsmasq
+# readiness check has succeeded.  A failed uninstall must not prune the only
+# recovery points that still describe the previous installation.
+if [ -x "$BIN_DIR/router-policy" ]; then
+  "$BIN_DIR/router-policy" backup prune --root "$BACKUP_ROOT" --max 2 --max-bytes 134217728 --apply >/dev/null
+fi
+rm -f "$BIN_DIR/router-policy"
 
 echo "uninstalled=true"
 echo "backup=$BACKUP_DIR"

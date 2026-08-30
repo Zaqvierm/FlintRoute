@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -562,6 +563,16 @@ func TestOpenPreservesUnreadableDatabaseForRescue(t *testing.T) {
 	}
 	if artifact, readErr := os.ReadFile(artifacts[0]); readErr != nil || string(artifact) != string(original) {
 		t.Fatalf("forensic artifact mismatch: err=%v bytes=%q", readErr, artifact)
+	}
+	info, statErr := os.Stat(artifacts[0])
+	if statErr != nil {
+		t.Fatalf("forensic artifact disappeared: %v", statErr)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("forensic artifact is not private: mode=%v", info.Mode().Perm())
+	}
+	if temporary, globErr := filepath.Glob(filepath.Join(tmp, "forensics", ".router-policy-corrupt-*.tmp")); globErr != nil || len(temporary) != 0 {
+		t.Fatalf("partial forensic temporary files remain: %v err=%v", temporary, globErr)
 	}
 }
 
