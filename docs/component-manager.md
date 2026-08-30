@@ -110,3 +110,12 @@ Advanced и требует реальной SOCKS/TLS/HTTP проверки. Rou
 проверяются локально. Аппаратный PASS относится только к commit, который реально
 установлен на роутер, и фиксируется после backup, component preflight и runtime
 smoke. Недоступные внешние credentials отмечаются `SKIP`, а не заменяются mock.
+## Read-only service status from a non-root controller
+
+The controller must not rely on executing an OpenWrt init script to read
+service state: `rc.common` may require a root-only procd lock. When that query
+is unavailable, the driver performs a read-only `/proc` match against the
+exact managed executable. This reports a live `nfqws`/Xray process truthfully
+without granting the controller a privileged restart path. A live process is
+not by itself a health or dataplane proof; calibration and route evidence
+remain independent gates.

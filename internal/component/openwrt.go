@@ -475,6 +475,14 @@ func (d OpenWrtDriver) healthFor(ctx context.Context, kind Kind, binary, service
 		return Health{State: "failed", ServiceState: "unknown", Reason: "component version check failed"}, nil
 	}
 	running := d.serviceRunning(ctx, service)
+	if !running {
+		// The production controller is non-root.  OpenWrt's rc.common status
+		// command may be unreadable to it because procd tries to create a
+		// root-only lock file.  A read-only /proc check for the exact executable
+		// keeps component status truthful without granting the controller a
+		// privileged init-script execution path.
+		running = processBinaryRunning(binary)
+	}
 	state := "ready"
 	reason := ""
 	if !running {
@@ -567,6 +575,38 @@ func (d OpenWrtDriver) serviceRunning(ctx context.Context, service string) bool 
 	}
 	_, err = d.runner().Run(ctx, service, "status")
 	return err == nil
+}
+
+func processBinaryRunning(binary string) bool {
+	if runtime.GOOS == "windows" || strings.TrimSpace(binary) == "" {
+		return false
+	}
+	want := filepath.Clean(binary)
+	if resolved, err := filepath.EvalSymlinks(binary); err == nil {
+		want = filepath.Clean(resolved)
+	}
+	wantBase := filepath.Base(want)
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if _, err := strconv.Atoi(entry.Name()); err != nil {
+			continue
+		}
+		cmdline, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		if err != nil || len(cmdline) == 0 {
+			continue
+		}
+		first := strings.TrimSpace(strings.SplitN(string(cmdline), "\x00", 2)[0])
+		if first == want || filepath.Base(first) == wantBase {
+			return true
+		}
+	}
+	return false
 }
 
 func (d OpenWrtDriver) detectVersion(ctx context.Context, kind Kind, binary string) string {

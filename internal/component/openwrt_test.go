@@ -193,3 +193,19 @@ func TestZapretRuntimeReadinessRequiresCompleteManagedTree(t *testing.T) {
 		t.Fatalf("incomplete runtime accepted: ready=%v err=%v", ready, err)
 	}
 }
+
+func TestProcessBinaryRunningDetectsCurrentExecutable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose a /proc process command line")
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !processBinaryRunning(executable) {
+		t.Fatalf("current test executable was not found in /proc: %s", executable)
+	}
+	if processBinaryRunning(filepath.Join(t.TempDir(), "not-running")) {
+		t.Fatal("nonexistent executable was reported as running")
+	}
+}
