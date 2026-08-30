@@ -1771,6 +1771,19 @@ prepare_controller_identity() {
   for owned_root in "$ETC_DIR/config" "$STATE_DIR" "$RUNTIME_DIR"; do
     chown_owned_tree "$owned_root" || return 1
   done
+  # The controller runs as daemon and must be able to traverse its
+  # configuration root.  install_files() creates this directory under the
+  # installer's umask, so normalize only this exact FlintRoute-owned
+  # container.  Keep it root-owned; the daemon group gets traversal while
+  # secret/config permissions remain enforced below.
+  chown "0:$controller_gid" "$ETC_DIR" || {
+    echo "install blocked: cannot assign controller config root" >&2
+    return 1
+  }
+  chmod 750 "$ETC_DIR" || {
+    echo "install blocked: cannot make controller config root traversable" >&2
+    return 1
+  }
   validate_managed_secret_paths || return 1
   chown "$controller_uid:$controller_gid" "$ETC_DIR/secrets" || {
     echo "install blocked: cannot assign secrets directory" >&2

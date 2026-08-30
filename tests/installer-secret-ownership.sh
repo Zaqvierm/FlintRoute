@@ -20,7 +20,13 @@ cat > "$TMP/bin/chown" <<'EOF'
 printf '%s\n' "$*" >> "$CHOWN_LOG"
 exit 0
 EOF
-chmod +x "$TMP/bin/id" "$TMP/bin/chown"
+REAL_CHMOD="$(command -v chmod)"
+cat > "$TMP/bin/chmod" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "\$CHMOD_LOG"
+exec "$REAL_CHMOD" "\$@"
+EOF
+chmod +x "$TMP/bin/id" "$TMP/bin/chown" "$TMP/bin/chmod"
 
 for file in default.json schema.json listener.conf helper.env; do
   if [ "$file" = "helper.env" ]; then
@@ -34,6 +40,7 @@ for file in vpn-subscription-url happ-crypt4-private-key.pem telegram.json webho
 done
 export PATH="$TMP/bin:$PATH"
 export CHOWN_LOG="$TMP/chown.log"
+export CHMOD_LOG="$TMP/chmod.log"
 export ROUTER_POLICY_INSTALL_LIB_ONLY=1
 export ROUTER_POLICY_SYSTEM_ROOT=""
 export ETC_DIR="$TMP/etc/router-policy"
@@ -56,11 +63,24 @@ path_metadata() {
 mkdir -p "$TMP/prefix/components"
 : > "$TMP/prefix/components/foreign-runtime"
 chmod 700 "$TMP/prefix/components/foreign-runtime"
+chmod 700 "$TMP/etc/router-policy"
 component_mode_before=""
 if command -v stat >/dev/null 2>&1; then
   component_mode_before="$(stat -c '%a' "$TMP/prefix/components/foreign-runtime" 2>/dev/null || true)"
 fi
 prepare_controller_identity
+
+# The non-root controller must be able to traverse its exact config root,
+# while the root remains owned by root and no recursive ownership operation
+# is used.
+grep -F -- "750 $TMP/etc/router-policy" "$CHMOD_LOG" >/dev/null || {
+  echo "controller config root was not made traversable by daemon" >&2
+  exit 1
+}
+grep -F -- '0:1 ' "$CHOWN_LOG" >/dev/null || {
+  echo "controller config root was not assigned root:daemon ownership" >&2
+  exit 1
+}
 
 if [ -n "$component_mode_before" ]; then
   component_mode_after="$(stat -c '%a' "$TMP/prefix/components/foreign-runtime" 2>/dev/null || true)"
