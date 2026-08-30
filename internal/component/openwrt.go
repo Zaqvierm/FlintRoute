@@ -433,8 +433,13 @@ func zapretVersionRuntimeReady(target string) (bool, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o555 != 0o555 {
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return false, errors.New("unsafe Zapret version runtime")
+	}
+	if info.Mode().Perm()&0o555 != 0o555 {
+		// A root-owned tree created under umask 077 is repairable by the
+		// component installer; it is not a reason to reject the replacement.
+		return false, nil
 	}
 	for _, relative := range zapretRuntimeMembers() {
 		member, memberErr := os.Lstat(filepath.Join(target, filepath.FromSlash(relative)))
@@ -442,9 +447,11 @@ func zapretVersionRuntimeReady(target string) (bool, error) {
 		if errors.Is(memberErr, os.ErrNotExist) {
 			return false, nil
 		}
-		if memberErr != nil || !member.Mode().IsRegular() || member.Mode()&os.ModeSymlink != 0 ||
-			member.Mode().Perm()&0o444 != 0o444 || (executableRequired && member.Mode()&0o111 == 0) {
+		if memberErr != nil || !member.Mode().IsRegular() || member.Mode()&os.ModeSymlink != 0 {
 			return false, errors.New("unsafe Zapret runtime member")
+		}
+		if member.Mode().Perm()&0o444 != 0o444 || (executableRequired && member.Mode()&0o111 == 0) {
+			return false, nil
 		}
 	}
 	return true, nil
