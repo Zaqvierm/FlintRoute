@@ -23,6 +23,29 @@ func TestValidateRouteSelectionWeights(t *testing.T) {
 	}
 }
 
+func TestPolicyCanonicalJSONPreservesLegacyOmittedWeights(t *testing.T) {
+	var policy Policy
+	legacy := []byte(`{"unknown_domain_first_path":"direct","unknown_domain_background_check":true}`)
+	if err := json.Unmarshal(legacy, &policy); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(canonical), `"route_selection_weights"`) {
+		t.Fatalf("zero legacy weights changed canonical JSON: %s", canonical)
+	}
+	policy.RouteSelectionWeights.EndToEndLatency = 1
+	canonical, err = json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(canonical), `"route_selection_weights":{"end_to_end_latency":1}`) {
+		t.Fatalf("non-zero route-selection weights were omitted: %s", canonical)
+	}
+}
+
 func TestPlatformIPv6FalseKeepsLegacyCanonicalJSON(t *testing.T) {
 	legacy := []byte(`{"target":"glinet-flint2","require_confirmed_diagnostics":true,"unsupported_apply_policy":"fail_closed"}`)
 	var platform Platform

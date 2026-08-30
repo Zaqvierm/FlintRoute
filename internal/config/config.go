@@ -109,6 +109,78 @@ type Policy struct {
 	DiscoveryMaxConsecutiveRollbacks int                   `json:"discovery_max_consecutive_rollbacks,omitempty"`
 }
 
+// MarshalJSON keeps canonical hashes stable for configurations written before
+// route-selection weights were introduced.  encoding/json does not consider a
+// zero-valued struct empty for omitempty, so the plain struct tag would add an
+// empty route_selection_weights object and make an otherwise unchanged legacy
+// committed revision look divergent during recovery.
+func (p Policy) MarshalJSON() ([]byte, error) {
+	type policyJSON struct {
+		UnknownDomainFirstPath           string                 `json:"unknown_domain_first_path"`
+		RouteSelectionStrategy           string                 `json:"route_selection_strategy,omitempty"`
+		RouteSelectionHysteresisPercent  int                    `json:"route_selection_hysteresis_percent,omitempty"`
+		RouteSelectionCooldownSeconds    int                    `json:"route_selection_cooldown_seconds,omitempty"`
+		RouteSelectionWeights            *RouteSelectionWeights `json:"route_selection_weights,omitempty"`
+		UnknownDomainBackgroundCheck     bool                   `json:"unknown_domain_background_check"`
+		RouteHoldSeconds                 int                    `json:"route_hold_seconds"`
+		FailAfterConsecutiveErrors       int                    `json:"fail_after_consecutive_errors"`
+		RecoverAfterConsecutiveSuccess   int                    `json:"recover_after_consecutive_successes"`
+		HealthCheckIntervalSeconds       int                    `json:"health_check_interval_seconds"`
+		InventoryHealthIntervalSeconds   int                    `json:"inventory_health_interval_seconds,omitempty"`
+		ProbeBudget                      int                    `json:"probe_budget,omitempty"`
+		DiscoveryQueueLimit              int                    `json:"discovery_queue_limit,omitempty"`
+		DomainDecisionTTLSeconds         int                    `json:"domain_decision_ttl_seconds"`
+		SubscriptionUpdateIntervalSecs   int                    `json:"subscription_update_interval_seconds"`
+		TSPUListUpdateIntervalSeconds    int                    `json:"tspu_list_update_interval_seconds"`
+		TSPUStalePolicy                  string                 `json:"tspu_stale_policy"`
+		MaxSubscriptionBytes             int64                  `json:"max_subscription_bytes"`
+		MaxTSPUListBytes                 int64                  `json:"max_tspu_list_bytes"`
+		MaxProbeSeconds                  int                    `json:"max_probe_seconds"`
+		ParallelServerChecks             int                    `json:"parallel_server_checks"`
+		GeoLockedUnknownCountryIsSafe    bool                   `json:"geo_locked_unknown_country_is_safe"`
+		GeoLockedAllowDirect             bool                   `json:"geo_locked_allow_direct"`
+		GeoLockedAllowZapret             bool                   `json:"geo_locked_allow_zapret"`
+		DirectOnlyAllowForeignProxy      bool                   `json:"direct_only_allow_foreign_proxy"`
+		DiscoveryMode                    string                 `json:"discovery_mode,omitempty"`
+		DiscoveryMaxNewRulesPerHour      int                    `json:"discovery_max_new_rules_per_hour,omitempty"`
+		DiscoveryMaxConsecutiveRollbacks int                    `json:"discovery_max_consecutive_rollbacks,omitempty"`
+	}
+	wire := policyJSON{
+		UnknownDomainFirstPath:           p.UnknownDomainFirstPath,
+		RouteSelectionStrategy:           p.RouteSelectionStrategy,
+		RouteSelectionHysteresisPercent:  p.RouteSelectionHysteresisPercent,
+		RouteSelectionCooldownSeconds:    p.RouteSelectionCooldownSeconds,
+		UnknownDomainBackgroundCheck:     p.UnknownDomainBackgroundCheck,
+		RouteHoldSeconds:                 p.RouteHoldSeconds,
+		FailAfterConsecutiveErrors:       p.FailAfterConsecutiveErrors,
+		RecoverAfterConsecutiveSuccess:   p.RecoverAfterConsecutiveSuccess,
+		HealthCheckIntervalSeconds:       p.HealthCheckIntervalSeconds,
+		InventoryHealthIntervalSeconds:   p.InventoryHealthIntervalSeconds,
+		ProbeBudget:                      p.ProbeBudget,
+		DiscoveryQueueLimit:              p.DiscoveryQueueLimit,
+		DomainDecisionTTLSeconds:         p.DomainDecisionTTLSeconds,
+		SubscriptionUpdateIntervalSecs:   p.SubscriptionUpdateIntervalSecs,
+		TSPUListUpdateIntervalSeconds:    p.TSPUListUpdateIntervalSeconds,
+		TSPUStalePolicy:                  p.TSPUStalePolicy,
+		MaxSubscriptionBytes:             p.MaxSubscriptionBytes,
+		MaxTSPUListBytes:                 p.MaxTSPUListBytes,
+		MaxProbeSeconds:                  p.MaxProbeSeconds,
+		ParallelServerChecks:             p.ParallelServerChecks,
+		GeoLockedUnknownCountryIsSafe:    p.GeoLockedUnknownCountryIsSafe,
+		GeoLockedAllowDirect:             p.GeoLockedAllowDirect,
+		GeoLockedAllowZapret:             p.GeoLockedAllowZapret,
+		DirectOnlyAllowForeignProxy:      p.DirectOnlyAllowForeignProxy,
+		DiscoveryMode:                    p.DiscoveryMode,
+		DiscoveryMaxNewRulesPerHour:      p.DiscoveryMaxNewRulesPerHour,
+		DiscoveryMaxConsecutiveRollbacks: p.DiscoveryMaxConsecutiveRollbacks,
+	}
+	if p.RouteSelectionWeights != (RouteSelectionWeights{}) {
+		weights := p.RouteSelectionWeights
+		wire.RouteSelectionWeights = &weights
+	}
+	return json.Marshal(wire)
+}
+
 type RouteSelectionWeights struct {
 	EndToEndLatency float64 `json:"end_to_end_latency,omitempty"`
 	Availability    float64 `json:"availability,omitempty"`
