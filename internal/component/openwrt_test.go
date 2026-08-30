@@ -223,7 +223,7 @@ func TestZapretRuntimeReadinessRejectsUmaskLockedRuntime(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if ready, err := zapretVersionRuntimeReady(version); err == nil || ready {
+	if ready, err := zapretVersionRuntimeReady(version); err != nil || ready {
 		t.Fatalf("umask-locked runtime was accepted: ready=%v err=%v", ready, err)
 	}
 	if err := normalizeZapretRuntimeModes(version); err != nil {
