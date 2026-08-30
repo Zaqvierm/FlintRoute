@@ -259,3 +259,10 @@ DNS resolution, классификация, фактический egress, до�
 - Telegram delivery и внешний SOCKS endpoint требуют аппаратной проверки с
   пользовательскими credentials; собственный TGWS transport не поставляется.
 - Роли кроме admin.
+# Admin session lifecycle
+
+The default local administrator session is intentionally non-expiring. The
+HttpOnly `rp_session` cookie is a browser session cookie with no `Max-Age` or
+`Expires`; it ends only on explicit logout/revocation or controller restart.
+Background refresh failures (including a transient 401) keep the current UI
+visible and expose a retry action instead of redirecting to the login screen.
