@@ -28,6 +28,29 @@ type RescueError struct {
 	Cause error
 }
 
+// BusyError means the durable state is healthy but currently owned by the
+// running controller. It is distinct from RescueError: a second CLI process
+// must not enter rescue mode or copy a forensic artifact just because bbolt's
+// exclusive lock is held.
+type BusyError struct {
+	Path  string
+	Cause error
+}
+
+func (e *BusyError) Error() string {
+	if e == nil || e.Cause == nil {
+		return "persistent state is busy"
+	}
+	return "persistent state is busy: " + e.Cause.Error()
+}
+
+func (e *BusyError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
 func (e *RescueError) Error() string {
 	if e == nil || e.Cause == nil {
 		return "persistent state requires rescue"
@@ -100,6 +123,9 @@ func Open(cfg *config.Config) (*Store, error) {
 	}
 	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: 2 * time.Second})
 	if err != nil {
+		if errors.Is(err, bolt.ErrTimeout) {
+			return nil, &BusyError{Path: path, Cause: err}
+		}
 		preserveRescueArtifact(path, dir)
 		return nil, &RescueError{Path: path, Cause: err}
 	}

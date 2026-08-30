@@ -268,3 +268,11 @@ Transport failures during background refresh keep the current UI visible and
 mark only the affected data slices stale, with an explicit retry action. A
 real `401 Unauthorized` is different: the privileged state is cleared and the
 browser returns to the login form with a clear re-authentication message.
+
+## Live CLI state access
+
+Production CLI commands resolve `/etc/router-policy/config/default.json` when
+`ROUTER_POLICY_CONFIG` is not set. The running controller owns the bbolt
+exclusive lock; a concurrent CLI state reader reports `persistent state is
+busy` and does not enter rescue mode or create a forensic copy. Rescue mode is
+reserved for an unreadable or structurally invalid database.

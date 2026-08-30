@@ -576,6 +576,34 @@ func TestOpenPreservesUnreadableDatabaseForRescue(t *testing.T) {
 	}
 }
 
+func TestOpenReportsBusyWithoutCreatingRescueArtifact(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "state.bbolt")
+	cfg := &config.Config{Storage: config.Storage{StateDir: tmp, Database: path}}
+	store, err := Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	_, err = Open(cfg)
+	if err == nil {
+		t.Fatal("second open unexpectedly acquired the exclusive bbolt lock")
+	}
+	var busy *BusyError
+	if !errors.As(err, &busy) {
+		t.Fatalf("locked database was not reported as busy: %v", err)
+	}
+	var rescue *RescueError
+	if errors.As(err, &rescue) {
+		t.Fatalf("locked database was incorrectly classified as rescue: %v", err)
+	}
+	artifacts, globErr := filepath.Glob(filepath.Join(tmp, "forensics", "router-policy-corrupt-*.bbolt"))
+	if globErr != nil || len(artifacts) != 0 {
+		t.Fatalf("busy database created forensic artifacts: %v err=%v", artifacts, globErr)
+	}
+}
+
 func TestOpenRecoversInterruptedActiveCompaction(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "state.bbolt")

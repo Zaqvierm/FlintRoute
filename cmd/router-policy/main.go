@@ -64,10 +64,7 @@ func run(args []string) error {
 		return nil
 	}
 
-	cfgPath := os.Getenv("ROUTER_POLICY_CONFIG")
-	if cfgPath == "" {
-		cfgPath = filepath.Join("config", "default.json")
-	}
+	cfgPath := defaultConfigPath()
 
 	switch args[0] {
 	case "internal-health-field":
@@ -1510,6 +1507,20 @@ func run(args []string) error {
 		usage()
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
+}
+
+// defaultConfigPath keeps production CLI commands usable when invoked from
+// procd/SSH with a working directory outside the repository, while retaining
+// the repository-relative path used by development and tests.
+func defaultConfigPath() string {
+	if configured := strings.TrimSpace(os.Getenv("ROUTER_POLICY_CONFIG")); configured != "" {
+		return configured
+	}
+	const openWrtPath = "/etc/router-policy/config/default.json"
+	if _, err := os.Stat(openWrtPath); err == nil {
+		return openWrtPath
+	}
+	return filepath.Join("config", "default.json")
 }
 
 func usage() {

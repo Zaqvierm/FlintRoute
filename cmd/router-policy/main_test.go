@@ -18,6 +18,20 @@ import (
 	"router-policy/internal/zapret"
 )
 
+func TestDefaultConfigPathHonorsEnvironment(t *testing.T) {
+	t.Setenv("ROUTER_POLICY_CONFIG", "/tmp/flintroute-test-config.json")
+	if got := defaultConfigPath(); got != "/tmp/flintroute-test-config.json" {
+		t.Fatalf("environment config path was ignored: %q", got)
+	}
+}
+
+func TestDefaultConfigPathFallsBackToRepositoryConfig(t *testing.T) {
+	t.Setenv("ROUTER_POLICY_CONFIG", "")
+	if got := defaultConfigPath(); got != filepath.Join("config", "default.json") {
+		t.Fatalf("unexpected development config fallback: %q", got)
+	}
+}
+
 func TestSetupTokenIfNeededIsIdempotentAfterAdminCreation(t *testing.T) {
 	cfg, err := config.Load(filepath.Join("..", "..", "config", "default.json"))
 	if err != nil {
