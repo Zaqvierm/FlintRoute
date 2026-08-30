@@ -1784,6 +1784,38 @@ prepare_controller_identity() {
     echo "install blocked: cannot make controller config root traversable" >&2
     return 1
   }
+  # Adaptive Zapret metadata is read by the non-root controller and may be
+  # refreshed by its bounded calibration runner.  Normalize only this exact
+  # owned directory and catalog file; never recurse into profiles or active
+  # nfqws configuration, which remain root/helper-owned.
+  if [ -e "$ETC_DIR/zapret" ]; then
+    [ -d "$ETC_DIR/zapret" ] && [ ! -L "$ETC_DIR/zapret" ] || {
+      echo "install blocked: Zapret metadata root is not a directory" >&2
+      return 1
+    }
+    chown "0:$controller_gid" "$ETC_DIR/zapret" || {
+      echo "install blocked: cannot assign Zapret metadata root" >&2
+      return 1
+    }
+    chmod 750 "$ETC_DIR/zapret" || {
+      echo "install blocked: cannot make Zapret metadata root traversable" >&2
+      return 1
+    }
+  fi
+  if [ -e "$ETC_DIR/zapret/catalog.json" ]; then
+    [ -f "$ETC_DIR/zapret/catalog.json" ] && [ ! -L "$ETC_DIR/zapret/catalog.json" ] || {
+      echo "install blocked: Zapret catalog is not a regular file" >&2
+      return 1
+    }
+    chown "0:$controller_gid" "$ETC_DIR/zapret/catalog.json" || {
+      echo "install blocked: cannot assign Zapret catalog" >&2
+      return 1
+    }
+    chmod 660 "$ETC_DIR/zapret/catalog.json" || {
+      echo "install blocked: cannot make Zapret catalog writable" >&2
+      return 1
+    }
+  fi
   validate_managed_secret_paths || return 1
   chown "$controller_uid:$controller_gid" "$ETC_DIR/secrets" || {
     echo "install blocked: cannot assign secrets directory" >&2

@@ -63,6 +63,8 @@ path_metadata() {
 mkdir -p "$TMP/prefix/components"
 : > "$TMP/prefix/components/foreign-runtime"
 chmod 700 "$TMP/prefix/components/foreign-runtime"
+mkdir -p "$TMP/etc/router-policy/zapret"
+: > "$TMP/etc/router-policy/zapret/catalog.json"
 chmod 700 "$TMP/etc/router-policy"
 component_mode_before=""
 if command -v stat >/dev/null 2>&1; then
@@ -79,6 +81,22 @@ grep -F -- "750 $TMP/etc/router-policy" "$CHMOD_LOG" >/dev/null || {
 }
 grep -F -- '0:1 ' "$CHOWN_LOG" >/dev/null || {
   echo "controller config root was not assigned root:daemon ownership" >&2
+  exit 1
+}
+grep -F -- "0:1 $TMP/etc/router-policy/zapret" "$CHOWN_LOG" >/dev/null || {
+  echo "Zapret metadata root was not assigned root:daemon ownership" >&2
+  exit 1
+}
+grep -F -- "0:1 $TMP/etc/router-policy/zapret/catalog.json" "$CHOWN_LOG" >/dev/null || {
+  echo "Zapret catalog was not assigned root:daemon ownership" >&2
+  exit 1
+}
+grep -F -- "750 $TMP/etc/router-policy/zapret" "$CHMOD_LOG" >/dev/null || {
+  echo "Zapret metadata root was not made traversable" >&2
+  exit 1
+}
+grep -F -- "660 $TMP/etc/router-policy/zapret/catalog.json" "$CHMOD_LOG" >/dev/null || {
+  echo "Zapret catalog was not made writable by daemon" >&2
   exit 1
 }
 
