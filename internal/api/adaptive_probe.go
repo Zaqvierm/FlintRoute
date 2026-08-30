@@ -164,6 +164,11 @@ func (s *Server) handleAdaptiveZapretRuntime(w http.ResponseWriter, r *http.Requ
 	runtime.probeMu.Lock()
 	defer runtime.probeMu.Unlock()
 	active := s.currentConfig()
+	if active == nil {
+		used, limit, inFlight := runtime.scheduler.Budget(now)
+		writeData(w, r, adaptiveProbeRuntimeStatus{Enabled: true, Status: "UNVERIFIED", Reason: "active_config_unavailable", BudgetUsed: used, BudgetLimit: limit, InFlight: inFlight})
+		return
+	}
 	fingerprint, err := s.adaptiveNetworkFingerprint(active, runtime, now)
 	if err != nil {
 		used, limit, inFlight := runtime.scheduler.Budget(now)

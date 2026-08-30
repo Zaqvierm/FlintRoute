@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -18,8 +20,12 @@ import (
 )
 
 const (
-	discoveryStateKey       = "control"
-	maxDiscoverySuggestions = 256
+	discoveryStateKey        = "control"
+	maxDiscoverySuggestions  = 256
+	maxDiscoveryObservations = 1000
+	discoverySuggestionKey   = "suggestions"
+	discoveryObservationTTL  = time.Hour
+	discoverySuggestionTTL   = 7 * 24 * time.Hour
 	// A DNS cache miss can be reported repeatedly by several clients.  Treat
 	// the eTLD+1 as one discovery subject for a bounded observation window;
 	// ordinary repeat queries must not restart route probes.
@@ -70,21 +76,81 @@ func discoveryDedupeKey(domain string) string {
 	return domain
 }
 
+func discoverySuggestionMapKey(domain string) string {
+	return discoveryDedupeKey(domain)
+}
+
+// enqueueDiscoveryObservation performs admission-time coalescing.  Dedupe at
+// the worker alone is too late: a DNS storm can fill the bounded channel with
+// copies of one eTLD+1 and evict unrelated domains before the worker gets to
+// discard them.  A pending key remains reserved until the worker finishes the
+// observation, so a second event cannot slip into the queue between dequeue
+// and beginDiscoveryObservation.
+func (s *Server) enqueueDiscoveryObservation(observation discovery.Observation) (accepted, queueFull bool) {
+	key := discoveryDedupeKey(observation.Domain)
+	if key == "" {
+		return false, false
+	}
+	now := time.Now().UTC()
+	if s.discoveryNow != nil {
+		now = s.discoveryNow()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.discoveryPending == nil {
+		s.discoveryPending = make(map[string]bool)
+	}
+	if s.discoveryPending[key] || s.discoveryInFlight[key] {
+		return false, false
+	}
+	if last := s.discoveryRecent[key]; !last.IsZero() && now.Sub(last) < discoveryDedupeWindow {
+		return false, false
+	}
+	if s.discoveryQueue == nil {
+		return false, true
+	}
+	select {
+	case s.discoveryQueue <- observation:
+		s.discoveryPending[key] = true
+		return true, false
+	default:
+		return false, true
+	}
+}
+
+func (s *Server) releasePendingDiscovery(domain string) {
+	key := discoveryDedupeKey(domain)
+	if key == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.discoveryPending, key)
+	s.mu.Unlock()
+}
+
 func discoveryCandidateDetails(results []probe.RouteResult) []map[string]any {
 	items := make([]map[string]any, 0, len(results))
 	for _, result := range results {
 		item := map[string]any{
 			"route": result.Route, "route_type": result.RouteType, "status": result.Status,
 			"path_verified": result.PathVerified, "service_ok": result.ServiceOK,
-			"reason":                   result.ReasonCode,
-			"route_latency_available":  result.RouteLatencyAvailable,
-			"verification_duration_ms": result.VerificationDurationMS,
-			"dns_resolver":             result.DNSResolver, "resolved_ip": result.ResolvedIP,
+			"reason":                       result.ReasonCode,
+			"selection_score":              result.SelectionScore,
+			"regional_block":               result.RegionalBlock,
+			"authentication_required":      result.AuthenticationRequired,
+			"waf_or_rate_limit":            result.WAFOrRateLimit,
+			"route_latency_available":      result.RouteLatencyAvailable,
+			"end_to_end_latency_available": result.EndToEndLatencyAvailable,
+			"verification_duration_ms":     result.VerificationDurationMS,
+			"dns_resolver":                 result.DNSResolver, "resolved_ip": result.ResolvedIP,
 			"connected_ip": result.ConnectedIP, "interface": result.Interface,
 		}
 		if result.RouteLatencyAvailable {
 			item["latency_ms"] = result.RouteLatencyMS
 			item["route_latency_ms"] = result.RouteLatencyMS
+		}
+		if result.EndToEndLatencyAvailable {
+			item["end_to_end_latency_ms"] = result.EndToEndLatencyMS
 		}
 		items = append(items, item)
 	}
@@ -155,11 +221,19 @@ type discoveryControlState struct {
 }
 
 type discoverySuggestion struct {
-	Domain       string `json:"domain"`
-	Category     string `json:"category"`
-	Route        string `json:"route,omitempty"`
-	RouteType    string `json:"route_type,omitempty"`
-	PathVerified bool   `json:"path_verified"`
+	Domain                   string           `json:"domain"`
+	Category                 string           `json:"category"`
+	Route                    string           `json:"route,omitempty"`
+	RouteType                string           `json:"route_type,omitempty"`
+	PathVerified             bool             `json:"path_verified"`
+	ExternalCountry          string           `json:"external_country,omitempty"`
+	EgressConsensus          bool             `json:"egress_consensus"`
+	EndToEndLatencyMS        int64            `json:"end_to_end_latency_ms,omitempty"`
+	EndToEndLatencyAvailable bool             `json:"end_to_end_latency_available"`
+	SelectionScore           float64          `json:"selection_score,omitempty"`
+	CandidateInventoryHash   string           `json:"candidate_inventory_hash,omitempty"`
+	Candidates               []map[string]any `json:"candidates,omitempty"`
+	VerificationDurationMS   int64            `json:"verification_duration_ms,omitempty"`
 	// Confidence is retained as a compatibility alias for route-decision
 	// confidence. New clients must use the explicit fields below.
 	Confidence               float64   `json:"confidence"`
@@ -173,6 +247,16 @@ type discoverySuggestion struct {
 	ClassificationState      string    `json:"classification_state"`
 	ProbeState               string    `json:"probe_state"`
 	PolicyState              string    `json:"policy_state"`
+	Client                   string    `json:"client,omitempty"`
+	LastSeen                 time.Time `json:"last_seen"`
+	Count                    uint64    `json:"count"`
+}
+
+type discoveryObservation struct {
+	Domain     string    `json:"domain"`
+	QueryType  string    `json:"query_type"`
+	Client     string    `json:"client,omitempty"`
+	ObservedAt time.Time `json:"observed_at"`
 }
 
 func plannerProbeState(check planner.DomainCheck) string {
@@ -181,6 +265,10 @@ func plannerProbeState(check planner.DomainCheck) string {
 		case "in_progress":
 			return "verifying"
 		case "verified":
+			if check.Selected != nil && check.Selected.RouteType == "drop" &&
+				(strings.EqualFold(check.Status, "DROP") || strings.EqualFold(check.Selected.Status, "DROP") || strings.EqualFold(check.Selected.ApplicationStatus, "DROP")) {
+				return "drop_enforced"
+			}
 			if check.Selected != nil && check.Selected.PathVerified {
 				return "verified_candidate"
 			}
@@ -190,9 +278,18 @@ func plannerProbeState(check planner.DomainCheck) string {
 		}
 	}
 	switch check.Status {
-	case "SELECTED", "DROP":
+	case "SELECTED":
 		if check.Selected != nil && check.Selected.PathVerified {
 			return "verified_candidate"
+		}
+		return "verifying"
+	case "DROP":
+		// DROP is a terminal, fail-closed safety decision. It is not a
+		// network path and therefore cannot carry PathVerified=true, but it
+		// must not be rendered as an in-progress probe either.
+		if check.Selected != nil && check.Selected.RouteType == "drop" &&
+			(strings.EqualFold(check.Status, "DROP") || strings.EqualFold(check.Selected.Status, "DROP") || strings.EqualFold(check.Selected.ApplicationStatus, "DROP")) {
+			return "drop_enforced"
 		}
 		return "verifying"
 	case "NO_SAFE_ROUTE":
@@ -225,6 +322,117 @@ type automaticCommitResult struct {
 
 type DomainChecker func(context.Context, *config.Config, string, string, planner.Options) (planner.DomainCheck, error)
 
+type discoverySuggestionActionRequest struct {
+	Route string `json:"route,omitempty"`
+}
+
+// handleDiscoverySuggestionAction is the human-facing bounded action for a
+// verified suggestion. It intentionally reuses the route-only assignment
+// path and never invokes a full ChangeSet/dataplane rebuild.
+func (s *Server) handleDiscoverySuggestionAction(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/discovery/suggestions/"), "/")
+	if len(parts) != 2 || parts[0] == "" || (parts[1] != "apply" && parts[1] != "ignore") {
+		writeError(w, r, http.StatusNotFound, "not_found", "suggestion action not found")
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	domain, err := url.PathUnescape(parts[0])
+	if err != nil || strings.TrimSpace(domain) == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_domain", "domain is invalid")
+		return
+	}
+	release, failure := s.acquireMutationLease()
+	if failure != nil {
+		writeError(w, r, failure.Status, failure.Code, failure.Message)
+		return
+	}
+	defer release()
+	s.mu.Lock()
+	key := discoverySuggestionMapKey(domain)
+	suggestion, ok := s.discoverySuggestionMap[key]
+	if !ok {
+		// Accept entries written by older versions that used the full hostname
+		// as their map key; the next durable write normalizes them.
+		suggestion, ok = s.discoverySuggestionMap[domain]
+		if ok && domain != key {
+			delete(s.discoverySuggestionMap, domain)
+			s.discoverySuggestionMap[key] = suggestion
+		}
+	}
+	s.mu.Unlock()
+	if !ok {
+		writeError(w, r, http.StatusNotFound, "suggestion_not_found", "suggestion has expired or was removed")
+		return
+	}
+	if parts[1] == "ignore" {
+		s.mu.Lock()
+		previous := suggestion
+		suggestion.PolicyState = "ignored"
+		suggestion.Reason = "ignored by administrator"
+		s.discoverySuggestionMap[key] = suggestion
+		s.mu.Unlock()
+		if err := s.persistDiscoverySuggestions(); err != nil {
+			// Keep the in-memory view consistent with the durable suggestion. A
+			// failed ignore operation must not look successful to the caller or
+			// silently disappear on the next restart.
+			s.mu.Lock()
+			s.discoverySuggestionMap[domain] = previous
+			s.mu.Unlock()
+			writeError(w, r, http.StatusServiceUnavailable, "discovery_suggestion_persist_failed", err.Error())
+			return
+		}
+		writeData(w, r, map[string]any{"applied": false, "ignored": true, "domain": domain})
+		return
+	}
+	if !suggestion.PathVerified || suggestion.Route == "" {
+		writeError(w, r, http.StatusConflict, "suggestion_not_verified", "only a PathVerified suggestion can be applied")
+		return
+	}
+	var request discoverySuggestionActionRequest
+	if r.Body != nil {
+		if err := readJSON(r, &request); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())
+			return
+		}
+	}
+	if request.Route != "" && request.Route != suggestion.Route {
+		writeError(w, r, http.StatusConflict, "route_mismatch", "requested route differs from verified suggestion")
+		return
+	}
+	check := planner.DomainCheck{
+		Domain: suggestion.Domain, ETLDPlusOne: tspu.ETLDPlusOne(suggestion.Domain),
+		Category: suggestion.Category, Confidence: suggestion.DecisionConfidence,
+		ClassificationConfidence: suggestion.ClassificationConfidence,
+		ClassificationSource:     suggestion.ClassificationSource, ClassificationEvidence: suggestion.ClassificationEvidence,
+		CandidateInventoryHash: suggestion.CandidateInventoryHash,
+		Status:                 "SELECTED", VerificationState: "verified", Selected: &probe.RouteResult{
+			Route: suggestion.Route, RouteType: suggestion.RouteType, PathVerified: true, Status: "OK", ServiceOK: true,
+			ExternalCountry: suggestion.ExternalCountry, EgressConsensus: suggestion.EgressConsensus,
+			EndToEndLatencyMS: suggestion.EndToEndLatencyMS, EndToEndLatencyAvailable: suggestion.EndToEndLatencyAvailable,
+			SelectionScore: suggestion.SelectionScore,
+		},
+	}
+	result := s.commitAutomaticDomain(r.Context(), check)
+	if !result.Applied {
+		writeError(w, r, http.StatusConflict, "suggestion_apply_failed", result.Reason)
+		return
+	}
+	if err := s.recordDiscoveryAutoResult(result); err != nil {
+		s.publishEvent(Event{Type: "domain.discovery", Severity: "warning", ReasonCode: "discovery_control_state_persist_failed", Details: map[string]any{
+			"domain": domain, "error": err.Error(), "durable": false,
+		}})
+	}
+	writeData(w, r, map[string]any{
+		"applied": true, "domain": domain, "route": suggestion.Route, "route_type": suggestion.RouteType,
+		// Route-only assignment is followed by a fresh route/path proof before
+		// the handler reports success; the response is not a cached UI claim.
+		"post_apply_proof": true, "post_apply_proof_kind": "revision_bound_path_evidence",
+	})
+}
+
 func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
@@ -232,34 +440,118 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := s.currentConfig()
 	mode, maxRules, maxRollbacks, state := s.effectiveDiscoverySettings(cfg)
+	effectiveMode, autoApplyAvailable, autoApplyReason := s.discoveryRuntimeMode(mode, state)
+	queueDepth, queueCapacity, activeProbes := 0, 0, 0
+	if s.discoveryQueue != nil {
+		queueDepth, queueCapacity = len(s.discoveryQueue), cap(s.discoveryQueue)
+	}
+	if s.probeBudget != nil {
+		activeProbes = len(s.probeBudget)
+	}
 	writeData(w, r, map[string]any{
 		"mode":                      mode,
+		"configured_mode":           mode,
+		"effective_mode":            effectiveMode,
+		"auto_apply_available":      autoApplyAvailable,
+		"auto_apply_reason":         autoApplyReason,
 		"max_new_rules_per_hour":    maxRules,
 		"max_consecutive_rollbacks": maxRollbacks,
 		"consecutive_rollbacks":     state.ConsecutiveRollbacks,
 		"paused":                    state.PausedReason != "", "paused_reason": state.PausedReason,
 		"applied_last_hour":  len(pruneDiscoveryTimes(state.AppliedAt, s.discoveryNow().Add(-time.Hour))),
 		"suggestions":        s.discoverySuggestions(100),
+		"observations":       s.discoveryObservationsSnapshot(100),
+		"applied_count":      s.discoveryCounter("applied"),
+		"failed_count":       s.discoveryCounter("failed"),
+		"queue_depth":        queueDepth,
+		"queue_capacity":     queueCapacity,
+		"active_probe_jobs":  activeProbes,
 		"observation_source": s.discoveryObservationStatus(),
 	})
 }
 
+// discoveryRuntimeMode keeps the API truthful when the configured policy asks
+// for automatic route assignment but the bounded route-only runtime is not
+// installed or the mutation fence is active.  The configured mode remains
+// visible for diagnosis; effective_mode tells clients what can actually run.
+func (s *Server) discoveryRuntimeMode(mode string, state discoveryControlState) (string, bool, string) {
+	if mode != "auto_apply_verified" {
+		return mode, false, ""
+	}
+	if s.routeAssignmentRuntime == nil {
+		return "suggest", false, "route_assignment_runtime_unavailable"
+	}
+	if failure := s.mutationFailureNow(); failure != nil {
+		return "suggest", false, failure.Code
+	}
+	if state.PausedReason != "" {
+		return "suggest", false, "automatic_route_assignment_paused"
+	}
+	return mode, true, ""
+}
+
 func (s *Server) discoveryObservationStatus() map[string]any {
+	// Discovery observes dnsmasq query records; it is not a packet counter.
+	// Report a disabled observer separately from a missing or stale log so the
+	// UI cannot suggest that DNS interception is broken when the feature is
+	// simply turned off.
+	base := map[string]any{"source": "dnsmasq_query_log"}
+	cfg := s.currentConfig()
+	if cfg == nil || !cfg.Policy.UnknownDomainBackgroundCheck {
+		base["status"] = "disabled"
+		base["enabled"] = false
+		base["reason"] = "dns_observation_disabled"
+		return base
+	}
 	if strings.TrimSpace(s.dnsObservationPath) == "" {
-		return map[string]any{"status": "unavailable", "reason": "dns_observation_path_not_configured"}
+		base["status"] = "unavailable"
+		base["enabled"] = true
+		base["reason"] = "dns_observation_path_not_configured"
+		return base
 	}
 	info, err := os.Stat(s.dnsObservationPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return map[string]any{"status": "waiting", "reason": "dns_observation_log_not_created"}
+			base["status"] = "waiting"
+			base["enabled"] = true
+			base["reason"] = "dns_observation_log_not_created"
+			return base
 		}
-		return map[string]any{"status": "unavailable", "reason": "dns_observation_log_unreadable"}
+		base["status"] = "unavailable"
+		base["enabled"] = true
+		base["reason"] = "dns_observation_log_unreadable"
+		return base
 	}
 	status := "listening"
-	if info.Size() > 0 && time.Since(info.ModTime()) <= 5*time.Minute {
+	base["enabled"] = true
+	base["bytes"] = info.Size()
+	base["last_updated"] = info.ModTime().UTC()
+	s.mu.Lock()
+	base["cursor"] = s.discoveryCursor
+	base["lag_bytes"] = s.discoveryLagBytes
+	base["emitted"] = s.discoveryEmitted
+	base["dropped"] = s.discoveryDropped
+	emitted := s.discoveryEmitted
+	lastProgress := s.discoveryLastProgress
+	lastEmission := s.discoveryLastEmission
+	s.mu.Unlock()
+	now := s.discoveryNow()
+	if !lastEmission.IsZero() && now.Sub(lastEmission) <= 5*time.Minute && emitted > 0 {
 		status = "receiving"
+	} else if info.Size() > 0 && now.Sub(info.ModTime()) > 5*time.Minute && lastProgress.IsZero() {
+		// mtime may identify a stale file, but it is deliberately never used
+		// to claim that the observer is receiving. Receiving requires actual
+		// cursor/emission progress from the reader.
+		status = "stale"
+		base["status_reason"] = "cursor_progress_not_observed"
+	} else if !lastProgress.IsZero() && now.Sub(lastProgress) > 5*time.Minute {
+		status = "stale"
+		base["status_reason"] = "cursor_progress_stale"
+	} else if !lastProgress.IsZero() && emitted == 0 {
+		base["status_reason"] = "cursor_progress_without_domain_observation"
 	}
-	return map[string]any{"status": status, "bytes": info.Size(), "last_updated": info.ModTime().UTC()}
+	base["status"] = status
+	return base
 }
 
 func (s *Server) handleDiscoveryConfigure(w http.ResponseWriter, r *http.Request) {
@@ -308,9 +600,12 @@ func (s *Server) handleDiscoveryConfigure(w http.ResponseWriter, r *http.Request
 		return
 	}
 	s.publishEvent(Event{Type: "discovery.settings.updated", Severity: "info", ReasonCode: "discovery_runtime_policy_updated", Details: map[string]any{"mode": request.Mode, "max_new_rules_per_hour": request.MaxNewRulesPerHour, "max_consecutive_rollbacks": request.MaxConsecutiveRollbacks}})
+	effectiveMode, autoApplyAvailable, autoApplyReason := s.discoveryRuntimeMode(request.Mode, state)
 	writeData(w, r, map[string]any{
 		"applied": true, "dataplane_changed": false, "config_version": currentVersion,
-		"mode": request.Mode, "max_new_rules_per_hour": request.MaxNewRulesPerHour,
+		"mode": request.Mode, "configured_mode": request.Mode, "effective_mode": effectiveMode,
+		"auto_apply_available": autoApplyAvailable, "auto_apply_reason": autoApplyReason,
+		"max_new_rules_per_hour":    request.MaxNewRulesPerHour,
 		"max_consecutive_rollbacks": request.MaxConsecutiveRollbacks,
 		"paused":                    state.PausedReason != "", "paused_reason": state.PausedReason,
 	})
@@ -329,25 +624,57 @@ func validateDiscoveryOperations(operations []ChangeOp) error {
 }
 
 func (s *Server) discoveryAutoAllowed(cfg *config.Config, check planner.DomainCheck) error {
-	// DNS observations may not invoke the full ChangeSet/dataplane path. Until
-	// route-only assignment exists, auto_apply_verified remains non-mutating and
-	// leaves the verified result as a suggestion.
-	_ = cfg
-	_ = check
-	return errors.New("automatic_route_assignment_unavailable")
+	// Auto-apply is deliberately a narrow route-assignment operation. It may
+	// persist a revision-bound domain decision for an already enabled route, but
+	// it must never be allowed to fall through to the full ChangeSet/adapter
+	// path. All dataplane topology and component changes stay explicit.
+	if cfg == nil {
+		return errors.New("active configuration is unavailable")
+	}
+	mode, maxRules, _, state := s.effectiveDiscoverySettings(cfg)
+	if mode != "auto_apply_verified" {
+		return errors.New("automatic_route_assignment_disabled")
+	}
+	if s.routeAssignmentRuntime == nil {
+		return errors.New("automatic_route_assignment_runtime_unavailable")
+	}
+	if state.PausedReason != "" {
+		return fmt.Errorf("automatic_route_assignment_paused:%s", state.PausedReason)
+	}
+	if len(pruneDiscoveryTimes(state.AppliedAt, s.discoveryNow().Add(-time.Hour))) >= maxRules {
+		return errors.New("automatic_route_assignment_rate_limited")
+	}
+	if check.Selected == nil || !planner.SelectionEvidence(*check.Selected) || check.Confidence < 0.8 {
+		return errors.New("automatic_route_assignment_requires_verified_evidence")
+	}
+	route, ok := cfg.RouteByTag(check.Selected.Route)
+	if !ok || !route.Enabled() {
+		return errors.New("automatic_route_not_active")
+	}
+	service, _, allowed := automaticServiceForDecision(check)
+	if !allowed || !config.PathAllowed(service, route, cfg.Policy) {
+		return errors.New("automatic_route_not_allowed")
+	}
+	return nil
 }
 
-func (s *Server) recordDiscoveryAutoResult(result automaticCommitResult) {
+func (s *Server) recordDiscoveryAutoResult(result automaticCommitResult) error {
 	state := s.loadDiscoveryState()
 	now := s.discoveryNow()
 	state.AppliedAt = pruneDiscoveryTimes(state.AppliedAt, now.Add(-time.Hour))
 	state.LastResult = result.Reason
 	state.UpdatedAt = now
 	if result.Applied {
+		s.mu.Lock()
+		s.discoveryApplied++
+		s.mu.Unlock()
 		state.AppliedAt = append(state.AppliedAt, now)
 		state.ConsecutiveRollbacks = 0
 		state.PausedReason = ""
 	} else if result.RolledBack {
+		s.mu.Lock()
+		s.discoveryFailed++
+		s.mu.Unlock()
 		state.ConsecutiveRollbacks++
 		_, _, limit, _ := s.effectiveDiscoverySettings(s.currentConfig())
 		if state.ConsecutiveRollbacks >= limit {
@@ -355,7 +682,7 @@ func (s *Server) recordDiscoveryAutoResult(result automaticCommitResult) {
 			s.publishEvent(Event{Type: "discovery.auto_apply_paused", Severity: "error", ReasonCode: "consecutive_rollbacks", Details: map[string]any{"count": state.ConsecutiveRollbacks, "limit": limit}})
 		}
 	}
-	_ = s.store.SaveJSON("discovery", discoveryStateKey, state)
+	return s.store.SaveJSON("discovery", discoveryStateKey, state)
 }
 
 func (s *Server) loadDiscoveryState() discoveryControlState {
@@ -400,36 +727,103 @@ func pruneDiscoveryTimes(values []time.Time, cutoff time.Time) []time.Time {
 	return out
 }
 
-func (s *Server) saveDiscoverySuggestion(observation discovery.Observation, check planner.DomainCheck) {
+func (s *Server) saveDiscoverySuggestion(observation discovery.Observation, check planner.DomainCheck) error {
+	// Durable suggestions are an operator-facing claim that the bounded
+	// verification reached a terminal result.  In-progress, empty, or
+	// otherwise unclassified checks belong only in the transient live view;
+	// accepting them here would let a malformed DomainCheck masquerade as a
+	// verified suggestion after restart.
+	switch plannerProbeState(check) {
+	case "verified_candidate", "drop_enforced":
+		// These states carry a selected route or an explicit fail-closed DROP.
+	case "no_safe_route":
+		if len(check.Results) == 0 || check.Reason != "no_verified_policy_allowed_route" {
+			return errors.New("durable discovery suggestion requires terminal candidate evidence")
+		}
+	default:
+		return errors.New("durable discovery suggestion requires terminal verification")
+	}
+	s.saveDiscoverySuggestionState(observation, check)
+	return s.persistDiscoverySuggestions()
+}
+
+// saveDiscoverySuggestionTransient keeps an in-progress verification visible
+// to the current UI without treating it as a durable, verified suggestion.
+// A restart must never resurrect a probe that was still running.
+func (s *Server) saveDiscoverySuggestionTransient(observation discovery.Observation, check planner.DomainCheck) {
+	s.saveDiscoverySuggestionState(observation, check)
+}
+
+func (s *Server) saveDiscoverySuggestionState(observation discovery.Observation, check planner.DomainCheck) {
 	probeState := plannerProbeState(check)
 	suggestion := discoverySuggestion{
 		Domain: check.Domain, Category: check.Category, Confidence: check.Confidence,
 		DecisionConfidence: check.Confidence, ClassificationConfidence: check.ClassificationConfidence,
 		ClassificationSource: check.ClassificationSource, ClassificationEvidence: check.ClassificationEvidence,
 		QueryType: observation.QueryType, ObservedAt: s.discoveryNow(), Reason: "verification is still in progress",
-		ClassificationState: "unresolved", ProbeState: probeState, PolicyState: "suggested",
+		ClassificationState: check.ClassificationState, ProbeState: probeState, PolicyState: "suggested",
+		Candidates: discoveryCandidateDetails(check.Results), VerificationDurationMS: check.VerificationDurationMS,
+		CandidateInventoryHash: check.CandidateInventoryHash,
 	}
-	if probeState == "no_safe_route" {
+	if probeState == "no_safe_route" || probeState == "drop_enforced" {
 		suggestion.Reason = "no verified route selected"
 	}
-	if check.ClassificationConfidence > 0 || (check.ClassificationEvidence != "" && check.ClassificationEvidence != "none" && check.ClassificationEvidence != "unavailable") || check.Category == "GEO_LOCKED" || check.Category == "TSPU_RESTRICTED" {
-		suggestion.ClassificationState = "classified"
+	if suggestion.ClassificationState == "" {
+		suggestion.ClassificationState = "UNKNOWN"
 	}
 	if check.Selected != nil {
-		suggestion.Route = check.Selected.Route
-		suggestion.RouteType = check.Selected.RouteType
-		suggestion.PathVerified = check.Selected.PathVerified
-		suggestion.ProbeState = "verified_candidate"
-		suggestion.Reason = check.Selected.ReasonCode
-		if suggestion.Reason == "" && check.Selected.Reason != nil {
-			suggestion.Reason = *check.Selected.Reason
+		selectedIsDrop := check.Selected.RouteType == "drop" || check.Status == "DROP"
+		if !selectedIsDrop {
+			suggestion.Route = check.Selected.Route
+			suggestion.RouteType = check.Selected.RouteType
+			suggestion.PathVerified = check.Selected.PathVerified
+			suggestion.ProbeState = "verified_candidate"
+		} else {
+			// DROP proves the fail-closed safety outcome, not a usable route.
+			// Keep it in candidate evidence but never persist it as an applied
+			// route that the suggestion action could commit.
+			suggestion.RouteType = "drop"
+			suggestion.PathVerified = false
+			suggestion.ProbeState = "drop_enforced"
+			suggestion.Reason = "no_safe_route_drop_enforced"
 		}
-		if suggestion.Reason == "" {
-			suggestion.Reason = "route selected by verified planner evidence"
+		suggestion.ExternalCountry = check.Selected.ExternalCountry
+		suggestion.EgressConsensus = check.Selected.EgressConsensus
+		suggestion.EndToEndLatencyMS = check.Selected.EndToEndLatencyMS
+		suggestion.EndToEndLatencyAvailable = check.Selected.EndToEndLatencyAvailable
+		suggestion.SelectionScore = check.Selected.SelectionScore
+		if !selectedIsDrop {
+			suggestion.Reason = check.Selected.ReasonCode
+			if suggestion.Reason == "" && check.Selected.Reason != nil {
+				suggestion.Reason = *check.Selected.Reason
+			}
+			if suggestion.Reason == "" {
+				suggestion.Reason = "route selected by verified planner evidence"
+			}
 		}
 	}
+	suggestion.Client = strings.TrimSpace(observation.Client)
+	suggestion.LastSeen = suggestion.ObservedAt
 	s.mu.Lock()
-	s.discoverySuggestionMap[check.Domain] = suggestion
+	key := discoverySuggestionMapKey(check.Domain)
+	previous, ok := s.discoverySuggestionMap[key]
+	if !ok {
+		// Migrate an entry written by the pre-eTLD+1 map-key format while
+		// preserving its count on the next normalized write.
+		previous, ok = s.discoverySuggestionMap[check.Domain]
+		if ok && check.Domain != key {
+			delete(s.discoverySuggestionMap, check.Domain)
+		}
+	}
+	if ok {
+		suggestion.Count = previous.Count + 1
+		if suggestion.Count == 0 {
+			suggestion.Count = 1
+		}
+	} else {
+		suggestion.Count = 1
+	}
+	s.discoverySuggestionMap[discoverySuggestionMapKey(check.Domain)] = suggestion
 	if len(s.discoverySuggestionMap) > maxDiscoverySuggestions {
 		oldestDomain := ""
 		var oldestTime time.Time
@@ -445,9 +839,14 @@ func (s *Server) saveDiscoverySuggestion(observation discovery.Observation, chec
 }
 
 func (s *Server) discoverySuggestions(limit int) []discoverySuggestion {
+	now := s.discoveryNow()
+	cutoff := now.Add(-discoverySuggestionTTL)
 	s.mu.Lock()
 	items := make([]discoverySuggestion, 0, len(s.discoverySuggestionMap))
 	for _, item := range s.discoverySuggestionMap {
+		if !item.LastSeen.IsZero() && item.LastSeen.Before(cutoff) {
+			continue
+		}
 		items = append(items, item)
 	}
 	s.mu.Unlock()
@@ -456,4 +855,118 @@ func (s *Server) discoverySuggestions(limit int) []discoverySuggestion {
 		items = items[:limit]
 	}
 	return items
+}
+
+func (s *Server) recordDiscoveryObservation(observation discovery.Observation) {
+	now := s.discoveryNow()
+	item := discoveryObservation{Domain: observation.Domain, QueryType: observation.QueryType, Client: observation.Client, ObservedAt: now}
+	s.mu.Lock()
+	s.discoveryObservations = append(s.discoveryObservations, item)
+	s.pruneDiscoveryObservationsLocked(now)
+	s.mu.Unlock()
+}
+
+func (s *Server) discoveryObservationsSnapshot(limit int) []discoveryObservation {
+	if limit <= 0 || limit > maxDiscoveryObservations {
+		limit = maxDiscoveryObservations
+	}
+	now := s.discoveryNow()
+	s.mu.Lock()
+	s.pruneDiscoveryObservationsLocked(now)
+	items := append([]discoveryObservation(nil), s.discoveryObservations...)
+	s.mu.Unlock()
+	sort.Slice(items, func(i, j int) bool { return items[i].ObservedAt.After(items[j].ObservedAt) })
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return items
+}
+
+func (s *Server) pruneDiscoveryObservationsLocked(now time.Time) {
+	cutoff := now.Add(-discoveryObservationTTL)
+	first := 0
+	for first < len(s.discoveryObservations) && (len(s.discoveryObservations)-first > maxDiscoveryObservations || s.discoveryObservations[first].ObservedAt.Before(cutoff)) {
+		first++
+	}
+	if first > 0 {
+		s.discoveryObservations = append([]discoveryObservation(nil), s.discoveryObservations[first:]...)
+	}
+}
+
+func (s *Server) pruneDiscoverySuggestionsLocked(now time.Time) bool {
+	cutoff := now.Add(-discoverySuggestionTTL)
+	removed := false
+	for key, item := range s.discoverySuggestionMap {
+		if !item.LastSeen.IsZero() && item.LastSeen.Before(cutoff) {
+			delete(s.discoverySuggestionMap, key)
+			removed = true
+		}
+	}
+	return removed
+}
+
+func (s *Server) prunePersistedDiscoverySuggestions(now time.Time) error {
+	s.mu.Lock()
+	removed := s.pruneDiscoverySuggestionsLocked(now)
+	s.mu.Unlock()
+	if !removed {
+		return nil
+	}
+	return s.persistDiscoverySuggestions()
+}
+
+func (s *Server) discoveryCounter(kind string) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if kind == "applied" {
+		return s.discoveryApplied
+	}
+	return s.discoveryFailed
+}
+
+func (s *Server) loadPersistedDiscoverySuggestions() {
+	var items []discoverySuggestion
+	if err := s.store.LoadJSON("discovery", discoverySuggestionKey, &items); err != nil {
+		return
+	}
+	now := s.discoveryNow()
+	cutoff := now.Add(-discoverySuggestionTTL)
+	stale := false
+	s.mu.Lock()
+	for _, item := range items {
+		if item.Domain == "" {
+			stale = true
+			continue
+		}
+		if !item.LastSeen.IsZero() && item.LastSeen.Before(cutoff) {
+			stale = true
+			continue
+		}
+		if item.Count == 0 {
+			item.Count = 1
+		}
+		s.discoverySuggestionMap[discoverySuggestionMapKey(item.Domain)] = item
+	}
+	s.mu.Unlock()
+	// Rewrite once after startup if expired/malformed entries were filtered;
+	// this keeps the durable store bounded without writing on every DNS event.
+	if stale {
+		_ = s.persistDiscoverySuggestions()
+	}
+}
+
+func (s *Server) persistDiscoverySuggestions() error {
+	now := s.discoveryNow()
+	s.mu.Lock()
+	s.pruneDiscoverySuggestionsLocked(now)
+	items := make([]discoverySuggestion, 0, len(s.discoverySuggestionMap))
+	for _, item := range s.discoverySuggestionMap {
+		items = append(items, item)
+	}
+	s.mu.Unlock()
+	sort.Slice(items, func(i, j int) bool { return items[i].ObservedAt.After(items[j].ObservedAt) })
+	if len(items) > maxDiscoverySuggestions {
+		items = items[:maxDiscoverySuggestions]
+	}
+	return s.store.SaveJSON("discovery", discoverySuggestionKey, items)
 }

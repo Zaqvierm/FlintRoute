@@ -104,7 +104,14 @@ func (b *EventBroker) Unsubscribe(ch chan Event) {
 func (s *Server) publishEvent(event Event) Event {
 	published := s.broker.Publish(event)
 	if published.Durable || durableEventType(published.Type) {
-		_ = s.persistEvent(published)
+		if err := s.persistEvent(published); err != nil {
+			// Keep the original event available in the bounded in-memory stream,
+			// but make loss of its durable copy explicit. Do not recurse through
+			// publishEvent: this diagnostic must remain best-effort and non-durable.
+			s.broker.Publish(Event{Type: "storage.event_persist_failed", Severity: "error", ReasonCode: "durable_event_persist_failed", Details: map[string]any{
+				"event_id": published.ID, "event_type": published.Type, "error": err.Error(),
+			}})
+		}
 	}
 	if s.telegramNotifier != nil {
 		if notification, ok := notificationForEvent(published); ok {

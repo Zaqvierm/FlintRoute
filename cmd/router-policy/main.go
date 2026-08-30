@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -33,11 +34,14 @@ import (
 	"router-policy/internal/domaincache"
 	"router-policy/internal/evidence"
 	"router-policy/internal/geoip"
+	"router-policy/internal/healthjson"
 	"router-policy/internal/lifecycle"
 	"router-policy/internal/managementproof"
+	"router-policy/internal/manualimport"
 	"router-policy/internal/planner"
 	"router-policy/internal/platform"
 	"router-policy/internal/probe"
+	"router-policy/internal/routeassignment"
 	"router-policy/internal/security"
 	"router-policy/internal/state"
 	storagepolicy "router-policy/internal/storage"
@@ -66,6 +70,22 @@ func run(args []string) error {
 	}
 
 	switch args[0] {
+	case "internal-health-field":
+		fs := flag.NewFlagSet("internal-health-field", flag.ContinueOnError)
+		path := fs.String("path", "", "health response JSON path")
+		field := fs.String("field", "", "allowlisted health field")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 || strings.TrimSpace(*path) == "" || strings.TrimSpace(*field) == "" {
+			return errors.New("usage: router-policy internal-health-field --path HEALTH_JSON --field FIELD")
+		}
+		value, err := healthjson.ReadField(*path, *field)
+		if err != nil {
+			return err
+		}
+		fmt.Println(value)
+		return nil
 	case "run":
 		fs := flag.NewFlagSet("run", flag.ContinueOnError)
 		listen := fs.String("listen", "127.0.0.1:8787", "listen address")
@@ -554,6 +574,76 @@ func run(args []string) error {
 		}
 		_, err := artifact.Verify(*root, artifact.Binding{TransactionID: *txID, RevisionID: *revision, CandidateHash: *candidateHash}, *manifestHash)
 		return err
+	case "internal-route-assignment":
+		fs := flag.NewFlagSet("internal-route-assignment", flag.ContinueOnError)
+		operation := fs.String("operation", "", "apply or rollback")
+		configFile := fs.String("config", cfgPath, "committed bootstrap config")
+		requestID := fs.String("request-id", "", "route assignment request id")
+		revision := fs.String("revision", "", "committed revision")
+		candidateHash := fs.String("candidate-hash", "", "committed candidate hash")
+		manifestHash := fs.String("manifest-hash", "", "committed artifact manifest hash")
+		domain := fs.String("domain", "", "normalized domain")
+		routeTag := fs.String("route-tag", "", "existing route tag")
+		routeType := fs.String("route-type", "", "existing route type")
+		routeSetID := fs.String("route-set-id", "", "owned route set id")
+		assignmentID := fs.String("assignment-id", "", "owned assignment id")
+		mappingHash := fs.String("mapping-hash", "", "mapping hash")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 || (*operation != "apply" && *operation != "rollback") {
+			return errors.New("usage: router-policy internal-route-assignment --operation apply|rollback --config FILE --request-id ID --revision REVISION --candidate-hash HASH --manifest-hash HASH --domain DOMAIN --route-tag TAG --route-type TYPE --route-set-id ID --assignment-id ID --mapping-hash HASH")
+		}
+		cfg, err := config.Load(*configFile)
+		if err != nil {
+			return err
+		}
+		request := routeassignment.Request{
+			Generation: *revision, RevisionID: *revision, CandidateHash: *candidateHash, ArtifactManifestHash: *manifestHash,
+			Domain: *domain, RouteTag: *routeTag, RouteType: *routeType, RouteSetID: *routeSetID,
+			AssignmentID: *assignmentID, MappingHash: *mappingHash, RequestID: *requestID,
+		}
+		options := routeassignment.Options{DNSMasqInit: os.Getenv("ROUTER_POLICY_ROUTE_ASSIGNMENT_DNSMASQ_INIT")}
+		if *operation == "apply" {
+			err = routeassignment.Apply(context.Background(), cfg, request, options)
+		} else {
+			err = routeassignment.Rollback(context.Background(), cfg, request, options)
+		}
+		if err != nil {
+			return err
+		}
+		fmt.Printf("protocol_version=1\noperation=route_assignment.%s\ngeneration=%s\ntransaction_id=route-assignment\nrevision_id=%s\ncandidate_hash=%s\nartifact_manifest_hash=%s\ndomain=%s\nroute_tag=%s\nroute_type=%s\nroute_set_id=%s\nassignment_id=%s\nmapping_hash=%s\nverified=true\n", *operation, *revision, *revision, *candidateHash, *manifestHash, *domain, *routeTag, *routeType, *routeSetID, *assignmentID, *mappingHash)
+		if *operation == "apply" {
+			fmt.Println("applied=true")
+			fmt.Println("transaction_state=route_assignment_applied")
+		} else {
+			fmt.Println("applied=false")
+			fmt.Println("rollback=true")
+			fmt.Println("transaction_state=route_assignment_rolled_back")
+		}
+		return nil
+	case "internal-route-assignment-reconcile":
+		fs := flag.NewFlagSet("internal-route-assignment-reconcile", flag.ContinueOnError)
+		configFile := fs.String("config", cfgPath, "committed bootstrap config")
+		requestID := fs.String("request-id", "", "reconcile request id")
+		revision := fs.String("revision", "", "committed revision")
+		candidateHash := fs.String("candidate-hash", "", "committed candidate hash")
+		manifestHash := fs.String("manifest-hash", "", "committed artifact manifest hash")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 || *requestID == "" || *revision == "" || *candidateHash == "" || *manifestHash == "" {
+			return errors.New("usage: router-policy internal-route-assignment-reconcile --config FILE --request-id ID --revision REVISION --candidate-hash HASH --manifest-hash HASH")
+		}
+		cfg, err := config.Load(*configFile)
+		if err != nil {
+			return err
+		}
+		if err := routeassignment.ReconcileBound(context.Background(), cfg, routeassignment.Request{Generation: *revision, RevisionID: *revision, CandidateHash: *candidateHash, ArtifactManifestHash: *manifestHash}, routeassignment.Options{DNSMasqInit: os.Getenv("ROUTER_POLICY_ROUTE_ASSIGNMENT_DNSMASQ_INIT")}); err != nil {
+			return err
+		}
+		fmt.Printf("protocol_version=1\noperation=route_assignment.reconcile\ngeneration=%s\ntransaction_id=route-assignment\nrevision_id=%s\ncandidate_hash=%s\nartifact_manifest_hash=%s\nreconciled=true\nverified=true\ntransaction_state=route_assignment_reconciled\n", *revision, *revision, *candidateHash, *manifestHash)
+		return nil
 	case "internal-verify-candidate":
 		fs := flag.NewFlagSet("internal-verify-candidate", flag.ContinueOnError)
 		candidatePath := fs.String("candidate", "", "candidate config")
@@ -805,6 +895,34 @@ func run(args []string) error {
 		fmt.Println("ip_state_rollback=true")
 		fmt.Printf("routes=%d`n", len(pre.Routes))
 		fmt.Printf("rules=%d`n", len(pre.Rules))
+		return nil
+	case "internal-verify-no-owned-ip-state":
+		if len(args) != 1 {
+			return errors.New("usage: router-policy internal-verify-no-owned-ip-state")
+		}
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			return err
+		}
+		marks := []string{
+			cfg.OpenWrt.DirectMark,
+			cfg.OpenWrt.ZapretMark,
+			cfg.OpenWrt.XrayMark,
+			cfg.OpenWrt.XrayTProxyMark,
+			cfg.OpenWrt.XrayBypassMark,
+			cfg.OpenWrt.DropMark,
+		}
+		tables := []int{cfg.OpenWrt.WANRouteTable, cfg.OpenWrt.ZapretRouteTable, cfg.OpenWrt.XrayRouteTable}
+		ipBinary := os.Getenv("ROUTER_POLICY_IP_BIN")
+		if ipBinary == "" {
+			ipBinary = "ip"
+		}
+		if err := dataplane.VerifyNoOwnedIPState(context.Background(), dataplane.ExecCommandRunner{}, ipBinary, dataplane.OwnedIPStateSpec{
+			Marks: marks, RouteTables: tables, MinRulePriority: 10000, MaxRulePriority: 20099,
+		}); err != nil {
+			return err
+		}
+		fmt.Println("ip_state_empty=true")
 		return nil
 	case "internal-verify-data-plane":
 		fs := flag.NewFlagSet("internal-verify-data-plane", flag.ContinueOnError)
@@ -1168,6 +1286,203 @@ func run(args []string) error {
 			return err
 		}
 		return printJSON(summary)
+	case "manual-import":
+		fs := flag.NewFlagSet("manual-import", flag.ContinueOnError)
+		xrayPath := fs.String("xray", "", "manual Xray JSON (read-only input)")
+		q205Path := fs.String("q205", "", "manual q205 nfqws arguments (read-only input)")
+		q208Path := fs.String("q208", "", "manual q208 nfqws arguments (read-only input)")
+		dnsmasqPath := fs.String("dnsmasq", "", "manual dnsmasq include (read-only input)")
+		nftPath := fs.String("nft", "", "manual nft evidence file (read-only input)")
+		lifecyclePaths := []string{}
+		fs.Func("lifecycle", "repeatable manual init/cron lifecycle evidence path (read-only input)", func(value string) error {
+			if strings.TrimSpace(value) == "" {
+				return errors.New("lifecycle path must not be empty")
+			}
+			lifecyclePaths = append(lifecyclePaths, value)
+			return nil
+		})
+		outBundle := fs.String("out-bundle", "", "optional local 0600 Xray candidate output")
+		outFullBundle := fs.String("out-full-bundle", "", "optional local 0600 full-topology review candidate output")
+		outPlan := fs.String("out-plan", "", "optional local 0600 redacted ownership handoff plan output")
+		plan := fs.Bool("plan", false, "also print the review-only ownership handoff plan")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 || strings.TrimSpace(*xrayPath) == "" {
+			return errors.New("usage: router-policy manual-import --xray MANUAL_XRAY_JSON [--q205 ARGS] [--q208 ARGS] [--dnsmasq FILE] [--nft FILE] [--lifecycle FILE ...] [--out-bundle CANDIDATE_JSON] [--out-full-bundle FULL_CANDIDATE_JSON] [--out-plan PLAN_JSON]")
+		}
+		zapretPaths := make([]string, 0, 2)
+		if strings.TrimSpace(*q205Path) != "" {
+			zapretPaths = append(zapretPaths, *q205Path)
+		}
+		if strings.TrimSpace(*q208Path) != "" {
+			zapretPaths = append(zapretPaths, *q208Path)
+		}
+		report, err := manualimport.Inspect(manualimport.Options{
+			XrayPath: *xrayPath, ZapretArgs: zapretPaths, DNSMasqPath: *dnsmasqPath,
+			NFTPaths: []string{*nftPath}, LifecyclePaths: lifecyclePaths,
+			OutputBundle: *outBundle, OutputFullBundle: *outFullBundle,
+		})
+		if err != nil {
+			return err
+		}
+		var handoff manualimport.AdoptionPlan
+		if *plan || strings.TrimSpace(*outPlan) != "" {
+			handoff, err := manualimport.BuildAdoptionPlan(report)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(*outPlan) != "" {
+				rawPlan, err := json.MarshalIndent(handoff, "", "  ")
+				if err != nil {
+					return fmt.Errorf("marshal adoption plan: %w", err)
+				}
+				rawPlan = append(rawPlan, '\n')
+				if err := writePrivateFileAtomic(*outPlan, rawPlan); err != nil {
+					return fmt.Errorf("write adoption plan: %w", err)
+				}
+			}
+		}
+		if *plan {
+			return printJSON(map[string]any{"report": report, "adoption_plan": handoff})
+		}
+		return printJSON(report)
+	case "manual-handoff-check":
+		fs := flag.NewFlagSet("manual-handoff-check", flag.ContinueOnError)
+		planPath := fs.String("plan", "", "redacted adoption plan JSON (read-only input)")
+		proofPath := fs.String("proof", "", "typed ownership proof JSON (read-only input)")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 || strings.TrimSpace(*planPath) == "" || strings.TrimSpace(*proofPath) == "" {
+			return errors.New("usage: router-policy manual-handoff-check --plan PLAN_JSON --proof PROOF_JSON")
+		}
+		planRaw, err := readBoundedRegularFile(*planPath, 2<<20)
+		if err != nil {
+			return fmt.Errorf("read adoption plan: %w", err)
+		}
+		proofRaw, err := readBoundedRegularFile(*proofPath, 2<<20)
+		if err != nil {
+			return fmt.Errorf("read handoff proof: %w", err)
+		}
+		var plan manualimport.AdoptionPlan
+		if err := decodeStrictJSON(planRaw, &plan); err != nil {
+			return fmt.Errorf("decode adoption plan: %w", err)
+		}
+		var proof manualimport.HandoffManifest
+		if err := decodeStrictJSON(proofRaw, &proof); err != nil {
+			return fmt.Errorf("decode handoff proof: %w", err)
+		}
+		decision, err := manualimport.EvaluateHandoff(plan, proof)
+		if err != nil {
+			return err
+		}
+		return printJSON(decision)
+	case "manual-handoff-draft":
+		fs := flag.NewFlagSet("manual-handoff-draft", flag.ContinueOnError)
+		planPath := fs.String("plan", "", "redacted adoption plan JSON (read-only input)")
+		proofPath := fs.String("proof", "", "typed ownership proof JSON (read-only input)")
+		outPath := fs.String("out", "", "optional local 0600 review-only draft output")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 || strings.TrimSpace(*planPath) == "" || strings.TrimSpace(*proofPath) == "" {
+			return errors.New("usage: router-policy manual-handoff-draft --plan PLAN_JSON --proof PROOF_JSON [--out OUTPUT_JSON]")
+		}
+		planRaw, err := readBoundedRegularFile(*planPath, 2<<20)
+		if err != nil {
+			return fmt.Errorf("read adoption plan: %w", err)
+		}
+		proofRaw, err := readBoundedRegularFile(*proofPath, 2<<20)
+		if err != nil {
+			return fmt.Errorf("read handoff proof: %w", err)
+		}
+		var plan manualimport.AdoptionPlan
+		if err := decodeStrictJSON(planRaw, &plan); err != nil {
+			return fmt.Errorf("decode adoption plan: %w", err)
+		}
+		var proof manualimport.HandoffManifest
+		if err := decodeStrictJSON(proofRaw, &proof); err != nil {
+			return fmt.Errorf("decode handoff proof: %w", err)
+		}
+		draft, err := manualimport.BuildAdoptionDraft(plan, proof)
+		if err != nil {
+			return err
+		}
+		if err := draft.Validate(); err != nil {
+			return err
+		}
+		if strings.TrimSpace(*outPath) != "" {
+			raw, marshalErr := json.MarshalIndent(draft, "", "  ")
+			if marshalErr != nil {
+				return fmt.Errorf("marshal adoption draft: %w", marshalErr)
+			}
+			raw = append(raw, '\n')
+			if err := writePrivateFileAtomic(*outPath, raw); err != nil {
+				return fmt.Errorf("write adoption draft: %w", err)
+			}
+		}
+		return printJSON(draft)
+	case "manual-handoff-observe":
+		fs := flag.NewFlagSet("manual-handoff-observe", flag.ContinueOnError)
+		planPath := fs.String("plan", "", "redacted adoption plan JSON (read-only input)")
+		outPath := fs.String("out", "", "optional local 0600 observation JSON output")
+		var pidSpecs []string
+		fs.Func("pid", "repeatable process/<identifier>=PID observation target", func(value string) error {
+			pidSpecs = append(pidSpecs, value)
+			return nil
+		})
+		var evidenceSpecs []string
+		fs.Func("evidence", "repeatable kind/<identifier>=PATH evidence target", func(value string) error {
+			evidenceSpecs = append(evidenceSpecs, value)
+			return nil
+		})
+		var configSpecs []string
+		fs.Func("config", "repeatable process/<identifier>=PATH config hash target", func(value string) error {
+			configSpecs = append(configSpecs, value)
+			return nil
+		})
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 || strings.TrimSpace(*planPath) == "" {
+			return errors.New("usage: router-policy manual-handoff-observe --plan PLAN_JSON [--pid process/ID=PID] [--config process/ID=PATH] [--evidence kind/ID=PATH] [--out OUTPUT_JSON]")
+		}
+		planRaw, err := readBoundedRegularFile(*planPath, 2<<20)
+		if err != nil {
+			return fmt.Errorf("read adoption plan: %w", err)
+		}
+		var plan manualimport.AdoptionPlan
+		if err := decodeStrictJSON(planRaw, &plan); err != nil {
+			return fmt.Errorf("decode adoption plan: %w", err)
+		}
+		processTargets, err := parseObservationProcessTargets(plan, pidSpecs, configSpecs)
+		if err != nil {
+			return err
+		}
+		evidenceTargets, err := parseObservationEvidenceTargets(plan, evidenceSpecs)
+		if err != nil {
+			return err
+		}
+		observation, err := manualimport.CaptureLiveObservation(manualimport.LiveObservationOptions{
+			Plan:            plan,
+			ProcessTargets:  processTargets,
+			EvidenceTargets: evidenceTargets,
+		})
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(*outPath) != "" {
+			raw, marshalErr := json.MarshalIndent(observation, "", "  ")
+			if marshalErr != nil {
+				return fmt.Errorf("marshal live observation: %w", marshalErr)
+			}
+			raw = append(raw, '\n')
+			if err := writePrivateFileAtomic(*outPath, raw); err != nil {
+				return fmt.Errorf("write live observation: %w", err)
+			}
+		}
+		return printJSON(observation)
 	case "install-dry-run":
 		return printJSON(map[string]any{
 			"dry_run": true,
@@ -1200,6 +1515,7 @@ func run(args []string) error {
 func usage() {
 	fmt.Println(`router-policy:
   run [--listen 127.0.0.1:8787]
+  internal-health-field --path HEALTH_JSON --field FIELD
   serve [--listen 127.0.0.1:8787]
   serve-dev [--listen 127.0.0.1:8787]
   auth setup-token [--if-needed]
@@ -1234,6 +1550,10 @@ func usage() {
   subscription-normalize SUBSCRIPTION_JSON
   subscription-routes [--base-port PORT] SUBSCRIPTION_JSON
   subscription-xray [--base-port PORT] --out OUTPUT_JSON SUBSCRIPTION_JSON
+  manual-import --xray MANUAL_XRAY_JSON [--q205 ARGS] [--q208 ARGS] [--dnsmasq FILE] [--nft FILE] [--out-bundle CANDIDATE_JSON] [--out-full-bundle FULL_CANDIDATE_JSON] [--plan]
+  manual-handoff-check --plan PLAN_JSON --proof PROOF_JSON
+  manual-handoff-draft --plan PLAN_JSON --proof PROOF_JSON [--out OUTPUT_JSON]
+  manual-handoff-observe --plan PLAN_JSON [--pid process/ID=PID] [--config process/ID=PATH] [--evidence kind/ID=PATH] [--out OUTPUT_JSON]
   daemon
   install-dry-run
   security audit
@@ -1259,6 +1579,7 @@ func runWatchdog(healthURL string, interval, startupGrace time.Duration, failure
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	client := &http.Client{Timeout: min(interval/2, 5*time.Second)}
+	defer client.CloseIdleConnections()
 	controller := watchdog.Controller{StartedAt: time.Now().UTC(), StartupGrace: startupGrace, FailureThreshold: failureThreshold}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -1290,8 +1611,11 @@ func runWatchdog(healthURL string, interval, startupGrace time.Duration, failure
 }
 
 func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) error {
+	if err := validateProductionPrivilege(development, processIsRoot(), os.Getenv("ROUTER_POLICY_HELPER_SOCKET")); err != nil {
+		return err
+	}
 	if !allowedListenAddress(listen) {
-		return fmt.Errorf("refusing non-loopback listen address %q; set ROUTER_POLICY_ALLOW_FIREWALLED_BIND=1 only with a source-restricted firewall rule", listen)
+		return fmt.Errorf("refusing listen address %q; use loopback or explicitly opt in to a private LAN address with listener.conf", listen)
 	}
 	cfg, err := loadRuntimeConfig(cfgPath)
 	if err != nil {
@@ -1304,6 +1628,7 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 	var componentManager api.ComponentManager
 	var zapretCalibration *zapret.CalibrationManager
 	var vlessThroughputTester vpnsub.ThroughputTester
+	var routeAssignmentRuntime api.RouteAssignmentRuntime
 	if development {
 		provider = platform.DevelopmentMockProvider{}
 		productionAdapter = adapter.NewFilesystem(cfg)
@@ -1312,6 +1637,7 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 		if err != nil {
 			return err
 		}
+		routeAssignmentRuntime = openWrtRouteAssignmentRuntime{adapter: productionAdapter.(*adapter.OpenWrt)}
 		runner, runnerErr := vpnsub.NewManagedExecXrayRunner(cfg.Xray.Binary)
 		if runnerErr != nil {
 			return runnerErr
@@ -1324,6 +1650,10 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 		zapretSetupChecker = zapret.LocalSetupChecker{}
 		componentManager = &component.Manager{
 			StateDir: cfg.Storage.StateDir, RuntimeDir: cfg.Storage.RuntimeDir,
+			// The production controller is non-root.  Until component operations
+			// have a typed helper backend, keep this manager read-only rather than
+			// allowing a direct OpenWrtDriver mutation attempt.
+			DirectMutationAllowed: false,
 			Driver: component.OpenWrtDriver{
 				StateDir:   cfg.Storage.StateDir,
 				XrayBinary: cfg.Xray.Binary, XrayService: cfg.Xray.InitScript,
@@ -1342,7 +1672,7 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 			CatalogOut: "/etc/router-policy/zapret/catalog.json",
 		})
 	}
-	app, err := api.NewServerWithOptions(cfg, api.Options{Provider: provider, ProductionAdapter: productionAdapter, SubscriptionPreparer: subscriptionPreparer, ZapretSetupChecker: zapretSetupChecker, ComponentManager: componentManager, ZapretCalibration: zapretCalibration, VLESSThroughputTester: vlessThroughputTester, Development: development, DeferRecovery: !development})
+	app, err := api.NewServerWithOptions(cfg, api.Options{Provider: provider, ProductionAdapter: productionAdapter, RouteAssignmentRuntime: routeAssignmentRuntime, SubscriptionPreparer: subscriptionPreparer, ZapretSetupChecker: zapretSetupChecker, ComponentManager: componentManager, ZapretCalibration: zapretCalibration, VLESSThroughputTester: vlessThroughputTester, Development: development, DeferRecovery: !development})
 	if err != nil {
 		if api.IsRescueRequired(err) {
 			databasePath := cfg.Storage.Database
@@ -1395,6 +1725,19 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 		}
 		return err
 	}
+}
+
+func validateProductionPrivilege(development, isRoot bool, helperSocket string) error {
+	if development {
+		return nil
+	}
+	if isRoot {
+		return errors.New("refusing production controller as root; run it as the dedicated non-root service account")
+	}
+	if strings.TrimSpace(helperSocket) == "" {
+		return errors.New("refusing production controller without the configured root-helper socket")
+	}
+	return nil
 }
 
 func runRescueHTTPProcess(requestedListen string, handler http.Handler) error {
@@ -1627,6 +1970,162 @@ func printJSON(v any) error {
 	return enc.Encode(v)
 }
 
+func decodeStrictJSON(raw []byte, dst any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("trailing JSON data")
+		}
+		return err
+	}
+	return nil
+}
+
+// parseObservationReference decodes the deliberately small CLI reference
+// syntax kind/identifier=value. The left hand side must identify a resource
+// from the reviewed adoption plan; the right hand side is an operator-supplied
+// PID or local path and is never interpreted as a command.
+func parseObservationReference(value string) (kind, identifier, rhs string, err error) {
+	left, rhs, ok := strings.Cut(value, "=")
+	if !ok || strings.TrimSpace(left) == "" || strings.TrimSpace(rhs) == "" {
+		return "", "", "", errors.New("observation target must use kind/identifier=value")
+	}
+	kind, identifier, ok = strings.Cut(left, "/")
+	if !ok || strings.TrimSpace(kind) == "" || strings.TrimSpace(identifier) == "" {
+		return "", "", "", errors.New("observation target must use kind/identifier=value")
+	}
+	return strings.TrimSpace(kind), strings.TrimSpace(identifier), strings.TrimSpace(rhs), nil
+}
+
+func adoptionPlanResourceIndex(plan manualimport.AdoptionPlan) (map[string]manualimport.AdoptionResource, error) {
+	resources := make(map[string]manualimport.AdoptionResource, len(plan.Resources))
+	for _, resource := range plan.Resources {
+		kind := strings.TrimSpace(resource.Kind)
+		identifier := strings.TrimSpace(resource.Identifier)
+		if kind == "" || identifier == "" {
+			return nil, errors.New("adoption plan contains a resource without kind or identifier")
+		}
+		key := kind + "\x00" + identifier
+		if _, exists := resources[key]; exists {
+			return nil, fmt.Errorf("adoption plan contains duplicate resource %s/%s", kind, identifier)
+		}
+		resources[key] = resource
+	}
+	return resources, nil
+}
+
+func parseObservationProcessTargets(plan manualimport.AdoptionPlan, pidSpecs, configSpecs []string) ([]manualimport.LiveProcessTarget, error) {
+	resources, err := adoptionPlanResourceIndex(plan)
+	if err != nil {
+		return nil, err
+	}
+	type processTarget struct {
+		pid        int
+		configPath string
+	}
+	targets := make(map[string]processTarget)
+	for _, spec := range pidSpecs {
+		kind, identifier, rawPID, parseErr := parseObservationReference(spec)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		if kind != "process" {
+			return nil, fmt.Errorf("PID target %s/%s is not a process", kind, identifier)
+		}
+		resource, ok := resources[kind+"\x00"+identifier]
+		if !ok || resource.Kind != "process" {
+			return nil, fmt.Errorf("PID target %s/%s is absent from the adoption plan", kind, identifier)
+		}
+		pid, convErr := strconv.Atoi(rawPID)
+		if convErr != nil || pid <= 0 {
+			return nil, fmt.Errorf("PID target %s must be a positive integer", identifier)
+		}
+		key := kind + "\x00" + identifier
+		if _, exists := targets[key]; exists {
+			return nil, fmt.Errorf("duplicate PID target %s/%s", kind, identifier)
+		}
+		targets[key] = processTarget{pid: pid}
+	}
+	for _, spec := range configSpecs {
+		kind, identifier, path, parseErr := parseObservationReference(spec)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		if kind != "process" {
+			return nil, fmt.Errorf("config target %s/%s is not a process", kind, identifier)
+		}
+		if _, ok := resources[kind+"\x00"+identifier]; !ok {
+			return nil, fmt.Errorf("config target %s/%s is absent from the adoption plan", kind, identifier)
+		}
+		key := kind + "\x00" + identifier
+		target, ok := targets[key]
+		if !ok {
+			return nil, fmt.Errorf("config target %s/%s requires a matching PID target", kind, identifier)
+		}
+		if target.configPath != "" {
+			return nil, fmt.Errorf("duplicate config target %s/%s", kind, identifier)
+		}
+		target.configPath = path
+		targets[key] = target
+	}
+	result := make([]manualimport.LiveProcessTarget, 0, len(targets))
+	for key, target := range targets {
+		kind, identifier, ok := strings.Cut(key, "\x00")
+		if !ok {
+			return nil, errors.New("invalid process target key")
+		}
+		result = append(result, manualimport.LiveProcessTarget{
+			Kind:       kind,
+			Identifier: identifier,
+			PID:        target.pid,
+			ConfigPath: target.configPath,
+		})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Kind != result[j].Kind {
+			return result[i].Kind < result[j].Kind
+		}
+		return result[i].Identifier < result[j].Identifier
+	})
+	return result, nil
+}
+
+func parseObservationEvidenceTargets(plan manualimport.AdoptionPlan, specs []string) ([]manualimport.LiveEvidenceTarget, error) {
+	resources, err := adoptionPlanResourceIndex(plan)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(specs))
+	result := make([]manualimport.LiveEvidenceTarget, 0, len(specs))
+	for _, spec := range specs {
+		kind, identifier, path, parseErr := parseObservationReference(spec)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		key := kind + "\x00" + identifier
+		if _, ok := resources[key]; !ok {
+			return nil, fmt.Errorf("evidence target %s/%s is absent from the adoption plan", kind, identifier)
+		}
+		if _, exists := seen[key]; exists {
+			return nil, fmt.Errorf("duplicate evidence target %s/%s", kind, identifier)
+		}
+		seen[key] = struct{}{}
+		result = append(result, manualimport.LiveEvidenceTarget{Kind: kind, Identifier: identifier, Path: path})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Kind != result[j].Kind {
+			return result[i].Kind < result[j].Kind
+		}
+		return result[i].Identifier < result[j].Identifier
+	})
+	return result, nil
+}
+
 func writeIPStateSnapshot(path string, snap dataplane.IPStateSnapshot, reason string, captured bool) error {
 	raw, err := json.Marshal(snap)
 	if err != nil {
@@ -1738,7 +2237,33 @@ func allowedListenAddress(addr string) bool {
 	if safeListenAddress(addr) {
 		return true
 	}
+	if os.Getenv("ROUTER_POLICY_ALLOW_LAN_BIND") == "1" {
+		// A private address is not a privilege boundary. The production entry
+		// point already rejects root and requires the fixed helper socket; keep
+		// refusing every non-loopback bind from a root process even when an old
+		// init environment carries the legacy LAN opt-in.
+		if processIsRoot() {
+			return false
+		}
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return false
+		}
+		portNumber, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || portNumber == 0 {
+			return false
+		}
+		ip := net.ParseIP(host)
+		// The production init script uses this narrow opt-in.  Exact private
+		// unicast binding keeps the controller off WAN/wildcard addresses; the
+		// default remains loopback-only.  Binding fails closed if the address is
+		// not assigned on the router.
+		return ip != nil && ip.IsPrivate() && !ip.IsUnspecified() && !ip.IsLoopback() && !ip.IsMulticast() && !ip.IsLinkLocalUnicast()
+	}
 	if os.Getenv("ROUTER_POLICY_ALLOW_FIREWALLED_BIND") != "1" {
+		return false
+	}
+	if processIsRoot() {
 		return false
 	}
 	host, port, err := net.SplitHostPort(addr)

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -47,27 +48,32 @@ import (
 var secureRandomHex = secureid.Hex
 
 type Options struct {
-	Auth                   *auth.Store
-	Provider               platform.Provider
-	State                  *state.Store
-	ProductionAdapter      adapter.Interface
-	SubscriptionPreparer   SubscriptionPreparer
-	ZapretSetupChecker     zapret.SetupChecker
-	ExternalSOCKSChecker   externalsocks.Checker
-	TelegramNotifier       *telegramnotify.Manager
-	ComponentManager       ComponentManager
-	ZapretCalibration      *zapret.CalibrationManager
-	VLESSThroughputTester  vpnsub.ThroughputTester
-	ProbeEngineFactory     func(*config.Config) health.ProbeEngine
-	TSPURefresh            TSPURefreshFunc
-	DNSObservationPath     string
-	Development            bool
-	DeferRecovery          bool
-	ManagementProofs       *managementproof.Manager
-	RequireManagementProof bool
-	SmartDNSValidator      SmartDNSValidator
-	DiscoveryNow           func() time.Time
-	DomainChecker          DomainChecker
+	Auth                    *auth.Store
+	Provider                platform.Provider
+	State                   *state.Store
+	ProductionAdapter       adapter.Interface
+	SubscriptionPreparer    SubscriptionPreparer
+	ZapretSetupChecker      zapret.SetupChecker
+	ExternalSOCKSChecker    externalsocks.Checker
+	TelegramNotifier        *telegramnotify.Manager
+	ComponentManager        ComponentManager
+	ZapretCalibration       *zapret.CalibrationManager
+	VLESSThroughputTester   vpnsub.ThroughputTester
+	HWIDFingerprintProvider vpnsub.FingerprintProvider
+	ProbeEngineFactory      func(*config.Config) health.ProbeEngine
+	TSPURefresh             TSPURefreshFunc
+	DNSObservationPath      string
+	Development             bool
+	DeferRecovery           bool
+	ManagementProofs        *managementproof.Manager
+	RequireManagementProof  bool
+	SmartDNSValidator       SmartDNSValidator
+	DiscoveryNow            func() time.Time
+	DomainChecker           DomainChecker
+	// RouteAssignmentRuntime is intentionally optional.  Until a production
+	// consumer can atomically materialize a revision-bound domain mapping in
+	// the owned nft/dnsmasq dataplane, discovery must remain suggestion-only.
+	RouteAssignmentRuntime RouteAssignmentRuntime
 }
 
 type SubscriptionPreparer interface {
@@ -99,28 +105,30 @@ type actionLockEntry struct {
 }
 
 type Server struct {
-	cfg                   *config.Config
-	auth                  *auth.Store
-	provider              platform.Provider
-	store                 *state.Store
-	adapter               adapter.Interface
-	subscriptionPreparer  SubscriptionPreparer
-	zapretSetupChecker    zapret.SetupChecker
-	externalSOCKSChecker  externalsocks.Checker
-	telegramNotifier      *telegramnotify.Manager
-	componentManager      ComponentManager
-	zapretCalibration     *zapret.CalibrationManager
-	vlessThroughputTester vpnsub.ThroughputTester
-	probeEngineFactory    func(*config.Config) health.ProbeEngine
-	tspuRefresh           TSPURefreshFunc
-	tspuDelay             tspuDelayFunc
-	healthTracker         *probe.HealthTracker
-	domainDecisions       *domaincache.Manager
-	dnsObservationPath    string
-	development           bool
-	broker                *EventBroker
-	mux                   *http.ServeMux
-	mu                    sync.Mutex
+	cfg                     *config.Config
+	auth                    *auth.Store
+	provider                platform.Provider
+	store                   *state.Store
+	adapter                 adapter.Interface
+	subscriptionPreparer    SubscriptionPreparer
+	zapretSetupChecker      zapret.SetupChecker
+	externalSOCKSChecker    externalsocks.Checker
+	telegramNotifier        *telegramnotify.Manager
+	componentManager        ComponentManager
+	routeAssignmentRuntime  RouteAssignmentRuntime
+	zapretCalibration       *zapret.CalibrationManager
+	vlessThroughputTester   vpnsub.ThroughputTester
+	hwidFingerprintProvider vpnsub.FingerprintProvider
+	probeEngineFactory      func(*config.Config) health.ProbeEngine
+	tspuRefresh             TSPURefreshFunc
+	tspuDelay               tspuDelayFunc
+	healthTracker           *probe.HealthTracker
+	domainDecisions         *domaincache.Manager
+	dnsObservationPath      string
+	development             bool
+	broker                  *EventBroker
+	mux                     *http.ServeMux
+	mu                      sync.Mutex
 	// mutationGate closes the recovery-to-mutation TOCTOU window. Recovery
 	// status transitions take the write side; every write-capable operation
 	// holds the read side for its entire lifetime.
@@ -144,8 +152,18 @@ type Server struct {
 	discoveryNow           func() time.Time
 	domainChecker          DomainChecker
 	discoverySuggestionMap map[string]discoverySuggestion
+	discoveryObservations  []discoveryObservation
+	discoveryCursor        int64
+	discoveryLagBytes      int64
+	discoveryEmitted       uint64
+	discoveryLastProgress  time.Time
+	discoveryLastEmission  time.Time
+	discoveryDropped       uint64
+	discoveryApplied       uint64
+	discoveryFailed        uint64
 	discoveryRecent        map[string]time.Time
 	discoveryInFlight      map[string]bool
+	discoveryPending       map[string]bool
 	discoveryQueue         chan discovery.Observation
 	probeBudget            chan struct{}
 	routeFailureQueue      chan routeFailureReport
@@ -163,6 +181,14 @@ type Server struct {
 	schedulerWG            sync.WaitGroup
 	closeOnce              sync.Once
 	closeErr               error
+}
+
+// tryLockSubscription prevents a slow provider or speed measurement from
+// turning a second scheduler/HTTP request into a blocked handler.  The
+// operation lock still serializes the actual work; callers must report the
+// busy condition and let the next bounded scheduling interval retry.
+func (s *Server) tryLockSubscription() bool {
+	return s.subscriptionMu.TryLock()
 }
 
 func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
@@ -207,6 +233,10 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 	provider := opts.Provider
 	if provider == nil {
 		provider = platform.NewOpenWrtProvider()
+	}
+	hwidFingerprintProvider := opts.HWIDFingerprintProvider
+	if hwidFingerprintProvider == nil {
+		hwidFingerprintProvider = vpnsub.SystemFingerprintProvider{}
 	}
 	stateStore := opts.State
 	if stateStore == nil {
@@ -288,52 +318,57 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		}
 	}
 	s := &Server{
-		cfg:                    cfg,
-		auth:                   authStore,
-		provider:               provider,
-		store:                  stateStore,
-		adapter:                opts.ProductionAdapter,
-		subscriptionPreparer:   opts.SubscriptionPreparer,
-		zapretSetupChecker:     opts.ZapretSetupChecker,
-		externalSOCKSChecker:   externalSOCKSChecker,
-		telegramNotifier:       telegramNotifier,
-		componentManager:       opts.ComponentManager,
-		zapretCalibration:      opts.ZapretCalibration,
-		vlessThroughputTester:  opts.VLESSThroughputTester,
-		probeEngineFactory:     probeEngineFactory,
-		tspuRefresh:            tspuRefresh,
-		tspuDelay:              randomTSPUDelay,
-		healthTracker:          probe.NewHealthTracker(persistedHealth),
-		domainDecisions:        domainDecisions,
-		dnsObservationPath:     dnsObservationPath,
-		development:            opts.Development,
-		broker:                 broker,
-		mux:                    http.NewServeMux(),
-		changes:                changes,
-		actionLocks:            map[string]*actionLockEntry{},
-		timers:                 map[string]*time.Timer{},
-		activeConfig:           activeConfig,
-		activeRevision:         activeRevision,
-		configVersion:          configVersion,
-		hideSensitive:          true,
-		managementProofs:       managementProofs,
-		requireManagementProof: requireManagementProof,
-		smartDNSValidator:      smartDNSValidator,
-		discoveryNow:           discoveryNow,
-		domainChecker:          domainChecker,
-		discoverySuggestionMap: map[string]discoverySuggestion{},
-		discoveryRecent:        map[string]time.Time{},
-		discoveryInFlight:      map[string]bool{},
-		discoveryQueue:         make(chan discovery.Observation, discoveryQueueLimit),
-		probeBudget:            make(chan struct{}, probeBudgetSize),
-		routeFailureQueue:      make(chan routeFailureReport, 16),
-		routeFailureRecent:     map[string]time.Time{},
-		routeFailureCooldown:   map[string]time.Time{},
-		routeRecoveryNext:      map[string]time.Time{},
-		routeRecoveryBackoff:   map[string]time.Duration{},
-		revalidationNext:       map[string]time.Time{},
-		deferRecovery:          opts.DeferRecovery,
+		cfg:                     cfg,
+		auth:                    authStore,
+		provider:                provider,
+		store:                   stateStore,
+		adapter:                 opts.ProductionAdapter,
+		subscriptionPreparer:    opts.SubscriptionPreparer,
+		zapretSetupChecker:      opts.ZapretSetupChecker,
+		externalSOCKSChecker:    externalSOCKSChecker,
+		telegramNotifier:        telegramNotifier,
+		componentManager:        opts.ComponentManager,
+		routeAssignmentRuntime:  opts.RouteAssignmentRuntime,
+		zapretCalibration:       opts.ZapretCalibration,
+		vlessThroughputTester:   opts.VLESSThroughputTester,
+		hwidFingerprintProvider: hwidFingerprintProvider,
+		probeEngineFactory:      probeEngineFactory,
+		tspuRefresh:             tspuRefresh,
+		tspuDelay:               randomTSPUDelay,
+		healthTracker:           probe.NewHealthTracker(persistedHealth),
+		domainDecisions:         domainDecisions,
+		dnsObservationPath:      dnsObservationPath,
+		development:             opts.Development,
+		broker:                  broker,
+		mux:                     http.NewServeMux(),
+		changes:                 changes,
+		actionLocks:             map[string]*actionLockEntry{},
+		timers:                  map[string]*time.Timer{},
+		activeConfig:            activeConfig,
+		activeRevision:          activeRevision,
+		configVersion:           configVersion,
+		hideSensitive:           true,
+		managementProofs:        managementProofs,
+		requireManagementProof:  requireManagementProof,
+		smartDNSValidator:       smartDNSValidator,
+		discoveryNow:            discoveryNow,
+		domainChecker:           domainChecker,
+		discoverySuggestionMap:  map[string]discoverySuggestion{},
+		discoveryObservations:   make([]discoveryObservation, 0, maxDiscoveryObservations),
+		discoveryRecent:         map[string]time.Time{},
+		discoveryInFlight:       map[string]bool{},
+		discoveryPending:        map[string]bool{},
+		discoveryQueue:          make(chan discovery.Observation, discoveryQueueLimit),
+		probeBudget:             make(chan struct{}, probeBudgetSize),
+		routeFailureQueue:       make(chan routeFailureReport, 16),
+		routeFailureRecent:      map[string]time.Time{},
+		routeFailureCooldown:    map[string]time.Time{},
+		routeRecoveryNext:       map[string]time.Time{},
+		routeRecoveryBackoff:    map[string]time.Duration{},
+		revalidationNext:        map[string]time.Time{},
+		deferRecovery:           opts.DeferRecovery,
 	}
+	s.loadPersistedDiscoverySuggestions()
 	if preparer, ok := s.subscriptionPreparer.(ProbeBudgetAware); ok {
 		preparer.SetProbeBudget(s.probeBudget)
 	}
@@ -365,6 +400,12 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		}
 	} else {
 		s.recoverCommittedDataplane(context.Background())
+		if recoveryStatusAllowsMutation(s.currentRecoveryStatus()) {
+			if err := s.reconcileRouteAssignments(context.Background()); err != nil {
+				revision, _ := s.activeIdentity()
+				s.setRecoveryStatus(failedRecovery(time.Now().UTC(), "route_assignment_reconcile_failed", err.Error(), adapter.RecoveryTarget{RevisionID: revision}))
+			}
+		}
 	}
 	return s, nil
 }
@@ -412,6 +453,11 @@ func (s *Server) StartScheduler(ctx context.Context) {
 				defer cancelRecovery()
 				s.recoverCommittedDataplane(recoveryCtx)
 				if schedulerCtx.Err() == nil && recoveryStatusAllowsMutation(s.currentRecoveryStatus()) {
+					if err := s.reconcileRouteAssignments(recoveryCtx); err != nil {
+						revision, _ := s.activeIdentity()
+						s.setRecoveryStatus(failedRecovery(time.Now().UTC(), "route_assignment_reconcile_failed", err.Error(), adapter.RecoveryTarget{RevisionID: revision}))
+						return
+					}
 					s.startOperationalSchedulers(schedulerCtx)
 				}
 			}()
@@ -419,6 +465,23 @@ func (s *Server) StartScheduler(ctx context.Context) {
 		}
 		s.startOperationalSchedulers(schedulerCtx)
 	})
+}
+
+func (s *Server) reconcileRouteAssignments(ctx context.Context) error {
+	reconciler, ok := s.routeAssignmentRuntime.(RouteAssignmentReconciler)
+	if !ok {
+		return nil
+	}
+	s.mu.Lock()
+	revision := s.activeRevision
+	s.mu.Unlock()
+	if revision == "" {
+		return nil
+	}
+	// The runtime independently reads the durable binding and refuses stale
+	// manifests; passing only the context keeps controller code from gaining
+	// any path or shell authority.
+	return reconciler.ReconcileRouteAssignments(ctx)
 }
 
 func (s *Server) startOperationalSchedulers(schedulerCtx context.Context) {
@@ -449,6 +512,9 @@ func (s *Server) startOperationalSchedulers(schedulerCtx context.Context) {
 			case <-maintenance.C:
 				if err := s.store.Maintain(time.Now().UTC()); err != nil {
 					s.publishEvent(Event{Type: "storage.maintenance_failed", Severity: "error", ReasonCode: "bbolt_maintenance_failed", Details: map[string]any{"error": err.Error()}})
+				}
+				if err := s.prunePersistedDiscoverySuggestions(time.Now().UTC()); err != nil {
+					s.publishEvent(Event{Type: "discovery.storage", Severity: "warning", ReasonCode: "suggestion_retention_cleanup_failed", Details: map[string]any{"error": err.Error()}})
 				}
 			}
 			next.Stop()
@@ -491,7 +557,10 @@ func (s *Server) startSubscriptionScheduler(ctx context.Context) {
 				s.publishEvent(Event{Type: "subscription.refresh", Severity: "warning", ReasonCode: "mutation_fenced", Details: map[string]any{"code": failure.Code}})
 				continue
 			}
-			s.subscriptionMu.Lock()
+			if !s.tryLockSubscription() {
+				s.publishEvent(Event{Type: "subscription.refresh", Severity: "info", ReasonCode: "subscription_refresh_busy"})
+				continue
+			}
 			active := s.currentConfig()
 			refreshCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 			_, err := s.subscriptionPreparer.Prepare(refreshCtx, active)
@@ -582,19 +651,53 @@ func (s *Server) startDNSDiscovery(ctx context.Context) {
 					select {
 					case <-ctx.Done():
 						return
-					case observation := <-s.discoveryQueue:
+					case observation, ok := <-s.discoveryQueue:
+						if !ok {
+							return
+						}
 						s.discoverDomain(ctx, observation)
+						s.releasePendingDiscovery(observation.Domain)
 					}
 				}
 			}()
 		}
+		var dropped uint64
+		var lastDropNotice time.Time
 		watcher := discovery.Watcher{
-			Path: s.dnsObservationPath,
+			Path:       s.dnsObservationPath,
+			StartAtEnd: true,
+			Progress: func(cursor int64, emitted uint64) {
+				info, _ := os.Stat(s.dnsObservationPath)
+				now := s.discoveryNow()
+				s.mu.Lock()
+				s.discoveryCursor = cursor
+				s.discoveryEmitted += emitted
+				s.discoveryLastProgress = now
+				if emitted > 0 {
+					s.discoveryLastEmission = now
+				}
+				if info != nil && info.Size() >= cursor {
+					s.discoveryLagBytes = info.Size() - cursor
+				}
+				s.mu.Unlock()
+			},
 			Emit: func(observationContext context.Context, observation discovery.Observation) {
-				select {
-				case s.discoveryQueue <- observation:
-				default:
-					s.publishEvent(Event{Type: "domain.discovery", Severity: "warning", ReasonCode: "discovery_queue_full", Details: map[string]any{"domain": observation.Domain}})
+				s.recordDiscoveryObservation(observation)
+				_, queueFull := s.enqueueDiscoveryObservation(observation)
+				if queueFull {
+					// A busy DNS log must never turn queue backpressure into one
+					// durable/event-broker write per dropped line.  Keep the queue
+					// bounded and emit at most one coalesced notice per minute.
+					dropped++
+					s.mu.Lock()
+					s.discoveryDropped++
+					s.mu.Unlock()
+					now := time.Now().UTC()
+					if lastDropNotice.IsZero() || now.Sub(lastDropNotice) >= time.Minute {
+						s.publishEvent(Event{Type: "domain.discovery", Severity: "warning", ReasonCode: "discovery_queue_full", Details: map[string]any{"dropped": dropped}})
+						dropped = 0
+						lastDropNotice = now
+					}
 				}
 			},
 		}
@@ -626,18 +729,28 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 		return
 	}
 	now := time.Now().UTC()
-	match := tspu.Match{Domain: observation.Domain, Status: "UNAVAILABLE"}
-	cache, err := tspu.Load(filepath.Join(active.Storage.StateDir, "tspu-cache.json"))
-	if err == nil {
-		if found, ok := tspu.Find(cache, observation.Domain, now); ok {
-			match = found
-		} else {
-			match = tspu.Match{Domain: observation.Domain, Status: "NO_MATCH"}
+	match := tspu.Match{Domain: observation.Domain, Status: "UNAVAILABLE", Evidence: "tspu_cache_deferred_observe_only"}
+	// Observe-only must stay passive and bounded.  Loading the full TSPU
+	// domain index here materializes a potentially 32 MiB JSON file into a
+	// large Go map for every DNS observation.  On an OpenWrt router that can
+	// grow well beyond the cache size and starve the controller before the
+	// browser can use the API.  Classification from the already persisted
+	// cache is intentionally deferred to active/suggest modes; observe-only
+	// still records the observation and clearly reports classification as
+	// unavailable rather than turning a DNS event into a memory-heavy job.
+	if mode != "observe_only" {
+		cache, err := tspu.Load(filepath.Join(active.Storage.StateDir, "tspu-cache.json"))
+		if err == nil {
+			if found, ok := tspu.Find(cache, observation.Domain, now); ok {
+				match = found
+			} else {
+				match = tspu.Match{Domain: observation.Domain, Status: "NO_MATCH"}
+			}
 		}
 	}
 	if mode == "observe_only" {
 		// Observe-only is intentionally passive.  It records the DNS
-		// observation and any already-cached classification, but it must not
+		// observation without materializing the large TSPU index and must not
 		// invoke domainChecker (which performs active route probes).
 		category := "UNKNOWN"
 		if match.Status == "MATCH" {
@@ -690,10 +803,14 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 		"classification_confidence": check.ClassificationConfidence,
 		"classification_source":     check.ClassificationSource,
 		"classification_evidence":   check.ClassificationEvidence,
+		"classification_state":      check.ClassificationState,
+		"classification_reason":     check.ClassificationReason,
+		"candidate_inventory_hash":  check.CandidateInventoryHash,
 		"verification_state":        check.VerificationState,
 		"verification_cached":       check.Cached,
 		"service":                   check.Service, "decision_duration_ms": s.discoveryNow().Sub(startedAt).Milliseconds(),
 		"verification_duration_ms": checkVerificationDuration(check),
+		"initial_unknown_policy":   check.InitialUnknownPolicy,
 		"candidates":               discoveryCandidateDetails(check.Results),
 	}
 	selectedType := ""
@@ -703,9 +820,8 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 	classification, displayName := observationClassification(check.Service, check.Category, selectedType, check.ClassificationConfidence)
 	details["classification"] = classification
 	details["service_name"] = displayName
-	details["classification_state"] = "unresolved"
-	if check.ClassificationConfidence > 0 || (check.ClassificationEvidence != "" && check.ClassificationEvidence != "none" && check.ClassificationEvidence != "unavailable") || check.Category == "GEO_LOCKED" || check.Category == "TSPU_RESTRICTED" {
-		details["classification_state"] = "classified"
+	if check.ClassificationState == "" {
+		details["classification_state"] = "UNKNOWN"
 	}
 	details["probe_state"] = plannerProbeState(check)
 	details["policy_state"] = "observed"
@@ -745,10 +861,17 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 		details["fallback_performed"] = len(attempted) > 1
 	}
 	if check.Selected != nil {
-		details["route"] = check.Selected.Route
+		selectedIsDrop := check.Selected.RouteType == "drop" || check.Status == "DROP"
+		if selectedIsDrop {
+			// DROP is a terminal safety outcome, never a usable route assignment.
+			details["route"] = ""
+			details["drop_enforced"] = true
+		} else {
+			details["route"] = check.Selected.Route
+		}
 		details["route_label"] = discoveryRouteLabel(*check.Selected)
 		details["route_type"] = check.Selected.RouteType
-		details["path_verified"] = check.Selected.PathVerified
+		details["path_verified"] = check.Selected.PathVerified && !selectedIsDrop
 		details["route_reason"] = check.Selected.ReasonCode
 		details["destination_ip"] = check.Selected.ConnectedIP
 		if details["destination_ip"] == "" {
@@ -759,6 +882,11 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 			details["route_latency_ms"] = check.Selected.RouteLatencyMS
 		}
 		details["path_verification_duration_ms"] = check.Selected.VerificationDurationMS
+		details["end_to_end_latency_available"] = check.Selected.EndToEndLatencyAvailable
+		if check.Selected.EndToEndLatencyAvailable {
+			details["end_to_end_latency_ms"] = check.Selected.EndToEndLatencyMS
+		}
+		details["selection_score"] = check.Selected.SelectionScore
 		details["http_status"] = discoveryHTTPStatus(*check.Selected)
 		details["tls_status"] = map[bool]string{true: "TLS OK", false: "TLS не подтверждён"}[check.Selected.TLSOK]
 		details["dns_status"] = map[bool]string{true: "DNS resolved", false: "DNS не подтверждён"}[check.Selected.DNSOK]
@@ -769,8 +897,20 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 	if mode == "observe_only" {
 		return
 	}
-	s.saveDiscoverySuggestion(observation, check)
 	if plannerProbeState(check) == "verifying" {
+		// Keep the provisional result in RAM for the live Decision Flow, but
+		// do not write an unverified suggestion to bbolt. A later terminal
+		// result will replace it with the durable verified/exhausted record.
+		s.saveDiscoverySuggestionTransient(observation, check)
+		return
+	}
+	if err := s.saveDiscoverySuggestion(observation, check); err != nil {
+		// A suggestion that only exists in RAM is not durable evidence. Fail
+		// closed before any automatic route assignment and make the storage
+		// failure visible to operators instead of claiming a complete check.
+		s.publishEvent(Event{Type: "domain.discovery", Severity: "warning", ReasonCode: "discovery_suggestion_persist_failed", Details: map[string]any{
+			"domain": check.Domain, "error": err.Error(), "durable": false,
+		}})
 		return
 	}
 	if mode == "suggest" {
@@ -781,7 +921,11 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 		return
 	}
 	result := s.commitAutomaticDomain(ctx, check)
-	s.recordDiscoveryAutoResult(result)
+	if err := s.recordDiscoveryAutoResult(result); err != nil {
+		s.publishEvent(Event{Type: "domain.discovery", Severity: "warning", ReasonCode: "discovery_control_state_persist_failed", Details: map[string]any{
+			"domain": check.Domain, "error": err.Error(), "durable": false,
+		}})
+	}
 	if !result.Applied {
 		s.publishEvent(Event{Type: "domain.discovery", Severity: "warning", ReasonCode: "automatic_policy_commit_failed", Details: map[string]any{"domain": check.Domain, "error": result.Reason, "rolled_back": result.RolledBack}})
 	}
@@ -805,16 +949,254 @@ func observationClassification(service, category, selectedType string, confidenc
 }
 
 func (s *Server) commitAutomaticDomain(ctx context.Context, check planner.DomainCheck) automaticCommitResult {
-	// The route-only automatic assignment backend is not implemented yet. Never
-	// fall back to a full ChangeSet/apply from a DNS observation: that would
-	// rebuild dataplane topology from a background event. Verified decisions
-	// remain suggestions until an explicit bounded route-only mutation exists.
-	_ = ctx
-	_ = check
+	release, failure := s.acquireMutationLease()
+	if failure != nil {
+		return automaticCommitResult{Reason: failure.Message}
+	}
+	defer func() {
+		if release != nil {
+			release()
+		}
+	}()
 	if failure := s.mutationFailureNow(); failure != nil {
 		return automaticCommitResult{Reason: failure.Message}
 	}
-	return automaticCommitResult{Reason: "automatic_route_assignment_unavailable"}
+	if check.Selected == nil || !planner.SelectionEvidence(*check.Selected) || check.Confidence < 0.8 {
+		return automaticCommitResult{Reason: "automatic_route_assignment_requires_verified_evidence"}
+	}
+	active := s.currentConfig()
+	if active == nil {
+		return automaticCommitResult{Reason: "route_assignment_active_config_unavailable"}
+	}
+	route, ok := active.RouteByTag(check.Selected.Route)
+	autoService, _, autoOK := automaticServiceForDecision(check)
+	if !ok || !autoOK || !route.Enabled() || !config.PathAllowed(autoService, route, active.Policy) {
+		return automaticCommitResult{Reason: "automatic_route_not_allowed_or_unavailable"}
+	}
+	if autoService.RequireNonRUEgress && route.Type != "drop" {
+		country := strings.ToUpper(strings.TrimSpace(check.Selected.ExternalCountry))
+		if !check.Selected.EgressConsensus || country == "" || country == "RU" {
+			return automaticCommitResult{Reason: "automatic_route_egress_not_proven_non_ru"}
+		}
+	}
+	now := s.discoveryNow()
+	expires := check.ExpiresAt
+	if expires.IsZero() || !now.Before(expires) {
+		ttl := time.Duration(active.Policy.DomainDecisionTTLSeconds) * time.Second
+		if ttl <= 0 {
+			ttl = 24 * time.Hour
+		}
+		expires = now.Add(ttl)
+	}
+	results := append([]probe.RouteResult(nil), check.Results...)
+	if len(results) == 0 {
+		results = []probe.RouteResult{*check.Selected}
+	}
+	service := strings.TrimSpace(check.Service)
+	if service == "" {
+		service = "UNKNOWN:" + check.Domain
+	}
+	revision, _ := s.activeIdentity()
+	if strings.TrimSpace(revision) == "" {
+		return automaticCommitResult{Reason: "route_assignment_revision_unavailable: active revision is unavailable"}
+	}
+	runtime := s.routeAssignmentRuntime
+	if runtime == nil {
+		// Persisting a decision without a runtime consumer is not an
+		// assignment.  Keep the suggestion available, but fail closed instead
+		// of claiming that production dataplane changed.
+		return automaticCommitResult{Reason: "route_assignment_runtime_unavailable"}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	request := RouteAssignmentRequest{
+		ProtocolVersion:      1,
+		RequestID:            fmt.Sprintf("route-assignment-%d", now.UnixNano()),
+		Generation:           revision,
+		RevisionID:           revision,
+		CandidateHash:        check.Selected.CandidateHash,
+		ArtifactManifestHash: check.Selected.ArtifactManifestHash,
+		Domain:               check.Domain,
+		RouteTag:             route.Tag,
+		RouteType:            route.Type,
+		RouteSetID:           routeAssignmentObjectID("route:", route.Tag),
+		AssignmentID:         routeAssignmentObjectID("assignment:", check.Domain),
+	}
+	request.MappingHash = routeAssignmentMappingHash(request)
+	receipt, err := runtime.ApplyRouteAssignment(ctx, request)
+	if err != nil {
+		return automaticCommitResult{Reason: "route_assignment_runtime_apply_failed: " + err.Error()}
+	}
+	rollbackRuntime := func(reason string) automaticCommitResult {
+		if err := runtime.RollbackRouteAssignment(ctx, request, receipt); err != nil {
+			return automaticCommitResult{Reason: reason + "; route_assignment_runtime_rollback_failed: " + err.Error()}
+		}
+		return automaticCommitResult{Reason: reason, RolledBack: true}
+	}
+	if !receipt.Applied || !receipt.Verified || receipt.ProtocolVersion != request.ProtocolVersion ||
+		receipt.RequestID != request.RequestID || receipt.Operation != "route_assignment.apply" ||
+		receipt.Generation != request.Generation || receipt.RevisionID != request.RevisionID ||
+		receipt.Domain != request.Domain || receipt.RouteTag != request.RouteTag || receipt.RouteType != request.RouteType ||
+		receipt.RouteSetID != request.RouteSetID || receipt.AssignmentID != request.AssignmentID ||
+		receipt.MappingHash != request.MappingHash {
+		if receipt.Applied {
+			return rollbackRuntime("route_assignment_runtime_semantic_response_invalid")
+		}
+		return automaticCommitResult{Reason: "route_assignment_runtime_semantic_response_invalid"}
+	}
+	// Prove that the newly materialized route works before recording a durable
+	// decision. A pre-apply result cannot be reused: the assignment itself is
+	// the mutation boundary, so the post-apply probe must observe that exact
+	// route/revision.
+	if s.probeEngineFactory == nil {
+		return rollbackRuntime("route_assignment_post_apply_proof_unavailable")
+	}
+	post := s.probeEngineFactory(active).ProbeRoute(ctx, active, check.Domain, service, autoService, route)
+	if post.Route != route.Tag || post.RouteType != route.Type || post.AdapterRevision != revision ||
+		!planner.SelectionEvidence(post) ||
+		(check.Selected.CandidateHash != "" && post.CandidateHash != check.Selected.CandidateHash) ||
+		(check.Selected.ArtifactManifestHash != "" && post.ArtifactManifestHash != check.Selected.ArtifactManifestHash) ||
+		(autoService.RequireNonRUEgress && route.Type != "drop" && (!post.EgressConsensus || strings.TrimSpace(post.ExternalCountry) == "" || strings.EqualFold(post.ExternalCountry, "RU"))) {
+		failureResult := rollbackRuntime("route_assignment_post_apply_proof_failed")
+		// A failed post-apply proof is candidate-specific evidence, not proof
+		// that every already-verified route is bad.  Retry the next bounded,
+		// policy-allowed candidate after the owned mapping has been rolled back.
+		// Infrastructure failures (apply, semantic receipt, persistence, or
+		// rollback) still return immediately and never fan out into retries.
+		if failureResult.RolledBack {
+			if next, found := nextAutomaticAssignmentCandidate(check, active, route.Tag); found {
+				retry := check
+				nextCopy := next
+				retry.Selected = &nextCopy
+				retry.Results = remainingRouteResults(check.Results, route.Tag)
+				release()
+				release = nil
+				return s.commitAutomaticDomain(ctx, retry)
+			}
+		}
+		return failureResult
+	}
+
+	decision := domaincache.Decision{
+		Domain: check.Domain, ETLDPlusOne: check.ETLDPlusOne, Service: service,
+		Category: check.Category, TSPUStatus: check.TSPUStatus, SelectedRoute: route.Tag,
+		SelectedType: route.Type, Status: "SELECTED", Reason: "route_only_assignment",
+		AdapterRevision: revision, Confidence: check.Confidence,
+		ClassificationConfidence: check.ClassificationConfidence,
+		ClassificationSource:     check.ClassificationSource, ClassificationEvidence: check.ClassificationEvidence,
+		CandidateInventoryHash: check.CandidateInventoryHash,
+		VerificationDurationMS: check.VerificationDurationMS, Results: results,
+		CheckedAt: now, ExpiresAt: expires, LastUsedAt: now,
+	}
+	saved, err := s.domainDecisions.Save(check.Domain, decision)
+	if err != nil {
+		return rollbackRuntime("route_assignment_persist_failed: " + err.Error())
+	}
+	// Read back the exact revision-bound decision before reporting success. This
+	// prevents a storage layer that returned a false-success from making the UI
+	// claim a committed assignment without durable evidence.
+	stored, ok, lookupErr := s.domainDecisions.Lookup(check.Domain, revision, now)
+	if lookupErr != nil || !ok || stored.AdapterRevision != revision || stored.SelectedRoute != route.Tag || stored.SelectedType != route.Type ||
+		(check.CandidateInventoryHash != "" && stored.CandidateInventoryHash != check.CandidateInventoryHash) {
+		if lookupErr == nil {
+			lookupErr = errors.New("stored route assignment does not match active revision")
+		}
+		cleanupErr := error(nil)
+		if saved.Key != "" {
+			cleanupErr = s.domainDecisions.Discard(saved.Key)
+		}
+		reason := "route_assignment_readback_failed: " + lookupErr.Error()
+		if cleanupErr != nil {
+			reason += "; decision_cleanup_failed: " + cleanupErr.Error()
+		}
+		return rollbackRuntime(reason)
+	}
+	s.mu.Lock()
+	if suggestion, exists := s.discoverySuggestionMap[check.Domain]; exists {
+		suggestion.PolicyState = "applied"
+		suggestion.Reason = "route assignment committed"
+		s.discoverySuggestionMap[check.Domain] = suggestion
+	}
+	s.mu.Unlock()
+	if err := s.persistDiscoverySuggestions(); err != nil {
+		// The route assignment and revision-bound decision are already durable;
+		// suggestion metadata is auxiliary. Do not undo a verified assignment,
+		// but surface the failed metadata write explicitly.
+		s.publishEvent(Event{Type: "domain.discovery", Severity: "warning", ReasonCode: "route_assignment_suggestion_persist_failed", Details: map[string]any{
+			"domain": check.Domain, "route": route.Tag, "error": err.Error(), "durable_assignment": true,
+		}})
+	}
+	s.publishEvent(Event{Type: "route.decision", Severity: "info", ReasonCode: "route_assignment_committed", Details: map[string]any{
+		"domain": check.Domain, "route": route.Tag, "route_type": route.Type,
+		"assignment": "route_only", "post_apply_proof": true,
+		"post_apply_proof_kind": "revision_bound_path_evidence", "active_revision": revision,
+	}})
+	_ = ctx // proof is the PathVerified result bound to the current revision.
+	return automaticCommitResult{Applied: true, Reason: "route assignment committed"}
+}
+
+// nextAutomaticAssignmentCandidate returns the best remaining verified route
+// that can be materialized without changing component/topology state.  The
+// current route is excluded so a post-apply failure cannot recurse forever.
+// The planner has already attached selection scores; sorting those scores
+// preserves the same evidence-based ordering used for the initial choice.
+func nextAutomaticAssignmentCandidate(check planner.DomainCheck, active *config.Config, currentRoute string) (probe.RouteResult, bool) {
+	if active == nil {
+		return probe.RouteResult{}, false
+	}
+	candidates := make([]probe.RouteResult, 0, len(check.Results))
+	seen := make(map[string]struct{}, len(check.Results))
+	for _, result := range check.Results {
+		if result.Route == "" || result.Route == currentRoute {
+			continue
+		}
+		if _, exists := seen[result.Route]; exists {
+			continue
+		}
+		seen[result.Route] = struct{}{}
+		if !strings.EqualFold(result.Status, "OK") || strings.EqualFold(result.Status, "REGION_BLOCK") || !result.PathVerified || !result.ServiceOK || result.RegionalBlock {
+			continue
+		}
+		route, ok := active.RouteByTag(result.Route)
+		if !ok || !route.Enabled() {
+			continue
+		}
+		candidateCheck := check
+		candidate := result
+		candidateCheck.Selected = &candidate
+		autoService, _, autoOK := automaticServiceForDecision(candidateCheck)
+		if !autoOK || !config.PathAllowed(autoService, route, active.Policy) {
+			continue
+		}
+		if autoService.RequireNonRUEgress && route.Type != "drop" {
+			country := strings.ToUpper(strings.TrimSpace(result.ExternalCountry))
+			if !result.EgressConsensus || country == "" || country == "RU" {
+				continue
+			}
+		}
+		candidates = append(candidates, result)
+	}
+	if len(candidates) == 0 {
+		return probe.RouteResult{}, false
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].SelectionScore != candidates[j].SelectionScore {
+			return candidates[i].SelectionScore < candidates[j].SelectionScore
+		}
+		return candidates[i].Route < candidates[j].Route
+	})
+	return candidates[0], true
+}
+
+func remainingRouteResults(results []probe.RouteResult, excludedRoute string) []probe.RouteResult {
+	remaining := make([]probe.RouteResult, 0, len(results))
+	for _, result := range results {
+		if result.Route != excludedRoute {
+			remaining = append(remaining, result)
+		}
+	}
+	return remaining
 }
 
 func automaticServiceForDecision(check planner.DomainCheck) (config.Service, string, bool) {
@@ -833,8 +1215,21 @@ func automaticServiceForDecision(check planner.DomainCheck) (config.Service, str
 		forbidden = []string{"direct", "zapret"}
 		requireNonRU = true
 	case "TSPU_RESTRICTED":
-		allowed = []string{"zapret", "vless", "drop"}
+		allowed = []string{"zapret", "smart_dns", "vless", "drop"}
+	case "DIRECT_PREFERRED", "UNKNOWN", "":
+		// Unknown-domain auto-routing is still a product feature, but it is
+		// bounded to an already enabled route and the verified evidence gate in
+		// discoveryAutoAllowed. It never grants a background task topology or
+		// component mutation authority.
+		category = "DIRECT_PREFERRED"
+		allowed = []string{"direct", "zapret", "smart_dns", "vless", "drop"}
 	default:
+		return config.Service{}, "", false
+	}
+	// A successful Direct observation is useful evidence, but automatic
+	// assignment is reserved for managed routes. Drop is a terminal safety
+	// result, never a policy mapping created by discovery.
+	if check.Selected.RouteType == "direct" || check.Selected.RouteType == "drop" {
 		return config.Service{}, "", false
 	}
 	id := "auto_" + strings.NewReplacer(".", "_", "-", "_").Replace(check.ETLDPlusOne)
@@ -844,7 +1239,7 @@ func automaticServiceForDecision(check planner.DomainCheck) (config.Service, str
 		RequireNonRUEgress: requireNonRU,
 		ProbeURLs: []config.ProbeCheck{{
 			Name: "automatic-web", URL: "https://" + check.Domain + "/", Required: true,
-			ExpectedCodes: []int{200, 204, 301, 302, 303, 307, 308, 401, 403}, BodyMode: "optional",
+			ExpectedCodes: []int{200, 204, 301, 302, 303, 307, 308}, BodyMode: "optional",
 		}},
 	}, id, true
 }
@@ -899,7 +1294,11 @@ func tspuInitialDelay(active *config.Config, interval time.Duration, now time.Ti
 	if active == nil || interval <= 0 {
 		return fallback
 	}
-	cache, err := tspu.Load(filepath.Join(active.Storage.StateDir, "tspu-cache.json"))
+	// The cache can contain tens of thousands of domains and is expensive to
+	// materialise on a memory-constrained router.  Scheduling only needs the
+	// validated freshness sidecar; the full index is loaded by the refresh path
+	// when it is actually needed.
+	cache, err := tspu.LoadFreshness(filepath.Join(active.Storage.StateDir, "tspu-cache.json"))
 	if err != nil || !cache.ExpiresAt.After(now) {
 		return fallback
 	}
@@ -1005,10 +1404,14 @@ func tspuBaseDelay(interval time.Duration, failures int, initial bool) time.Dura
 		return 5 * time.Minute
 	}
 	if initial {
-		if interval < 30*time.Second {
+		// Do not turn a cold boot into an immediate remote-list fetch. The
+		// first refresh is deliberately delayed, while still respecting short
+		// test intervals. Normal refreshes continue to use the provider/TTL
+		// interval below.
+		if interval < 5*time.Minute {
 			return interval
 		}
-		return 30 * time.Second
+		return 5 * time.Minute
 	}
 	if failures <= 0 {
 		return interval
@@ -1045,6 +1448,12 @@ func (s *Server) runHealthCycle(ctx context.Context) {
 		return
 	}
 	active := s.currentConfig()
+	if active == nil {
+		// A missing active revision is a fenced control-plane state, not an
+		// invitation to dereference a nil config from a background scheduler.
+		s.publishEvent(Event{Type: "route.health", Severity: "warning", ReasonCode: "active_config_unavailable", Details: map[string]any{"probes_started": 0}})
+		return
+	}
 	engine := s.probeEngineFactory(active)
 	now := time.Now().UTC()
 	service := health.Service{
@@ -1091,7 +1500,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/devices", s.requireRole(auth.RoleViewer, s.handleDevices))
 	s.mux.HandleFunc("/api/v1/services", s.requireRole(auth.RoleViewer, s.handleServices))
 	s.mux.HandleFunc("/api/v1/services/classify", s.requireRole(auth.RoleAdministrator, s.handleServiceClassify))
+	s.mux.HandleFunc("/api/v1/services/verify", s.requireRole(auth.RoleAdministrator, s.handleServiceVerify))
 	s.mux.HandleFunc("/api/v1/discovery", s.requireRole(auth.RoleViewer, s.handleDiscovery))
+	s.mux.HandleFunc("/api/v1/discovery/suggestions/", s.requireRole(auth.RoleAdministrator, s.handleDiscoverySuggestionAction))
 	s.mux.HandleFunc("/api/v1/discovery/configure", s.requireRole(auth.RoleAdministrator, s.handleDiscoveryConfigure))
 	s.mux.HandleFunc("/api/v1/domains", s.requireRole(auth.RoleViewer, s.handleDomains))
 	s.mux.HandleFunc("/api/v1/policies", s.requireRole(auth.RoleViewer, s.handlePolicies))
@@ -1104,6 +1515,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/route-health", s.requireRole(auth.RoleViewer, s.handleRouteHealth))
 	s.mux.HandleFunc("/api/v1/proxies", s.requireRole(auth.RoleViewer, s.handleProxies))
 	s.mux.HandleFunc("/api/v1/xray/subscription/secret", s.requireRole(auth.RoleAdministrator, s.handleXraySubscriptionSecret))
+	s.mux.HandleFunc("/api/v1/xray/subscription/hwid", s.requireRole(auth.RoleAdministrator, s.handleXraySubscriptionHWID))
 	s.mux.HandleFunc("/api/v1/xray/subscription/prepare", s.requireRole(auth.RoleAdministrator, s.handleXraySubscriptionPrepare))
 	s.mux.HandleFunc("/api/v1/xray/manual-servers", s.requireRole(auth.RoleAdministrator, s.handleXrayManualServers))
 	s.mux.HandleFunc("/api/v1/xray/pool", s.requireRole(auth.RoleViewer, s.handleXrayPool))
@@ -1324,14 +1736,38 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 	sort.Strings(ids)
 	for _, id := range ids {
 		svc := cfg.Services[id]
-		items = append(items, map[string]any{
+		item := map[string]any{
 			"id": id, "category": svc.Category, "domains": svc.Domains,
 			"allowed_paths": svc.AllowedPaths, "forbidden_paths": svc.ForbiddenPaths,
 			"selected_route_tag": svc.SelectedRouteTag,
 			"probe_count":        len(svc.ProbeURLs), "require_non_ru_egress": svc.RequireNonRUEgress,
 			"source": "configured", "applied": true,
-			"classification_state": "configured", "probe_state": "committed", "policy_state": "applied",
-		})
+			// A persisted policy is not proof that its path was checked against
+			// the current network. Keep configuration and runtime evidence
+			// separate so YouTube (and every other service) cannot appear
+			// falsely verified merely because a rule was saved.
+			"status": "CONFIGURED", "classification_state": "configured",
+			"probe_state": "not_checked", "verification_state": "not_checked",
+			"verification_reason": "policy_applied_path_not_verified", "policy_state": "applied",
+		}
+		if proof, ok := s.latestConfiguredServiceProof(id, svc, time.Now().UTC()); ok {
+			item["status"] = "VERIFIED"
+			item["probe_state"] = "verified_candidate"
+			item["verification_state"] = "verified"
+			item["verification_reason"] = "path_verified"
+			item["checked_at"] = proof.CheckedAt
+			item["latest_checked_at"] = proof.CheckedAt
+			item["verification_route_latency_ms"] = proof.RouteLatencyMS
+			item["verification_route_latency_available"] = proof.RouteLatencyAvailable
+			item["verification_end_to_end_latency_available"] = proof.EndToEndLatencyAvailable
+			if proof.EndToEndLatencyAvailable {
+				item["verification_end_to_end_latency_ms"] = proof.EndToEndLatencyMS
+			}
+			if svc.SelectedRouteTag == "" {
+				item["selected_route_tag"] = proof.Route
+			}
+		}
+		items = append(items, item)
 	}
 	discoveryMode, _, _, _ := s.effectiveDiscoverySettings(cfg)
 	if s.domainDecisions != nil {
@@ -1363,17 +1799,12 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 			if classificationConfidence > 0 || category == "GEO_LOCKED" || category == "TSPU_RESTRICTED" {
 				classificationState = "classified"
 			}
-			probeState := "not_checked"
-			switch status {
-			case "SELECTED", "DROP":
-				if selectedRoute != "" {
-					probeState = "verified_candidate"
-				}
-			case "NO_SAFE_ROUTE":
-				probeState = "no_safe_route"
-			case "VERIFYING":
-				probeState = "verifying"
-			}
+			// A cached/observed decision can carry a selected route without
+			// carrying complete path evidence (for example after an interrupted
+			// verification or a legacy cache record). Never turn that route ID
+			// into a green "verified" state unless the matching result proves
+			// service success and PathVerified.
+			probeState := automaticDecisionProbeState(decision, selectedRoute, selectedType, status)
 			policyState := "observed"
 			if discoveryMode == "suggest" {
 				policyState = "suggested"
@@ -1417,6 +1848,44 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 	writeData(w, r, items)
 }
 
+func automaticDecisionProbeState(decision domaincache.Decision, selectedRoute, selectedType, status string) string {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "VERIFYING", "PROBING", "WAITING", "IN_PROGRESS":
+		return "verifying"
+	case "NO_SAFE_ROUTE":
+		if len(decision.Results) == 0 {
+			return "verifying"
+		}
+		for _, result := range decision.Results {
+			if !decisionResultTerminal(result.Status) {
+				return "verifying"
+			}
+		}
+		return "no_safe_route"
+	case "SELECTED", "DROP":
+		if selectedRoute == "" {
+			return "verifying"
+		}
+		for _, result := range decision.Results {
+			if result.Route == selectedRoute && result.RouteType == selectedType && planner.SelectionEvidence(result) {
+				return "verified_candidate"
+			}
+		}
+		return "verifying"
+	default:
+		return "not_checked"
+	}
+}
+
+func decisionResultTerminal(status string) bool {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "FAIL", "OK", "DEGRADED", "NOT_CONFIGURED", "NOT_APPLICABLE", "UNVERIFIED", "RU_EXIT", "REGION_BLOCK", "SUSPECTED_TSPU", "DROP", "TIMEOUT", "ERROR":
+		return true
+	default:
+		return false
+	}
+}
+
 func routeTypeInOrder(order []string, routeType string) bool {
 	for _, item := range order {
 		if item == routeType {
@@ -1444,7 +1913,7 @@ func serviceForClassifyRequest(request serviceClassifyRequest) (string, config.S
 		Domains: []string{domain},
 		ProbeURLs: []config.ProbeCheck{{
 			Name: "https", URL: "https://" + domain + "/", Required: true,
-			ExpectedCodes: []int{200, 204, 301, 302, 303, 307, 308, 401, 403, 404, 405}, BodyMode: "optional",
+			ExpectedCodes: []int{200, 204, 301, 302, 303, 307, 308}, BodyMode: "optional",
 		}},
 	}
 	switch category {
@@ -1455,7 +1924,7 @@ func serviceForClassifyRequest(request serviceClassifyRequest) (string, config.S
 		service.RequireNonRUEgress = true
 	case "TSPU_RESTRICTED":
 		service.Category = category
-		service.AllowedPaths = []string{"zapret", "vless", "drop"}
+		service.AllowedPaths = []string{"zapret", "smart_dns", "vless", "drop"}
 	case "DIRECT_PREFERRED":
 		service.Category = category
 		service.AllowedPaths = []string{"direct", "zapret", "smart_dns", "vless", "drop"}
@@ -1500,6 +1969,167 @@ func serviceForClassifyRequest(request serviceClassifyRequest) (string, config.S
 		}
 	}
 	return category, service, nil
+}
+
+type serviceVerifyRequest struct {
+	ServiceID string `json:"service_id,omitempty"`
+	Domain    string `json:"domain,omitempty"`
+}
+
+// handleServiceVerify performs a read-only path check for an already persisted
+// service. It deliberately does not create a ChangeSet or call the adapter:
+// the user is asking "does the current rule work?", not asking to mutate the
+// dataplane. The resulting probe evidence is stored separately so the next
+// services read can show the last verified state without treating policy
+// persistence as proof.
+func (s *Server) handleServiceVerify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	var request serviceVerifyRequest
+	if err := readJSON(r, &request); err != nil {
+		writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	serviceID, service, domain, err := s.configuredServiceForVerification(request)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_service", err.Error())
+		return
+	}
+	check, verifyErr := s.selectVerifiedServiceRoute(r.Context(), serviceID, serviceWithVerificationDomain(service, domain))
+	persisted := 0
+	if s.store != nil {
+		for _, result := range check.Results {
+			if err := s.store.StoreProbeResult(result); err == nil {
+				persisted++
+			}
+		}
+	}
+	state := check.VerificationState
+	if state == "" {
+		switch {
+		case check.Selected != nil && check.Selected.PathVerified:
+			state = "verified"
+		case len(check.Results) > 0:
+			state = "in_progress"
+		default:
+			state = "error"
+		}
+	}
+	response := map[string]any{
+		"service_id": serviceID, "domain": domain, "status": check.Status,
+		"verification_state": state, "reason": check.Reason,
+		"classification_confidence": check.ClassificationConfidence,
+		"classification_state":      check.ClassificationState, "classification_reason": check.ClassificationReason,
+		"checked_at": check.CheckedAt, "verification_duration_ms": check.VerificationDurationMS,
+		"selected_route_tag": "", "selected_route_type": "", "path_verified": false,
+		"candidates": discoveryCandidateDetails(check.Results), "evidence_persisted": persisted,
+	}
+	if check.Selected != nil {
+		response["selected_route_tag"] = check.Selected.Route
+		response["selected_route_type"] = check.Selected.RouteType
+		response["path_verified"] = check.Selected.PathVerified
+		if check.Selected.RouteLatencyAvailable {
+			response["route_latency_ms"] = check.Selected.RouteLatencyMS
+		}
+		response["route_latency_available"] = check.Selected.RouteLatencyAvailable
+		response["end_to_end_latency_available"] = check.Selected.EndToEndLatencyAvailable
+		if check.Selected.EndToEndLatencyAvailable {
+			response["end_to_end_latency_ms"] = check.Selected.EndToEndLatencyMS
+		}
+		response["selection_score"] = check.Selected.SelectionScore
+	}
+	if verifyErr != nil {
+		response["error_code"] = "route_verification_failed"
+		response["error"] = verifyErr.Error()
+	}
+	writeData(w, r, response)
+}
+
+func serviceWithVerificationDomain(service config.Service, domain string) config.Service {
+	service.Domains = []string{domain}
+	return service
+}
+
+func (s *Server) configuredServiceForVerification(request serviceVerifyRequest) (string, config.Service, string, error) {
+	cfg := s.currentConfig()
+	if cfg == nil {
+		return "", config.Service{}, "", errors.New("active configuration is unavailable")
+	}
+	serviceID := strings.TrimSpace(request.ServiceID)
+	service, ok := cfg.Services[serviceID]
+	if serviceID != "" && !ok {
+		return "", config.Service{}, "", errors.New("configured service was not found")
+	}
+	domain := strings.TrimSpace(request.Domain)
+	if domain == "" && len(service.Domains) > 0 {
+		domain = service.Domains[0]
+	}
+	normalized, err := tspu.NormalizeDomain(domain)
+	if err != nil {
+		return "", config.Service{}, "", errors.New("a valid service domain is required")
+	}
+	if serviceID == "" {
+		serviceID = cfg.ServiceForDomain(normalized)
+		if serviceID == "" {
+			return "", config.Service{}, "", errors.New("configured service was not found for this domain")
+		}
+		service, ok = cfg.Services[serviceID]
+		if !ok {
+			return "", config.Service{}, "", errors.New("configured service was not found")
+		}
+	}
+	belongs := false
+	for _, candidate := range service.Domains {
+		if normalizedCandidate, normalizeErr := tspu.NormalizeDomain(candidate); normalizeErr == nil && normalizedCandidate == normalized {
+			belongs = true
+			break
+		}
+	}
+	if !belongs {
+		return "", config.Service{}, "", errors.New("domain is not part of the configured service")
+	}
+	return serviceID, service, normalized, nil
+}
+
+const configuredServiceProofFreshness = 15 * time.Minute
+
+func (s *Server) latestConfiguredServiceProof(serviceID string, service config.Service, now time.Time) (probe.RouteResult, bool) {
+	if s == nil || s.store == nil {
+		return probe.RouteResult{}, false
+	}
+	items, err := s.store.ListProbeResults(500)
+	if err != nil {
+		return probe.RouteResult{}, false
+	}
+	for _, item := range items {
+		if item.Service != serviceID || !serviceDomainContains(service, item.Domain) || !planner.SelectionEvidence(item) {
+			continue
+		}
+		if service.SelectedRouteTag != "" && item.Route != service.SelectedRouteTag {
+			continue
+		}
+		checkedAt, parseErr := time.Parse(time.RFC3339, item.CheckedAt)
+		if parseErr != nil || checkedAt.After(now.Add(time.Minute)) || now.Sub(checkedAt) > configuredServiceProofFreshness {
+			continue
+		}
+		return item, true
+	}
+	return probe.RouteResult{}, false
+}
+
+func serviceDomainContains(service config.Service, domain string) bool {
+	normalized, err := tspu.NormalizeDomain(domain)
+	if err != nil {
+		return false
+	}
+	for _, candidate := range service.Domains {
+		if value, normalizeErr := tspu.NormalizeDomain(candidate); normalizeErr == nil && value == normalized {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleServiceClassify(w http.ResponseWriter, r *http.Request) {
@@ -1600,13 +2230,15 @@ func (s *Server) selectVerifiedServiceRoute(ctx context.Context, serviceID strin
 		return check, fmt.Errorf("route preflight failed: %w", err)
 	}
 	if check.Selected == nil {
-		check.Selected = candidateRequiringGuardedApply(check.Results, service.AllowedPaths)
+		check.Selected = candidateRequiringGuardedApply(check.Results, service.AllowedPaths, candidate.Policy, s.healthTracker)
 		if check.Selected != nil {
 			check.Status = "CANDIDATE_REQUIRES_APPLY"
 			check.Reason = "candidate_transport_verified_requires_bound_path_apply"
 		}
 	}
-	if check.Selected == nil || !check.Selected.ServiceOK || (!check.Selected.PathVerified && check.Selected.ReasonCode != "route_not_bound_to_verification_plan") {
+	if check.Selected == nil ||
+		(check.Selected.ReasonCode == "route_not_bound_to_verification_plan" && !guardedApplyCandidateEvidence(*check.Selected)) ||
+		(check.Selected.ReasonCode != "route_not_bound_to_verification_plan" && !planner.SelectionEvidence(*check.Selected)) {
 		return check, errors.New("no safe route passed DNS, service and data-path verification")
 	}
 	if _, ok := candidate.RouteByTag(check.Selected.Route); !ok {
@@ -1615,21 +2247,37 @@ func (s *Server) selectVerifiedServiceRoute(ctx context.Context, serviceID strin
 	return check, nil
 }
 
-func candidateRequiringGuardedApply(results []probe.RouteResult, allowedPaths []string) *probe.RouteResult {
+func candidateRequiringGuardedApply(results []probe.RouteResult, allowedPaths []string, policy config.Policy, health *probe.HealthTracker) *probe.RouteResult {
+	allowed := make(map[string]struct{}, len(allowedPaths))
 	for _, routeType := range allowedPaths {
-		for i := range results {
-			result := results[i]
-			if result.RouteType != routeType || result.PathVerified || result.ReasonCode != "route_not_bound_to_verification_plan" {
-				continue
-			}
-			if !result.DNSOK || !result.TransportOK || !result.ServiceOK || result.RegionalBlock || result.SuspectedTSPU {
-				continue
-			}
+		allowed[routeType] = struct{}{}
+	}
+	var best *probe.RouteResult
+	for i := range results {
+		result := results[i]
+		if _, ok := allowed[result.RouteType]; !ok || result.PathVerified || result.ReasonCode != "route_not_bound_to_verification_plan" {
+			continue
+		}
+		if !guardedApplyCandidateEvidence(result) {
+			continue
+		}
+		if best == nil || planner.ScoreRouteResult(result, policy, health) < planner.ScoreRouteResult(*best, policy, health) ||
+			(planner.ScoreRouteResult(result, policy, health) == planner.ScoreRouteResult(*best, policy, health) && result.Route < best.Route) {
 			candidate := result
-			return &candidate
+			best = &candidate
 		}
 	}
-	return nil
+	return best
+}
+
+// guardedApplyCandidateEvidence is intentionally separate from
+// planner.SelectionEvidence: this candidate has passed DNS/transport/service
+// checks but has not yet been bound to a live route path. It may only proceed
+// to the explicit guarded-apply workflow, never to automatic assignment.
+func guardedApplyCandidateEvidence(result probe.RouteResult) bool {
+	return result.ReasonCode == "route_not_bound_to_verification_plan" && !result.PathVerified &&
+		result.DNSOK && result.TransportOK && result.ServiceOK && !result.RegionalBlock &&
+		!result.SuspectedTSPU && !result.AuthenticationRequired && !result.WAFOrRateLimit && !result.Simulation
 }
 
 func serviceRouteSelectionState(result *probe.RouteResult) string {
@@ -1695,6 +2343,10 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	active := s.currentConfig()
+	if active == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "active_config_unavailable", "Smart DNS state is unavailable until a committed config is restored")
+		return
+	}
 	routes := filterRoutes(active, "smart_dns")
 	healthIntervalSeconds := 300
 	if active != nil && active.Policy.HealthCheckIntervalSeconds > 0 {
@@ -1758,7 +2410,7 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 		"routes":           items,
 		"fallback_order": map[string][]string{
 			"geo":  {"smart_dns", "vless", "drop"},
-			"tspu": {"zapret", "vless", "drop"},
+			"tspu": {"zapret", "smart_dns", "vless", "drop"},
 		},
 		"success_contract": []string{"safe DNS answer", "connection to returned address", "content check", "egress check when required"},
 		"route_semantics":  "conditional DNS; not a VPN or tunnel",
@@ -1830,6 +2482,10 @@ func (s *Server) handleSmartDNSConfigure(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	active := s.currentConfig()
+	if active == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "active_config_unavailable", "Smart DNS cannot be configured without a committed config")
+		return
+	}
 	routeIndexes := make([]int, 0, 2)
 	for index, route := range active.Routes {
 		if route.Type == "smart_dns" {
@@ -1947,13 +2603,87 @@ func normalizeSmartDNSEndpoint(raw string) (string, error) {
 }
 func (s *Server) handleZapret(w http.ResponseWriter, r *http.Request) {
 	cfg := s.currentConfig()
+	profiles, fallback, assignments := zapretProfileStatus(cfg)
 	writeData(w, r, map[string]any{
-		"status":           zapretSetupStatus(cfg),
-		"routes":           filterRoutes(cfg, "zapret"),
-		"activation_mode":  cfg.Zapret.ActivationMode,
-		"provider_pinned":  cfg.Zapret.ProviderSource != "" && cfg.Zapret.ProviderVersion != "" && cfg.Zapret.BinarySHA256 != "",
-		"provider_version": cfg.Zapret.ProviderVersion,
+		"status":              zapretSetupStatus(cfg),
+		"routes":              filterRoutes(cfg, "zapret"),
+		"activation_mode":     cfg.Zapret.ActivationMode,
+		"provider_pinned":     cfg.Zapret.ProviderSource != "" && cfg.Zapret.ProviderVersion != "" && cfg.Zapret.BinarySHA256 != "",
+		"provider_version":    cfg.Zapret.ProviderVersion,
+		"active_profile":      profiles,
+		"fallback_profile":    fallback,
+		"profile_assignments": assignments,
 	})
+}
+
+// zapretProfileStatus exposes the actual selected catalog profile rather than
+// leaking the internal strategy enum. When an adaptive catalog is available,
+// the next allowed profile is the declared fallback for that bundle. Missing
+// catalog metadata is represented as an unavailable profile, never guessed.
+func zapretProfileStatus(cfg *config.Config) (map[string]any, map[string]any, []map[string]any) {
+	empty := map[string]any{}
+	if cfg == nil {
+		return empty, empty, nil
+	}
+	profiles := map[string]zapret.Profile{}
+	bundles := map[string]zapret.ServiceBundle{}
+	if path := strings.TrimSpace(cfg.Zapret.AdaptiveCatalogFile); path != "" {
+		profileCatalog, bundleCatalog, err := zapret.LoadCatalogFile(path)
+		if err == nil {
+			// Catalog has no public iterator by design. Resolve only IDs named by
+			// the persisted assignments; unknown IDs remain visibly unresolved.
+			for _, assignment := range cfg.Zapret.AdaptiveAssignments {
+				if profile, ok := profileCatalog.Lookup(assignment.ProfileID); ok {
+					profiles[assignment.ProfileID] = profile
+				}
+				if bundle, ok := bundleCatalog.Lookup(assignment.BundleID); ok {
+					bundles[assignment.BundleID] = bundle
+				}
+			}
+		}
+	}
+	assignments := make([]map[string]any, 0, len(cfg.Zapret.AdaptiveAssignments))
+	var active, fallback map[string]any
+	for _, assignment := range cfg.Zapret.AdaptiveAssignments {
+		profile, profileOK := profiles[assignment.ProfileID]
+		activeView := map[string]any{"bundle_id": assignment.BundleID, "profile_id": assignment.ProfileID, "available": profileOK}
+		if profileOK {
+			activeView["profile_name"] = profile.Name
+		}
+		assignments = append(assignments, activeView)
+		if active == nil {
+			active = activeView
+		}
+		bundle, bundleOK := bundles[assignment.BundleID]
+		if !bundleOK {
+			continue
+		}
+		for index, profileID := range bundle.AllowedProfiles {
+			if profileID != assignment.ProfileID || index+1 >= len(bundle.AllowedProfiles) {
+				continue
+			}
+			nextID := bundle.AllowedProfiles[index+1]
+			next, nextOK := profiles[nextID]
+			fallback = map[string]any{"bundle_id": assignment.BundleID, "profile_id": nextID, "available": nextOK}
+			if nextOK {
+				fallback["profile_name"] = next.Name
+			}
+			break
+		}
+		if fallback != nil {
+			break
+		}
+	}
+	if active == nil && strings.TrimSpace(cfg.Zapret.Strategy) != "" {
+		active = map[string]any{"profile_id": cfg.Zapret.Strategy, "available": false}
+	}
+	if fallback == nil {
+		fallback = empty
+	}
+	if active == nil {
+		active = empty
+	}
+	return active, fallback, assignments
 }
 func (s *Server) handleTelegram(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -2425,9 +3155,12 @@ func writeSSE(w http.ResponseWriter, ev Event) {
 }
 
 func (s *Server) sessionCookie(r *http.Request, session auth.Session, clear bool) *http.Cookie {
-	maxAge := int(time.Until(session.ExpiresAt).Seconds())
+	maxAge := 0 // session cookie for the non-expiring default session
 	value := session.ID
 	expires := session.ExpiresAt
+	if !session.ExpiresAt.IsZero() {
+		maxAge = int(time.Until(session.ExpiresAt).Seconds())
+	}
 	if clear {
 		maxAge = -1
 		value = ""
@@ -2581,8 +3314,13 @@ func pointerParent(root any, parts []string) (any, error) {
 	return cur, nil
 }
 
-func countRoutes(cfg *config.Config, typ string) int             { return len(filterRoutes(cfg, typ)) }
-func filterRoutes(cfg *config.Config, typ string) []config.Route { return cfg.RoutesByType(typ) }
+func countRoutes(cfg *config.Config, typ string) int { return len(filterRoutes(cfg, typ)) }
+func filterRoutes(cfg *config.Config, typ string) []config.Route {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.RoutesByType(typ)
+}
 
 func (s *Server) activeIdentity() (string, int64) {
 	s.mu.Lock()

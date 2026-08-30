@@ -50,6 +50,33 @@ func TestLoginWithoutAdminRequiresSetup(t *testing.T) {
 	}
 }
 
+func TestDefaultAdminSessionDoesNotExpire(t *testing.T) {
+	store := testStore(t)
+	token, _, err := store.CreateSetupToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetupAdmin("admin", "CorrectHorse123!", token); err != nil {
+		t.Fatal(err)
+	}
+	session, _, err := store.Login("admin", "CorrectHorse123!", "127.0.0.1:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !session.ExpiresAt.IsZero() {
+		t.Fatalf("default session unexpectedly has an expiry: %s", session.ExpiresAt)
+	}
+	if _, ok := store.Session(session.ID); !ok {
+		t.Fatal("default non-expiring session was rejected")
+	}
+	store.mu.Lock()
+	store.cleanupLocked(time.Now().UTC().Add(100 * 365 * 24 * time.Hour))
+	store.mu.Unlock()
+	if _, ok := store.Session(session.ID); !ok {
+		t.Fatal("default non-expiring session was removed by cleanup")
+	}
+}
+
 func TestLoginRateLimitBoundsRotatingSourcesBeforePasswordWork(t *testing.T) {
 	store := testStore(t)
 	store.mu.Lock()

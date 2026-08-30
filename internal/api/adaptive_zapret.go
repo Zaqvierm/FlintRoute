@@ -300,6 +300,9 @@ func (s *Server) restoreAdaptiveState(key zapret.DecisionKey, now time.Time) (*a
 		return nil, "", conflict("adaptive_zapret_disabled", "adaptive Zapret is not configured")
 	}
 	active := s.currentConfig()
+	if active == nil {
+		return nil, "", &actionFailure{Status: 503, Code: "active_config_unavailable", Message: "adaptive state cannot be restored without an active config"}
+	}
 	currentProfile := profileForBundle(active.Zapret.AdaptiveAssignments, key.BundleID)
 	if currentProfile == "" {
 		return nil, "", conflict("adaptive_assignment_missing", "service bundle has no active profile")

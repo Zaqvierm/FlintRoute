@@ -47,6 +47,24 @@ func (e *apiHealthEngine) ProbeRoute(_ context.Context, _ *config.Config, domain
 	}
 }
 
+func TestSubscriptionOperationLockIsNonBlocking(t *testing.T) {
+	srv := &Server{}
+	srv.subscriptionMu.Lock()
+	started := time.Now()
+	if srv.tryLockSubscription() {
+		srv.subscriptionMu.Unlock()
+		t.Fatal("tryLockSubscription acquired an already-held lock")
+	}
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("busy subscription operation blocked for %s", elapsed)
+	}
+	srv.subscriptionMu.Unlock()
+	if !srv.tryLockSubscription() {
+		t.Fatal("tryLockSubscription did not acquire an available lock")
+	}
+	srv.subscriptionMu.Unlock()
+}
+
 func TestServerHealthCycleCallsInjectedEnginePersistsAndExposesStatus(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
@@ -94,6 +112,43 @@ func TestServerHealthCycleCallsInjectedEnginePersistsAndExposesStatus(t *testing
 	raw, _ := json.Marshal(envelope.Data)
 	if !strings.Contains(string(raw), `"status":"OK"`) || strings.Contains(string(raw), "203.0.113.") {
 		t.Fatalf("route health API is dishonest or leaked an IP: %s", raw)
+	}
+}
+
+func TestServerHealthCycleFailsClosedWhenActiveConfigIsMissing(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	srv.mu.Lock()
+	srv.activeConfig = nil
+	srv.mu.Unlock()
+	srv.probeEngineFactory = func(*config.Config) health.ProbeEngine {
+		t.Fatal("health scheduler constructed a probe engine without active config")
+		return nil
+	}
+
+	srv.runHealthCycle(context.Background())
+	events := srv.broker.Recent(0, 5)
+	if len(events) == 0 || events[len(events)-1].ReasonCode != "active_config_unavailable" {
+		t.Fatalf("missing active config was not reported as a fenced health state: %+v", events)
+	}
+}
+
+func TestSmartDNSHandlersFailClosedWhenActiveConfigIsMissing(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	srv.mu.Lock()
+	srv.activeConfig = nil
+	srv.mu.Unlock()
+
+	get := httptest.NewRecorder()
+	srv.handleSmartDNS(get, httptest.NewRequest(http.MethodGet, "/api/v1/smart-dns", nil))
+	if get.Code != http.StatusServiceUnavailable || !strings.Contains(get.Body.String(), "active_config_unavailable") {
+		t.Fatalf("Smart DNS read did not fail closed: status=%d body=%s", get.Code, get.Body.String())
+	}
+	post := httptest.NewRecorder()
+	srv.handleSmartDNSConfigure(post, httptest.NewRequest(http.MethodPost, "/api/v1/smart-dns/configure", strings.NewReader(`{"base_version":1,"test_domain":"example.com","endpoints":["1.1.1.1:53"]}`)))
+	if post.Code != http.StatusServiceUnavailable || !strings.Contains(post.Body.String(), "active_config_unavailable") {
+		t.Fatalf("Smart DNS mutation did not fail closed: status=%d body=%s", post.Code, post.Body.String())
 	}
 }
 
@@ -162,7 +217,7 @@ func TestTSPUSchedulerRunsInjectedRefresh(t *testing.T) {
 
 func TestTSPUDelayUsesStartupJitterAndBoundedFailureBackoff(t *testing.T) {
 	interval := 6 * time.Hour
-	if got := tspuBaseDelay(interval, 0, true); got != 30*time.Second {
+	if got := tspuBaseDelay(interval, 0, true); got != 5*time.Minute {
 		t.Fatalf("startup delay=%s", got)
 	}
 	if got := tspuBaseDelay(interval, 0, false); got != interval {
@@ -216,6 +271,45 @@ func TestServerUsesBoundedGlobalProbeBudgetAndDiscoveryQueue(t *testing.T) {
 	}
 	if got := cap(srv.discoveryQueue); got != 3 {
 		t.Fatalf("discovery queue capacity=%d want=3", got)
+	}
+}
+
+func TestDiscoveryAdmissionCoalescesPendingETLDPlusOne(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Policy.ProbeBudget = 1
+	cfg.Policy.DiscoveryQueueLimit = 2
+	srv, err := NewServerWithOptions(cfg, Options{
+		Provider: platform.DevelopmentMockProvider{}, ProductionAdapter: newFakeAdapter(),
+		Development: true, DeferRecovery: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	if accepted, full := srv.enqueueDiscoveryObservation(discovery.Observation{Domain: "a.example.com", QueryType: "A"}); !accepted || full {
+		t.Fatalf("first admission accepted=%v full=%v", accepted, full)
+	}
+	if accepted, full := srv.enqueueDiscoveryObservation(discovery.Observation{Domain: "b.example.com", QueryType: "A"}); accepted || full {
+		t.Fatalf("same eTLD+1 was not coalesced: accepted=%v full=%v", accepted, full)
+	}
+	if got := len(srv.discoveryQueue); got != 1 {
+		t.Fatalf("pending duplicate occupied queue: depth=%d", got)
+	}
+	if accepted, full := srv.enqueueDiscoveryObservation(discovery.Observation{Domain: "other.example.net", QueryType: "A"}); !accepted || full {
+		t.Fatalf("independent domain was not admitted: accepted=%v full=%v", accepted, full)
+	}
+	if accepted, full := srv.enqueueDiscoveryObservation(discovery.Observation{Domain: "third.example.org", QueryType: "A"}); accepted || !full {
+		t.Fatalf("full queue was not reported: accepted=%v full=%v", accepted, full)
+	}
+	if got := len(srv.discoveryQueue); got != 2 {
+		t.Fatalf("queue escaped configured bound: depth=%d cap=%d", got, cap(srv.discoveryQueue))
+	}
+
+	first := <-srv.discoveryQueue
+	srv.releasePendingDiscovery(first.Domain)
+	if accepted, full := srv.enqueueDiscoveryObservation(discovery.Observation{Domain: "c.example.com", QueryType: "A"}); !accepted || full {
+		t.Fatalf("released eTLD+1 was not admitted: accepted=%v full=%v", accepted, full)
 	}
 }
 
@@ -369,6 +463,29 @@ func TestTSPUInitialDelayUsesPersistedFreshness(t *testing.T) {
 	}
 	if got := tspuInitialDelay(cfg, 6*time.Hour, cache.ExpiresAt.Add(time.Second), fallback); got != fallback {
 		t.Fatalf("expired cache initial delay=%s want fallback=%s", got, fallback)
+	}
+}
+
+func TestTSPUInitialDelayDoesNotMaterializeCorruptLargeCache(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Storage.StateDir = t.TempDir()
+	now := time.Date(2026, 7, 27, 2, 0, 0, 0, time.UTC)
+	cache := tspu.BuildCache(now, time.Hour,
+		[]tspu.SourceReport{{Name: "fixture", Accepted: true, Fresh: true, Confidence: 0.9}},
+		map[string][]string{"fixture": {"one.example"}})
+	cachePath := filepath.Join(cfg.Storage.StateDir, "tspu-cache.json")
+	if err := tspu.Save(cachePath, cache); err != nil {
+		t.Fatal(err)
+	}
+	// Scheduling only needs the validated freshness sidecar.  A damaged or
+	// very large index must not be materialised merely to calculate the next
+	// refresh time; the refresh path will handle that error when it runs.
+	if err := os.WriteFile(cachePath, []byte(strings.Repeat("{", 1024*1024)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fallback := 30 * time.Second
+	if got, want := tspuInitialDelay(cfg, 6*time.Hour, now, fallback), 55*time.Minute; got != want {
+		t.Fatalf("freshness-only initial delay=%s want=%s", got, want)
 	}
 }
 

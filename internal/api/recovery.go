@@ -65,6 +65,21 @@ func (s *Server) recoverCommittedDataplane(ctx context.Context) {
 		if err := validateBaselineRevision(revision, activeRevision, s.currentConfig()); err != nil {
 			result = failedRecovery(started, "active_baseline_invalid", err.Error(), adapter.RecoveryTarget{RevisionID: activeRevision, CandidateHash: revision.CandidateHash})
 		} else {
+			// A boot guard may have been armed before the controller created or
+			// re-opened the baseline. Clear it through a dedicated baseline-bound
+			// adapter operation; the generic unbound clear is never sufficient.
+			if clearer, ok := s.adapter.(adapter.BaselineBootGuardClearer); ok {
+				clearResult := clearer.ClearBootGuardForBaseline(ctx, activeRevision, revision.CandidateHash)
+				if !stepOK(clearResult) {
+					reason := clearResult.Reason
+					if reason == "" {
+						reason = "baseline boot guard removal was not proven"
+					}
+					result = failedRecovery(started, "baseline_boot_guard_clear_failed", reason, adapter.RecoveryTarget{RevisionID: activeRevision, CandidateHash: revision.CandidateHash})
+					s.setRecoveryStatus(result)
+					return
+				}
+			}
 			result = recoveryStatus{
 				Status: "not_required", RevisionID: activeRevision, CandidateHash: revision.CandidateHash,
 				CommitPhase: "baseline_confirmed", StartedAt: started, FinishedAt: time.Now().UTC(),

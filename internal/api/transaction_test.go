@@ -1415,3 +1415,45 @@ func postActionNoTest(client *http.Client, csrf, baseURL, id, action, body strin
 	_ = json.Unmarshal(raw, &cs)
 	return cs, resp.StatusCode
 }
+
+type cleanupStatusStoreStub struct {
+	err    error
+	bucket string
+	key    string
+	value  any
+}
+
+func (s *cleanupStatusStoreStub) SaveJSON(bucket, key string, value any) error {
+	s.bucket = bucket
+	s.key = key
+	s.value = value
+	return s.err
+}
+
+func TestSaveCleanupStatusPropagatesPersistenceFailure(t *testing.T) {
+	wantErr := fmt.Errorf("state store unavailable")
+	store := &cleanupStatusStoreStub{err: wantErr}
+	result := map[string]any{"transaction_id": "tx-1", "status": "partial"}
+
+	if err := saveCleanupStatus(store, result); err == nil || err.Error() != wantErr.Error() {
+		t.Fatalf("saveCleanupStatus error = %v, want %v", err, wantErr)
+	}
+	if store.bucket != "meta" || store.key != "last_cleanup_result" {
+		t.Fatalf("cleanup status persisted to %q/%q, want meta/last_cleanup_result", store.bucket, store.key)
+	}
+}
+
+func TestSaveCleanupStatusUsesCanonicalRecord(t *testing.T) {
+	store := &cleanupStatusStoreStub{}
+	result := map[string]any{"transaction_id": "tx-2", "status": "complete"}
+
+	if err := saveCleanupStatus(store, result); err != nil {
+		t.Fatalf("saveCleanupStatus returned error: %v", err)
+	}
+	if store.bucket != "meta" || store.key != "last_cleanup_result" {
+		t.Fatalf("cleanup status persisted to %q/%q, want meta/last_cleanup_result", store.bucket, store.key)
+	}
+	if got, ok := store.value.(map[string]any); !ok || got["transaction_id"] != "tx-2" || got["status"] != "complete" {
+		t.Fatalf("unexpected cleanup status value: %#v", store.value)
+	}
+}

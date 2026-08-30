@@ -179,7 +179,7 @@ func servicesForExternalSOCKSTest(active *config.Config, domain string) (map[str
 		services[owner] = config.Service{
 			Category: "TELEGRAM", Domains: []string{domain},
 			AllowedPaths: []string{"external_socks", "vless", "drop"}, SelectedRouteTag: routeTag,
-			ProbeURLs: []config.ProbeCheck{{Name: "external-socks", URL: "https://" + domain + "/", Required: true, ExpectedCodes: []int{200, 204, 301, 302, 307, 308, 401, 403}, BodyMode: "optional"}},
+			ProbeURLs: []config.ProbeCheck{{Name: "external-socks", URL: "https://" + domain + "/", Required: true, ExpectedCodes: []int{200, 204, 301, 302, 307, 308}, BodyMode: "optional"}},
 		}
 		return services, nil
 	}

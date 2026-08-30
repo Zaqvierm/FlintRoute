@@ -17,6 +17,19 @@ type reactiveRouteEngine struct {
 	calls []string
 }
 
+type fixedRouteEngine struct {
+	result probe.RouteResult
+}
+
+func (e fixedRouteEngine) ProbeRoute(_ context.Context, _ *config.Config, domain, service string, _ config.Service, route config.Route) probe.RouteResult {
+	result := e.result
+	result.Domain = domain
+	result.Service = service
+	result.Route = route.Tag
+	result.RouteType = route.Type
+	return result
+}
+
 func (e *reactiveRouteEngine) ProbeRoute(_ context.Context, _ *config.Config, domain, service string, _ config.Service, route config.Route) probe.RouteResult {
 	e.mu.Lock()
 	e.calls = append(e.calls, route.Tag)
@@ -61,12 +74,17 @@ func TestReactiveFailureIsHystereticAndBounded(t *testing.T) {
 	}
 	var sawFallback bool
 	for _, event := range srv.broker.Recent(0, 40) {
-		if event.ReasonCode == "route_failover_applied" || event.ReasonCode == "route_failover_apply_failed" {
+		if event.ReasonCode == "route_failover_pending_review" {
 			sawFallback = true
 		}
 	}
 	if !sawFallback {
-		t.Fatal("thresholded failure did not produce a failover outcome")
+		t.Fatal("thresholded failure did not produce a reviewable fallback outcome")
+	}
+	if fake, ok := srv.adapter.(*fakeAdapter); ok {
+		if calls := fakeAdapterCallCount(fake); calls != 0 {
+			t.Fatalf("reactive fallback invoked full adapter apply: %d calls", calls)
+		}
 	}
 }
 
@@ -99,6 +117,39 @@ func TestClassifiedRevalidationUsesOnlyOneDirectProbe(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("successful Direct revalidation did not create a policy suggestion")
+	}
+}
+
+func TestClassifiedRevalidationRejectsContradictoryDirectEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*probe.RouteResult)
+	}{
+		{name: "regional_denial", mutate: func(result *probe.RouteResult) { result.RegionalBlock = true }},
+		{name: "authentication_required", mutate: func(result *probe.RouteResult) { result.AuthenticationRequired = true }},
+		{name: "waf_or_rate_limit", mutate: func(result *probe.RouteResult) { result.WAFOrRateLimit = true }},
+		{name: "simulation", mutate: func(result *probe.RouteResult) { result.Simulation = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newTestServer(t)
+			defer srv.Close()
+			active := srv.currentConfig()
+			service := active.Services["github"]
+			service.Category = "GEO_LOCKED"
+			service.AllowedPaths = []string{"direct", "vless", "drop"}
+			active.Services["github"] = service
+			result := probe.RouteResult{Status: "OK", ApplicationStatus: "OK", PathVerified: true, ServiceOK: true}
+			tc.mutate(&result)
+			srv.probeEngineFactory = func(*config.Config) health.ProbeEngine { return fixedRouteEngine{result: result} }
+			if err := srv.RevalidateClassifiedDomain(context.Background(), "github.com"); err != nil {
+				t.Fatal(err)
+			}
+			for _, event := range srv.broker.Recent(0, 20) {
+				if event.ReasonCode == "direct_path_recovered_suggestion" {
+					t.Fatalf("contradictory Direct evidence created recovery suggestion: %+v", event)
+				}
+			}
+		})
 	}
 }
 
@@ -154,5 +205,28 @@ func TestFailedRouteRecoveryUsesOneProbeAndBackoff(t *testing.T) {
 	srv.routeFailureMu.Unlock()
 	if !next.After(now) || backoff <= 5*time.Minute {
 		t.Fatalf("failed recovery did not increase cooldown: next=%v backoff=%v", next, backoff)
+	}
+}
+
+func TestFailedRouteRecoveryRejectsContradictorySuccessEvidence(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	active := srv.currentConfig()
+	service := active.Services["github"]
+	service.AllowedPaths = []string{"vless"}
+	service.SelectedRouteTag = "vless-a"
+	active.Services["github"] = service
+	active.Routes = append(active.Routes, config.Route{Type: "vless", Tag: "vless-a", Priority: 10, SOCKS5: "127.0.0.1:12000"})
+	srv.healthTracker = probe.NewHealthTracker([]probe.RouteHealth{{RouteTag: "vless-a", RouteType: "vless", State: "unhealthy", Role: "quarantined", Score: 10}})
+	srv.probeEngineFactory = func(*config.Config) health.ProbeEngine {
+		return fixedRouteEngine{result: probe.RouteResult{Status: "OK", ApplicationStatus: "OK", PathVerified: true, ServiceOK: true, WAFOrRateLimit: true}}
+	}
+	now := time.Now().UTC()
+	srv.scheduleFailedRouteRecovery("vless-a", now.Add(-time.Second), 5*time.Minute)
+	srv.runDueFailedRouteRecovery(context.Background(), now)
+	for _, event := range srv.broker.Recent(0, 20) {
+		if event.Type == "route.recovery" && event.Route == "vless-a" && event.ReasonCode == "failed_route_recovered" {
+			t.Fatalf("contradictory success evidence marked route recovered: %+v", event)
+		}
 	}
 }

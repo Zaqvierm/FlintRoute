@@ -11,7 +11,7 @@ import (
 	"router-policy/internal/probe"
 )
 
-func TestAutomaticServiceUsesVerifiedTSPUFallbackOrder(t *testing.T) {
+func TestAutomaticServiceIncludesSmartDNSForTSPUEligibility(t *testing.T) {
 	check := planner.DomainCheck{
 		Domain: "www.video.example", ETLDPlusOne: "video.example",
 		Category: "DIRECT_PREFERRED", TSPUStatus: "MATCH",
@@ -21,18 +21,20 @@ func TestAutomaticServiceUsesVerifiedTSPUFallbackOrder(t *testing.T) {
 	if !ok || id != "auto_video_example" || service.Category != "TSPU_RESTRICTED" || service.SelectedRouteTag != "zapret" {
 		t.Fatalf("automatic TSPU service mismatch: id=%q service=%+v ok=%v", id, service, ok)
 	}
-	expected := []string{"zapret", "vless", "drop"}
+	expected := map[string]bool{"zapret": true, "smart_dns": true, "vless": true, "drop": true}
 	if len(service.AllowedPaths) != len(expected) {
 		t.Fatalf("fallback count=%d", len(service.AllowedPaths))
 	}
-	for index := range expected {
-		if service.AllowedPaths[index] != expected[index] {
-			t.Fatalf("fallback order=%v", service.AllowedPaths)
+	seen := make(map[string]bool, len(service.AllowedPaths))
+	for _, path := range service.AllowedPaths {
+		if !expected[path] || seen[path] {
+			t.Fatalf("TSPU eligibility contains unexpected or duplicate path %q: %v", path, service.AllowedPaths)
 		}
+		seen[path] = true
 	}
 }
 
-func TestAutomaticServiceKeepsSmartDNSBeforeVPNForGeoDecision(t *testing.T) {
+func TestAutomaticServiceIncludesSmartDNSAndVLESSForGeoEligibility(t *testing.T) {
 	check := planner.DomainCheck{
 		Domain: "app.example", ETLDPlusOne: "app.example", Category: "GEO_LOCKED",
 		Selected: &probe.RouteResult{Route: "smart-primary", RouteType: "smart_dns"},
@@ -41,8 +43,19 @@ func TestAutomaticServiceKeepsSmartDNSBeforeVPNForGeoDecision(t *testing.T) {
 	if !ok || service.Category != "GEO_LOCKED" || !service.RequireNonRUEgress {
 		t.Fatalf("automatic GEO service mismatch: %+v ok=%v", service, ok)
 	}
-	if len(service.AllowedPaths) < 2 || service.AllowedPaths[0] != "smart_dns" || service.AllowedPaths[1] != "vless" {
-		t.Fatalf("Smart DNS is not checked before VPN: %v", service.AllowedPaths)
+	expected := map[string]bool{"smart_dns": true, "vless": true, "drop": true}
+	if len(service.AllowedPaths) != len(expected) {
+		t.Fatalf("GEO eligibility paths=%v", service.AllowedPaths)
+	}
+	for _, path := range service.AllowedPaths {
+		if !expected[path] {
+			t.Fatalf("GEO eligibility contains forbidden path %q: %v", path, service.AllowedPaths)
+		}
+	}
+	for _, path := range service.ForbiddenPaths {
+		if path != "direct" && path != "zapret" {
+			t.Fatalf("unexpected GEO forbidden path %q: %v", path, service.ForbiddenPaths)
+		}
 	}
 }
 
@@ -54,6 +67,29 @@ func TestAutomaticServiceDoesNotPersistDirectOrDrop(t *testing.T) {
 		}
 		if _, _, ok := automaticServiceForDecision(check); ok {
 			t.Fatalf("%s decision should stay runtime-only", routeType)
+		}
+	}
+}
+
+func TestAutomaticServiceAllowsVerifiedUnknownRouteAssignment(t *testing.T) {
+	check := planner.DomainCheck{
+		Domain: "new.example", ETLDPlusOne: "new.example", Category: "DIRECT_PREFERRED",
+		Selected: &probe.RouteResult{Route: "smart-primary", RouteType: "smart_dns"},
+	}
+	service, _, ok := automaticServiceForDecision(check)
+	if !ok || service.Category != "DIRECT_PREFERRED" || len(service.AllowedPaths) != 5 {
+		t.Fatalf("unknown route assignment was not represented as a bounded direct-preferred policy: %+v ok=%v", service, ok)
+	}
+	for _, path := range []string{"direct", "zapret", "smart_dns", "vless", "drop"} {
+		found := false
+		for _, allowed := range service.AllowedPaths {
+			if allowed == path {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("unknown route assignment omitted allowed path %q: %v", path, service.AllowedPaths)
 		}
 	}
 }
@@ -131,7 +167,7 @@ func TestTSPUDefaultFallbackIsZapretThenVLESSThenDrop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"zapret", "vless", "drop"}
+	want := []string{"zapret", "smart_dns", "vless", "drop"}
 	if !reflect.DeepEqual(service.AllowedPaths, want) {
 		t.Fatalf("TSPU fallback=%v, want %v", service.AllowedPaths, want)
 	}
@@ -145,7 +181,7 @@ func TestManualServiceRuleStoresOnlyVerifiedSelectedRoute(t *testing.T) {
 		if domain != "discord.com" || serviceID != "user_discord_com" {
 			t.Fatalf("unexpected verification target: %s %s", domain, serviceID)
 		}
-		if got := candidate.Services[serviceID].AllowedPaths; len(got) != 3 || got[0] != "zapret" || got[1] != "vless" || got[2] != "drop" {
+		if got := candidate.Services[serviceID].AllowedPaths; len(got) != 4 || got[0] != "zapret" || got[1] != "smart_dns" || got[2] != "vless" || got[3] != "drop" {
 			t.Fatalf("candidate lost fallback order: %v", got)
 		}
 		if opts.TSPUResult.Status != "MATCH" {
@@ -158,7 +194,7 @@ func TestManualServiceRuleStoresOnlyVerifiedSelectedRoute(t *testing.T) {
 	}
 	service := config.Service{
 		Category: "TSPU_RESTRICTED", Domains: []string{"discord.com"},
-		AllowedPaths: []string{"zapret", "vless", "drop"},
+		AllowedPaths: []string{"zapret", "smart_dns", "vless", "drop"},
 		ProbeURLs:    []config.ProbeCheck{{URL: "https://discord.com/", Required: true}},
 	}
 	check, err := srv.selectVerifiedServiceRoute(context.Background(), "user_discord_com", service)
@@ -167,6 +203,54 @@ func TestManualServiceRuleStoresOnlyVerifiedSelectedRoute(t *testing.T) {
 	}
 	if check.Selected == nil || check.Selected.Route != "vpn" {
 		t.Fatalf("verified route was not selected: %+v", check)
+	}
+}
+
+func TestManualServiceRuleRejectsContradictorySelectedEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*probe.RouteResult)
+	}{
+		{name: "regional_denial", mutate: func(result *probe.RouteResult) { result.RegionalBlock = true }},
+		{name: "authentication_required", mutate: func(result *probe.RouteResult) { result.AuthenticationRequired = true }},
+		{name: "waf_or_rate_limit", mutate: func(result *probe.RouteResult) { result.WAFOrRateLimit = true }},
+		{name: "simulation", mutate: func(result *probe.RouteResult) { result.Simulation = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testAPIConfig(t)
+			cfg.Routes = append(cfg.Routes, config.Route{Type: "vless", Tag: "vpn"})
+			srv := &Server{activeConfig: cfg, activeRevision: "rev-test"}
+			srv.domainChecker = func(context.Context, *config.Config, string, string, planner.Options) (planner.DomainCheck, error) {
+				selected := probe.RouteResult{Route: "vpn", RouteType: "vless", Status: "OK", ServiceOK: true, PathVerified: true}
+				tc.mutate(&selected)
+				return planner.DomainCheck{Selected: &selected}, nil
+			}
+			_, err := srv.selectVerifiedServiceRoute(context.Background(), "user_service", config.Service{
+				Category: "GEO_LOCKED", Domains: []string{"chatgpt.com"}, AllowedPaths: []string{"vless", "drop"},
+			})
+			if err == nil || !strings.Contains(err.Error(), "no safe route") {
+				t.Fatalf("contradictory selected evidence was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestGuardedApplyCandidateRejectsContradictoryEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*probe.RouteResult)
+	}{
+		{name: "authentication_required", mutate: func(result *probe.RouteResult) { result.AuthenticationRequired = true }},
+		{name: "waf_or_rate_limit", mutate: func(result *probe.RouteResult) { result.WAFOrRateLimit = true }},
+		{name: "simulation", mutate: func(result *probe.RouteResult) { result.Simulation = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := probe.RouteResult{Route: "vpn", RouteType: "vless", Status: "UNVERIFIED", DNSOK: true, TransportOK: true, ServiceOK: true, ReasonCode: "route_not_bound_to_verification_plan"}
+			tc.mutate(&result)
+			if got := candidateRequiringGuardedApply([]probe.RouteResult{result}, []string{"vless"}, config.Policy{}, nil); got != nil {
+				t.Fatalf("contradictory guarded-apply candidate was accepted: %+v", got)
+			}
+		})
 	}
 }
 
@@ -228,7 +312,7 @@ func TestObservationClassificationDoesNotExposeResolvedDirectAsUnknown(t *testin
 }
 
 func TestRouteTypeInOrderRejectsStaleDirectForTSPU(t *testing.T) {
-	order := []string{"zapret", "vless", "drop"}
+	order := []string{"zapret", "smart_dns", "vless", "drop"}
 	if routeTypeInOrder(order, "direct") || !routeTypeInOrder(order, "vless") {
 		t.Fatalf("route order membership is wrong for TSPU: %v", order)
 	}
