@@ -42,12 +42,15 @@ function App() {
     session,
     privacyHidden,
     navigate: selectScreen,
-    // Do not throw the user back to the login screen from a background
-    // refresh.  A transient 401/API failure must leave the current read-only
-    // view intact; SessionBar exposes the error and offers an explicit retry.
-    // The server only expires sessions on logout/revocation (or a process
-    // restart), so this is not a silent privilege extension.
-    onUnauthorized: () => undefined
+    // A 401 means the server no longer accepts the session (revocation,
+    // restart, or an explicit logout elsewhere).  Do not keep rendering a
+    // privileged page with stale data: return to the login screen and make
+    // the transition explicit.  Ordinary transport failures remain isolated
+    // as stale slices by useDashboardData.
+    onUnauthorized: () => {
+      setAuthError('Сессия завершилась. Войдите снова.');
+      setSession(null);
+    }
   });
   const { overview, onboarding, topology, devices, services, routes, discovery, events, changes, security, securitySummary, system, diagnostics, lifecycle, storage, settings, backups, revisions, configVersion, traffic, loading, refreshing, lastUpdated, apiError, sliceErrors, retryingSlice, refresh, retrySlice, clearPrivacySensitive, reset, updateOnboardingState } = dashboard;
 

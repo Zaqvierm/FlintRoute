@@ -147,6 +147,10 @@ export function useDashboardData({ screen, screenRef, session, privacyHidden, na
             return await load;
           } catch (reason) {
             if (reason instanceof Error && reason.name === 'AbortError') throw reason;
+            // Authentication loss is not an optional slice failure.  Let the
+            // outer refresh handler clear privileged state and return to the
+            // login screen instead of showing a misleading stale dashboard.
+            if (reason instanceof APIError && reason.status === 401) throw reason;
             if (!(reason instanceof APIError && reason.status === 403)) optionalErrors.push({ name, message: errorInfo(reason).message });
             return staleFallback(fallback);
           }
@@ -201,6 +205,8 @@ export function useDashboardData({ screen, screenRef, session, privacyHidden, na
           maybe(needsSettings, 'settings', () => getSettings(signal), settings),
           maybe(needsBackups, 'backups', () => getBackups(signal), backups)
         ]);
+        const unauthorized = optional.find((result) => result.status === 'rejected' && result.reason instanceof APIError && result.reason.status === 401);
+        if (unauthorized?.status === 'rejected') throw unauthorized.reason;
         const setters = [setChanges, setSecurity, setSecuritySummary, setDiagnostics, setLifecycle, setStorage, setSettings, setBackups];
         optional.forEach((result, index) => {
           if (result.status === 'fulfilled') setters[index](result.value as never);
@@ -215,7 +221,11 @@ export function useDashboardData({ screen, screenRef, session, privacyHidden, na
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') return;
         if (generation !== refreshGeneration.current) return;
-        if (err instanceof APIError && err.status === 401) onUnauthorized();
+        if (err instanceof APIError && err.status === 401) {
+          reset();
+          onUnauthorized();
+          return;
+        }
         setApiError(err instanceof Error ? err.message : 'API недоступен');
       } finally {
         if (refreshAbort.current === controller) refreshAbort.current = null;
@@ -290,6 +300,11 @@ export function useDashboardData({ screen, screenRef, session, privacyHidden, na
       setLastUpdated(new Date().toISOString());
     } catch (reason) {
       if (!(reason instanceof Error && reason.name === 'AbortError')) {
+        if (reason instanceof APIError && reason.status === 401) {
+          reset();
+          onUnauthorized();
+          return;
+        }
         const info = errorInfo(reason);
         setSliceErrors((current) => {
           const next = current.filter((item) => item.name !== name);

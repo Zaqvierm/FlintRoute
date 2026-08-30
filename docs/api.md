@@ -264,5 +264,7 @@ DNS resolution, классификация, фактический egress, до�
 The default local administrator session is intentionally non-expiring. The
 HttpOnly `rp_session` cookie is a browser session cookie with no `Max-Age` or
 `Expires`; it ends only on explicit logout/revocation or controller restart.
-Background refresh failures (including a transient 401) keep the current UI
-visible and expose a retry action instead of redirecting to the login screen.
+Transport failures during background refresh keep the current UI visible and
+mark only the affected data slices stale, with an explicit retry action. A
+real `401 Unauthorized` is different: the privileged state is cleared and the
+browser returns to the login form with a clear re-authentication message.
