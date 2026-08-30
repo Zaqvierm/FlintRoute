@@ -1932,7 +1932,6 @@ case "$mode" in
     snapshot_state_database
     backup
     install_files
-    prepare_controller_identity
     if [ "$enable_services" = "1" ]; then
       activate_dns_observer
     fi
@@ -1940,6 +1939,10 @@ case "$mode" in
     "$ROUTER_POLICY_BIN" backup register --root "$BACKUP_DIR" --operation "$(basename "$BACKUP_DIR")" --version "$ROUTER_POLICY_VERSION" --reason install --retention-class installer-fallback >/dev/null
     echo "== setup token =="
     ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$ROUTER_POLICY_BIN" auth setup-token --if-needed
+    # The root-side backup/auth commands above may create or replace files in
+    # the state tree. Normalize controller ownership only after the final
+    # privileged write, immediately before any service can start.
+    prepare_controller_identity
     restart_running_services
     if [ "$enable_services" = "1" ]; then
       run_bounded "$INIT_DIR/router-policy-dns-observer" enable

@@ -19,6 +19,18 @@ disarm_line=$(grep -n '^    INSTALL_ROLLBACK_ARMED=0$' "$ROOT/install.sh" | cut 
   exit 1
 }
 
+# Root-side backup/auth commands can recreate the bbolt file after the
+# controller identity setup.  The final ownership normalization must remain
+# after those writes and before service restart.
+identity_call_line=$(grep -n '^    prepare_controller_identity$' "$ROOT/install.sh" | cut -d: -f1)
+auth_line_source=$(grep -n 'auth setup-token --if-needed' "$ROOT/install.sh" | tail -n 1 | cut -d: -f1)
+restart_line=$(grep -n '^    restart_running_services$' "$ROOT/install.sh" | cut -d: -f1)
+[ -n "$identity_call_line" ] && [ -n "$auth_line_source" ] && [ -n "$restart_line" ] && \
+  [ "$identity_call_line" -gt "$auth_line_source" ] && [ "$restart_line" -gt "$identity_call_line" ] || {
+  echo "installer normalizes controller ownership before final root-side writes" >&2
+  exit 1
+}
+
 # Uninstall backup pruning is the final bookkeeping step.  If service teardown
 # or dnsmasq readiness fails, older fallback backups must remain available.
 uninstall_prune_line=$(grep -n 'backup prune --root' "$ROOT/uninstall.sh" | tail -n 1 | cut -d: -f1)
