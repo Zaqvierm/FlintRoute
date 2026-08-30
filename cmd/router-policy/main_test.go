@@ -5,12 +5,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"router-policy/internal/auth"
 	"router-policy/internal/config"
+	"router-policy/internal/manualimport"
 	"router-policy/internal/state"
 	"router-policy/internal/tspu"
 	"router-policy/internal/zapret"
@@ -51,6 +53,62 @@ func TestSetupTokenIfNeededIsIdempotentAfterAdminCreation(t *testing.T) {
 	}
 	if err := run([]string{"auth", "setup-token"}); err == nil {
 		t.Fatal("setup-token without --if-needed must still reject an initialized store")
+	}
+}
+
+func TestParseObservationTargetsBindsOnlyPlanResources(t *testing.T) {
+	plan := manualimport.AdoptionPlan{
+		SchemaVersion: 1,
+		Resources: []manualimport.AdoptionResource{
+			{Kind: "process", Identifier: "manual-xray"},
+			{Kind: "nft-table", Identifier: "manual-table"},
+			{Kind: "file", Identifier: "manual-lifecycle/file-1"},
+		},
+	}
+	processes, err := parseObservationProcessTargets(plan,
+		[]string{"process/manual-xray=10775"},
+		[]string{"process/manual-xray=/etc/chatgpt-proxy/xray.json"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(processes) != 1 || processes[0].PID != 10775 || processes[0].ConfigPath == "" {
+		t.Fatalf("unexpected process targets: %+v", processes)
+	}
+	evidence, err := parseObservationEvidenceTargets(plan, []string{"nft-table/manual-table=/tmp/table.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evidence) != 1 || evidence[0].Path != "/tmp/table.txt" {
+		t.Fatalf("unexpected evidence targets: %+v", evidence)
+	}
+	evidence, err = parseObservationEvidenceTargets(plan, []string{"file/manual-lifecycle/file-1=/tmp/lifecycle.txt"})
+	if err != nil || len(evidence) != 1 || evidence[0].Identifier != "manual-lifecycle/file-1" {
+		t.Fatalf("hierarchical resource identifier was not accepted: %+v err=%v", evidence, err)
+	}
+	if _, err := parseObservationProcessTargets(plan, []string{"process/unknown=1"}, nil); err == nil {
+		t.Fatal("unknown process resource must be rejected")
+	}
+	if _, err := parseObservationEvidenceTargets(plan, []string{"file/missing=/tmp/x"}); err == nil {
+		t.Fatal("unknown evidence resource must be rejected")
+	}
+}
+
+func TestParseObservationTargetsRejectAmbiguousReferences(t *testing.T) {
+	plan := manualimport.AdoptionPlan{
+		SchemaVersion: 1,
+		Resources:     []manualimport.AdoptionResource{{Kind: "process", Identifier: "p"}},
+	}
+	for _, spec := range []string{"process/p", "process/p=", "process//1", "process/p/extra=1", "process/p=0"} {
+		if _, err := parseObservationProcessTargets(plan, []string{spec}, nil); err == nil {
+			t.Fatalf("reference %q must be rejected", spec)
+		}
+	}
+	if _, err := parseObservationProcessTargets(plan,
+		[]string{"process/p=1"},
+		[]string{"process/p=/tmp/a", "process/p=/tmp/b"},
+	); err == nil {
+		t.Fatal("duplicate config target must be rejected")
 	}
 }
 
@@ -108,17 +166,106 @@ func TestSafeListenAddress(t *testing.T) {
 
 func TestServeRefusesUnsafeBind(t *testing.T) {
 	t.Setenv("ROUTER_POLICY_ALLOW_FIREWALLED_BIND", "")
+	t.Setenv("ROUTER_POLICY_ALLOW_LAN_BIND", "")
+	t.Setenv("ROUTER_POLICY_HELPER_SOCKET", "/var/run/router-policy/helper.sock")
 	err := run([]string{"serve", "--listen", "0.0.0.0:8787"})
-	if err == nil || !strings.Contains(err.Error(), "refusing non-loopback") {
+	if err == nil || !strings.Contains(err.Error(), "refusing listen address") {
 		t.Fatalf("expected unsafe bind refusal, got %v", err)
+	}
+}
+
+func TestProductionControllerRequiresNonRootHelperBoundary(t *testing.T) {
+	if err := validateProductionPrivilege(false, true, "/var/run/router-policy/helper.sock"); err == nil {
+		t.Fatal("root production controller was accepted")
+	}
+	if err := validateProductionPrivilege(false, false, ""); err == nil {
+		t.Fatal("production controller without helper socket was accepted")
+	}
+	if err := validateProductionPrivilege(false, false, "/var/run/router-policy/helper.sock"); err != nil {
+		t.Fatalf("non-root production controller with helper was rejected: %v", err)
+	}
+	if err := validateProductionPrivilege(true, true, ""); err != nil {
+		t.Fatalf("development simulation should remain available: %v", err)
+	}
+}
+
+func TestManualImportWritesRedactedPlanWithoutApplyPermission(t *testing.T) {
+	dir := t.TempDir()
+	xrayPath := filepath.Join(dir, "xray.json")
+	planPath := filepath.Join(dir, "adoption-plan.json")
+	const uuid = "11111111-1111-4111-8111-111111111111"
+	raw := `{
+  "inbounds": [{"tag":"socks-proxy-1","listen":"127.0.0.1","port":12000,"protocol":"socks"}],
+  "outbounds": [{"tag":"proxy-1","protocol":"vless","settings":{"vnext":[{"address":"vc9.example.com","port":443,"users":[{"id":"` + uuid + `","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"tls"}}],
+  "routing":{"rules":[{"type":"field","inboundTag":["socks-proxy-1"],"outboundTag":"proxy-1"}]}
+}`
+	if err := os.WriteFile(xrayPath, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"manual-import", "--xray", xrayPath, "--out-plan", planPath}); err != nil {
+		t.Fatalf("manual-import failed: %v", err)
+	}
+	planRaw, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan struct {
+		MigrationState string `json:"migration_state"`
+		ApplyAllowed   bool   `json:"apply_allowed"`
+	}
+	if err := json.Unmarshal(planRaw, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.MigrationState != "blocked_on_ownership_handoff" || plan.ApplyAllowed {
+		t.Fatalf("manual adoption plan was not fenced: %+v", plan)
+	}
+	if strings.Contains(string(planRaw), xrayPath) || strings.Contains(string(planRaw), uuid) {
+		t.Fatal("redacted adoption plan leaked an input path or credential")
+	}
+	if info, err := os.Stat(planPath); err != nil {
+		t.Fatal(err)
+	} else if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("adoption plan mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestLanBindRequiresExplicitOptIn(t *testing.T) {
+	t.Setenv("ROUTER_POLICY_ALLOW_LAN_BIND", "")
+	for _, addr := range []string{"192.168.0.1:8787", "10.0.0.1:8787", "[fd00::1]:8787"} {
+		if allowedListenAddress(addr) {
+			t.Fatalf("expected LAN bind %s to require explicit opt-in", addr)
+		}
+	}
+
+	t.Setenv("ROUTER_POLICY_ALLOW_LAN_BIND", "1")
+	for _, addr := range []string{"192.168.0.1:8787", "10.0.0.1:8787", "[fd00::1]:8787"} {
+		if processIsRoot() {
+			if allowedListenAddress(addr) {
+				t.Fatalf("root controller must not bind private LAN address %s", addr)
+			}
+		} else if !allowedListenAddress(addr) {
+			t.Fatalf("expected private LAN bind %s to be allowed for non-root controller", addr)
+		}
+	}
+	for _, addr := range []string{"0.0.0.0:8787", "[::]:8787", "169.254.1.1:8787", "203.0.113.1:8787", ":8787"} {
+		if allowedListenAddress(addr) {
+			t.Fatalf("expected unsafe LAN bind %s to be rejected", addr)
+		}
+	}
+	if !allowedListenAddress("127.0.0.1:8787") {
+		t.Fatal("loopback must remain allowed regardless of LAN opt-in")
 	}
 }
 
 func TestFirewalledBindRequiresExplicitOptIn(t *testing.T) {
 	t.Setenv("ROUTER_POLICY_ALLOW_FIREWALLED_BIND", "1")
 	for _, addr := range []string{"0.0.0.0:8787", "192.168.8.1:8787", "[::]:8787"} {
-		if !allowedListenAddress(addr) {
-			t.Fatalf("expected explicit firewalled bind %s to be allowed", addr)
+		if processIsRoot() {
+			if allowedListenAddress(addr) {
+				t.Fatalf("root controller must reject firewalled bind %s", addr)
+			}
+		} else if !allowedListenAddress(addr) {
+			t.Fatalf("expected explicit firewalled bind %s to be allowed for non-root controller", addr)
 		}
 	}
 	for _, addr := range []string{":8787", "0.0.0.0:0", "0.0.0.0:bad", "bad"} {
