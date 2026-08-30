@@ -1102,6 +1102,14 @@ func (c *Config) ServiceForDomain(domain string) string {
 }
 
 func PathAllowed(svc Service, route Route, policy Policy) bool {
+	// An explicitly classified TSPU service must never fall back to Direct.
+	// Direct remains eligible for UNKNOWN/DIRECT_PREFERRED until live evidence
+	// promotes the service, but once the service contract is TSPU_RESTRICTED the
+	// privacy invariant is unconditional and must not depend on a legacy policy
+	// toggle or an accidentally stale allowed_paths entry.
+	if svc.Category == "TSPU_RESTRICTED" && route.Type == "direct" {
+		return false
+	}
 	if svc.Category == "GEO_LOCKED" {
 		if route.Type == "direct" && !policy.GeoLockedAllowDirect {
 			return false

@@ -158,6 +158,28 @@ func TestValidateRejectsUnsafeGeoLockedPolicy(t *testing.T) {
 	}
 }
 
+func TestPathAllowedRejectsDirectForTSPURestricted(t *testing.T) {
+	service := Service{Category: "TSPU_RESTRICTED", AllowedPaths: []string{"direct", "zapret", "drop"}}
+	if PathAllowed(service, Route{Type: "direct", Tag: "direct"}, Policy{GeoLockedAllowDirect: true}) {
+		t.Fatal("TSPU_RESTRICTED must never allow direct")
+	}
+	if !PathAllowed(service, Route{Type: "zapret", Tag: "zapret"}, Policy{}) {
+		t.Fatal("TSPU_RESTRICTED should allow an explicitly permitted zapret route")
+	}
+}
+
+func TestValidateRejectsSelectedDirectForTSPURestricted(t *testing.T) {
+	cfg := validConfig()
+	service := cfg.Services["site"]
+	service.Category = "TSPU_RESTRICTED"
+	service.AllowedPaths = []string{"direct", "drop"}
+	service.SelectedRouteTag = "direct"
+	cfg.Services["site"] = service
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "unavailable or forbidden route") {
+		t.Fatalf("TSPU_RESTRICTED selected direct route was accepted: %v", err)
+	}
+}
+
 func TestValidateBoundsRouteCheckFanout(t *testing.T) {
 	cfg := validConfig()
 	for i := len(cfg.Routes); i < 65; i++ {
