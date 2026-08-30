@@ -15,6 +15,7 @@ LOGGER_LOG="$TMP/logger.log"
 export PROCD_LOG LOGGER_LOG
 
 logger() { printf '%s\n' "$*" >> "$LOGGER_LOG"; }
+chown() { printf '%s\n' "$*" >> "$TMP/chown.log"; }
 procd_open_instance() { printf 'open:%s\n' "$*" >> "$PROCD_LOG"; }
 procd_set_param() { printf 'param:%s\n' "$*" >> "$PROCD_LOG"; }
 procd_close_instance() { printf 'close\n' >> "$PROCD_LOG"; }
@@ -49,6 +50,13 @@ printf '%s\n' "$env_line" | grep -F 'ROUTER_POLICY_INIT_DIR=/etc/init.d' >/dev/n
   exit 1
 }
 grep -F 'param:command /usr/bin/router-policy-helper' "$PROCD_LOG" >/dev/null
+grep -F "0:1001 $TMP/run" "$TMP/chown.log" >/dev/null
+if grep -F 'param:env' "$PROCD_LOG" | tail -n 1 | grep -F 'ROUTER_POLICY_HELPER_PEER_UID=1001' >/dev/null; then
+  :
+else
+  echo "helper peer environment missing after runtime directory setup" >&2
+  exit 1
+fi
 
 printf 'peer_uid=1001\nsocket=/tmp/unsafe.sock\n' > "$ROUTER_POLICY_HELPER_ENV"
 start_service

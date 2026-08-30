@@ -30,7 +30,17 @@ start_service() {
     return 0
   }
   mkdir -p "$run_dir"
-  chmod 700 "$run_dir"
+  # The controller connects as peer_uid. Keep the directory root-owned while
+  # granting that peer traversal; a root-owned 0700 directory makes the
+  # otherwise correctly peer-owned 0600 socket unreachable.
+  chown 0:"$peer_uid" "$run_dir" || {
+    logger -t router-policy-helper "disabled: cannot assign helper runtime directory"
+    return 0
+  }
+  chmod 750 "$run_dir" || {
+    logger -t router-policy-helper "disabled: cannot make helper runtime directory traversable"
+    return 0
+  }
   procd_open_instance router-policy-helper
   # procd's `env` parameter is a single parameter map on the target. Multiple
   # calls replace that map, so all helper bindings must be supplied together;
