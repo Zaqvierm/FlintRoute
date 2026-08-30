@@ -15,6 +15,32 @@ import (
 	"time"
 )
 
+const maxCalibrationOutputBytes = 1 << 20
+
+// boundedCalibrationOutput keeps a noisy helper from turning a bounded
+// calibration into an unbounded memory allocation.  We deliberately report
+// the full write length to the child: truncating diagnostics must not make a
+// successful helper look like a different failure mode.  Run checks
+// overflow after Wait and rejects the result instead.
+type boundedCalibrationOutput struct {
+	bytes.Buffer
+	overflow bool
+}
+
+func (b *boundedCalibrationOutput) Write(p []byte) (int, error) {
+	remaining := maxCalibrationOutputBytes - b.Len()
+	if remaining <= 0 {
+		b.overflow = true
+		return len(p), nil
+	}
+	if len(p) > remaining {
+		_, _ = b.Buffer.Write(p[:remaining])
+		b.overflow = true
+		return len(p), nil
+	}
+	return b.Buffer.Write(p)
+}
+
 func (r ExecCalibrationRunner) Progress() (int, int) {
 	raw := r.latestCalibrationLog()
 	return countCompletedCalibrationChecks(raw), 0
@@ -92,9 +118,12 @@ func (r ExecCalibrationRunner) Run(ctx context.Context, request CalibrationReque
 		command.Env = append(command.Env, "ZAPRET_CALIBRATION_IPV4="+strings.Join(request.ResolvedIPv4, ","))
 	}
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	var output bytes.Buffer
-	command.Stdout = &output
-	command.Stderr = &output
+	var stdout, stderr boundedCalibrationOutput
+	// stdout is a machine-readable protocol.  stderr is diagnostics only and
+	// must never be concatenated with the JSON document: nft/curl/OpenWrt can
+	// legitimately write warnings while the helper still completes successfully.
+	command.Stdout = &stdout
+	command.Stderr = &stderr
 	if err := command.Start(); err != nil {
 		return nil, errors.New("start Zapret calibration failed")
 	}
@@ -102,13 +131,16 @@ func (r ExecCalibrationRunner) Run(ctx context.Context, request CalibrationReque
 	go func() { done <- command.Wait() }()
 	select {
 	case err := <-done:
-		if output.Len() > 1<<20 {
+		if stdout.overflow || stderr.overflow {
 			return nil, errors.New("Zapret calibration output exceeded limit")
 		}
 		if err != nil {
-			return nil, calibrationCommandError(output.Bytes())
+			diagnostic := make([]byte, 0, stdout.Len()+stderr.Len())
+			diagnostic = append(diagnostic, stdout.Bytes()...)
+			diagnostic = append(diagnostic, stderr.Bytes()...)
+			return nil, calibrationCommandError(diagnostic)
 		}
-		return output.Bytes(), nil
+		return append([]byte(nil), stdout.Bytes()...), nil
 	case <-ctx.Done():
 		_ = syscall.Kill(-command.Process.Pid, syscall.SIGTERM)
 		select {

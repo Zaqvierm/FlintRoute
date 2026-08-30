@@ -23,15 +23,18 @@ var (
 	valuePattern     = regexp.MustCompile(`^[A-Za-z0-9,+._-]+$`)
 	allowedOptions   = map[string]bool{
 		"--qnum": true, "--filter-tcp": true, "--filter-udp": true,
-		"--dpi-desync": true, "--dpi-desync-split-pos": true,
+		"--hostlist-domains": true,
+		"--dpi-desync":       true, "--dpi-desync-split-pos": true,
 		"--dpi-desync-split-seqovl": true, "--dpi-desync-fooling": true,
 		"--dpi-desync-repeats": true, "--dpi-desync-ttl": true,
-		"--orig-ttl": true, "--orig-mod-start": true, "--orig-mod-cutoff": true,
+		"--dpi-desync-fakedsplit-pattern": true,
+		"--orig-ttl":                      true, "--orig-mod-start": true, "--orig-mod-cutoff": true,
 	}
 )
 
 type Profile struct {
 	ID              string   `json:"id"`
+	Name            string   `json:"name,omitempty"`
 	Provider        string   `json:"provider"`
 	ProviderVersion string   `json:"provider_version"`
 	BinaryDigest    string   `json:"binary_digest"`

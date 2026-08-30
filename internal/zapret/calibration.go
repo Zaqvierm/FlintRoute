@@ -22,8 +22,9 @@ const calibrationConcurrencyReason = "one worker only: curated checks and upstre
 
 var errCalibrationUpstreamTimeout = errors.New("upstream Zapret blockcheck timed out")
 var errCalibrationQuickEvidenceUnavailable = errors.New("quick Zapret calibration requires a curated dataplane evidence runner")
+var errCalibrationPrivilegeHelperUnavailable = errors.New("quick Zapret calibration has no privilege-drop helper")
 
-const quickCuratedProfileCount = 4
+const quickCuratedProfileCount = 6
 
 // CalibrationMode deliberately exposes two different user actions. Quick is
 // the bounded/default check; exhaustive is an explicit maintenance operation
@@ -82,6 +83,7 @@ type CalibrationRequest struct {
 
 type CalibrationCandidate struct {
 	ProfileID       string   `json:"profile_id"`
+	ProfileName     string   `json:"profile_name,omitempty"`
 	Provider        string   `json:"provider"`
 	ProviderVersion string   `json:"provider_version"`
 	Transports      []string `json:"transports"`
@@ -97,6 +99,7 @@ type CalibrationCandidate struct {
 // cleanup must be proven as well.
 type CalibrationAttempt struct {
 	ProfileID                string `json:"profile_id"`
+	ProfileName              string `json:"profile_name,omitempty"`
 	Target                   string `json:"target"`
 	Protocol                 string `json:"protocol"`
 	Result                   string `json:"result"`
@@ -343,6 +346,9 @@ func (m *CalibrationManager) run(ctx context.Context, request CalibrationRequest
 		if errors.Is(runErr, errCalibrationQuickEvidenceUnavailable) {
 			status.Stage, status.ErrorCode, status.Error = "evidence_validation", "zapret_quick_evidence_unavailable", "быстрый тест недоступен: в runtime нет curated runner с доказательством dataplane path"
 		}
+		if errors.Is(runErr, errCalibrationPrivilegeHelperUnavailable) {
+			status.Stage, status.ErrorCode, status.Error = "preflight", "zapret_probe_privilege_unavailable", "быстрый тест остановлен: установленный runner требует su, которого нет на этом OpenWrt. Обновите FlintRoute runner и повторите проверку; конфигурация Zapret не изменена"
+		}
 		if errors.Is(runErr, errCalibrationUpstreamTimeout) {
 			status.ErrorCode, status.Error = "zapret_calibration_timeout", "upstream blockcheck exceeded the selected bounded runtime"
 		} else if errors.Is(ctx.Err(), context.Canceled) {
@@ -454,7 +460,7 @@ func parseCalibrationEvidence(raw []byte, mode CalibrationMode, domain string) (
 			seenAttempts[attempt.ProfileID] = struct{}{}
 			switch attempt.Result {
 			case "PASS":
-				if !attempt.PathVerified {
+				if !attempt.PathVerified || !quickAttemptHasPathEvidence(*attempt) {
 					return parsedCalibrationResult{}, errCalibrationQuickEvidenceUnavailable
 				}
 				passCount++
@@ -462,7 +468,7 @@ func parseCalibrationEvidence(raw []byte, mode CalibrationMode, domain string) (
 				// A bounded strategy failure/timeout is still a valid attempt only
 				// when the runner proved that the request traversed the tested
 				// path. An infrastructure failure is the explicit exception below.
-				if !attempt.PathVerified {
+				if !attempt.PathVerified || !quickAttemptHasPathEvidence(*attempt) {
 					return parsedCalibrationResult{}, errCalibrationQuickEvidenceUnavailable
 				}
 			case "INFRA_ERROR":
@@ -502,7 +508,7 @@ func parseCalibrationEvidence(raw []byte, mode CalibrationMode, domain string) (
 		}
 		item := evidence[profile.ID]
 		result = append(result, CalibrationCandidate{
-			ProfileID: profile.ID, Provider: profile.Provider, ProviderVersion: profile.ProviderVersion,
+			ProfileID: profile.ID, ProfileName: profile.Name, Provider: profile.Provider, ProviderVersion: profile.ProviderVersion,
 			Transports: append([]string(nil), profile.Transports...), Ports: append([]uint16(nil), profile.Ports...),
 			StrategyDigest: profile.StrategyDigest, Tests: item.Tests, Occurrences: item.Occurrences,
 		})
@@ -520,6 +526,11 @@ func parseCalibrationEvidence(raw []byte, mode CalibrationMode, domain string) (
 		evidenceLevel = "curl_only"
 	}
 	return parsedCalibrationResult{Candidates: result, Attempts: append([]CalibrationAttempt(nil), document.Attempts...), EvidenceLevel: evidenceLevel, PathVerified: document.PathVerified}, nil
+}
+
+func quickAttemptHasPathEvidence(attempt CalibrationAttempt) bool {
+	return strings.TrimSpace(attempt.RouteEvidence) != "" &&
+		attempt.NFQueuePackets > 0 && attempt.NFQueueCounterDelta > 0
 }
 
 func calibrationRunID(request CalibrationRequest, now time.Time) string {
@@ -553,8 +564,12 @@ func calibrationCommandError(output []byte) error {
 		return errors.New("Zapret calibration command failed without diagnostic output")
 	}
 	upstreamTimeout := strings.Contains(value, "upstream blockcheck timed out")
+	privilegeHelperUnavailable := strings.Contains(value, "su is unavailable") || strings.Contains(value, "no privilege-drop helper is available")
 	if len(value) > 240 {
 		value = value[len(value)-240:]
+	}
+	if privilegeHelperUnavailable {
+		return fmt.Errorf("%w: %s", errCalibrationPrivilegeHelperUnavailable, value)
 	}
 	if upstreamTimeout {
 		return fmt.Errorf("%w: %s", errCalibrationUpstreamTimeout, value)

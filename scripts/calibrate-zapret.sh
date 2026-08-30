@@ -4,6 +4,8 @@ set -eu
 CONFIG="${ROUTER_POLICY_CONFIG:-/etc/router-policy/config/default.json}"
 ROUTER_POLICY_BIN="${ROUTER_POLICY_BIN:-/usr/bin/router-policy}"
 NFQWS_BIN="${NFQWS_BIN:-/usr/bin/nfqws}"
+NFT_BIN="${NFT_BIN:-nft}"
+IP_BIN="${IP_BIN:-ip}"
 ZAPRET_INIT="${ZAPRET_INIT:-/etc/init.d/router-policy-zapret}"
 RUNTIME_DIR="${ROUTER_POLICY_RUNTIME_DIR:-/tmp/router-policy}"
 CATALOG_OUT="${ZAPRET_CATALOG_OUT:-/etc/router-policy/zapret/catalog.json}"
@@ -125,6 +127,17 @@ for command in "$ROUTER_POLICY_BIN" "$NFQWS_BIN" "$TIMEOUT_BIN"; do
   [ -x "$command" ] || { echo "required executable is unavailable: $command" >&2; exit 1; }
   [ ! -L "$command" ] || { echo "refusing symlink executable: $command" >&2; exit 1; }
 done
+resolve_tool() {
+  tool="$1"
+  case "$tool" in
+    /*) [ -x "$tool" ] || return 1; printf '%s\n' "$tool" ;;
+    *) command -v "$tool" ;;
+  esac
+}
+NFT_BIN=$(resolve_tool "$NFT_BIN") || { echo "required executable is unavailable: nft" >&2; exit 1; }
+IP_BIN=$(resolve_tool "$IP_BIN") || { echo "required executable is unavailable: ip" >&2; exit 1; }
+[ ! -L "$NFT_BIN" ] || { echo "refusing symlink executable: $NFT_BIN" >&2; exit 1; }
+[ ! -L "$IP_BIN" ] || { echo "refusing symlink executable: $IP_BIN" >&2; exit 1; }
 [ -f "$blockcheck_script" ] && [ ! -L "$blockcheck_script" ] || {
   echo "upstream blockcheck must be a regular non-symlink file" >&2
   exit 1
@@ -140,6 +153,7 @@ mkdir "$run_dir"
 chmod 700 "$run_dir"
 process_manifest="$run_dir/processes.txt"
 nfqws_baseline="$run_dir/nfqws.before"
+nft_baseline="$run_dir/nft.before"
 routes_baseline="$run_dir/routes.before"
 rules_baseline="$run_dir/rules.before"
 report="$run_dir/blockcheck.log"
@@ -152,6 +166,7 @@ blockcheck_pid=""
 blockcheck_pgid=""
 calibration_pgid=""
 calibration_run_id="calibration-$$"
+failure_root="$RUNTIME_DIR/zapret-calibration-failures"
 
 proc_start_time() {
   pid="$1"
@@ -291,38 +306,80 @@ verify_no_owned_nfqwss() {
 }
 
 verify_calibration_network_cleanup() {
-  if command -v nft >/dev/null 2>&1; then
-    if nft list ruleset 2>/dev/null | grep -Fq "router-policy-calibration owner=$calibration_run_id"; then
-      echo "calibration cleanup left an NFQUEUE/nft resource" >&2
-      return 1
-    fi
+  "$NFT_BIN" list ruleset 2>/dev/null > "$run_dir/nft.after" || return 1
+  if ! cmp -s "$nft_baseline" "$run_dir/nft.after"; then
+    echo "calibration cleanup changed nftables state or left a temporary NFQUEUE object" >&2
+    return 1
   fi
-  if command -v ip >/dev/null 2>&1; then
-    ip -o route show table all 2>/dev/null > "$run_dir/routes.after" || return 1
-    ip -o rule show 2>/dev/null > "$run_dir/rules.after" || return 1
-    if ! cmp -s "$routes_baseline" "$run_dir/routes.after"; then
-      echo "calibration cleanup changed routing tables" >&2
-      return 1
-    fi
-    if ! cmp -s "$rules_baseline" "$run_dir/rules.after"; then
-      echo "calibration cleanup changed policy rules" >&2
-      return 1
-    fi
+  "$IP_BIN" -o route show table all 2>/dev/null > "$run_dir/routes.after" || return 1
+  "$IP_BIN" -o rule show 2>/dev/null > "$run_dir/rules.after" || return 1
+  if ! cmp -s "$routes_baseline" "$run_dir/routes.after"; then
+    echo "calibration cleanup changed routing tables" >&2
+    return 1
+  fi
+  if ! cmp -s "$rules_baseline" "$run_dir/rules.after"; then
+    echo "calibration cleanup changed policy rules" >&2
+    return 1
   fi
   return 0
 }
 
+write_failure_bundle() {
+  failure_status="$1"
+  mkdir -p "$failure_root" || return 1
+  chmod 700 "$failure_root" || return 1
+  failure_stamp=$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null) || return 1
+  failure_bundle="$failure_root/failure.${failure_stamp}.$$"
+  mkdir "$failure_bundle" 2>/dev/null || {
+    # A repeated invocation in the same second must not overwrite evidence.
+    failure_bundle="$failure_root/failure.${failure_stamp}.$$.retry"
+    mkdir "$failure_bundle" 2>/dev/null || return 1
+  }
+  chmod 700 "$failure_bundle" || return 1
+  printf 'status=%s\nrun_id=%s\n' "$failure_status" "$calibration_run_id" > "$failure_bundle/status.env" || return 1
+  chmod 600 "$failure_bundle/status.env" || return 1
+  if [ -f "$report" ]; then
+    tail -n 64 "$report" | tr '\r\n\t' '   ' | cut -c1-4096 > "$failure_bundle/report.tail" || return 1
+    chmod 600 "$failure_bundle/report.tail" || return 1
+  fi
+  for evidence in nfqws.before nfqws.after nfqws.remaining nft.before nft.after routes.before routes.after rules.before rules.after processes.txt; do
+    if [ -f "$run_dir/$evidence" ]; then
+      cp "$run_dir/$evidence" "$failure_bundle/$evidence" || return 1
+      chmod 600 "$failure_bundle/$evidence" || return 1
+    fi
+  done
+  # Retain at most three bounded bundles.  Names are generated above and the
+  # prefix check prevents pruning an unrelated runtime path.
+  candidate_list="$run_dir/failure-candidates"
+  find "$failure_root" -mindepth 1 -maxdepth 1 -type d -name 'failure.*' -print | sort -r > "$candidate_list" || return 1
+  bundle_count=0
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    case "$candidate" in
+      "$failure_root"/failure.*) ;;
+      *) continue ;;
+    esac
+    [ -d "$candidate" ] || continue
+    bundle_count=$((bundle_count + 1))
+    if [ "$bundle_count" -gt 3 ]; then
+      rm -rf "$candidate" || return 1
+    fi
+  done < "$candidate_list"
+}
+
 list_nfqwss > "$nfqws_baseline"
-if command -v ip >/dev/null 2>&1; then
-  ip -o route show table all 2>/dev/null > "$routes_baseline" || exit 1
-  ip -o rule show 2>/dev/null > "$rules_baseline" || exit 1
-else
-  : > "$routes_baseline"
-  : > "$rules_baseline"
-fi
+"$NFT_BIN" list ruleset 2>/dev/null > "$nft_baseline" || exit 1
+"$IP_BIN" -o route show table all 2>/dev/null > "$routes_baseline" || exit 1
+"$IP_BIN" -o rule show 2>/dev/null > "$rules_baseline" || exit 1
 
 cleanup() {
   status=$?
+  # EXIT uses the command's status.  Signal traps pass an explicit status so
+  # cancelling calibration can never be reported as a successful run merely
+  # because the shell resumed after running the finally path.
+  if [ "$#" -gt 0 ]; then
+    status="$1"
+  fi
   trap - EXIT HUP INT TERM
   calibration_pgid="$blockcheck_pgid"
   if [ -n "$blockcheck_pgid" ]; then
@@ -362,11 +419,17 @@ cleanup() {
   if [ "$maintenance_started" = "1" ]; then
     ROUTER_POLICY_CONFIG="$CONFIG" "$TIMEOUT_BIN" 15 "$ROUTER_POLICY_BIN" maintenance end >/dev/null 2>&1 || status=1
   fi
+  if [ "$status" -ne 0 ]; then
+    write_failure_bundle "$status" || status=1
+  fi
   rm -rf "$run_dir"
   rmdir "$lock_dir" 2>/dev/null || true
   exit "$status"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'cleanup 129' HUP
+trap 'cleanup 130' INT
+trap 'cleanup 143' TERM
 
 if "$TIMEOUT_BIN" 10 "$ZAPRET_INIT" running >/dev/null 2>&1; then
   [ "$allow_managed_restart" = "1" ] || {

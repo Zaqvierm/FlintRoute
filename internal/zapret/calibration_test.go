@@ -35,6 +35,7 @@ func (r *progressCalibrationRunner) Live() ([]string, []string) {
 
 func TestCalibrationManagerCompletesWithBoundedCandidates(t *testing.T) {
 	raw := []byte(`{"catalog":{"version":1,"profiles":[{"id":"auto-a","provider":"nfqws-v1","provider_version":"72.13","binary_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","route_type":"zapret","ip_families":["ipv4"],"transports":["tcp"],"ports":[443],"queue":200,"safety":"reviewed","strategy_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","strategy":"--qnum=200"}],"bundles":[]},"evidence_level":"path_verified","path_verified":true,"attempts":[{"profile_id":"auto-a","target":"example.com","protocol":"https","result":"PASS","path_verified":true,"cleanup_verified":true,"nfqueue_packets":3}],"evidence":[{"profile_id":"auto-a","tests":["https_tls12"],"occurrences":3}]}`)
+	raw = []byte(strings.Replace(string(raw), `"cleanup_verified":true,"nfqueue_packets":3`, `"cleanup_verified":true,"route_evidence":"default dev eth0","nfqueue_packets":3,"nfqueue_counter_delta":3`, 1))
 	manager := NewCalibrationManager(calibrationRunnerFunc(func(context.Context, CalibrationRequest) ([]byte, error) { return raw, nil }))
 	manager.Now = func() time.Time { return time.Unix(100, 0).UTC() }
 	_, err := manager.Start(CalibrationRequest{Domain: "example.com", BundleID: "auto-example", NetworkFingerprint: "sha256:bad"})
@@ -119,9 +120,9 @@ func TestQuickCalibrationReturnsAllAttemptsButOnlyVerifiedPassesAsCandidates(t *
 		{"id":"profile-d","provider":"nfqws","provider_version":"72.13","strategy_digest":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}
 	]},"evidence_level":"path_verified","path_verified":true,
 		"attempts":[
-			{"profile_id":"profile-a","target":"example.com","protocol":"https","result":"PASS","path_verified":true,"cleanup_verified":true,"nfqueue_packets":4},
-			{"profile_id":"profile-b","target":"example.com","protocol":"https","result":"FAIL","path_verified":true,"cleanup_verified":true,"nfqueue_packets":2},
-			{"profile_id":"profile-c","target":"example.com","protocol":"https","result":"TIMEOUT","path_verified":true,"cleanup_verified":true,"nfqueue_packets":1},
+			{"profile_id":"profile-a","target":"example.com","protocol":"https","result":"PASS","path_verified":true,"cleanup_verified":true,"route_evidence":"default dev eth0","nfqueue_packets":4,"nfqueue_counter_delta":4},
+			{"profile_id":"profile-b","target":"example.com","protocol":"https","result":"FAIL","path_verified":true,"cleanup_verified":true,"route_evidence":"default dev eth0","nfqueue_packets":2,"nfqueue_counter_delta":2},
+			{"profile_id":"profile-c","target":"example.com","protocol":"https","result":"TIMEOUT","path_verified":true,"cleanup_verified":true,"route_evidence":"default dev eth0","nfqueue_packets":1,"nfqueue_counter_delta":1},
 			{"profile_id":"profile-d","target":"example.com","protocol":"https","result":"INFRA_ERROR","path_verified":false,"cleanup_verified":true,"error_code":"nfqueue_unavailable"}
 		]}`)
 	parsed, err := parseCalibrationEvidence(raw, CalibrationModeQuick, "example.com")
@@ -139,8 +140,8 @@ func TestQuickCalibrationAllFailuresRemainTerminalWithoutRecommendation(t *testi
 		{"id":"profile-b","provider":"nfqws","provider_version":"72.13","strategy_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
 	]},"evidence_level":"path_verified","path_verified":false,
 		"attempts":[
-			{"profile_id":"profile-a","target":"example.com","protocol":"https","result":"FAIL","path_verified":true,"cleanup_verified":true},
-			{"profile_id":"profile-b","target":"example.com","protocol":"https","result":"TIMEOUT","path_verified":true,"cleanup_verified":true}
+			{"profile_id":"profile-a","target":"example.com","protocol":"https","result":"FAIL","path_verified":true,"cleanup_verified":true,"route_evidence":"default dev eth0","nfqueue_packets":1,"nfqueue_counter_delta":1},
+			{"profile_id":"profile-b","target":"example.com","protocol":"https","result":"TIMEOUT","path_verified":true,"cleanup_verified":true,"route_evidence":"default dev eth0","nfqueue_packets":1,"nfqueue_counter_delta":1}
 		]}`)
 	parsed, err := parseCalibrationEvidence(raw, CalibrationModeQuick, "example.com")
 	if err != nil {
@@ -154,9 +155,11 @@ func TestQuickCalibrationAllFailuresRemainTerminalWithoutRecommendation(t *testi
 func TestQuickCalibrationRejectsUnboundOrDuplicateAttempts(t *testing.T) {
 	base := `{"catalog":{"version":1,"profiles":[{"id":"profile-a","provider":"nfqws","provider_version":"72.13","strategy_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]},"evidence_level":"path_verified","path_verified":true,"attempts":[%s]}`
 	for name, attempt := range map[string]string{
-		"unknown profile":   `{"profile_id":"profile-b","target":"example.com","protocol":"https","result":"PASS","path_verified":true,"cleanup_verified":true}`,
-		"duplicate profile": `{"profile_id":"profile-a","target":"example.com","protocol":"https","result":"PASS","path_verified":true,"cleanup_verified":true},{"profile_id":"profile-a","target":"example.com","protocol":"https","result":"FAIL","path_verified":true,"cleanup_verified":true}`,
-		"wrong target":      `{"profile_id":"profile-a","target":"other.example","protocol":"https","result":"PASS","path_verified":true,"cleanup_verified":true}`,
+		"unknown profile":        `{"profile_id":"profile-b","target":"example.com","protocol":"https","result":"PASS","path_verified":true,"cleanup_verified":true}`,
+		"duplicate profile":      `{"profile_id":"profile-a","target":"example.com","protocol":"https","result":"PASS","path_verified":true,"cleanup_verified":true},{"profile_id":"profile-a","target":"example.com","protocol":"https","result":"FAIL","path_verified":true,"cleanup_verified":true}`,
+		"wrong target":           `{"profile_id":"profile-a","target":"other.example","protocol":"https","result":"PASS","path_verified":true,"cleanup_verified":true}`,
+		"missing route evidence": `{"profile_id":"profile-a","target":"example.com","protocol":"https","result":"PASS","path_verified":true,"cleanup_verified":true,"nfqueue_packets":1,"nfqueue_counter_delta":1}`,
+		"missing queue counter":  `{"profile_id":"profile-a","target":"example.com","protocol":"https","result":"PASS","path_verified":true,"cleanup_verified":true,"route_evidence":"default dev eth0"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := parseCalibrationEvidence([]byte(fmt.Sprintf(base, attempt)), CalibrationModeQuick, "example.com"); !errors.Is(err, errCalibrationQuickEvidenceUnavailable) {
@@ -237,6 +240,16 @@ func TestCalibrationCommandErrorClassifiesUpstreamTimeout(t *testing.T) {
 	err := calibrationCommandError([]byte("upstream blockcheck timed out after 2400s; bounded diagnostic tail follows\nlast strategy"))
 	if !strings.Contains(err.Error(), "last strategy") || !errors.Is(err, errCalibrationUpstreamTimeout) {
 		t.Fatalf("timeout classification was lost: %v", err)
+	}
+}
+
+func TestCalibrationCommandErrorClassifiesMissingPrivilegeHelper(t *testing.T) {
+	err := calibrationCommandError([]byte("quick Zapret check: su is unavailable"))
+	if !errors.Is(err, errCalibrationPrivilegeHelperUnavailable) {
+		t.Fatalf("missing privilege helper was not classified: %v", err)
+	}
+	if !strings.Contains(err.Error(), "su is unavailable") {
+		t.Fatalf("diagnostic was lost: %v", err)
 	}
 }
 

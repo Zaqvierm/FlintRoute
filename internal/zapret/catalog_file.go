@@ -19,6 +19,7 @@ type CatalogFile struct {
 
 type CatalogFileProfile struct {
 	ID              string   `json:"id"`
+	Name            string   `json:"name,omitempty"`
 	Provider        string   `json:"provider"`
 	ProviderVersion string   `json:"provider_version"`
 	BinaryDigest    string   `json:"binary_digest"`
@@ -60,7 +61,7 @@ func LoadCatalogFile(path string) (*Catalog, *BundleCatalog, error) {
 	profiles := make([]Profile, 0, len(document.Profiles))
 	for _, rawProfile := range document.Profiles {
 		profiles = append(profiles, Profile{
-			ID: rawProfile.ID, Provider: rawProfile.Provider, ProviderVersion: rawProfile.ProviderVersion,
+			ID: rawProfile.ID, Name: rawProfile.Name, Provider: rawProfile.Provider, ProviderVersion: rawProfile.ProviderVersion,
 			BinaryDigest: rawProfile.BinaryDigest, RouteType: rawProfile.RouteType,
 			IPFamilies: rawProfile.IPFamilies, Transports: rawProfile.Transports, Ports: rawProfile.Ports,
 			Queue: rawProfile.Queue, Safety: rawProfile.Safety, StrategyDigest: rawProfile.StrategyDigest,
