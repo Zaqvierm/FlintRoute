@@ -7,10 +7,10 @@ historical and must be treated as stale when its SHA differs.
 ## Binding
 
 - Repository branch: `integration/discovery-smartdns-local-dod`
-- Software HEAD: `29e276c43855e95be8ccf575a35caaa95f344422`
+- Software HEAD: `f27468c0897356067546e21bb8c55f35f27fb2eb`
 - Device: GL.iNet GL-MT6000, OpenWrt 24.10.4, kernel 6.6.110, aarch64
 - Installed package SHA-256:
-  `773a78ce21ff3ab36ae63a2026ad1284416a7e87cf2cfacd147473bfca573612`
+  `5f52cc80f5278dc0e1ec4a47011041110d9b352b5097d5b68873e9e5e40880ae`
 - Redacted raw evidence (outside git):
   `H:\LAN\Internal\Context\hardware-evidence\20260830-stage11-final\`
 
