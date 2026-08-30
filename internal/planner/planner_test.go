@@ -15,6 +15,66 @@ import (
 	"router-policy/internal/tspu"
 )
 
+func TestCheckDomainRejectsNilConfigAndAcceptsNilContextSafely(t *testing.T) {
+	if _, err := CheckDomain(nil, nil, "example.com", "", Options{}); err == nil || err.Error() != "config is required" {
+		t.Fatalf("nil config should fail closed with a stable diagnostic, got %v", err)
+	}
+
+	cfg := discoveryConfig(t)
+	prober := &scriptedProber{results: map[string]probe.RouteResult{
+		"direct": successfulResult("direct", "direct", "rev-active"),
+	}}
+	if check, err := CheckDomain(nil, cfg, "example.com", "", Options{RouteProber: prober, ActiveRevision: "rev-active"}); err != nil || check.Status == "" {
+		t.Fatalf("nil context should be normalized instead of panicking: check=%+v err=%v", check, err)
+	}
+}
+
+func TestCheckDomainTreatsCaseInsensitiveRegionalBlockAsGEO(t *testing.T) {
+	cfg := discoveryConfig(t)
+	prober := &scriptedProber{results: map[string]probe.RouteResult{
+		"direct": failedResult("direct", "direct", "rev-active"),
+		"vless":  successfulResult("vless", "vless", "rev-active"),
+	}}
+	result := failedResult("direct", "direct", "rev-active")
+	result.Status = "region_block"
+	result.PathVerified = true
+	result.ServiceOK = false
+	result.AdapterRevision = "rev-active"
+	prober.results["direct"] = result
+	check, err := CheckDomain(context.Background(), cfg, "example.com", "", Options{RouteProber: prober, ActiveRevision: "rev-active"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.Category != "GEO_LOCKED" {
+		t.Fatalf("case-insensitive regional block was not classified as GEO_LOCKED: %+v", check)
+	}
+}
+
+func TestClassifyEvidenceTreatsCaseVariantTerminalStatusesAsEvidence(t *testing.T) {
+	profile := serviceProfile{service: config.Service{}}
+	results := []probe.RouteResult{
+		{Route: "direct", RouteType: "direct", Status: "region_block"},
+		{Route: "vless", RouteType: "vless", Status: "suspected_tspu"},
+	}
+	classification, _ := classifyEvidence(profile, results, "no_match")
+	if classification != "SUSPECTED_GEO_LOCKED" {
+		t.Fatalf("case-variant regional evidence was not classified safely: %q", classification)
+	}
+
+	results[0].Status = "suspected_tspu"
+	results[1].Status = "FAIL"
+	classification, _ = classifyEvidence(profile, results, "no_match")
+	if classification != "SUSPECTED_TSPU" {
+		t.Fatalf("case-variant direct TSPU evidence was not classified safely: %q", classification)
+	}
+
+	results[0].Status = "FAIL"
+	classification, _ = classifyEvidence(profile, results, "no_match")
+	if classification != "UNKNOWN" {
+		t.Fatalf("non-direct TSPU evidence must not classify the service: %q", classification)
+	}
+}
+
 func TestGeoLockedCandidatesExcludeDirectAndZapret(t *testing.T) {
 	cfg := &config.Config{
 		Version: 2,
@@ -44,32 +104,32 @@ func TestGeoLockedCandidatesExcludeDirectAndZapret(t *testing.T) {
 	}
 }
 
-func TestSelectBestPrefersRoutePriorityOverSmallLatencyWin(t *testing.T) {
+func TestSelectBestUsesMeasuredEndToEndLatencyOverRoutePriority(t *testing.T) {
 	results := []probe.RouteResult{
-		{Route: "zapret", RouteType: "zapret", RoutePriority: 20, Status: "OK", PathVerified: true, ServiceOK: true, LatencyMS: 100},
-		{Route: "vless-frankfurt", RouteType: "vless", RoutePriority: 50, Status: "OK", PathVerified: true, ServiceOK: true, LatencyMS: 70},
+		{Route: "zapret", RouteType: "zapret", RoutePriority: 20, Status: "OK", PathVerified: true, ServiceOK: true, EndToEndLatencyMS: 100, EndToEndLatencyAvailable: true},
+		{Route: "vless-frankfurt", RouteType: "vless", RoutePriority: 50, Status: "OK", PathVerified: true, ServiceOK: true, EndToEndLatencyMS: 70, EndToEndLatencyAvailable: true},
 	}
 	selected := SelectBest(results)
-	if selected == nil || selected.Route != "zapret" {
-		t.Fatalf("expected zapret to win by priority, got %+v", selected)
+	if selected == nil || selected.Route != "vless-frankfurt" {
+		t.Fatalf("expected lower end-to-end latency to win, got %+v", selected)
 	}
 }
 
 func TestSelectBestDoesNotTreatUnknownLatencyAsZero(t *testing.T) {
 	results := []probe.RouteResult{
-		{Route: "measured", RouteType: "vless", RoutePriority: 50, Status: "OK", PathVerified: true, ServiceOK: true, RouteLatencyMS: 120, RouteLatencyAvailable: true},
-		{Route: "unknown", RouteType: "direct", RoutePriority: 50, Status: "OK", PathVerified: true, ServiceOK: true},
+		{Route: "request-only", RouteType: "vless", RoutePriority: 50, Status: "OK", PathVerified: true, ServiceOK: true, RouteLatencyMS: 1, RouteLatencyAvailable: true},
+		{Route: "e2e", RouteType: "direct", RoutePriority: 50, Status: "OK", PathVerified: true, ServiceOK: true, EndToEndLatencyMS: 120, EndToEndLatencyAvailable: true},
 	}
 	selected := SelectBest(results)
-	if selected == nil || selected.Route != "measured" {
-		t.Fatalf("unknown latency must not rank as zero: %+v", selected)
+	if selected == nil || selected.Route != "e2e" {
+		t.Fatalf("request-only latency must not beat comparable end-to-end evidence: %+v", selected)
 	}
 }
 
 func TestSelectBestDoesNotUseVerificationDurationAsLatency(t *testing.T) {
 	results := []probe.RouteResult{
 		{Route: "legacy-duration", RouteType: "direct", RoutePriority: 50, Status: "OK", PathVerified: true, ServiceOK: true, LatencyMS: 1, VerificationDurationMS: 9000},
-		{Route: "measured", RouteType: "direct", RoutePriority: 50, Status: "OK", PathVerified: true, ServiceOK: true, RouteLatencyMS: 80, RouteLatencyAvailable: true, VerificationDurationMS: 12000},
+		{Route: "measured", RouteType: "direct", RoutePriority: 50, Status: "OK", PathVerified: true, ServiceOK: true, EndToEndLatencyMS: 80, EndToEndLatencyAvailable: true, RouteLatencyMS: 60, RouteLatencyAvailable: true, VerificationDurationMS: 12000},
 	}
 	selected := SelectBest(results)
 	if selected == nil || selected.Route != "measured" {
@@ -151,15 +211,15 @@ func TestUnknownDomainDirectSuccessIsCachedAndReused(t *testing.T) {
 	if first.Service != "UNKNOWN:example.com" || first.Selected == nil || first.Selected.Route != "direct" || first.Cached {
 		t.Fatalf("unexpected discovery result: %+v", first)
 	}
-	if got := prober.calls; len(got) != 1 || got[0] != "direct" {
-		t.Fatalf("direct success should stop fallback queue: %v", got)
+	if got := prober.calls; !reflect.DeepEqual(got, []string{"direct", "smart-one", "vless-one", "drop"}) {
+		t.Fatalf("all eligible candidates should reach terminal evidence: %v", got)
 	}
 
 	second, err := CheckDomain(context.Background(), cfg, "api.example.com", "", opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !second.Cached || second.Selected == nil || second.Selected.Route != "direct" || len(prober.calls) != 1 {
+	if !second.Cached || second.Selected == nil || second.Selected.Route != "direct" || len(prober.calls) != 4 {
 		t.Fatalf("cached decision was not reused: %+v calls=%v", second, prober.calls)
 	}
 	if first.VerificationDurationMS <= 0 || second.VerificationDurationMS != first.VerificationDurationMS {
@@ -173,7 +233,7 @@ func TestUnknownDomainDirectSuccessIsCachedAndReused(t *testing.T) {
 	}
 }
 
-func TestUnknownDomainFailureIsNotCached(t *testing.T) {
+func TestUnknownDomainNoSafeRouteIsCachedAndReused(t *testing.T) {
 	cfg := discoveryConfig(t)
 	cache := openDecisionCache(t, cfg)
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
@@ -189,15 +249,80 @@ func TestUnknownDomainFailureIsNotCached(t *testing.T) {
 	if first.Status != "NO_SAFE_ROUTE" || first.VerificationState != "terminal_no_safe_route" || first.Confidence != 0 || first.Selected != nil {
 		t.Fatalf("unexpected failed decision: %+v", first)
 	}
-	if got := cache.Snapshot(); len(got) != 0 {
-		t.Fatalf("failed observation was persisted as a route decision: %+v", got)
+	if got := cache.Snapshot(); len(got) != 1 || got[0].Status != "NO_SAFE_ROUTE" || got[0].SelectedRoute != "" {
+		t.Fatalf("terminal exhaustion was not persisted safely: %+v", got)
 	}
 	firstCalls := len(prober.calls)
-	if _, err := CheckDomain(context.Background(), cfg, "unreachable.example", "", opts); err != nil {
+	second, err := CheckDomain(context.Background(), cfg, "unreachable.example", "", opts)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(prober.calls) <= firstCalls {
-		t.Fatalf("failed observation suppressed a fresh probe: before=%d after=%d", firstCalls, len(prober.calls))
+	if !second.Cached || second.Status != "NO_SAFE_ROUTE" || second.VerificationState != "terminal_no_safe_route" || second.Selected != nil {
+		t.Fatalf("terminal exhaustion cache was not reused: %+v", second)
+	}
+	if len(prober.calls) != firstCalls {
+		t.Fatalf("cached terminal exhaustion triggered fresh probes: before=%d after=%d", firstCalls, len(prober.calls))
+	}
+}
+
+func TestIncompleteNoSafeRouteCacheEntryIsRejected(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cache := openDecisionCache(t, cfg)
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	if _, err := cache.Save("incomplete.example", domaincache.Decision{
+		Service: "UNKNOWN:incomplete.example", Category: "UNKNOWN", Status: "NO_SAFE_ROUTE",
+		Reason: "no_verified_policy_allowed_route", AdapterRevision: "rev-active", Confidence: 0,
+		CheckedAt: now, ExpiresAt: now.Add(time.Hour), Results: nil,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prober := &scriptedProber{results: map[string]probe.RouteResult{}}
+	check, err := CheckDomain(context.Background(), cfg, "incomplete.example", "", Options{
+		RouteProber: prober, DecisionCache: cache, ActiveRevision: "rev-active", Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.Cached {
+		t.Fatalf("incomplete terminal cache entry was accepted: %+v", check)
+	}
+	if len(prober.calls) == 0 {
+		t.Fatal("incomplete terminal cache entry suppressed fresh verification")
+	}
+}
+
+func TestTruncatedNoSafeRouteCacheEntryIsRejected(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cache := openDecisionCache(t, cfg)
+	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	plan, err := BuildCandidates(cfg, "truncated.example", "", Options{ActiveRevision: "rev-active"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The inventory hash matches the current plan, but the result list is
+	// truncated to Direct only. That is not terminal exhaustion: Smart DNS,
+	// VLESS and DROP still need bounded terminal results before NO_SAFE_ROUTE
+	// can be cached.
+	if _, err := cache.Save("truncated.example", domaincache.Decision{
+		Service: "UNKNOWN:truncated.example", Category: "DIRECT_PREFERRED", TSPUStatus: plan.TSPUStatus,
+		Status: "NO_SAFE_ROUTE", Reason: "no_verified_policy_allowed_route", AdapterRevision: "rev-active",
+		CandidateInventoryHash: plan.InventoryHash, Confidence: 0, CheckedAt: now, ExpiresAt: now.Add(time.Hour),
+		Results: []probe.RouteResult{{Route: "direct", RouteType: "direct", Status: "FAIL"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prober := &scriptedProber{results: map[string]probe.RouteResult{}}
+	check, err := CheckDomain(context.Background(), cfg, "truncated.example", "", Options{
+		RouteProber: prober, DecisionCache: cache, ActiveRevision: "rev-active", Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.Cached {
+		t.Fatalf("truncated terminal cache entry was accepted: %+v", check)
+	}
+	if !reflect.DeepEqual(prober.calls, []string{"direct", "smart-one", "vless-one", "drop"}) {
+		t.Fatalf("fresh verification did not cover every required candidate: %v", prober.calls)
 	}
 }
 
@@ -295,7 +420,7 @@ func TestCachedDecisionRetainsClassificationMetadata(t *testing.T) {
 	if first.ClassificationConfidence != match.Confidence || second.ClassificationConfidence != match.Confidence || second.ClassificationSource != match.Source || second.ClassificationEvidence != match.Evidence {
 		t.Fatalf("classification metadata was not persisted independently: first=%+v second=%+v", first, second)
 	}
-	if second.Confidence != 1 || len(prober.calls) != 1 {
+	if second.Confidence != 1 || len(prober.calls) != 4 {
 		t.Fatalf("cached route decision was not reused independently: second=%+v calls=%v", second, prober.calls)
 	}
 }
@@ -318,6 +443,67 @@ func TestUnknownBaselineUsesSystemDefaultBeforeManagedDirect(t *testing.T) {
 	}
 	if plan.Candidates[1].Tag != "direct" || !plan.Candidates[1].RequiresAdapter {
 		t.Fatalf("managed Direct candidate was lost: %+v", plan.Candidates)
+	}
+}
+
+func TestPrivacyFirstUnknownCandidatesExcludeDirect(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cfg.Policy.UnknownDomainFirstPath = "vless"
+	plan, err := BuildCandidates(cfg, "new.example", "", Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Candidates) == 0 {
+		t.Fatal("privacy-first plan has no candidates")
+	}
+	for _, route := range plan.Candidates {
+		if route.Type == "direct" {
+			t.Fatalf("privacy-first unknown plan exposed Direct candidate: %+v", plan.Candidates)
+		}
+	}
+}
+
+func TestFailClosedUnknownCandidatesContainOnlyDrop(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cfg.Policy.UnknownDomainFirstPath = "drop"
+	plan, err := BuildCandidates(cfg, "new.example", "", Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Candidates) != 1 || plan.Candidates[0].Type != "drop" {
+		t.Fatalf("fail-closed unknown plan was not DROP-only: %+v", plan.Candidates)
+	}
+}
+
+func TestPrivacyFirstUnknownDecisionCannotSelectDirect(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cfg.Policy.UnknownDomainFirstPath = "privacy_first"
+	prober := &scriptedProber{results: map[string]probe.RouteResult{
+		"smart-one": successfulResult("smart-one", "smart_dns", "rev-active"),
+		"vless-one": successfulResult("vless-one", "vless", "rev-active"),
+		"drop":      successfulResult("drop", "drop", "rev-active"),
+	}}
+	check, err := CheckDomain(context.Background(), cfg, "unknown.example", "", Options{RouteProber: prober, ActiveRevision: "rev-active"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.InitialUnknownPolicy != "privacy_first" || check.Selected == nil || check.Selected.RouteType == "direct" {
+		t.Fatalf("privacy-first selected an unsafe initial path: %+v", check)
+	}
+}
+
+func TestFailClosedUnknownDecisionSelectsDropOnly(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cfg.Policy.UnknownDomainFirstPath = "fail_closed"
+	prober := &scriptedProber{results: map[string]probe.RouteResult{
+		"drop": successfulResult("drop", "drop", "rev-active"),
+	}}
+	check, err := CheckDomain(context.Background(), cfg, "unknown.example", "", Options{RouteProber: prober, ActiveRevision: "rev-active"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.InitialUnknownPolicy != "fail_closed" || check.Selected == nil || check.Selected.RouteType != "drop" {
+		t.Fatalf("fail-closed selected a non-DROP path: %+v", check)
 	}
 }
 
@@ -380,8 +566,8 @@ func TestCachedNoMatchDecisionIsInvalidatedByFreshTSPUMatch(t *testing.T) {
 	if result.Cached || result.Selected == nil || result.Selected.Route != "zapret" {
 		t.Fatalf("fresh TSPU signal reused unsafe cached direct route: %+v", result)
 	}
-	if len(prober.calls) != 2 || prober.calls[1] != "zapret" {
-		t.Fatalf("expected a fresh Zapret probe, calls=%v", prober.calls)
+	if !reflect.DeepEqual(prober.calls, []string{"direct", "smart-one", "vless-one", "drop", "zapret", "smart-one", "vless-one", "drop"}) {
+		t.Fatalf("expected a fresh TSPU candidate set, calls=%v", prober.calls)
 	}
 }
 
@@ -429,7 +615,7 @@ func TestDirectTSPUSymptomFallsBackToZapret(t *testing.T) {
 	if result.Selected == nil || result.Selected.Route != "zapret" {
 		t.Fatalf("zapret fallback not selected: %+v", result)
 	}
-	if got := prober.calls; len(got) != 2 || got[0] != "direct" || got[1] != "zapret" {
+	if got := prober.calls; !reflect.DeepEqual(got, []string{"direct", "zapret", "smart-one", "vless-one", "drop"}) {
 		t.Fatalf("wrong fallback order: %v", got)
 	}
 }
@@ -447,8 +633,8 @@ func TestOrdinaryDirectFailureSkipsZapretAndTriesSmartDNS(t *testing.T) {
 	if result.Selected == nil || result.Selected.Route != "smart-one" {
 		t.Fatalf("Smart DNS fallback not selected: %+v", result)
 	}
-	if got := prober.calls; len(got) != 2 || got[0] != "direct" || got[1] != "smart-one" {
-		t.Fatalf("ordinary failure must not invoke Zapret: %v", got)
+	if got := prober.calls; !reflect.DeepEqual(got, []string{"direct", "smart-one", "vless-one", "drop"}) {
+		t.Fatalf("ordinary failure must not invoke Zapret, but alternatives must finish: %v", got)
 	}
 }
 
@@ -464,20 +650,20 @@ func TestFreshTSPUMatchStartsWithZapret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Selected == nil || result.Selected.Route != "zapret" || len(prober.calls) != 1 || prober.calls[0] != "zapret" {
+	if result.Selected == nil || result.Selected.Route != "zapret" || !reflect.DeepEqual(prober.calls, []string{"zapret", "smart-one", "vless-one", "drop"}) {
 		t.Fatalf("fresh TSPU match did not start with Zapret: %+v calls=%v", result, prober.calls)
 	}
 }
 
-func TestTSPUFallbackOrderUsesZapretThenVLESSThenDrop(t *testing.T) {
-	got := orderForService("TSPU_RESTRICTED", "MATCH", "zapret_first")
-	want := []string{"zapret", "vless", "drop"}
+func TestTSPUFallbackOrderUsesZapretThenSmartDNSThenVLESSThenDrop(t *testing.T) {
+	got := eligibleRouteTypesForService("TSPU_RESTRICTED", "MATCH", "zapret_first")
+	want := []string{"zapret", "smart_dns", "vless", "drop"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("TSPU fallback order = %v, want %v", got, want)
 	}
 }
 
-func TestTSPUCheckFallsBackFromZapretToVLESS(t *testing.T) {
+func TestTSPUCheckFallsBackFromZapretToSmartDNSBeforeVLESS(t *testing.T) {
 	cfg := discoveryConfig(t)
 	prober := &scriptedProber{results: map[string]probe.RouteResult{
 		"zapret":    failedResult("zapret", "zapret", "strategy_failed"),
@@ -491,12 +677,47 @@ func TestTSPUCheckFallsBackFromZapretToVLESS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Selected == nil || result.Selected.Route != "vless-one" {
-		t.Fatalf("VLESS was not selected after Zapret failed: %+v", result)
+	if result.Selected == nil || result.Selected.Route != "smart-one" {
+		t.Fatalf("Smart DNS was not selected after Zapret failed: %+v", result)
 	}
-	want := []string{"zapret", "vless-one"}
+	want := []string{"zapret", "smart-one", "vless-one", "drop"}
 	if !reflect.DeepEqual(prober.calls, want) {
 		t.Fatalf("unexpected TSPU fallback calls=%v", prober.calls)
+	}
+}
+
+func TestExplicitTSPUCategoryProbesZapretWithoutFreshDetectorResult(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cfg.Services["tspu-service"] = config.Service{
+		Category:       "TSPU_RESTRICTED",
+		AllowedPaths:   []string{"zapret", "smart_dns", "vless", "drop"},
+		ForbiddenPaths: []string{"direct"},
+	}
+	prober := &scriptedProber{results: map[string]probe.RouteResult{
+		"zapret": successfulResult("zapret", "zapret", "rev-active"),
+		"smart-one": func() probe.RouteResult {
+			result := successfulResult("smart-one", "smart_dns", "rev-active")
+			result.EndToEndLatencyMS = 70
+			return result
+		}(),
+		"vless-one": func() probe.RouteResult {
+			result := successfulResult("vless-one", "vless", "rev-active")
+			result.EndToEndLatencyMS = 40
+			return result
+		}(),
+	}}
+	result, err := CheckDomain(context.Background(), cfg, "listed.example", "tspu-service", Options{
+		RouteProber: prober, ActiveRevision: "rev-active",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCalls := []string{"zapret", "smart-one", "vless-one", "drop"}
+	if !reflect.DeepEqual(prober.calls, wantCalls) {
+		t.Fatalf("explicit TSPU category skipped a candidate: got calls=%v want=%v", prober.calls, wantCalls)
+	}
+	if result.Selected == nil || result.Selected.Route != "vless-one" {
+		t.Fatalf("selection must use verified evidence rather than candidate order: %+v", result.Selected)
 	}
 }
 
@@ -516,8 +737,8 @@ func TestRegionalBlockRemovesDirectAndZapretFromRemainingQueue(t *testing.T) {
 	if result.Category != "GEO_LOCKED" || result.Selected == nil || result.Selected.Route != "smart-one" {
 		t.Fatalf("regional fallback failed: %+v", result)
 	}
-	if got := prober.calls; len(got) != 2 || got[0] != "direct" || got[1] != "smart-one" {
-		t.Fatalf("Zapret was not excluded after regional block: %v", got)
+	if got := prober.calls; !reflect.DeepEqual(got, []string{"direct", "smart-one", "vless-one", "drop"}) {
+		t.Fatalf("regional block must exclude Zapret but finish safe candidates: %v", got)
 	}
 	if len(prober.services) < 2 || !prober.services[1].RequireNonRUEgress || prober.services[1].Category != "GEO_LOCKED" {
 		t.Fatalf("GEO_LOCKED evidence requirements not applied to fallback: %+v", prober.services)
@@ -556,6 +777,26 @@ func TestWrongRevisionCannotBeSelected(t *testing.T) {
 	}
 	if result.Selected == nil || result.Selected.Route != "smart-one" || result.Results[0].Status != "UNVERIFIED" || result.Results[0].ReasonCode != "probe_adapter_revision_mismatch" {
 		t.Fatalf("wrong revision evidence was accepted: %+v", result)
+	}
+}
+
+func TestWrongRevisionCannotBeSelectedForCaseVariantSuccess(t *testing.T) {
+	cfg := discoveryConfig(t)
+	result := successfulResult("direct", "direct", "rev-old")
+	result.Status = "ok"
+	prober := &scriptedProber{results: map[string]probe.RouteResult{
+		"direct":    result,
+		"smart-one": successfulResult("smart-one", "smart_dns", "rev-active"),
+	}}
+	check, err := CheckDomain(context.Background(), cfg, "revision-case.example", "", Options{RouteProber: prober, ActiveRevision: "rev-active"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(check.Results) == 0 || check.Results[0].Status != "UNVERIFIED" || check.Results[0].ReasonCode != "probe_adapter_revision_mismatch" {
+		t.Fatalf("case-variant success bypassed revision binding: %+v", check)
+	}
+	if check.Selected == nil || check.Selected.Route != "smart-one" {
+		t.Fatalf("safe revision-bound route was not selected after rejecting stale evidence: %+v", check)
 	}
 }
 
@@ -634,10 +875,19 @@ func (p *scriptedProber) ProbeRoute(_ context.Context, _ *config.Config, domain,
 }
 
 func successfulResult(tag, routeType, revision string) probe.RouteResult {
-	return probe.RouteResult{
+	result := probe.RouteResult{
 		Route: tag, RouteType: routeType, Status: "OK", ApplicationStatus: "OK",
 		PathVerified: true, ServiceOK: true, AdapterRevision: revision,
+		EndToEndLatencyMS: 50, EndToEndLatencyAvailable: true,
 	}
+	if routeType == "drop" {
+		result.ApplicationStatus = "DROP"
+	}
+	if routeType == "smart_dns" || routeType == "vless" {
+		result.ExternalCountry = "DE"
+		result.EgressConsensus = true
+	}
+	return result
 }
 
 func failedResult(tag, routeType, reason string) probe.RouteResult {

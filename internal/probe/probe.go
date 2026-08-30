@@ -63,6 +63,8 @@ type RouteResult struct {
 	ServiceOK              bool                  `json:"service_ok"`
 	RegionalBlock          bool                  `json:"regional_block"`
 	SuspectedTSPU          bool                  `json:"suspected_tspu"`
+	AuthenticationRequired bool                  `json:"authentication_required"`
+	WAFOrRateLimit         bool                  `json:"waf_or_rate_limit"`
 	ExternalCountry        string                `json:"external_country,omitempty"`
 	ExternalIPHash         string                `json:"external_ip_hash,omitempty"`
 	ExternalCountrySources []string              `json:"external_country_sources,omitempty"`
@@ -72,9 +74,18 @@ type RouteResult struct {
 	// consumers. It must never contain queue/setup/proof duration. When the
 	// route cannot expose a meaningful network measurement it is zero and
 	// RouteLatencyAvailable is false.
-	LatencyMS              int64         `json:"latency_ms,omitempty"`
-	RouteLatencyMS         int64         `json:"route_latency_ms,omitempty"`
-	RouteLatencyAvailable  bool          `json:"route_latency_available"`
+	LatencyMS             int64 `json:"latency_ms,omitempty"`
+	RouteLatencyMS        int64 `json:"route_latency_ms,omitempty"`
+	RouteLatencyAvailable bool  `json:"route_latency_available"`
+	// EndToEndLatencyMS covers DNS resolution plus the required
+	// transport/TLS/HTTP contract for this route. It is the comparable
+	// selection metric; RouteLatencyMS remains request-only latency.
+	EndToEndLatencyMS        int64 `json:"end_to_end_latency_ms,omitempty"`
+	EndToEndLatencyAvailable bool  `json:"end_to_end_latency_available"`
+	// SelectionScore is the policy-aware score calculated after hard safety
+	// filtering. It is evidence for the decision UI, never a replacement for
+	// PathVerified/ServiceOK.
+	SelectionScore         float64       `json:"selection_score,omitempty"`
 	VerificationDurationMS int64         `json:"verification_duration_ms,omitempty"`
 	Checks                 []CheckResult `json:"checks"`
 	FailureStage           string        `json:"failure_stage,omitempty"`
@@ -84,38 +95,42 @@ type RouteResult struct {
 }
 
 type CheckResult struct {
-	Name                string   `json:"name"`
-	URL                 string   `json:"url"`
-	Required            bool     `json:"required"`
-	Status              string   `json:"status"`
-	DNSOK               bool     `json:"dns_ok"`
-	DNSResolver         string   `json:"dns_resolver,omitempty"`
-	DNSProtocol         string   `json:"dns_protocol,omitempty"`
-	ResolvedIPs         []string `json:"resolved_ips,omitempty"`
-	ConnectedIP         string   `json:"connected_ip,omitempty"`
-	ConnectedPort       int      `json:"connected_port,omitempty"`
-	LocalIP             string   `json:"local_ip,omitempty"`
-	AddressFamily       string   `json:"address_family,omitempty"`
-	Transport           string   `json:"transport,omitempty"`
-	SocketMark          string   `json:"socket_mark,omitempty"`
-	HostPreserved       bool     `json:"host_preserved"`
-	SNIPreserved        bool     `json:"sni_preserved"`
-	TransportOK         bool     `json:"transport_ok"`
-	TLSOK               bool     `json:"tls_ok"`
-	HTTPOK              bool     `json:"http_ok"`
-	ContentOK           bool     `json:"content_ok"`
-	ExpectedCodeMatched bool     `json:"expected_code_matched"`
-	HTTPCode            int      `json:"http_code,omitempty"`
-	Redirects           int      `json:"redirects"`
-	RegionalBlock       bool     `json:"regional_block"`
-	SuspectedTSPU       bool     `json:"suspected_tspu"`
+	Name                   string   `json:"name"`
+	URL                    string   `json:"url"`
+	Required               bool     `json:"required"`
+	Status                 string   `json:"status"`
+	DNSOK                  bool     `json:"dns_ok"`
+	DNSResolver            string   `json:"dns_resolver,omitempty"`
+	DNSProtocol            string   `json:"dns_protocol,omitempty"`
+	ResolvedIPs            []string `json:"resolved_ips,omitempty"`
+	ConnectedIP            string   `json:"connected_ip,omitempty"`
+	ConnectedPort          int      `json:"connected_port,omitempty"`
+	LocalIP                string   `json:"local_ip,omitempty"`
+	AddressFamily          string   `json:"address_family,omitempty"`
+	Transport              string   `json:"transport,omitempty"`
+	SocketMark             string   `json:"socket_mark,omitempty"`
+	HostPreserved          bool     `json:"host_preserved"`
+	SNIPreserved           bool     `json:"sni_preserved"`
+	TransportOK            bool     `json:"transport_ok"`
+	TLSOK                  bool     `json:"tls_ok"`
+	HTTPOK                 bool     `json:"http_ok"`
+	ContentOK              bool     `json:"content_ok"`
+	ExpectedCodeMatched    bool     `json:"expected_code_matched"`
+	HTTPCode               int      `json:"http_code,omitempty"`
+	Redirects              int      `json:"redirects"`
+	RegionalBlock          bool     `json:"regional_block"`
+	SuspectedTSPU          bool     `json:"suspected_tspu"`
+	AuthenticationRequired bool     `json:"authentication_required"`
+	WAFOrRateLimit         bool     `json:"waf_or_rate_limit"`
 	// LatencyMS is the network request measurement, not the full check
 	// duration. The latter is VerificationDurationMS.
-	LatencyMS              int64  `json:"latency_ms,omitempty"`
-	RouteLatencyMS         int64  `json:"route_latency_ms,omitempty"`
-	RouteLatencyAvailable  bool   `json:"route_latency_available"`
-	VerificationDurationMS int64  `json:"verification_duration_ms,omitempty"`
-	Reason                 string `json:"reason,omitempty"`
+	LatencyMS                int64  `json:"latency_ms,omitempty"`
+	RouteLatencyMS           int64  `json:"route_latency_ms,omitempty"`
+	RouteLatencyAvailable    bool   `json:"route_latency_available"`
+	EndToEndLatencyMS        int64  `json:"end_to_end_latency_ms,omitempty"`
+	EndToEndLatencyAvailable bool   `json:"end_to_end_latency_available"`
+	VerificationDurationMS   int64  `json:"verification_duration_ms,omitempty"`
+	Reason                   string `json:"reason,omitempty"`
 }
 
 func ProbeRoute(ctx context.Context, cfg *config.Config, domain, serviceName string, svc config.Service, route config.Route) RouteResult {
@@ -202,7 +217,7 @@ func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, ser
 	}
 	result.LatencyMS = result.RouteLatencyMS
 
-	probeEgress := route.ExternalIPProbe || route.Type == "vless"
+	probeEgress := route.ExternalIPProbe || route.Type == "vless" || svc.RequireNonRUEgress
 	if cfg.Platform.Target != "test" && (route.Type == "direct" || route.Type == "zapret" || route.Type == "external_socks") {
 		probeEgress = true
 	}
@@ -216,7 +231,10 @@ func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, ser
 		} else if err != nil {
 			result.EgressReason = err.Error()
 		}
-		if svc.RequireNonRUEgress {
+		// GEO_LOCKED is a policy constraint, not a route label. Every network
+		// candidate, including Smart DNS, needs a known non-RU egress proof
+		// before it can be selected. A working DNS response alone is not enough.
+		if svc.RequireNonRUEgress && route.Type != "drop" {
 			if country == "RU" {
 				reason := "ru_exit_for_geo_locked"
 				result.ApplicationStatus = "RU_EXIT"
@@ -240,17 +258,31 @@ func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, ser
 	requiredOK := true
 	requiredSeen := false
 	optionalOK := false
+	e2eTotal := int64(0)
+	e2eAvailable := true
+	authRequired := false
+	wafOrRateLimit := false
 	var firstReason string
 	for _, c := range result.Checks {
+		checkStatus := strings.ToUpper(strings.TrimSpace(c.Status))
+		authRequired = authRequired || c.AuthenticationRequired || checkStatus == "AUTH_REQUIRED"
+		wafOrRateLimit = wafOrRateLimit || c.WAFOrRateLimit || checkStatus == "WAF_OR_RATE_LIMIT"
+		if c.Required {
+			if c.EndToEndLatencyAvailable {
+				e2eTotal += c.EndToEndLatencyMS
+			} else {
+				e2eAvailable = false
+			}
+		}
 		if c.Required {
 			requiredSeen = true
-			if c.Status != "OK" {
+			if checkStatus != "OK" {
 				requiredOK = false
 				if firstReason == "" {
 					firstReason = c.Reason
 				}
 			}
-		} else if c.Status == "OK" {
+		} else if checkStatus == "OK" {
 			optionalOK = true
 		}
 	}
@@ -269,8 +301,28 @@ func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, ser
 		result.Reason = &reason
 		return e.finishWithPathProof(ctx, cfg, route, result, startAll, proofSession)
 	}
+	result.AuthenticationRequired = authRequired
+	result.WAFOrRateLimit = wafOrRateLimit
+	if authRequired {
+		result.ApplicationStatus = "AUTH_REQUIRED"
+		result.Status = "AUTH_REQUIRED"
+		reason := "authentication_required"
+		result.Reason = &reason
+		return e.finishWithPathProof(ctx, cfg, route, result, startAll, proofSession)
+	}
+	if wafOrRateLimit {
+		result.ApplicationStatus = "WAF_OR_RATE_LIMIT"
+		result.Status = "WAF_OR_RATE_LIMIT"
+		reason := "waf_or_rate_limit"
+		result.Reason = &reason
+		return e.finishWithPathProof(ctx, cfg, route, result, startAll, proofSession)
+	}
 	if requiredSeen && requiredOK {
 		result.ServiceOK = true
+		if e2eAvailable {
+			result.EndToEndLatencyMS = e2eTotal
+			result.EndToEndLatencyAvailable = e2eTotal > 0
+		}
 		result.ApplicationStatus = "OK"
 		result.Status = "OK"
 		return e.finishWithPathProof(ctx, cfg, route, result, startAll, proofSession)
@@ -291,7 +343,7 @@ func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, ser
 }
 
 func finalizeUnverifiedResult(result RouteResult, startedAt time.Time) RouteResult {
-	result.VerificationDurationMS = time.Since(startedAt).Milliseconds()
+	result.VerificationDurationMS = elapsedMilliseconds(startedAt)
 	if result.RouteLatencyAvailable {
 		result.LatencyMS = result.RouteLatencyMS
 	} else {
@@ -312,7 +364,7 @@ func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check
 	parsed, err := url.Parse(check.URL)
 	if err != nil {
 		res.Reason = "invalid_url"
-		return res
+		return finalizeCheckResult(res, start)
 	}
 	host := parsed.Hostname()
 	port := parsed.Port()
@@ -324,11 +376,16 @@ func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check
 		}
 	}
 
+	// Resolve once per service check. Keep the DNS portion separate so a
+	// later address attempt cannot accidentally inherit the duration of a
+	// previous failed address.
+	dnsStarted := time.Now()
 	ips, resolver, protocol, err := resolveForRoute(ctx, cfg, route, host)
 	if err != nil {
 		res.Reason = "dns_failed:" + err.Error()
-		return res
+		return finalizeCheckResult(res, start)
 	}
+	dnsLatencyMS, dnsLatencyAvailable := measuredRouteLatency(dnsStarted)
 	res.DNSOK = true
 	res.DNSResolver = resolver
 	res.DNSProtocol = protocol
@@ -339,20 +396,20 @@ func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check
 		for _, ip := range ips {
 			if isUnsafeAddr(ip) {
 				res.Reason = "smart_dns_unsafe_answer"
-				return res
+				return finalizeCheckResult(res, start)
 			}
 		}
 	}
 
 	if len(ips) == 0 {
 		res.Reason = "dns_empty"
-		return res
+		return finalizeCheckResult(res, start)
 	}
 
 	targets := routeProbeTargets(ips, family)
 	if len(targets) == 0 {
 		res.Reason = "dns_address_family_unavailable"
-		return res
+		return finalizeCheckResult(res, start)
 	}
 
 	var lastReason string
@@ -361,6 +418,7 @@ func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check
 			lastReason = "ssrf_private_address_blocked"
 			continue
 		}
+		attemptStarted := time.Now()
 		attempt := runHTTPAttempt(ctx, cfg, route, check, parsed, host, port, ip)
 		if attempt.ConnectedIP != "" {
 			res.ConnectedIP = attempt.ConnectedIP
@@ -389,23 +447,45 @@ func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check
 		res.Redirects = attempt.Redirects
 		res.RegionalBlock = attempt.RegionalBlock
 		res.SuspectedTSPU = attempt.SuspectedTSPU
+		res.AuthenticationRequired = attempt.AuthenticationRequired
+		res.WAFOrRateLimit = attempt.WAFOrRateLimit
+		if attempt.ResponseReceived && dnsLatencyAvailable {
+			// End-to-end service latency includes the DNS lookup and this
+			// particular completed network attempt. It must not include a
+			// previous target's timeout/retry or the full verification job.
+			if attemptMS, ok := measuredRouteLatency(attemptStarted); ok {
+				e2e, ok := composeEndToEndLatency(dnsLatencyMS, attemptMS)
+				if ok && (!res.EndToEndLatencyAvailable || e2e < res.EndToEndLatencyMS) {
+					res.EndToEndLatencyMS = e2e
+					res.EndToEndLatencyAvailable = true
+				}
+			}
+		}
 		if attempt.RouteLatencyAvailable && (!res.RouteLatencyAvailable || attempt.RouteLatencyMS < res.RouteLatencyMS) {
 			res.RouteLatencyMS = attempt.RouteLatencyMS
 			res.RouteLatencyAvailable = true
 			res.LatencyMS = attempt.RouteLatencyMS
 		}
 		lastReason = attempt.Reason
-		if attempt.Status == "OK" || attempt.Status == "REGION_BLOCK" || attempt.Status == "SUSPECTED_TSPU" {
-			res.Status = attempt.Status
+		attemptStatus := strings.ToUpper(strings.TrimSpace(attempt.Status))
+		if attemptStatus == "OK" || attemptStatus == "REGION_BLOCK" || attemptStatus == "SUSPECTED_TSPU" || attemptStatus == "AUTH_REQUIRED" || attemptStatus == "WAF_OR_RATE_LIMIT" {
+			res.Status = attemptStatus
 			res.Reason = attempt.Reason
-			res.VerificationDurationMS = time.Since(start).Milliseconds()
-			return res
+			return finalizeCheckResult(res, start)
 		}
 	}
-	res.VerificationDurationMS = time.Since(start).Milliseconds()
+	res = finalizeCheckResult(res, start)
 	if lastReason != "" {
 		res.Reason = lastReason
 	}
+	return res
+}
+
+func finalizeCheckResult(res CheckResult, startedAt time.Time) CheckResult {
+	res.VerificationDurationMS = elapsedMilliseconds(startedAt)
+	// End-to-end latency is recorded by probeOne from the DNS/network path
+	// timer. Never derive it from VerificationDurationMS: that timer includes
+	// orchestration, retries, proof and cleanup and is not a network metric.
 	return res
 }
 
@@ -748,27 +828,30 @@ func skipDNSName(msg []byte, off int) (int, error) {
 }
 
 type attemptResult struct {
-	Status                string
-	ConnectedIP           string
-	ConnectedPort         int
-	LocalIP               string
-	AddressFamily         string
-	Transport             string
-	SocketMark            string
-	HostPreserved         bool
-	SNIPreserved          bool
-	TransportOK           bool
-	TLSOK                 bool
-	HTTPOK                bool
-	ContentOK             bool
-	ExpectedCodeMatched   bool
-	HTTPCode              int
-	Redirects             int
-	RegionalBlock         bool
-	SuspectedTSPU         bool
-	Reason                string
-	RouteLatencyMS        int64
-	RouteLatencyAvailable bool
+	Status                 string
+	ConnectedIP            string
+	ConnectedPort          int
+	LocalIP                string
+	AddressFamily          string
+	Transport              string
+	SocketMark             string
+	HostPreserved          bool
+	SNIPreserved           bool
+	TransportOK            bool
+	TLSOK                  bool
+	HTTPOK                 bool
+	ContentOK              bool
+	ExpectedCodeMatched    bool
+	HTTPCode               int
+	Redirects              int
+	RegionalBlock          bool
+	SuspectedTSPU          bool
+	AuthenticationRequired bool
+	WAFOrRateLimit         bool
+	ResponseReceived       bool
+	Reason                 string
+	RouteLatencyMS         int64
+	RouteLatencyAvailable  bool
 }
 
 func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route, check config.ProbeCheck, parsed *url.URL, host, port string, ip netip.Addr) attemptResult {
@@ -851,9 +934,9 @@ func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route,
 
 	requestStarted := time.Now()
 	resp, err := client.Do(req)
-	routeLatencyMS := time.Since(requestStarted).Milliseconds()
+	routeLatencyMS, routeLatencyAvailable := measuredRouteLatency(requestStarted)
 	if err != nil {
-		return attemptResult{Status: "FAIL", ConnectedIP: connectedIP, ConnectedPort: connectedPort, LocalIP: localIP, AddressFamily: addressFamily, Transport: dialTransport, SocketMark: formatSocketMark(observedSocketMark), Reason: classifyTransportError(err), RouteLatencyMS: routeLatencyMS, RouteLatencyAvailable: routeLatencyMS > 0}
+		return attemptResult{Status: "FAIL", ConnectedIP: connectedIP, ConnectedPort: connectedPort, LocalIP: localIP, AddressFamily: addressFamily, Transport: dialTransport, SocketMark: formatSocketMark(observedSocketMark), Reason: classifyTransportError(err), RouteLatencyMS: routeLatencyMS, RouteLatencyAvailable: routeLatencyAvailable}
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
@@ -866,12 +949,26 @@ func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route,
 
 	status := "FAIL"
 	reason := "unexpected_response"
+	authRequired := resp.StatusCode == http.StatusUnauthorized
+	wafOrRateLimit := (resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests) && !regional
 	if regional {
 		status = "REGION_BLOCK"
 		reason = "regional_block_marker"
 	} else if tspu {
 		status = "SUSPECTED_TSPU"
 		reason = "tspu_or_block_marker"
+	} else if authRequired {
+		if check.AllowUnauthenticated && expectedCode && contentOK {
+			status = "OK"
+			reason = ""
+			authRequired = false
+		} else {
+			status = "AUTH_REQUIRED"
+			reason = "authentication_required"
+		}
+	} else if wafOrRateLimit {
+		status = "WAF_OR_RATE_LIMIT"
+		reason = "waf_or_rate_limit"
 	} else if !expectedCode {
 		reason = fmt.Sprintf("unexpected_http_%d", resp.StatusCode)
 	} else if !contentOK {
@@ -882,28 +979,81 @@ func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route,
 	}
 
 	return attemptResult{
-		Status:                status,
-		ConnectedIP:           connectedIP,
-		ConnectedPort:         connectedPort,
-		LocalIP:               localIP,
-		AddressFamily:         addressFamily,
-		Transport:             dialTransport,
-		SocketMark:            formatSocketMark(observedSocketMark),
-		HostPreserved:         req.Host == parsed.Host,
-		SNIPreserved:          parsed.Scheme != "https" || transport.TLSClientConfig.ServerName == host,
-		TransportOK:           true,
-		TLSOK:                 parsed.Scheme == "https" && resp.TLS != nil,
-		HTTPOK:                expectedCode,
-		ContentOK:             contentOK,
-		ExpectedCodeMatched:   expectedCode,
-		HTTPCode:              resp.StatusCode,
-		Redirects:             redirects,
-		RegionalBlock:         regional,
-		SuspectedTSPU:         tspu,
-		Reason:                reason,
-		RouteLatencyMS:        routeLatencyMS,
-		RouteLatencyAvailable: routeLatencyMS > 0,
+		Status:                 status,
+		ConnectedIP:            connectedIP,
+		ConnectedPort:          connectedPort,
+		LocalIP:                localIP,
+		AddressFamily:          addressFamily,
+		Transport:              dialTransport,
+		SocketMark:             formatSocketMark(observedSocketMark),
+		HostPreserved:          req.Host == parsed.Host,
+		SNIPreserved:           parsed.Scheme != "https" || transport.TLSClientConfig.ServerName == host,
+		TransportOK:            true,
+		TLSOK:                  parsed.Scheme == "https" && resp.TLS != nil,
+		HTTPOK:                 expectedCode,
+		ContentOK:              contentOK,
+		ExpectedCodeMatched:    expectedCode,
+		HTTPCode:               resp.StatusCode,
+		Redirects:              redirects,
+		RegionalBlock:          regional,
+		SuspectedTSPU:          tspu,
+		AuthenticationRequired: authRequired,
+		WAFOrRateLimit:         wafOrRateLimit,
+		ResponseReceived:       true,
+		Reason:                 reason,
+		RouteLatencyMS:         routeLatencyMS,
+		RouteLatencyAvailable:  routeLatencyAvailable,
 	}
+}
+
+// measuredRouteLatency keeps the network-path timer separate from the full
+// verification duration. Millisecond fields cannot represent a successful
+// sub-millisecond local probe as 0 without making it look unavailable, so a
+// positive measured interval is reported as the smallest representable value.
+func measuredRouteLatency(start time.Time) (int64, bool) {
+	elapsed := time.Since(start)
+	// A completed request is a valid path measurement even when the host
+	// clock reports a zero-duration interval. Round that sub-millisecond
+	// success up to the smallest representable millisecond instead of
+	// incorrectly labelling latency as unavailable.
+	if elapsed < 0 {
+		return 0, false
+	}
+	latency := elapsed.Milliseconds()
+	if latency < 1 {
+		latency = 1
+	}
+	return latency, true
+}
+
+// composeEndToEndLatency combines the one-time DNS measurement with the
+// duration of one completed network attempt. Keeping this arithmetic explicit
+// prevents retry/queue duration from being smuggled into the comparable
+// service-path metric.
+func composeEndToEndLatency(dnsMS, attemptMS int64) (int64, bool) {
+	if dnsMS < 0 || attemptMS < 0 {
+		return 0, false
+	}
+	total := dnsMS + attemptMS
+	if total < 1 {
+		total = 1
+	}
+	return total, true
+}
+
+func elapsedMilliseconds(start time.Time) int64 {
+	elapsed := time.Since(start)
+	if elapsed <= 0 {
+		// The operation has completed, but a wall-clock adjustment can make a
+		// monotonic sample appear non-positive. Keep duration distinct from
+		// latency and report the smallest representable completed interval.
+		return 1
+	}
+	latency := elapsed.Milliseconds()
+	if latency < 1 {
+		latency = 1
+	}
+	return latency
 }
 
 func splitAddr(addr net.Addr) (string, bool) {

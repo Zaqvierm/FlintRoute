@@ -30,8 +30,13 @@ import (
 const (
 	CacheVersion          = 2
 	FreshnessVersion      = 1
-	maxCacheBytes         = 32 << 20
+	maxCacheBytes         = 8 << 20
 	maxFreshnessFileBytes = 64 << 10
+	// MaxSourceEntries is a second bound beside the byte limit. A compact
+	// domain list can still expand into a very large map of strings and cache
+	// entries. On a router that expansion is a real memory/DoS risk, so reject
+	// the source before building an unbounded in-memory cache.
+	MaxSourceEntries = 16_384
 )
 
 type Cache struct {
@@ -173,6 +178,13 @@ func PreviousPath(path string) string  { return previousPath(path) }
 func FreshnessPath(path string) string { return freshnessPath(path) }
 
 func ParseDomains(r io.Reader) ([]string, error) {
+	return parseDomains(r, MaxSourceEntries)
+}
+
+func parseDomains(r io.Reader, maxEntries int) ([]string, error) {
+	if maxEntries <= 0 {
+		maxEntries = MaxSourceEntries
+	}
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	seen := map[string]bool{}
@@ -206,6 +218,9 @@ func ParseDomains(r io.Reader) ([]string, error) {
 		if !seen[pattern] {
 			seen[pattern] = true
 			out = append(out, pattern)
+			if len(out) > maxEntries {
+				return nil, errors.New("domain_entry_limit_exceeded")
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -574,6 +589,9 @@ func decodeCache(raw []byte) (Cache, error) {
 	if cache.Entries == nil || cache.GeneratedAt.IsZero() || cache.ExpiresAt.IsZero() {
 		return Cache{}, errors.New("incomplete TSPU cache")
 	}
+	if len(cache.Entries) > MaxSourceEntries {
+		return Cache{}, errors.New("domain_entry_limit_exceeded")
+	}
 	if cache.Version < CacheVersion {
 		for pattern, entry := range cache.Entries {
 			normalized, matchType, err := normalizePattern(pattern)
@@ -740,7 +758,10 @@ func saveFreshness(path, cacheSHA256 string, cache Cache) error {
 	return writeAtomic(target, raw, 0o600)
 }
 
-func loadFreshness(path, cacheSHA256 string) (Freshness, error) {
+// LoadFreshness reads only the small freshness sidecar.  Callers that only
+// need scheduling metadata must not load the (potentially very large) domain
+// index into a map just to find its expiry time.
+func LoadFreshness(path string) (Freshness, error) {
 	raw, err := readBoundedRegular(freshnessPath(path), maxFreshnessFileBytes)
 	if err != nil {
 		return Freshness{}, err
@@ -755,7 +776,6 @@ func loadFreshness(path, cacheSHA256 string) (Freshness, error) {
 	}
 	if value.Version != FreshnessVersion ||
 		value.CacheSHA256 == "" ||
-		value.CacheSHA256 != cacheSHA256 ||
 		value.ValidatedAt.IsZero() ||
 		value.ExpiresAt.IsZero() ||
 		len(value.SourceExpiry) > len(value.Sources) ||
@@ -766,6 +786,17 @@ func loadFreshness(path, cacheSHA256 string) (Freshness, error) {
 		if !validSourceName(source) || expires.IsZero() || expires.After(value.ExpiresAt) {
 			return Freshness{}, errors.New("invalid TSPU freshness source expiry")
 		}
+	}
+	return value, nil
+}
+
+func loadFreshness(path, cacheSHA256 string) (Freshness, error) {
+	value, err := LoadFreshness(path)
+	if err != nil {
+		return Freshness{}, err
+	}
+	if value.CacheSHA256 != cacheSHA256 {
+		return Freshness{}, errors.New("invalid TSPU freshness file")
 	}
 	return value, nil
 }

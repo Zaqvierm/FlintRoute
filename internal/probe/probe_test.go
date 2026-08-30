@@ -101,6 +101,24 @@ func TestProbeHTTP200WithMarker(t *testing.T) {
 	if result.VerificationDurationMS < result.RouteLatencyMS {
 		t.Fatalf("verification duration %dms is shorter than route latency %dms: %+v", result.VerificationDurationMS, result.RouteLatencyMS, result)
 	}
+	if len(result.Checks) != 1 || !result.Checks[0].EndToEndLatencyAvailable || result.Checks[0].EndToEndLatencyMS <= 0 {
+		t.Fatalf("successful HTTP check did not record end-to-end network evidence: %+v", result)
+	}
+}
+
+func TestProbe403IsTypedAsWAFOrRateLimitNotRegionalBlock(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	result := ProbeRoute(context.Background(), testConfig(), "example.test", "svc", serviceWithProbe(srv.URL, []int{http.StatusOK}, "optional", nil), config.Route{Type: "direct", Tag: "direct"})
+	if result.Status != "WAF_OR_RATE_LIMIT" || result.RegionalBlock || result.ServiceOK {
+		t.Fatalf("403 was misclassified as a service success/geo block: %+v", result)
+	}
+	if len(result.Checks) != 1 || !result.Checks[0].WAFOrRateLimit {
+		t.Fatalf("typed 403 evidence missing: %+v", result)
+	}
 }
 
 type fixedProofVerifier struct {
@@ -132,6 +150,49 @@ func TestPathVerificationDurationIsNotRouteLatency(t *testing.T) {
 	}
 }
 
+func TestPathProofFailureNormalizesCaseVariantSuccessStatus(t *testing.T) {
+	engine := NewEngine(fixedProofVerifier{})
+	result := engine.finishWithPathProof(context.Background(), testConfig(), config.Route{Type: "direct", Tag: "direct"}, RouteResult{
+		Domain: "example.test", Route: "direct", RouteType: "direct", Status: "ok", ApplicationStatus: "OK",
+		ServiceOK: true, PathVerified: true,
+	}, time.Now(), PathProofSession{BeginError: "missing path evidence"})
+	if result.Status == "ok" || result.PathVerified || result.FailureStage != "path_evidence_begin" {
+		t.Fatalf("case-variant success status survived path-proof failure: %+v", result)
+	}
+}
+
+func TestFinalizeCheckResultDoesNotDeriveE2EFromVerificationDuration(t *testing.T) {
+	result := finalizeCheckResult(CheckResult{
+		Status: "ok", RouteLatencyMS: 12, RouteLatencyAvailable: true,
+	}, time.Now().Add(-20*time.Millisecond))
+	if result.EndToEndLatencyAvailable || result.EndToEndLatencyMS != 0 {
+		t.Fatalf("verification duration was incorrectly exposed as end-to-end latency: %+v", result)
+	}
+	if result.VerificationDurationMS <= 0 {
+		t.Fatalf("verification duration was not recorded: %+v", result)
+	}
+}
+
+func TestFinalizeCheckResultPreservesMeasuredE2E(t *testing.T) {
+	result := finalizeCheckResult(CheckResult{
+		Status: "ok", RouteLatencyMS: 12, RouteLatencyAvailable: true,
+		EndToEndLatencyMS: 37, EndToEndLatencyAvailable: true,
+	}, time.Now().Add(-20*time.Millisecond))
+	if !result.EndToEndLatencyAvailable || result.EndToEndLatencyMS != 37 {
+		t.Fatalf("measured end-to-end evidence was overwritten: %+v", result)
+	}
+}
+
+func TestComposeEndToEndLatencyDoesNotAccumulatePreviousAttempts(t *testing.T) {
+	// The first target may have timed out before a second target succeeds. The
+	// comparable metric is DNS once plus the successful attempt, not the sum of
+	// all target attempts.
+	got, ok := composeEndToEndLatency(12, 85)
+	if !ok || got != 97 {
+		t.Fatalf("unexpected per-attempt end-to-end latency: got=%d ok=%v", got, ok)
+	}
+}
+
 func TestProbeHTTP204EmptyBodyIsOK(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(204)
@@ -157,7 +218,7 @@ func TestProbeUnexpected403Fails(t *testing.T) {
 	}
 }
 
-func TestProbeExpected401CanPass(t *testing.T) {
+func TestProbeExpected401IsAuthenticationRequiredNotServiceSuccess(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(401)
 		_, _ = w.Write([]byte("missing api key"))
@@ -165,8 +226,23 @@ func TestProbeExpected401CanPass(t *testing.T) {
 	defer srv.Close()
 
 	result := ProbeRoute(context.Background(), testConfig(), "example.test", "svc", serviceWithProbe(srv.URL, []int{401}, "required", nil), config.Route{Type: "direct", Tag: "direct"})
-	if result.Status != "UNVERIFIED" || result.ApplicationStatus != "OK" {
-		t.Fatalf("expected configured 401 to pass application checks only, got %+v", result)
+	if result.Status != "AUTH_REQUIRED" || result.ApplicationStatus != "AUTH_REQUIRED" || result.ServiceOK {
+		t.Fatalf("401 must remain an authentication result, not service success: %+v", result)
+	}
+}
+
+func TestProbeAllowsExplicitUnauthenticated401(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(401)
+		_, _ = w.Write([]byte("public endpoint requires a token"))
+	}))
+	defer srv.Close()
+
+	check := serviceWithProbe(srv.URL, []int{401}, "optional", nil)
+	check.ProbeURLs[0].AllowUnauthenticated = true
+	result := ProbeRoute(context.Background(), testConfig(), "example.test", "svc", check, config.Route{Type: "direct", Tag: "direct"})
+	if result.ApplicationStatus != "OK" || !result.ServiceOK || result.AuthenticationRequired || len(result.Checks) != 1 || result.Checks[0].Status != "OK" {
+		t.Fatalf("explicit unauthenticated 401 should be a valid service check: %+v", result)
 	}
 }
 
@@ -232,6 +308,34 @@ func TestSmartDNSConnectsToResolvedIP(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("server did not receive request")
+	}
+}
+
+func TestSmartDNSGEOPathRequiresEgressConsensus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("regional content"))
+	}))
+	defer srv.Close()
+	_, port, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dnsAddr, closeDNS := startTestDNSServer(t, net.ParseIP("127.0.0.1"))
+	defer closeDNS()
+
+	service := serviceWithProbe("http://smart.test:"+port+"/", []int{http.StatusOK}, "required", []string{"regional content"})
+	service.Category = "GEO_LOCKED"
+	service.RequireNonRUEgress = true
+	service.AllowedPaths = []string{"smart_dns", "drop"}
+	result := ProbeRoute(context.Background(), testConfig(), "smart.test", "geo", service, config.Route{
+		Type: "smart_dns", Tag: "smart", DNSServer: dnsAddr, ConnectToResolvedIP: true,
+	})
+	if result.ServiceOK || result.Status == "OK" {
+		t.Fatalf("Smart DNS GEO path without egress evidence was accepted: %+v", result)
+	}
+	if result.EgressReason == "" {
+		t.Fatalf("missing egress evidence did not produce a diagnostic: %+v", result)
 	}
 }
 

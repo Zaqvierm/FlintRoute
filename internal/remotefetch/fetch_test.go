@@ -5,8 +5,12 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"net"
 	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestBoundedReadersLimitDecompressedResponses(t *testing.T) {
@@ -67,5 +71,45 @@ func TestNewClientRejectsNonHTTPSAndPrivateRedirectTarget(t *testing.T) {
 	}
 	if err := client.CheckRedirect(request, nil); err == nil {
 		t.Fatal("private redirect was accepted")
+	}
+}
+
+func TestNewClientCloseIdleConnectionsClosesPinnedDialTransport(t *testing.T) {
+	var closed atomic.Int32
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateClosed {
+			closed.Add(1)
+		}
+	}
+	server.StartTLS()
+	defer server.Close()
+
+	ctx := WithLoopbackForTests(context.Background())
+	client, err := NewClient(ctx, server.Client(), server.URL+"/source", Options{})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/source", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	client.CloseIdleConnections()
+
+	deadline := time.Now().Add(time.Second)
+	for closed.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if closed.Load() == 0 {
+		t.Fatal("CloseIdleConnections left the pinned dial transport connection open")
 	}
 }

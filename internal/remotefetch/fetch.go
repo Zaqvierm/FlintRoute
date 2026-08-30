@@ -78,11 +78,15 @@ type Options struct {
 }
 
 type pinnedTransport struct {
-	base  *http.Transport
-	ctx   context.Context
-	mu    sync.RWMutex
-	pins  map[string][]netip.Addr
-	allow bool
+	// transport is the RoundTripper exposed to net/http. base is a separate
+	// clone used only for pinned address dials; both transports can therefore
+	// own idle connections and must be closed together.
+	transport *http.Transport
+	base      *http.Transport
+	ctx       context.Context
+	mu        sync.RWMutex
+	pins      map[string][]netip.Addr
+	allow     bool
 }
 
 func NewClient(ctx context.Context, base *http.Client, rawURL string, opts Options) (*http.Client, error) {
@@ -98,16 +102,20 @@ func NewClient(ctx context.Context, base *http.Client, rawURL string, opts Optio
 	}
 	transport := cloneTransport(base)
 	pinned := &pinnedTransport{
-		base:  transport.Clone(),
-		ctx:   ctx,
-		pins:  make(map[string][]netip.Addr),
-		allow: ctx.Value(testLoopbackKey{}) == true,
+		transport: transport,
+		base:      transport.Clone(),
+		ctx:       ctx,
+		pins:      make(map[string][]netip.Addr),
+		allow:     ctx.Value(testLoopbackKey{}) == true,
 	}
 	if err := pinned.pin(parsed); err != nil {
 		return nil, err
 	}
 	transport.DialContext = pinned.dialContext
-	client := &http.Client{Transport: transport, Timeout: opts.Timeout}
+	// Expose the wrapper so CloseIdleConnections also closes the separate
+	// dial transport used for pinned addresses. Returning only transport would
+	// leave those idle sockets behind after every refresh/probe.
+	client := &http.Client{Transport: pinned, Timeout: opts.Timeout}
 	if base != nil {
 		client.CheckRedirect = base.CheckRedirect
 	}
@@ -127,6 +135,19 @@ func NewClient(ctx context.Context, base *http.Client, rawURL string, opts Optio
 		return nil
 	}
 	return client, nil
+}
+
+func (p *pinnedTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return p.transport.RoundTrip(request)
+}
+
+func (p *pinnedTransport) CloseIdleConnections() {
+	if p.transport != nil {
+		p.transport.CloseIdleConnections()
+	}
+	if p.base != nil {
+		p.base.CloseIdleConnections()
+	}
 }
 
 func cloneTransport(base *http.Client) *http.Transport {

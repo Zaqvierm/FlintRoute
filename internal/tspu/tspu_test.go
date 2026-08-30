@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -103,6 +104,17 @@ func TestUpdateRejectsOversizedSourceInsteadOfTruncating(t *testing.T) {
 	}
 }
 
+func TestParseDomainsRejectsEntryExplosionBeforeBuildingUnboundedCache(t *testing.T) {
+	var raw strings.Builder
+	for i := 0; i < MaxSourceEntries+1; i++ {
+		fmt.Fprintf(&raw, "node-%05d.example\n", i)
+	}
+	domains, err := ParseDomains(strings.NewReader(raw.String()))
+	if err == nil || err.Error() != "domain_entry_limit_exceeded" {
+		t.Fatalf("entry explosion was accepted: entries=%d err=%v", len(domains), err)
+	}
+}
+
 func TestDropRatioRetainsPreviousAcceptedVersion(t *testing.T) {
 	oldDomains := []string{"a.example", "b.example", "c.example", "d.example"}
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
@@ -158,6 +170,29 @@ func TestRefreshFilePreservesValidCacheWhenAllSourcesFail(t *testing.T) {
 	loaded, err := Load(path)
 	if err != nil || loaded.SHA256 != first.SHA256 {
 		t.Fatalf("last valid cache is no longer loadable: cache=%+v err=%v", loaded, err)
+	}
+}
+
+func TestRefreshFileDefersOversizedExistingCacheBeforeDecode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tspu-cache.json")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(maxRefreshExistingCacheBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Policy:      config.Policy{TSPUListUpdateIntervalSeconds: 3600, MaxTSPUListBytes: 4096},
+		TSPUSources: []config.TSPUSource{{Name: "fixture", Type: "domains", URL: "https://example.invalid/list"}},
+	}
+	_, err = RefreshFile(context.Background(), nil, cfg, path, time.Now().UTC())
+	if err == nil || !strings.Contains(err.Error(), "memory-safe limit") {
+		t.Fatalf("oversized cache was not deferred before decode: %v", err)
 	}
 }
 

@@ -135,6 +135,38 @@ func TestCycleNeverExceedsProcessWideFourJobBudget(t *testing.T) {
 	}
 }
 
+func TestBoundedParallelismClampsWorkersToSharedBudget(t *testing.T) {
+	if got := boundedParallelism(16, 4, 12, make(chan struct{}, 4)); got != 4 {
+		t.Fatalf("worker count=%d want shared budget 4", got)
+	}
+	if got := boundedParallelism(16, 4, 2, make(chan struct{}, 4)); got != 2 {
+		t.Fatalf("worker count=%d want available jobs 2", got)
+	}
+	if got := boundedParallelism(0, 0, 12, nil); got != 4 {
+		t.Fatalf("default worker count=%d want 4", got)
+	}
+}
+
+func TestControlServicesKeepsSelectionBoundedForLargeServiceMaps(t *testing.T) {
+	cfg := healthConfig()
+	for i := 0; i < 10000; i++ {
+		cfg.Services[fmt.Sprintf("unknown-%05d", i)] = controlService("FUTURE_CATEGORY", fmt.Sprintf("future-%d.example", i))
+	}
+	controls := controlServices(cfg, cfg.Routes[0], 3)
+	if len(controls) != 3 {
+		t.Fatalf("control selection length=%d want 3", len(controls))
+	}
+	// The bounded selector must preserve the same deterministic category/name
+	// ordering as the old full sort while retaining only the controls that can
+	// actually be probed.
+	want := []string{"control-a", "control-b", "control-c"}
+	for i, name := range want {
+		if controls[i].name != name {
+			t.Fatalf("control %d=%q want %q", i, controls[i].name, name)
+		}
+	}
+}
+
 func TestCycleRejectsMixedRevisionEvidence(t *testing.T) {
 	cfg := healthConfig()
 	cfg.Routes = cfg.Routes[:1]
@@ -154,6 +186,38 @@ func TestCycleRejectsMixedRevisionEvidence(t *testing.T) {
 	}
 	if cycle.SelectedTag != "" || cycle.Status != "UNVERIFIED" || store.health["fast"].Role != "quarantined" || store.health["fast"].LastReason != "health_evidence_consensus_mismatch" {
 		t.Fatalf("mixed revisions were accepted: cycle=%+v health=%+v", cycle, store.health["fast"])
+	}
+}
+
+func TestSafeHealthResultRejectsSimulationAndContradictoryFlags(t *testing.T) {
+	route := config.Route{Type: "vless", Tag: "fast"}
+	base := probe.RouteResult{
+		Route: route.Tag, RouteType: route.Type, Status: "OK", ApplicationStatus: "OK",
+		PathVerified: true, ServiceOK: true, EgressConsensus: true,
+		AdapterRevision: "rev_2_001122334455", CandidateHash: "sha256:" + repeat("a", 64),
+		ArtifactManifestHash: "sha256:" + repeat("b", 64), ExternalIPHash: "sha256:" + repeat("c", 64),
+		ExternalCountry: "DE",
+	}
+	if !safeHealthResult(route, base) {
+		t.Fatal("valid health evidence was rejected")
+	}
+	tests := []struct {
+		name string
+		set  func(*probe.RouteResult)
+	}{
+		{name: "simulation", set: func(result *probe.RouteResult) { result.Simulation = true }},
+		{name: "regional block", set: func(result *probe.RouteResult) { result.RegionalBlock = true }},
+		{name: "authentication required", set: func(result *probe.RouteResult) { result.AuthenticationRequired = true }},
+		{name: "waf or rate limit", set: func(result *probe.RouteResult) { result.WAFOrRateLimit = true }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := base
+			test.set(&result)
+			if safeHealthResult(route, result) {
+				t.Fatalf("contradictory result was accepted: %+v", result)
+			}
+		})
 	}
 }
 
