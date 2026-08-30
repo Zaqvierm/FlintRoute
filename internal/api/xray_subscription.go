@@ -574,6 +574,14 @@ func routesForPreparedBundle(active *config.Config, prepared vpnsub.PreparedBund
 var errBaseVersionConflict = errors.New("base version conflict")
 
 func (s *Server) createDraftChange(title, description string, baseVersion int64, operations []ChangeOp, author string) (ChangeSet, error) {
+	return s.createDraftChangeWithOptions(title, description, baseVersion, operations, author, false)
+}
+
+// createDraftChangeWithOptions persists product-operation intent together with
+// the draft. This closes the restart window in which a background operation
+// could be persisted as an ordinary user draft before its execution flag was
+// stored.
+func (s *Server) createDraftChangeWithOptions(title, description string, baseVersion int64, operations []ChangeOp, author string, autoApply bool) (ChangeSet, error) {
 	release, failure := s.acquireMutationLease()
 	if failure != nil {
 		return ChangeSet{}, &mutationBlockedError{failure: failure}
@@ -593,6 +601,7 @@ func (s *Server) createDraftChange(title, description string, baseVersion int64,
 	change := ChangeSet{
 		ID: "chg_" + randomID, State: "draft", Title: title, Description: description,
 		BaseVersion: baseVersion, Version: 1, Operations: operations, CreatedAt: now, UpdatedAt: now, Author: author,
+		AutoApply: autoApply,
 	}
 	s.changes[change.ID] = change
 	s.mu.Unlock()

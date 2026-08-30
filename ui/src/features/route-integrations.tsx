@@ -48,6 +48,25 @@ function humanSmartDNSReason(reason?: string): string {
   return messages[reason ?? ''] ?? (reason ? `Проверка пути не пройдена: ${reason}.` : 'Конфигурация сохранена, но путь ещё не подтверждён.');
 }
 
+function smartDNSOperationLabel(operation: any): string {
+  switch (textValue(operation?.state, '')) {
+    case 'draft': return 'изменение поставлено в очередь';
+    case 'validated': return 'кандидат проверен, применение запускается';
+    case 'applying': return 'применяется к dataplane';
+    case 'awaiting_confirmation': return 'путь проверен, завершается подтверждение';
+    case 'committing': return 'фиксируется активная ревизия';
+    case 'requires_device': return 'нужна проверка устройства перед применением';
+    case 'recovery_required': return 'заблокировано: требуется recovery';
+    case 'failed': return 'автоматическое применение не удалось';
+    case 'rolled_back': return 'откачено после неудачной проверки';
+    default: return 'обрабатывается';
+  }
+}
+
+function smartDNSOperationActive(operation: any): boolean {
+  return ['draft', 'validated', 'applying', 'awaiting_confirmation', 'committing'].includes(textValue(operation?.state, ''));
+}
+
 export function RouteType({ title, type, routes }: { title: string; type: string; routes: any[] }) {
   const [selected, setSelected] = useState<any>(null);
   return <section><h2>{title}</h2><Grid>{routes.filter((r) => r.type === type).map((r) => <EntityCard title={r.tag} status={statusWithFreshness(r.status, r)} onOpen={() => setSelected(r)}><RouteBadge type={type} /><p>{humanStatus(r.status)}</p></EntityCard>)}</Grid><DetailDrawer title={selected?.tag ?? title} open={Boolean(selected)} onClose={() => setSelected(null)}><InfoGrid items={[["Тип", selected?.type], ["Состояние", selected?.status], ["Фактический путь", selected?.effective_path], ["Scope", selected?.scope], ["Health", selected?.health]]} /><RawDisclosure value={selected} /></DetailDrawer></section>;
@@ -254,6 +273,22 @@ export function SmartDNS({
       });
     return () => controller.abort();
   }, []);
+  useEffect(() => {
+    if (!smartDNSOperationActive(status?.automatic_operation)) return;
+    const controller = new AbortController();
+    const timer = window.setInterval(() => {
+      getSmartDNS(controller.signal)
+        .then(setStatus)
+        .catch((reason) => {
+          if (reason instanceof Error && reason.name === 'AbortError') return;
+          setError(reason instanceof Error ? reason.message : 'Smart DNS недоступен');
+        });
+    }, 1000);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [status?.automatic_operation?.id, status?.automatic_operation?.state]);
   async function save() {
     if (mutationLocked) { setMessage('Smart DNS нельзя изменить до подтверждения recovery state.'); return; }
     let values;
@@ -275,10 +310,12 @@ export function SmartDNS({
     setBusy(true);
     setMessage('Создаю проверяемое изменение Smart DNS…');
     try {
-      const result = await configureSmartDNS(values, testDomain.trim(), configVersion);
+      const result = await configureSmartDNS(values, testDomain.trim(), configVersion, true);
       setValidations(result.validations ?? []);
       setResolvers(['']);
-      setMessage(`Smart DNS проверен. Создан черновик для ${result.endpoint_count} резолверов; открой очередь изменений для review и применения.`);
+      setMessage(result.auto_apply_started
+        ? `Smart DNS проверен. Автоматическое применение для ${result.endpoint_count} резолверов запущено в фоне; результат появится в центре операций.`
+        : `Smart DNS проверен. Создан черновик для ${result.endpoint_count} резолверов; автоматическое продолжение не запущено.`);
       setStatus(await getSmartDNS());
       await refresh();
     } catch (reason) {
@@ -293,7 +330,9 @@ export function SmartDNS({
     <section class="grid">
       <Card title="Состояние Smart DNS">
         <div class="row"><b>{status.configured_count ?? 0}</b><span>DNS-серверов настроено</span><small>{status.ready ?? 0} готовы к выбору для GEO-сервисов</small></div>
-        {status.configured && !status.ready && <p class="action-status">DNS-серверы сохранены, но маршрут пока не подтверждён. {humanSmartDNSReason(status.routes?.[0]?.health?.last_reason)}</p>}
+        {status.automatic_operation && smartDNSOperationActive(status.automatic_operation) && <p class="action-status">Smart DNS проверяется и применяется автоматически: {smartDNSOperationLabel(status.automatic_operation)}. Подробности появятся в центре операций.</p>}
+        {status.configured && !status.ready && !smartDNSOperationActive(status.automatic_operation) && <p class="action-status">DNS-серверы сохранены, но маршрут пока не подтверждён. {humanSmartDNSReason(status.routes?.[0]?.health?.last_reason)}</p>}
+        {status.automatic_operation && !smartDNSOperationActive(status.automatic_operation) && status.automatic_operation.state !== 'committed' && <p class="action-status">Последнее автоматическое применение: {smartDNSOperationLabel(status.automatic_operation)}. Текущая активная конфигурация не заменялась без подтверждённой транзакции.</p>}
         <h4>Проверка успеха</h4>
         <div class="chips">{(status.success_contract ?? []).map((item: string) => <span class="chip">{item}</span>)}</div>
         {role === 'administrator' && (
@@ -320,8 +359,9 @@ export function SmartDNS({
       {(status.routes ?? []).map((route: any) => (
         <Card title={textValue(route.tag, 'Smart DNS route')} key={textValue(route.tag, 'smart-dns-route')}>
           <div class="row"><RouteBadge type="smart_dns" /><StatusBadge value={statusWithFreshness(route.status || 'не проверен', route)} /><span>{route.resolver_configured ? 'endpoint задан' : 'нужен endpoint'}</span></div>
+          {route.resolver_ip && <small>DNS endpoint: <span class="mono">{route.resolver_ip}:{route.resolver_port || '53'}</span></small>}
           {route.last_validation && <div class="row"><b>{route.last_validation.result?.udp?.safe ? 'UDP OK' : 'UDP FAIL'}</b><b>{route.last_validation.result?.tcp?.safe ? 'TCP OK' : 'TCP FAIL'}</b><b>{route.last_validation.result?.tls_ok ? 'TLS OK' : 'TLS FAIL'}</b><b>{route.last_validation.result?.http_ok ? `HTTP ${route.last_validation.result.http_status}` : 'HTTP FAIL'}</b></div>}
-          {route.status === 'validated_idle' && <p>DNS-сервер работает и готов к выбору. Сейчас он не используется ни одним сервисом.</p>}
+          {route.status === 'validated_idle' && <p>DNS-сервер проверен и готов к автоматическому выбору. Он будет использован, когда политика конкретного сервиса выберет Smart DNS.</p>}
           {route.status !== 'validated_idle' && route.health?.last_reason && <p>{humanSmartDNSReason(textValue(route.health.last_reason, 'Причина не указана'))}</p>}
           <small>{route.connect_to_resolved_ip ? 'HTTP/TLS проверяется по адресу из ответа DNS' : 'Маршрут выключен: resolver ещё не проверен'}</small>
           <small>Conditional DNS, не VPN.</small>

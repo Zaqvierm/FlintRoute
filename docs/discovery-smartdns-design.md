@@ -122,9 +122,14 @@ typed failure/ambiguous result and cannot authorize a production route.
 
 The Smart DNS screen keeps the safety transaction behind one product action:
 “Add and verify endpoint”. A new endpoint is validated and represented as a
-candidate/draft; existing production endpoints show their blast radius before
-replacement. The UI does not ask a home user to operate internal transaction
-states.
+candidate/draft. It is explicitly marked `AutoApply`, so the backend continues
+the bounded validate -> apply -> management/data-plane verification -> confirm
+flow in the background. Progress remains visible in the operation center; the
+browser never asks a home user to operate internal transaction states. A
+restart resumes only this explicitly marked product operation, while ordinary
+drafts remain user-controlled. Existing production endpoints show their blast
+radius before replacement, and a device/recovery gate is reported as blocked
+instead of being presented as an active route.
 
 ## Decision evidence and terminal states
 

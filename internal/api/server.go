@@ -135,6 +135,11 @@ type Server struct {
 	mutationGate           sync.RWMutex
 	changes                map[string]ChangeSet
 	actionLocks            map[string]*actionLockEntry
+	autoApplyMu            sync.Mutex
+	autoApplyInFlight      map[string]bool
+	autoApplyCtx           context.Context
+	autoApplyCancel        context.CancelFunc
+	autoApplyWG            sync.WaitGroup
 	transactionMu          sync.Mutex
 	subscriptionMu         sync.Mutex
 	timers                 map[string]*time.Timer
@@ -317,6 +322,7 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 			return nil, fmt.Errorf("initialize Telegram notifications: %w", err)
 		}
 	}
+	autoApplyCtx, autoApplyCancel := context.WithCancel(context.Background())
 	s := &Server{
 		cfg:                     cfg,
 		auth:                    authStore,
@@ -343,6 +349,9 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		mux:                     http.NewServeMux(),
 		changes:                 changes,
 		actionLocks:             map[string]*actionLockEntry{},
+		autoApplyInFlight:       map[string]bool{},
+		autoApplyCtx:            autoApplyCtx,
+		autoApplyCancel:         autoApplyCancel,
 		timers:                  map[string]*time.Timer{},
 		activeConfig:            activeConfig,
 		activeRevision:          activeRevision,
@@ -428,6 +437,12 @@ func (s *Server) Close() error {
 		}
 		s.schedulerWG.Wait()
 		s.timerWG.Wait()
+		s.autoApplyMu.Lock()
+		if s.autoApplyCancel != nil {
+			s.autoApplyCancel()
+		}
+		s.autoApplyMu.Unlock()
+		s.autoApplyWG.Wait()
 		if s.telegramNotifier != nil {
 			s.telegramNotifier.Close()
 		}
@@ -485,6 +500,9 @@ func (s *Server) reconcileRouteAssignments(ctx context.Context) error {
 }
 
 func (s *Server) startOperationalSchedulers(schedulerCtx context.Context) {
+	// Resume only explicitly marked product operations after recovery has
+	// admitted mutations. Unmarked historical drafts remain user-controlled.
+	s.resumeAutoApplyChanges()
 	interval := time.Duration(s.cfg.Policy.InventoryHealthIntervalSeconds) * time.Second
 	if interval <= 0 {
 		interval = 24 * time.Hour
@@ -2404,10 +2422,11 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 		items = append(items, item)
 	}
 	writeData(w, r, map[string]any{
-		"configured":       configured > 0,
-		"configured_count": configured,
-		"ready":            ready,
-		"routes":           items,
+		"configured":          configured > 0,
+		"configured_count":    configured,
+		"ready":               ready,
+		"automatic_operation": s.smartDNSAutomaticOperation(),
+		"routes":              items,
 		"fallback_order": map[string][]string{
 			"geo":  {"smart_dns", "vless", "drop"},
 			"tspu": {"zapret", "smart_dns", "vless", "drop"},
@@ -2415,6 +2434,42 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 		"success_contract": []string{"safe DNS answer", "connection to returned address", "content check", "egress check when required"},
 		"route_semantics":  "conditional DNS; not a VPN or tunnel",
 	})
+}
+
+// smartDNSAutomaticOperation exposes the bounded product flow without
+// leaking its internal ChangeSet operations. The UI can therefore distinguish
+// "being applied" from a resolver that is merely configured but idle.
+func (s *Server) smartDNSAutomaticOperation() map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var selected *ChangeSet
+	for _, change := range s.changes {
+		if !change.AutoApply || change.Title != "Configure Smart DNS resolvers" {
+			continue
+		}
+		switch change.State {
+		case "draft", "validated", "applying", "awaiting_confirmation", "committing", "recovery_required", "requires_device", "failed", "rolled_back":
+		default:
+			continue
+		}
+		candidate := change
+		if selected == nil || candidate.UpdatedAt > selected.UpdatedAt {
+			selected = &candidate
+		}
+	}
+	if selected == nil {
+		return nil
+	}
+	return map[string]any{
+		"id":                  selected.ID,
+		"state":               selected.State,
+		"updated_at":          selected.UpdatedAt,
+		"adapter_status":      selected.AdapterStatus,
+		"management_verified": selected.ManagementVerified,
+		"data_plane_verified": selected.DataPlaneVerified,
+		"recovery_required":   selected.State == "recovery_required",
+		"requires_device":     selected.State == "requires_device",
+	}
 }
 
 // smartDNSHealthFresh prevents a persisted healthy result from becoming an
@@ -2460,6 +2515,7 @@ type smartDNSConfigureRequest struct {
 	Resolvers   []smartDNSResolverInput `json:"resolvers,omitempty"`
 	Endpoints   []string                `json:"endpoints,omitempty"`
 	TestDomain  string                  `json:"test_domain"`
+	AutoApply   bool                    `json:"auto_apply,omitempty"`
 }
 
 type smartDNSResolverInput struct {
@@ -2566,7 +2622,7 @@ func (s *Server) handleSmartDNSConfigure(w http.ResponseWriter, r *http.Request)
 		)
 	}
 	session := currentSession(r)
-	change, err := s.createDraftChange("Configure Smart DNS resolvers", "Validate resolvers before using VPN fallback", request.BaseVersion, operations, session.User)
+	change, err := s.createDraftChangeWithOptions("Configure Smart DNS resolvers", "Validate resolvers before using VPN fallback", request.BaseVersion, operations, session.User, request.AutoApply)
 	if err != nil {
 		if errors.Is(err, errBaseVersionConflict) {
 			writeError(w, r, http.StatusConflict, "base_version_conflict", "base_version does not match current revision")
@@ -2575,7 +2631,11 @@ func (s *Server) handleSmartDNSConfigure(w http.ResponseWriter, r *http.Request)
 		writeError(w, r, http.StatusInternalServerError, "smart_dns_change_failed", err.Error())
 		return
 	}
-	writeData(w, r, map[string]any{"change": change, "endpoint_count": len(endpoints), "validations": validationResults})
+	autoApplyStarted := request.AutoApply && s.startAutoApplyChange(change.ID)
+	writeData(w, r, map[string]any{
+		"change": change, "endpoint_count": len(endpoints), "validations": validationResults,
+		"auto_apply_requested": request.AutoApply, "auto_apply_started": autoApplyStarted,
+	})
 }
 
 func normalizeSmartDNSEndpoint(raw string) (string, error) {

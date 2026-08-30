@@ -491,10 +491,10 @@ export async function componentAction(kind: ComponentKind, action: ComponentActi
   return request('/components/action', { method: 'POST', body: JSON.stringify({ kind, action, confirm_disruption: confirmDisruption, preserve_config: preserveConfig }) });
 }
 export async function getSmartDNS(signal?: AbortSignal): Promise<any> { return request('/smart-dns', { signal }); }
-export async function configureSmartDNS(resolvers: SmartDNSResolver[], testDomain: string, baseVersion: number): Promise<{ change: ChangeSet; endpoint_count: number; validations: SmartDNSValidation[] }> {
+export async function configureSmartDNS(resolvers: SmartDNSResolver[], testDomain: string, baseVersion: number, autoApply = true): Promise<{ change: ChangeSet; endpoint_count: number; validations: SmartDNSValidation[]; auto_apply_requested?: boolean; auto_apply_started?: boolean }> {
   return request('/smart-dns/configure', {
     method: 'POST',
-    body: JSON.stringify({ resolvers, test_domain: testDomain, base_version: baseVersion })
+    body: JSON.stringify({ resolvers, test_domain: testDomain, base_version: baseVersion, auto_apply: autoApply })
   });
 }
 export async function getDiscovery(signal?: AbortSignal): Promise<DiscoveryStatus> { return request('/discovery', { signal }); }
