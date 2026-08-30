@@ -33,7 +33,17 @@ if command -v cygpath >/dev/null 2>&1; then
   ROOT_NATIVE=$(cygpath -m "$ROOT")
   EXE=.exe
   GO="${GO:-$ROOT_NATIVE/.tools/go1.26.5/go/bin/go.exe}"
-  ROUTER_POLICY_BIN="${ROUTER_POLICY_BIN:-$ROOT_NATIVE/dist/router-policy.exe}"
+  # `go build -o dist/router-policy` keeps the exact output name under
+  # MSYS/Windows (it does not append .exe automatically).  Prefer an
+  # explicitly provided binary, then accept either convention so a clean
+  # clone does not depend on an untracked dist/router-policy.exe.
+  if [ -z "${ROUTER_POLICY_BIN:-}" ]; then
+    if [ -f "$ROOT_NATIVE/dist/router-policy.exe" ]; then
+      ROUTER_POLICY_BIN="$ROOT_NATIVE/dist/router-policy.exe"
+    else
+      ROUTER_POLICY_BIN="$ROOT_NATIVE/dist/router-policy"
+    fi
+  fi
 else
   TMP_NATIVE="$TMP"
   ROOT_NATIVE="$ROOT"
@@ -41,6 +51,16 @@ else
   GO="${GO:-$ROOT/.tools/go1.26.5/go/bin/go}"
   ROUTER_POLICY_BIN="${ROUTER_POLICY_BIN:-$ROOT/dist/router-policy}"
 fi
+# CI and clean clones may provide Go through PATH instead of the repository's
+# pinned tool cache.  Prefer the pinned tool when present, but never fail just
+# because that optional cache is absent.
+if [ ! -x "$GO" ]; then
+  GO=$(command -v go || true)
+fi
+[ -n "$GO" ] && [ -x "$GO" ] || {
+  echo "go toolchain not found (set GO or install Go)" >&2
+  exit 1
+}
 STATE_DIR="$TMP_NATIVE/state"
 RUNTIME_DIR="$TMP_NATIVE/runtime"
 ROUTER_POLICY_CONFIG_PATH="$TMP_NATIVE/etc/config.json"
@@ -95,12 +115,13 @@ MOCK_UCI_STATE="$TMP_NATIVE/uci-state.env"
 MOCK_IP_STATE="$TMP_NATIVE/ip-state.json"
 MOCK_SERVICE_STATE="$TMP_NATIVE/service-state"
 MOCK_MANAGEMENT_INTERFACE=br-lan
+MOCK_LOOPBACK_API_HEALTH=0
 ROUTER_POLICY_BOOT_ID_PATH="$TMP_NATIVE/boot-id"
 export STATE_DIR RUNTIME_DIR ROUTER_POLICY_CONFIG_PATH ROUTER_POLICY_BIN ROUTER_POLICY_ADAPTER_SELF
 export ACTIVE_NFT ACTIVE_DNSMASQ ACTIVE_XRAY ACTIVE_ZAPRET MOCK_OPENWRT_LOG MOCK_NFT_BOOT_GUARD_STATE
-export NFT_BIN FW4_BIN DNSMASQ_BIN DNSMASQ_INIT XRAY_BIN XRAY_INIT NFQWS_BIN ZAPRET_INIT IP_BIN UCI_BIN WGET_BIN NSLOOKUP_BIN PIDOF_BIN
+export NFT_BIN FW4_BIN DNSMASQ_BIN DNSMASQ_INIT XRAY_BIN XRAY_INIT NFQWS_BIN ZAPRET_INIT IP_BIN UCI_BIN WGET_BIN NSLOOKUP_BIN PIDOF_BIN MOCK_NFT_FOREIGN_TABLE
 export ROUTER_POLICY_ALLOW_SIMULATED_DIAGNOSTICS ROUTER_POLICY_AUTO_COLLECT_EVIDENCE MOCK_UCI_STATE MOCK_IP_STATE MOCK_SERVICE_STATE
-export MOCK_MANAGEMENT_INTERFACE ROUTER_POLICY_BOOT_ID_PATH
+export MOCK_MANAGEMENT_INTERFACE MOCK_LOOPBACK_API_HEALTH ROUTER_POLICY_BOOT_ID_PATH
 
 printf '%s\n' \
   'firewall.@defaults[0].flow_offloading=1' \
@@ -160,7 +181,7 @@ setup_transaction() {
   txdir="$STATE_DIR/transactions/$revision/$txid"
   mkdir -p "$txdir"
   cp "$ROOT/config/default.json" "$txdir/candidate.json"
-  node -e 'const fs=require("fs"); const path=process.argv[1]; const state=process.argv[2]; const runtime=process.argv[3]; const mode=process.argv[4]; const config=JSON.parse(fs.readFileSync(path, "utf8")); config.platform.target="test"; config.storage.state_dir=state; config.storage.runtime_dir=runtime; config.storage.database=state+"/router-policy.bbolt"; config.openwrt.flow_offloading_policy="disable"; if(mode==="zapret"){const route=config.routes.find((item)=>item.type==="zapret"); route.disabled=false; route.status="CONFIGURED"; config.services.zapret_acceptance={category:"TSPU_RESTRICTED",domains:["blocked.example"],allowed_paths:["zapret","drop"],forbidden_paths:[],require_non_ru_egress:false,probe_urls:[{name:"web",url:"https://blocked.example/",required:true,expected_codes:[200],body_mode:"optional"}]};} fs.writeFileSync(path, JSON.stringify(config, null, 2)+"\n");' "$(to_native_path "$txdir/candidate.json")" "$(to_native_path "$STATE_DIR")" "$(to_native_path "$RUNTIME_DIR")" "$mode"
+  node -e 'const fs=require("fs"); const path=process.argv[1]; const state=process.argv[2]; const runtime=process.argv[3]; const mode=process.argv[4]; const config=JSON.parse(fs.readFileSync(path, "utf8")); config.platform.target="test"; config.storage.state_dir=state; config.storage.runtime_dir=runtime; config.storage.database=state+"/router-policy.bbolt"; config.openwrt.flow_offloading_policy="disable"; if(mode==="zapret"||mode==="device-zapret"){const route=config.routes.find((item)=>item.type==="zapret"); route.disabled=false; route.status="CONFIGURED"; config.services.zapret_acceptance={category:"TSPU_RESTRICTED",domains:["blocked.example"],allowed_paths:["zapret","drop"],forbidden_paths:[],require_non_ru_egress:false,probe_urls:[{name:"web",url:"https://blocked.example/",required:true,expected_codes:[200],body_mode:"optional"}]};} if(mode==="device-zapret"){config.zapret.device_profiles=[{id:"tv-q208",scope:{ipv4:"192.168.0.162"},queue_num:208,strategy:"tv-fake-multidisorder-v1",binary:"/usr/bin/nfqws",active_config:"/etc/router-policy/zapret/profiles/tv-q208.conf",init_script:"/etc/init.d/router-policy-zapret-tv-q208",rules:[{protocol:"udp",ports:[{start:443,end:443}],verdict:"drop"},{protocol:"tcp",ports:[{start:443,end:443}],verdict:"queue",conntrack_first_packets:32}]}];} fs.writeFileSync(path, JSON.stringify(config, null, 2)+"\n");' "$(to_native_path "$txdir/candidate.json")" "$(to_native_path "$STATE_DIR")" "$(to_native_path "$RUNTIME_DIR")" "$mode"
   (cd "$ROOT" && "$ROUTER_POLICY_BIN" internal-generate-artifacts \
     --candidate "$txdir/candidate.json" \
     --root "$txdir/generated" \
@@ -217,6 +238,28 @@ printf 'old-dnsmasq\n' > "$ACTIVE_DNSMASQ"
 printf 'old-xray\n' > "$ACTIVE_XRAY"
 : > "$TMP/openwrt-calls.log"
 
+# A same-name table without the FlintRoute ownership marker is foreign. The
+# adapter must fence the transition instead of deleting or replacing it.
+setup_transaction "tx_0000000000000001" "rev_1_000000000001" "0000000000000000000000000000000000000000000000000000000000000001"
+adapter prepare "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
+export MOCK_NFT_FOREIGN_TABLE=1
+set +e
+foreign_nft_output=$(adapter replace-owned-nft "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" 2>&1)
+foreign_nft_rc=$?
+set -e
+unset MOCK_NFT_FOREIGN_TABLE
+[ "$foreign_nft_rc" -ne 0 ] || { echo "owned nft replacement accepted a foreign table" >&2; exit 1; }
+printf '%s\n' "$foreign_nft_output" | grep -F 'reason=owned_nft_ownership_unproven' >/dev/null || {
+  echo "foreign nft table refusal did not report ownership conflict" >&2
+  exit 1
+}
+! grep -Eq '^nft -f .*nft-transition-' "$TMP/openwrt-calls.log" || {
+  echo "foreign nft table was replaced" >&2
+  exit 1
+}
+adapter rollback "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
+echo "owned_nft_requires_marker=true"
+
 setup_transaction "tx_0011223344556677" "rev_2_001122334455" "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
 set +e
 wrong_binding=$(adapter prepare "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" "$artifact_manifest_hash" 2>&1)
@@ -249,7 +292,9 @@ assert_status applied
   echo "dnsmasq observation log was not prepared before restart" >&2
   exit 1
 }
-adapter verify-management "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
+management_verified=$(adapter verify-management "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision")
+printf '%s\n' "$management_verified" | grep -F 'loopback_api_health=false' >/dev/null
+printf '%s\n' "$management_verified" | grep -F 'loopback_api_required=false' >/dev/null
 assert_status management_verified
 adapter verify-data-plane "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 assert_status data_plane_verified
@@ -309,9 +354,12 @@ assert_order '^pidof router-policy$' '^wget '
 
 # Restart reconciliation is a true no-op while committed artifacts and runtime
 # routing state still match. Read-only checks are allowed; mutations are not.
- # The direct shell fixture has no control-plane bbolt boundary. Mirror the
- # production controller's post-persistence fence clear explicitly; commit
- # itself must keep the transition fence armed.
+ # The direct shell fixture has no control-plane bbolt boundary. Exercise the
+ # generation-bound clear used by the production controller after persistence;
+ # commit itself must keep the transition fence armed.
+bound_clear=$(adapter clear-boot-guard-bound "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" "$candidate_hash" "$artifact_manifest_hash")
+printf '%s\n' "$bound_clear" | grep -F 'operation=clear-boot-guard' >/dev/null
+printf '%s\n' "$bound_clear" | grep -F 'boot_guard=cleared' >/dev/null
 adapter clear-boot-guard "$ROUTER_POLICY_CONFIG_PATH" >/dev/null
 grep -Eq '^nft delete table inet router_policy_boot_guard$' "$TMP/openwrt-calls.log" || {
   echo "explicit post-commit fence clear was not recorded" >&2
@@ -429,11 +477,18 @@ adapter snapshot-current "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/
 adapter apply-candidate "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 printf 'lan_management_path=true\nglinet_uhttpd_path=true\n' > "$STATE_DIR/diagnostics/management.env"
 rm -f "$RUNTIME_DIR/management-proofs/$revision-$txid.json"
-management_unverified=$(adapter verify-management "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision")
+set +e
+management_unverified=$(adapter verify-management "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" 2>&1)
+management_unverified_rc=$?
+set -e
+[ "$management_unverified_rc" -eq 4 ] || {
+  echo "missing management proof was not fail-closed: rc=$management_unverified_rc output=$management_unverified" >&2
+  exit 1
+}
 printf '%s\n' "$management_unverified" | grep -F 'lan_management_path=false' >/dev/null
 printf '%s\n' "$management_unverified" | grep -F 'proof_valid=false' >/dev/null
 printf '%s\n' "$management_unverified" | grep -F 'legacy_management_env_present=true' >/dev/null
-printf '%s\n' "$management_unverified" | grep -F 'verification_status=UNVERIFIED' >/dev/null
+printf '%s\n' "$management_unverified" | grep -F 'verification_status=ERROR' >/dev/null
 "$TMP/bin/management-proof-fixture$EXE" --state "$STATE_DIR" --runtime "$RUNTIME_DIR" --boot-id "$ROUTER_POLICY_BOOT_ID_PATH" --transaction "$txid" --revision "$revision"
 MOCK_MANAGEMENT_INTERFACE=guest
 set +e
@@ -563,6 +618,40 @@ assert_order '^nft -f .*nft-boot-guard-transition-' '^zapret-init restart$'
 adapter rollback "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
 [ ! -e "$ACTIVE_ZAPRET" ] || { echo "rollback left the managed nfqws config behind" >&2; exit 1; }
 grep -Fx 'stopped' "$TMP/service-state/zapret-init.state" >/dev/null
+
+# Artifact removal must prove that the fixed target still contains the exact
+# bytes generated for this transaction. A foreign replacement at an
+# allowlisted path must survive the helper operation.
+setup_transaction "tx_7777777777777777" "rev_10_777777777777" "7777777777777777777777777777777777777777777777777777777777777777"
+adapter prepare "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
+printf 'foreign-xray\n' > "$ACTIVE_XRAY"
+set +e
+foreign_artifact_output=$(adapter artifact-remove "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" "$candidate_hash" "$artifact_manifest_hash" xray_config 2>&1)
+foreign_artifact_rc=$?
+set -e
+[ "$foreign_artifact_rc" -ne 0 ] || { echo "artifact removal accepted a foreign target" >&2; exit 1; }
+printf '%s\n' "$foreign_artifact_output" | grep -F 'reason=artifact_target_ownership_unproven' >/dev/null || {
+  echo "foreign artifact removal did not report ownership conflict" >&2
+  exit 1
+}
+grep -Fx 'foreign-xray' "$ACTIVE_XRAY" >/dev/null || { echo "foreign artifact was removed" >&2; exit 1; }
+printf 'foreign-xray\n' > "$ACTIVE_XRAY"
+set +e
+foreign_install_output=$(adapter artifact-install "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" "$candidate_hash" "$artifact_manifest_hash" xray_config 2>&1)
+foreign_install_rc=$?
+set -e
+[ "$foreign_install_rc" -ne 0 ] || { echo "artifact installation overwrote a foreign target" >&2; exit 1; }
+printf '%s\n' "$foreign_install_output" | grep -F 'reason=install_target_ownership_unproven' >/dev/null || {
+  echo "foreign artifact installation did not report ownership conflict" >&2
+  exit 1
+}
+grep -Fx 'foreign-xray' "$ACTIVE_XRAY" >/dev/null || { echo "foreign artifact was overwritten" >&2; exit 1; }
+cp "$txdir/generated/xray.json" "$ACTIVE_XRAY"
+adapter artifact-install "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" "$candidate_hash" "$artifact_manifest_hash" xray_config >/dev/null
+adapter artifact-remove "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" "$candidate_hash" "$artifact_manifest_hash" xray_config >/dev/null
+[ ! -e "$ACTIVE_XRAY" ] || { echo "owned artifact was not removed" >&2; exit 1; }
+adapter rollback "$ROUTER_POLICY_CONFIG_PATH" "$txid" "$revision" >/dev/null
+echo "artifact_install_remove_requires_exact_owned_bytes=true"
 
 echo "state_transitions_begin"
 cat "$TMP/state-transitions.log"

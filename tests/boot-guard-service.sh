@@ -1,4 +1,8 @@
 #!/bin/sh
+# The init script is sourced through a test-controlled absolute ROOT path.
+# ShellCheck cannot resolve that runtime path in CI; the fixture owns the
+# sourced file and exercises it explicitly below.
+# shellcheck disable=SC1091
 set -eu
 
 ROOT=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd)
@@ -38,7 +42,10 @@ grep -Fx 'open:router-policy-boot-guard-lease' "$PROCD_CALL_LOG" >/dev/null
 grep -F 'sleep 2147483647' "$PROCD_CALL_LOG" >/dev/null
 
 stop_service
-grep -Fx "clear-boot-guard $ROUTER_POLICY_CONFIG" "$BOOT_GUARD_CALL_LOG" >/dev/null
+if grep -Fx "clear-boot-guard $ROUTER_POLICY_CONFIG" "$BOOT_GUARD_CALL_LOG" >/dev/null; then
+  echo 'boot guard stop path cleared the forwarding fence' >&2
+  exit 1
+fi
 
 echo "boot_guard_service_persistent_until_reconcile=true"
-echo "boot_guard_stop_clears_table=true"
+echo "boot_guard_stop_preserves_table=true"

@@ -5,7 +5,7 @@ ROOT=$(cd -- "$(dirname "$0")/.." && pwd)
 SCRIPT="$ROOT/openwrt/ensure-dns-observer.sh"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
-mkdir -p "$TMP/bin" "$TMP/conf"
+mkdir -p "$TMP/bin" "$TMP/root/tmp/dnsmasq.d"
 
 cat > "$TMP/bin/dnsmasq" <<'EOF'
 #!/bin/sh
@@ -32,7 +32,12 @@ cat > "$TMP/bin/uci" <<'EOF'
 #!/bin/sh
 exit 1
 EOF
-chmod +x "$TMP/bin/dnsmasq" "$TMP/bin/dnsmasq-init" "$TMP/bin/nslookup" "$TMP/bin/sleep" "$TMP/bin/uci"
+cat > "$TMP/bin/chown" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$DNSMASQ_CHOWN_LOG"
+exit 0
+EOF
+chmod +x "$TMP/bin/dnsmasq" "$TMP/bin/dnsmasq-init" "$TMP/bin/nslookup" "$TMP/bin/sleep" "$TMP/bin/uci" "$TMP/bin/chown"
 
 export PATH="$TMP/bin:$PATH"
 export DNSMASQ_BIN="$TMP/bin/dnsmasq"
@@ -40,18 +45,23 @@ export DNSMASQ_INIT="$TMP/bin/dnsmasq-init"
 export NSLOOKUP_BIN="$TMP/bin/nslookup"
 export SLEEP_BIN="$TMP/bin/sleep"
 export DNSMASQ_RESTART_LOG="$TMP/restarts.log"
+export DNSMASQ_CHOWN_LOG="$TMP/chown.log"
+export ROUTER_POLICY_DNS_OBSERVATION_LOG="$TMP/observer.log"
 export ROUTER_POLICY_DNS_OBSERVER_BOOTSTRAP="$ROOT/openwrt/dnsmasq/router-policy.conf"
-export ROUTER_POLICY_DNSMASQ_CONFDIR="$TMP/conf"
+export ROUTER_POLICY_SYSTEM_ROOT="$TMP/root"
+export ROUTER_POLICY_DNSMASQ_CONFDIR="$TMP/root/tmp/dnsmasq.d"
 
 first=$(sh "$SCRIPT")
 printf '%s\n' "$first" | grep -Fx 'dns_observer=installed' >/dev/null
 printf '%s\n' "$first" | grep -Fx 'dnsmasq_restart=not-requested' >/dev/null
-cmp "$ROUTER_POLICY_DNS_OBSERVER_BOOTSTRAP" "$TMP/conf/router-policy.conf"
+cmp "$ROUTER_POLICY_DNS_OBSERVER_BOOTSTRAP" "$TMP/root/tmp/dnsmasq.d/router-policy.conf"
 
 if [ -e "$DNSMASQ_RESTART_LOG" ]; then
   echo "boot-safe bootstrap restarted dnsmasq" >&2
   exit 1
 fi
+
+printf 'dnsmasq observation\n' > "$ROUTER_POLICY_DNS_OBSERVATION_LOG"
 
 second=$(sh "$SCRIPT")
 printf '%s\n' "$second" | grep -Fx 'dns_observer=present' >/dev/null
@@ -61,27 +71,33 @@ existing_reload=$(sh "$SCRIPT" --reload-if-needed)
 printf '%s\n' "$existing_reload" | grep -Fx 'dns_observer=present' >/dev/null
 printf '%s\n' "$existing_reload" | grep -Fx 'dnsmasq_restart=performed' >/dev/null
 [ "$(wc -l < "$DNSMASQ_RESTART_LOG" | tr -d ' ')" -eq 1 ]
+grep -F "root:daemon $ROUTER_POLICY_DNS_OBSERVATION_LOG" "$DNSMASQ_CHOWN_LOG" >/dev/null
 
-printf 'server=/managed.example/1.1.1.1\n' > "$TMP/conf/router-policy.conf"
+printf 'server=/managed.example/1.1.1.1\n' > "$TMP/root/tmp/dnsmasq.d/router-policy.conf"
 sh "$SCRIPT" >/dev/null
-grep -Fx 'server=/managed.example/1.1.1.1' "$TMP/conf/router-policy.conf" >/dev/null
+grep -Fx 'server=/managed.example/1.1.1.1' "$TMP/root/tmp/dnsmasq.d/router-policy.conf" >/dev/null
 [ "$(wc -l < "$DNSMASQ_RESTART_LOG" | tr -d ' ')" -eq 1 ]
 
-mkdir "$TMP/conf-live"
-live=$(ROUTER_POLICY_DNSMASQ_CONFDIR="$TMP/conf-live" sh "$SCRIPT" --reload-if-needed)
+mkdir "$TMP/root/etc" "$TMP/root/etc/dnsmasq.d"
+live=$(ROUTER_POLICY_DNSMASQ_CONFDIR="$TMP/root/etc/dnsmasq.d" sh "$SCRIPT" --reload-if-needed)
 printf '%s\n' "$live" | grep -Fx 'dnsmasq_restart=performed' >/dev/null
 [ "$(wc -l < "$DNSMASQ_RESTART_LOG" | tr -d ' ')" -eq 2 ]
 
 grep -Eq '^START=18$' "$ROOT/openwrt/init.d/router-policy-dns-observer"
+if grep -F 'chmod 620' "$ROOT/openwrt/adapter.sh" >/dev/null; then
+  echo "adapter leaves observer log unreadable to daemon" >&2
+  exit 1
+fi
 if grep -F 'ensure-dns-observer.sh' "$ROOT/openwrt/init.d/router-policy" >/dev/null; then
   echo "controller still performs late DNS bootstrap" >&2
   exit 1
 fi
 
-mkdir "$TMP/conf-symlink"
-if ln -s "$TMP/foreign" "$TMP/conf-symlink/router-policy.conf" 2>/dev/null; then
+rm -f "$TMP/root/tmp/dnsmasq.d/router-policy.conf"
+if ln -s "$TMP/foreign" "$TMP/root/tmp/dnsmasq.d/router-policy.conf" 2>/dev/null &&
+  [ -L "$TMP/root/tmp/dnsmasq.d/router-policy.conf" ]; then
   set +e
-  symlink_output=$(ROUTER_POLICY_DNSMASQ_CONFDIR="$TMP/conf-symlink" sh "$SCRIPT" 2>&1)
+  symlink_output=$(ROUTER_POLICY_DNSMASQ_CONFDIR="$TMP/root/tmp/dnsmasq.d" sh "$SCRIPT" 2>&1)
   symlink_rc=$?
   set -e
   [ "$symlink_rc" -ne 0 ]
@@ -89,6 +105,27 @@ if ln -s "$TMP/foreign" "$TMP/conf-symlink/router-policy.conf" 2>/dev/null; then
 else
   echo "symlink_test=skipped-filesystem"
 fi
+
+rm -rf "$TMP/root/tmp"
+mkdir -p "$TMP/foreign-parent/dnsmasq.d"
+if ln -s "$TMP/foreign-parent" "$TMP/root/tmp" 2>/dev/null &&
+  [ -L "$TMP/root/tmp" ]; then
+  set +e
+  parent_symlink_output=$(ROUTER_POLICY_DNSMASQ_CONFDIR="$TMP/root/tmp/dnsmasq.d" sh "$SCRIPT" 2>&1)
+  parent_symlink_rc=$?
+  set -e
+  [ "$parent_symlink_rc" -ne 0 ]
+  printf '%s\n' "$parent_symlink_output" | grep -Fx 'reason=dnsmasq_confdir_symlink' >/dev/null
+else
+  echo "parent_symlink_test=skipped-filesystem"
+fi
+
+set +e
+unowned_output=$(ROUTER_POLICY_DNSMASQ_CONFDIR="$TMP/root/etc/shadow" sh "$SCRIPT" 2>&1)
+unowned_rc=$?
+set -e
+[ "$unowned_rc" -ne 0 ]
+printf '%s\n' "$unowned_output" | grep -Fx 'reason=dnsmasq_confdir_unowned' >/dev/null
 
 unset ROUTER_POLICY_DNSMASQ_CONFDIR
 unknown=$(sh "$SCRIPT")

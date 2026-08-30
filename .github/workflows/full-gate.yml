@@ -2,8 +2,9 @@ name: exact SHA full safety gate
 
 on:
   push:
-    branches: [main, remediation/**]
+    branches: [main, remediation/**, integration/**]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   full-gate:
@@ -52,6 +53,11 @@ jobs:
           npm test -- --run
           npm run build
 
+      - name: Browser interaction and responsive tests
+        run: |
+          npx playwright install --with-deps chromium
+          npm run browser:test
+
       - name: Build reproducible OpenWrt artifacts
         run: sh scripts/build-go.sh
 
@@ -59,28 +65,45 @@ jobs:
         uses: ludeeus/action-shellcheck@master
         with:
           scandir: './'
+          # Only lint repository-owned shell sources. Toolchains, generated
+          # artifacts, and local fixtures are excluded just like run-all.ps1;
+          # excluding them prevents vendored Go scripts from becoming CI
+          # failures while leaving every tracked project script in scope.
+          ignore_paths: "node_modules .tools dist .local .git"
           severity: warning
 
       - name: Installer, adapter and recovery fixtures
         run: |
-          sh tests/package-openwrt.sh
-          sh tests/installer-backup.sh
-          sh tests/installer-lifecycle.sh
-          sh tests/content-aware-install.sh
-          sh tests/shell-library.sh
-          sh tests/dns-observer-bootstrap.sh
-          sh tests/boot-guard-service.sh
-          sh tests/controller-bind-safety.sh
-          sh tests/boot-guard-policy.sh
-          sh tests/helper-service.sh
-          sh tests/hotplug-bounded.sh
-          sh tests/adapter-rollback.sh
-          sh tests/openwrt-adapter-integration.sh
+          run_fixture() {
+            fixture="$1"
+            shift
+            if "$@"; then
+              return 0
+            fi
+            echo "::error title=fixture failure::${fixture}"
+            return 1
+          }
+          run_fixture package-openwrt sh tests/package-openwrt.sh
+          run_fixture installer-backup sh tests/installer-backup.sh
+          run_fixture installer-disk-preflight sh tests/installer-disk-preflight.sh
+          run_fixture installer-durability sh tests/installer-durability.sh
+          run_fixture installer-lifecycle sh tests/installer-lifecycle.sh
+          run_fixture installer-prefix-switch sh tests/installer-prefix-switch.sh
+          run_fixture content-aware-install sh tests/content-aware-install.sh
+          run_fixture shell-library sh tests/shell-library.sh
+          run_fixture dns-observer-bootstrap sh tests/dns-observer-bootstrap.sh
+          run_fixture boot-guard-service sh tests/boot-guard-service.sh
+          run_fixture controller-bind-safety sh tests/controller-bind-safety.sh
+          run_fixture boot-guard-policy sh tests/boot-guard-policy.sh
+          run_fixture helper-service sh tests/helper-service.sh
+          run_fixture hotplug-bounded sh tests/hotplug-bounded.sh
+          run_fixture adapter-rollback sh tests/adapter-rollback.sh
+          run_fixture openwrt-adapter-integration sh tests/openwrt-adapter-integration.sh
 
       - name: Zapret ownership and cleanup fixtures
         run: |
           sh tests/zapret-calibration-runtime.sh
-          sh tests/zapret-quick-contract.sh
+          sudo sh tests/zapret-quick-contract.sh
 
       - name: Linux namespace nft transition gate
         run: sudo sh tests/nft-transition-namespace.sh

@@ -9,7 +9,11 @@ mkdir -p "$TMP/state" "$TMP/runtime" "$TMP/etc" "$TMP/xray"
 STATE_DIR="$TMP/state"
 RUNTIME_DIR="$TMP/runtime"
 ROUTER_POLICY_CONFIG_PATH="$TMP/etc/config.json"
-ROUTER_POLICY_BIN="$ROOT/dist/router-policy.exe"
+if [ -x "$ROOT/dist/router-policy" ]; then
+  ROUTER_POLICY_BIN="$ROOT/dist/router-policy"
+else
+  ROUTER_POLICY_BIN="$ROOT/dist/router-policy.exe"
+fi
 ROUTER_POLICY_ADAPTER_LIB_ONLY=1
 mock_uci() {
   if [ "${1:-}" = "-q" ] && [ "${2:-}" = "get" ]; then
@@ -21,10 +25,17 @@ mock_uci() {
   fi
   return 0
 }
+# The adapter library is sourced below and consumes this command name through
+# its own globals; ShellCheck cannot infer that cross-file read.
+# shellcheck disable=SC2034
 UCI_BIN=mock_uci
 export STATE_DIR RUNTIME_DIR ROUTER_POLICY_CONFIG_PATH ROUTER_POLICY_BIN ROUTER_POLICY_ADAPTER_LIB_ONLY
 # shellcheck source=openwrt/adapter.sh
 . "$ROOT/openwrt/adapter.sh"
+
+# Keep the transaction root explicit for the fixture as it is initialized by
+# the sourced adapter rather than assigned in this test file.
+txroot="$STATE_DIR/transactions"
 
 config="$TMP/etc/config.json"
 active_nft="$TMP/etc/router-policy.nft"
@@ -51,6 +62,44 @@ if restore_snapshot "$snapshot" >/dev/null 2>&1; then
   exit 1
 fi
 [ "$(cat "$config")" = "config-new" ] || { echo "restore modified files before hash verification" >&2; exit 1; }
+
+# Snapshot verification must precede stopping any owned Zapret profile.  A
+# corrupt snapshot must be a read-only failure and must not leave the live
+# profile stopped merely because restore was attempted.
+PROFILE_ROOT="$TMP/profile-config"
+PROFILE_INIT_ROOT="$TMP/profile-init"
+PROFILE_STOP_LOG="$TMP/profile-stop.log"
+mkdir -p "$PROFILE_ROOT" "$PROFILE_INIT_ROOT"
+printf 'profile-config\n' > "$PROFILE_ROOT/test-profile.conf"
+cat > "$PROFILE_INIT_ROOT/router-policy-zapret-test-profile" <<'SH'
+#!/bin/sh
+case "${1:-}" in
+  running) exit 0 ;;
+  stop) printf 'stop\n' >> "$PROFILE_STOP_LOG"; exit 0 ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$PROFILE_INIT_ROOT/router-policy-zapret-test-profile"
+export PROFILE_STOP_LOG
+zapret_profile_dir="$PROFILE_ROOT"
+zapret_profile_init_prefix="$PROFILE_INIT_ROOT/router-policy-zapret-"
+active_zapret_profiles="$TMP/profiles.manifest"
+printf 'test-profile|%s|%s|205|\n' \
+  "$PROFILE_ROOT/test-profile.conf" \
+  "$PROFILE_INIT_ROOT/router-policy-zapret-test-profile" > "$active_zapret_profiles"
+profile_snapshot="$TMP/profile-snapshot"
+create_snapshot "$profile_snapshot"
+printf 'corrupt\n' >> "$profile_snapshot/xray-active.json"
+if restore_snapshot "$profile_snapshot" >/dev/null 2>&1; then
+  echo "corrupted profile snapshot was restored" >&2
+  exit 1
+fi
+[ ! -e "$PROFILE_STOP_LOG" ] || { echo "profile service was stopped before snapshot verification" >&2; exit 1; }
+active_zapret_profiles="$TMP/no-profile-manifest"
+# shellcheck disable=SC2034 # consumed by the sourced adapter library
+zapret_profile_dir="${active_zapret_profiles%/*}/profiles"
+# shellcheck disable=SC2034 # consumed by the sourced adapter library
+zapret_profile_init_prefix="/etc/init.d/router-policy-zapret-"
 
 printf 'config-old\n' > "$config"
 printf 'dns-old\n' > "$active_dnsmasq"
@@ -101,5 +150,22 @@ if verify_token >/dev/null 2>&1; then
   echo "wrong rollback token was accepted" >&2
   exit 1
 fi
+
+# A timer owner may exit in the small window between the ownership check and
+# kill(2).  Cancellation must treat that race as already complete instead of
+# reporting a false rollback failure.  Keep this deterministic by replacing
+# the process primitives with a fixture that models exactly that interleave.
+timer_process_checks=0
+process_terminated() {
+  timer_process_checks=$((timer_process_checks + 1))
+  [ "$timer_process_checks" -gt 1 ]
+}
+process_start() { printf '%s\n' "fixture-start"; }
+kill() { return 1; }
+if ! terminate_owned_timer_pid 12345 fixture-start; then
+  echo "timer cancellation did not tolerate an already-exited owner" >&2
+  exit 1
+fi
+echo "timer_cancellation_race_is_idempotent=true"
 
 echo "adapter_rollback_integrity_ok=true"

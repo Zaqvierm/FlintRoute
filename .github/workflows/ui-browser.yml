@@ -2,7 +2,7 @@ name: UI browser and responsive smoke
 
 on:
   push:
-    branches: [main, remediation/**, ui/**]
+    branches: [main, remediation/**, ui/**, integration/**]
   pull_request:
 
 jobs:

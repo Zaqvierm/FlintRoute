@@ -1,10 +1,47 @@
 #!/bin/sh
+# These globals are intentionally assigned for functions loaded from
+# install.sh; static analysis cannot see their cross-file consumers.
+# shellcheck disable=SC2034
 set -eu
 
 ROOT=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd)
 PROJECT_ROOT="$ROOT"
 TMP="${TMPDIR:-/tmp}/router-policy-installer-lifecycle-$$"
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
+
+# The rollback lease must remain armed through observer reload and prefix
+# finalization.  A source-order assertion protects this safety boundary from
+# being moved above the post-install verification block during refactors.
+post_install_line=$(grep -n '^    post_install_ok=1$' "$ROOT/install.sh" | cut -d: -f1)
+disarm_line=$(grep -n '^    INSTALL_ROLLBACK_ARMED=0$' "$ROOT/install.sh" | cut -d: -f1)
+[ -n "$post_install_line" ] && [ -n "$disarm_line" ] && [ "$disarm_line" -gt "$post_install_line" ] || {
+  echo "installer disarmed rollback before post-install verification" >&2
+  exit 1
+}
+
+# Root-side backup/auth commands can recreate the bbolt file after the
+# controller identity setup.  The final ownership normalization must remain
+# after those writes and before service restart.
+identity_call_line=$(grep -n '^    prepare_controller_identity$' "$ROOT/install.sh" | cut -d: -f1)
+auth_line_source=$(grep -n 'auth setup-token --if-needed' "$ROOT/install.sh" | tail -n 1 | cut -d: -f1)
+restart_line=$(grep -n '^    restart_running_services$' "$ROOT/install.sh" | cut -d: -f1)
+[ -n "$identity_call_line" ] && [ -n "$auth_line_source" ] && [ -n "$restart_line" ] && \
+  [ "$identity_call_line" -gt "$auth_line_source" ] && [ "$restart_line" -gt "$identity_call_line" ] || {
+  echo "installer normalizes controller ownership before final root-side writes" >&2
+  exit 1
+}
+
+# Uninstall backup pruning is the final bookkeeping step.  If service teardown
+# or dnsmasq readiness fails, older fallback backups must remain available.
+uninstall_prune_line=$(grep -n 'backup prune --root' "$ROOT/uninstall.sh" | tail -n 1 | cut -d: -f1)
+uninstall_dns_ready_line=$(grep -n 'wait_dnsmasq_ready ||' "$ROOT/uninstall.sh" | tail -n 1 | cut -d: -f1)
+uninstall_remove_binary_line=$(grep -n 'rm -f .*BIN_DIR/router-policy' "$ROOT/uninstall.sh" | tail -n 1 | cut -d: -f1)
+[ -n "$uninstall_prune_line" ] && [ -n "$uninstall_dns_ready_line" ] && [ -n "$uninstall_remove_binary_line" ] && \
+  [ "$uninstall_prune_line" -gt "$uninstall_dns_ready_line" ] && \
+  [ "$uninstall_prune_line" -lt "$uninstall_remove_binary_line" ] || {
+  echo "uninstaller pruned fallback backups before final readiness" >&2
+  exit 1
+}
 
 SYSTEM_ROOT="$TMP/root"
 BACKUP_BASE="$TMP/backups"
@@ -34,6 +71,20 @@ case "\${1:-}" in
     ;;
   backup) exit 0 ;;
   internal-verify-state-backup) exit 0 ;;
+  internal-health-field)
+    shift
+    field=""
+    file=""
+    while [ "\$#" -gt 0 ]; do
+      case "\$1" in
+        --field) field="\$2"; shift 2 ;;
+        --path) file="\$2"; shift 2 ;;
+        *) exit 2 ;;
+      esac
+    done
+    [ -n "\$field" ] && [ -f "\$file" ] || exit 2
+    tr '{},' '\n' < "\$file" | sed -n "s/^[[:space:]]*\"\$field\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\"[[:space:]]*$/\1/p" | head -n 1
+    ;;
   *) exit 2 ;;
 esac
 SH
@@ -67,6 +118,9 @@ run_install "$BACKUP_BASE/first" >/dev/null
 [ -x "$SYSTEM_ROOT/usr/bin/router-policy" ]
 [ -f "$SYSTEM_ROOT/usr/lib/router-policy/openwrt/adapter.sh" ]
 [ -f "$SYSTEM_ROOT/etc/init.d/router-policy" ]
+[ -f "$SYSTEM_ROOT/etc/router-policy/helper.env" ]
+grep -Fx 'peer_uid=1' "$SYSTEM_ROOT/etc/router-policy/helper.env" >/dev/null
+grep -Fx 'socket=/var/run/router-policy/helper.sock' "$SYSTEM_ROOT/etc/router-policy/helper.env" >/dev/null
 [ "$(cat "$SYSTEM_ROOT/etc/router-policy/config/listener.conf")" = "$(cat "$ROOT/config/listener.conf")" ]
 grep -F 'v1:auth setup-token --if-needed' "$FAKE_CALL_LOG" >/dev/null
 auth_line=$(grep -n 'v1:auth setup-token --if-needed' "$FAKE_CALL_LOG" | head -n 1 | cut -d: -f1)
@@ -107,7 +161,6 @@ install_service_sentinels
 write_fake_binary v2 0
 run_install "$BACKUP_BASE/restore-current" >/dev/null
 grep -F '"local":"preserved"' "$SYSTEM_ROOT/etc/router-policy/config/default.json" >/dev/null
-install_service_sentinels
 
 cp "$SYSTEM_ROOT/usr/bin/router-policy" "$TMP/expected-v2"
 printf 'stable-prefix\n' > "$SYSTEM_ROOT/usr/lib/router-policy/local-marker"
@@ -125,7 +178,74 @@ for critical_dir in "$SYSTEM_ROOT" "$SYSTEM_ROOT/etc" "$SYSTEM_ROOT/usr" "$SYSTE
     exit 1
   }
 done
-install_service_sentinels
+
+# Device-scoped Zapret artifacts are removed only from the manifest-bound
+# config/init paths. A foreign file in the same directory must survive.
+mkdir -p "$SYSTEM_ROOT/etc/router-policy/zapret/profiles"
+printf 'tv-q208|%s|%s|208\n' \
+  "$SYSTEM_ROOT/etc/router-policy/zapret/profiles/tv-q208.conf" \
+  "$SYSTEM_ROOT/etc/init.d/router-policy-zapret-tv-q208" \
+  > "$SYSTEM_ROOT/etc/router-policy/zapret/profiles.manifest"
+printf 'managed-profile\n' > "$SYSTEM_ROOT/etc/router-policy/zapret/profiles/tv-q208.conf"
+printf '#!/bin/sh\nexit 0\n' > "$SYSTEM_ROOT/etc/init.d/router-policy-zapret-tv-q208"
+chmod 600 "$SYSTEM_ROOT/etc/router-policy/zapret/profiles.manifest" \
+  "$SYSTEM_ROOT/etc/router-policy/zapret/profiles/tv-q208.conf"
+chmod 755 "$SYSTEM_ROOT/etc/init.d/router-policy-zapret-tv-q208"
+printf 'foreign-profile-file\n' > "$SYSTEM_ROOT/etc/router-policy/zapret/profiles/foreign.conf"
+
+# A fixed init-script name is not ownership proof.  If an operator or another
+# package changes one of the static files after install, uninstall must fence
+# before stopping/removing anything and leave that file intact.
+printf '#!/bin/sh\n# foreign replacement\n' > "$SYSTEM_ROOT/etc/init.d/router-policy-xray"
+chmod 755 "$SYSTEM_ROOT/etc/init.d/router-policy-xray"
+if BACKUP_DIR="$BACKUP_BASE/uninstall-foreign-init" \
+  ROUTER_POLICY_SYSTEM_ROOT="$SYSTEM_ROOT" \
+  FAKE_CALL_LOG="$FAKE_CALL_LOG" \
+  sh "$ROOT/uninstall.sh" --uninstall >/dev/null 2>&1; then
+  echo "uninstaller accepted foreign static init file" >&2
+  exit 1
+fi
+grep -F '# foreign replacement' "$SYSTEM_ROOT/etc/init.d/router-policy-xray" >/dev/null
+cp "$SYSTEM_ROOT/usr/lib/router-policy/openwrt/init.d/router-policy-xray" \
+  "$SYSTEM_ROOT/etc/init.d/router-policy-xray"
+chmod 755 "$SYSTEM_ROOT/etc/init.d/router-policy-xray"
+
+# A product-prefix-looking directory is not permission to recursively delete
+# arbitrary content.  An unknown top-level entry must fence before teardown.
+printf 'foreign-prefix-file\n' > "$SYSTEM_ROOT/usr/lib/router-policy/foreign-prefix-file"
+if BACKUP_DIR="$BACKUP_BASE/uninstall-foreign-prefix" \
+  ROUTER_POLICY_SYSTEM_ROOT="$SYSTEM_ROOT" \
+  FAKE_CALL_LOG="$FAKE_CALL_LOG" \
+  sh "$ROOT/uninstall.sh" --uninstall >/dev/null 2>&1; then
+  echo "uninstaller accepted foreign project-prefix entry" >&2
+  exit 1
+fi
+grep -F 'foreign-prefix-file' "$SYSTEM_ROOT/usr/lib/router-policy/foreign-prefix-file" >/dev/null
+# A failed ownership walk must fence before teardown.  Do not turn a find
+# error into an empty result and then delete an unverified prefix.
+mkdir -p "$TMP/fake-bin"
+cat > "$TMP/fake-bin/find" <<'SH'
+#!/bin/sh
+exit 1
+SH
+chmod +x "$TMP/fake-bin/find"
+if PATH="$TMP/fake-bin:$PATH" BACKUP_DIR="$BACKUP_BASE/uninstall-find-error" \
+  ROUTER_POLICY_SYSTEM_ROOT="$SYSTEM_ROOT" \
+  FAKE_CALL_LOG="$FAKE_CALL_LOG" \
+  sh "$ROOT/uninstall.sh" --uninstall >/dev/null 2>&1; then
+  echo "uninstaller ignored project-prefix enumeration failure" >&2
+  exit 1
+fi
+[ -d "$SYSTEM_ROOT/usr/lib/router-policy" ] || {
+  echo "uninstaller removed prefix after project-prefix enumeration failure" >&2
+  exit 1
+}
+rm -f "$TMP/fake-bin/find"
+rm -f "$SYSTEM_ROOT/usr/lib/router-policy/foreign-prefix-file"
+# The failed-upgrade marker is deliberately outside the installer-owned
+# prefix allowlist; it was verified above and must be removed by the fixture
+# before exercising a normal owned uninstall.
+rm -f "$SYSTEM_ROOT/usr/lib/router-policy/local-marker"
 
 BACKUP_DIR="$BACKUP_BASE/uninstall" \
 ROUTER_POLICY_SYSTEM_ROOT="$SYSTEM_ROOT" \
@@ -134,6 +254,10 @@ sh "$ROOT/uninstall.sh" --uninstall >/dev/null
 [ ! -e "$SYSTEM_ROOT/usr/bin/router-policy" ]
 [ ! -e "$SYSTEM_ROOT/usr/lib/router-policy" ]
 [ ! -e "$SYSTEM_ROOT/etc/init.d/router-policy" ]
+[ ! -e "$SYSTEM_ROOT/etc/router-policy/zapret/profiles.manifest" ]
+[ ! -e "$SYSTEM_ROOT/etc/router-policy/zapret/profiles/tv-q208.conf" ]
+[ ! -e "$SYSTEM_ROOT/etc/init.d/router-policy-zapret-tv-q208" ]
+[ -f "$SYSTEM_ROOT/etc/router-policy/zapret/profiles/foreign.conf" ]
 [ -f "$SYSTEM_ROOT/etc/router-policy/config/default.json" ]
 [ -s "$BACKUP_BASE/uninstall/router-policy-etc.tar" ]
 grep -E '^sha256=[0-9a-f]{64}$' "$BACKUP_BASE/uninstall/manifest.txt" >/dev/null
@@ -142,6 +266,17 @@ if grep -Eq '(^|[[:space:]])fw4[[:space:]]+reload' "$ROOT/uninstall.sh"; then
   echo "uninstaller performs an unscoped global firewall reload" >&2
   exit 1
 fi
+if grep -Eq 'chown[[:space:]]+-R[^\n]*ETC_DIR/secrets' "$ROOT/install.sh"; then
+  echo "installer recursively changes ownership of the whole secrets tree" >&2
+  exit 1
+fi
+for managed_secret in vpn-subscription-url happ-crypt4-private-key.pem telegram.json webhook.env; do
+  secret_marker="\$ETC_DIR/secrets/$managed_secret"
+  grep -F "$secret_marker" "$ROOT/install.sh" >/dev/null || {
+    echo "installer secret allowlist is missing: $managed_secret" >&2
+    exit 1
+  }
+done
 if ROUTER_POLICY_SYSTEM_ROOT="$SYSTEM_ROOT" PREFIX="$SYSTEM_ROOT/usr/lib/not-router-policy" \
   sh "$ROOT/uninstall.sh" --uninstall >/dev/null 2>&1; then
   echo "uninstaller accepted a non-standard recursive project prefix" >&2
@@ -181,6 +316,40 @@ ROUTER_POLICY_HEALTH_ATTEMPTS=3
 export HEALTH_COUNTER PATH ROUTER_POLICY_INSTALL_LIB_ONLY RUNTIME_DIR ROUTER_POLICY_HEALTH_ATTEMPTS
 # shellcheck source=install.sh
 . "$ROOT/install.sh"
+
+# A runtime UCI confdir is input, not an ownership grant.  The installer must
+# reject a path such as /etc/shadow before it can add an observer target to the
+# rollback manifest or create a file there.
+UNSAFE_UCI="$TMP/unsafe-uci"
+cat > "$UNSAFE_UCI" <<'SH'
+#!/bin/sh
+printf '/etc/shadow\n'
+SH
+chmod +x "$UNSAFE_UCI"
+saved_system_root="$SYSTEM_ROOT"
+saved_dnsmasq_dir="$DNSMASQ_DIR"
+saved_uci_bin="$UCI_BIN"
+saved_install_targets="$INSTALL_TARGETS"
+SYSTEM_ROOT=""
+DNSMASQ_DIR="/tmp/dnsmasq.d"
+UCI_BIN="$UNSAFE_UCI"
+INSTALL_TARGETS="$PREFIX"
+if refresh_install_targets >/dev/null 2>&1; then
+  echo "installer accepted an unowned dnsmasq confdir" >&2
+  exit 1
+fi
+SYSTEM_ROOT="$saved_system_root"
+DNSMASQ_DIR="$saved_dnsmasq_dir"
+UCI_BIN="$saved_uci_bin"
+INSTALL_TARGETS="$saved_install_targets"
+
+# Installer health must follow the explicitly configured local management
+# listener instead of assuming loopback.  A synthetic SYSTEM_ROOT has no real
+# network namespace, so the resolver accepts its fixture address; production
+# OpenWrt additionally proves the address is assigned by `ip -4 addr`.
+printf 'listen_address=192.0.2.1:8787\nallow_firewalled_bind=1\n' > "$SYSTEM_ROOT/etc/router-policy/config/listener.conf"
+[ "$(resolve_control_health_url)" = "http://192.0.2.1:8787/api/v1/health" ]
+printf 'listen_address=127.0.0.1:8787\nallow_firewalled_bind=0\n' > "$SYSTEM_ROOT/etc/router-policy/config/listener.conf"
 wait_control_health >/dev/null
 [ "$(cat "$HEALTH_COUNTER")" = "3" ]
 
@@ -435,6 +604,7 @@ SH
   chmod +x "$RESTART_INIT/$service"
 done
 cat > "$SERVICE_STATE_FIXTURE/install-rollback/services.txt" <<'EOF'
+router-policy-helper|1|1
 router-policy|1|1
 router-policy-watchdog|1|1
 router-policy-xray|1|1
@@ -443,10 +613,17 @@ EOF
 SERVICE_SEQUENCE_LOG="$TMP/service-sequence.log"
 INIT_DIR="$RESTART_INIT"
 export SERVICE_SEQUENCE_LOG
+cat > "$RESTART_INIT/router-policy-helper" <<'SH'
+#!/bin/sh
+printf '%s:%s\n' "${0##*/}" "$1" >> "$SERVICE_SEQUENCE_LOG"
+exit 0
+SH
+chmod +x "$RESTART_INIT/router-policy-helper"
 wait_control_health() {
   printf 'control:healthy\n' >> "$SERVICE_SEQUENCE_LOG"
 }
 restart_running_services
+grep -Fx 'router-policy-helper:start' "$SERVICE_SEQUENCE_LOG" >/dev/null
 grep -Fx 'router-policy:start' "$SERVICE_SEQUENCE_LOG" >/dev/null
 grep -Fx 'control:healthy' "$SERVICE_SEQUENCE_LOG" >/dev/null
 grep -Fx 'router-policy-watchdog:start' "$SERVICE_SEQUENCE_LOG" >/dev/null
@@ -455,9 +632,10 @@ if grep -E '^router-policy-(xray|zapret):restart$' "$SERVICE_SEQUENCE_LOG" >/dev
   exit 1
 fi
 controller_line=$(grep -n '^router-policy:start$' "$SERVICE_SEQUENCE_LOG" | cut -d: -f1)
+helper_line=$(grep -n '^router-policy-helper:start$' "$SERVICE_SEQUENCE_LOG" | cut -d: -f1)
 health_line=$(grep -n '^control:healthy$' "$SERVICE_SEQUENCE_LOG" | cut -d: -f1)
 watchdog_line=$(grep -n '^router-policy-watchdog:start$' "$SERVICE_SEQUENCE_LOG" | cut -d: -f1)
-[ "$controller_line" -lt "$health_line" ] && [ "$health_line" -lt "$watchdog_line" ] || {
+[ "$helper_line" -lt "$controller_line" ] && [ "$controller_line" -lt "$health_line" ] && [ "$health_line" -lt "$watchdog_line" ] || {
   echo "controller/watchdog recovery order is unsafe" >&2
   exit 1
 }
@@ -476,6 +654,7 @@ printf 'present|%s\n' "$ROLLBACK_TARGET" > "$ROLLBACK_BACKUP/install-rollback/ma
 (cd "$ROLLBACK_STAGE" && tar -cf "$ROLLBACK_BACKUP/install-rollback/files.tar" .)
 sha256sum "$ROLLBACK_BACKUP/install-rollback/files.tar" | awk '{print $1}' > "$ROLLBACK_BACKUP/install-rollback/files.sha256"
 cat > "$ROLLBACK_BACKUP/install-rollback/services.txt" <<'EOF'
+router-policy-helper|0|0
 router-policy|1|1
 router-policy-watchdog|1|1
 router-policy-xray|1|1
@@ -490,10 +669,24 @@ exit 0
 SH
   chmod +x "$ROLLBACK_INIT/$service"
 done
+ROLLBACK_HELPER_STATE="$TMP/rollback-helper-state"
+ROLLBACK_HELPER_LOG="$TMP/rollback-helper.log"
+printf 'running\n' > "$ROLLBACK_HELPER_STATE"
+cat > "$ROLLBACK_INIT/router-policy-helper" <<'SH'
+#!/bin/sh
+case "${1:-}" in
+  running) [ "$(cat "$ROLLBACK_HELPER_STATE")" = running ] ;;
+  stop) printf 'stop\n' >> "$ROLLBACK_HELPER_LOG"; printf 'stopped\n' > "$ROLLBACK_HELPER_STATE" ;;
+  disable|enable) : ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$ROLLBACK_INIT/router-policy-helper"
+export ROLLBACK_HELPER_STATE ROLLBACK_HELPER_LOG
 BACKUP_DIR="$ROLLBACK_BACKUP"
 INIT_DIR="$ROLLBACK_INIT"
 INSTALL_TARGETS="$ROLLBACK_TARGET"
-ENABLE_SERVICES="router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
+ENABLE_SERVICES="router-policy-helper router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
 if rollback_output=$(restore_installation 2>&1); then
   echo "rollback reported success after controller restoration failed" >&2
   exit 1
@@ -504,6 +697,8 @@ if printf '%s\n' "$rollback_output" | grep -Fx 'install_rollback=restored' >/dev
   exit 1
 fi
 [ "$(cat "$ROLLBACK_TARGET")" = "original" ]
+[ "$(cat "$ROLLBACK_HELPER_STATE")" = "stopped" ]
+grep -Fx 'stop' "$ROLLBACK_HELPER_LOG" >/dev/null
 
 printf 'changed-again\n' > "$ROLLBACK_TARGET"
 printf 'present|%s\n' "$TMP/not-owned-by-flintroute" > "$ROLLBACK_BACKUP/install-rollback/manifest.txt"
@@ -547,32 +742,40 @@ printf '%s\n' "$corrupted_output" | grep -F 'snapshot hash mismatch' >/dev/null
 # critical directories all start at 0755.
 PERM_ROOT="$TMP/permission-root"
 PERM_BACKUP="$TMP/permission-backup"
-mkdir -p "$PERM_ROOT/etc/init.d" "$PERM_ROOT/etc/hotplug.d" "$PERM_ROOT/usr/bin" "$PERM_ROOT/usr/lib/router-policy"
+mkdir -p "$PERM_ROOT/etc/init.d" "$PERM_ROOT/etc/hotplug.d" "$PERM_ROOT/usr/bin" "$PERM_ROOT/usr/lib/router-policy/scripts" "$PERM_ROOT/tmp/dnsmasq.d"
 for directory in "$PERM_ROOT" "$PERM_ROOT/etc" "$PERM_ROOT/usr" "$PERM_ROOT/usr/bin" "$PERM_ROOT/usr/lib" "$PERM_ROOT/etc/init.d" "$PERM_ROOT/etc/hotplug.d"; do
   chmod 755 "$directory"
 done
-printf 'old-runtime\n' > "$PERM_ROOT/usr/lib/router-policy/runtime.txt"
-chmod 644 "$PERM_ROOT/usr/lib/router-policy/runtime.txt"
+printf 'old-runtime\n' > "$PERM_ROOT/usr/lib/router-policy/scripts/runtime.txt"
+chmod 644 "$PERM_ROOT/usr/lib/router-policy/scripts/runtime.txt"
 SYSTEM_ROOT="$PERM_ROOT"
 PREFIX="$PERM_ROOT/usr/lib/router-policy"
 ETC_DIR="$PERM_ROOT/etc/router-policy"
 STATE_DIR="$ETC_DIR/state"
 BACKUP_ROOT="$TMP"
 BACKUP_DIR="$PERM_BACKUP"
+DNSMASQ_DIR="$PERM_ROOT/tmp/dnsmasq.d"
+mkdir -p "$STATE_DIR"
 INSTALL_TARGETS="$PREFIX"
 ENABLE_SERVICES="router-policy"
 CRITICAL_SYSTEM_DIRS="$PERM_ROOT $PERM_ROOT/etc $PERM_ROOT/usr $PERM_ROOT/usr/bin $PERM_ROOT/usr/lib $PERM_ROOT/etc/init.d $PERM_ROOT/etc/hotplug.d"
+printf 'observer-before\n' > "$DNSMASQ_DIR/router-policy.conf"
 snapshot_installation
-printf 'new-runtime\n' > "$PERM_ROOT/usr/lib/router-policy/runtime.txt"
-chmod 700 "$PERM_ROOT/usr/lib/router-policy/runtime.txt"
+printf 'new-runtime\n' > "$PERM_ROOT/usr/lib/router-policy/scripts/runtime.txt"
+chmod 700 "$PERM_ROOT/usr/lib/router-policy/scripts/runtime.txt"
+printf 'observer-after\n' > "$DNSMASQ_DIR/router-policy.conf"
 # Exercise the same automatic rollback entry point used by a failed install,
 # rather than only calling the restore helper directly.
 set +e
-(INSTALL_ROLLBACK_ARMED=1; install_exit 1) >/dev/null 2>&1
+rollback_output=$(INSTALL_ROLLBACK_ARMED=1 install_exit 1 2>&1)
 rollback_status=$?
 set -e
 [ "$rollback_status" -eq 1 ]
-[ "$(cat "$PERM_ROOT/usr/lib/router-policy/runtime.txt")" = "old-runtime" ]
+[ "$(cat "$PERM_ROOT/usr/lib/router-policy/scripts/runtime.txt")" = "old-runtime" ] || {
+  echo "permission rollback output: $rollback_output" >&2
+  exit 1
+}
+[ "$(cat "$DNSMASQ_DIR/router-policy.conf")" = "observer-before" ]
 for directory in "$PERM_ROOT" "$PERM_ROOT/etc" "$PERM_ROOT/usr" "$PERM_ROOT/usr/bin" "$PERM_ROOT/usr/lib" "$PERM_ROOT/etc/init.d" "$PERM_ROOT/etc/hotplug.d"; do
   (umask 022; [ "$(stat -c '%a' "$directory")" = "755" ]) || { echo "rollback changed critical parent mode: $directory" >&2; exit 1; }
 done
@@ -586,6 +789,10 @@ mkdir -p \
   "$UNINSTALL_DEACTIVATE_ROOT/etc/router-policy/state/transactions/rev_4_aabbccddeeff/tx_0011223344556677/generated"
 cat >"$UNINSTALL_DEACTIVATE_ROOT/bin/router-policy" <<'SH'
 #!/bin/sh
+if [ "$1" = internal-verify-no-owned-ip-state ]; then
+  printf '%s\n' 'ip_state_empty=true' >"$UNINSTALL_DEACTIVATE_LOG"
+  exit 0
+fi
 printf '%s\n' "$*" >"$UNINSTALL_DEACTIVATE_LOG"
 [ "$1" = internal-rollback-ip-state ]
 SH
@@ -660,8 +867,62 @@ env \
   RESULT_PATH="$UNINSTALL_NO_LAST_GOOD_ROOT/result.txt" \
   sh "$UNINSTALL_DEACTIVATE_HELPER"
 grep -Fx 'flow_offloading_restore=persistent-baseline-restored' "$UNINSTALL_NO_LAST_GOOD_ROOT/result.txt" >/dev/null
-grep -Fx 'dataplane_deactivation=skipped-no-last-good' "$UNINSTALL_NO_LAST_GOOD_ROOT/result.txt" >/dev/null
+grep -Fx 'dataplane_deactivation=verified-empty' "$UNINSTALL_NO_LAST_GOOD_ROOT/result.txt" >/dev/null
 grep -Fx 'commit firewall' "$UNINSTALL_UCI_LOG" >/dev/null
+
+UNINSTALL_MISSING_BINDING_ROOT="$TMP/uninstall-missing-binding"
+mkdir -p "$UNINSTALL_MISSING_BINDING_ROOT/etc/router-policy/state/transactions/rev_orphan"
+: >"$UNINSTALL_MISSING_BINDING_ROOT/etc/router-policy/state/transactions/rev_orphan/status.env"
+set +e
+env \
+  ROUTER_POLICY_UNINSTALL_LIB_ONLY=1 \
+  SYSTEM_ROOT="$UNINSTALL_MISSING_BINDING_ROOT" \
+  ETC_DIR="$UNINSTALL_MISSING_BINDING_ROOT/etc/router-policy" \
+  STATE_DIR="$UNINSTALL_MISSING_BINDING_ROOT/etc/router-policy/state" \
+  RUNTIME_DIR="$UNINSTALL_MISSING_BINDING_ROOT/tmp/router-policy" \
+  BIN_DIR="$UNINSTALL_DEACTIVATE_ROOT/bin" \
+  UCI_BIN="$UNINSTALL_DEACTIVATE_ROOT/bin/uci" \
+  PROJECT_ROOT="$PROJECT_ROOT" \
+  RESULT_PATH="$UNINSTALL_MISSING_BINDING_ROOT/result.txt" \
+  sh "$UNINSTALL_DEACTIVATE_HELPER" >"$UNINSTALL_MISSING_BINDING_ROOT/stdout.txt" 2>"$UNINSTALL_MISSING_BINDING_ROOT/stderr.txt"
+missing_binding_status=$?
+set -e
+[ "$missing_binding_status" -ne 0 ]
+grep -F 'committed transaction binding is missing while transaction journals remain' \
+  "$UNINSTALL_MISSING_BINDING_ROOT/stderr.txt" >/dev/null
+
+UNINSTALL_ORPHAN_IP_ROOT="$TMP/uninstall-orphan-ip-state"
+mkdir -p "$UNINSTALL_ORPHAN_IP_ROOT/etc/router-policy/state/ownership"
+cp "$UNINSTALL_DEACTIVATE_ROOT/etc/router-policy/state/ownership/flow-offloading.env" \
+  "$UNINSTALL_ORPHAN_IP_ROOT/etc/router-policy/state/ownership/flow-offloading.env"
+cat >"$UNINSTALL_DEACTIVATE_ROOT/bin/router-policy-orphan-ip" <<'SH'
+#!/bin/sh
+if [ "$1" = internal-verify-no-owned-ip-state ]; then
+  echo "owned ipv4 rule remains: priority=10010 mark=0x41 table=100" >&2
+  exit 1
+fi
+exit 1
+SH
+chmod +x "$UNINSTALL_DEACTIVATE_ROOT/bin/router-policy-orphan-ip"
+mkdir -p "$UNINSTALL_ORPHAN_IP_ROOT/bin"
+cp "$UNINSTALL_DEACTIVATE_ROOT/bin/router-policy-orphan-ip" "$UNINSTALL_ORPHAN_IP_ROOT/bin/router-policy"
+set +e
+env \
+  ROUTER_POLICY_UNINSTALL_LIB_ONLY=1 \
+  SYSTEM_ROOT="$UNINSTALL_ORPHAN_IP_ROOT" \
+  ETC_DIR="$UNINSTALL_ORPHAN_IP_ROOT/etc/router-policy" \
+  STATE_DIR="$UNINSTALL_ORPHAN_IP_ROOT/etc/router-policy/state" \
+  RUNTIME_DIR="$UNINSTALL_ORPHAN_IP_ROOT/tmp/router-policy" \
+  BIN_DIR="$UNINSTALL_ORPHAN_IP_ROOT/bin" \
+  ROUTER_POLICY_IP_BIN=ip \
+  UCI_BIN="$UNINSTALL_DEACTIVATE_ROOT/bin/uci" \
+  PROJECT_ROOT="$PROJECT_ROOT" \
+  RESULT_PATH="$UNINSTALL_ORPHAN_IP_ROOT/result.txt" \
+  sh "$UNINSTALL_DEACTIVATE_HELPER" >"$UNINSTALL_ORPHAN_IP_ROOT/stdout.txt" 2>"$UNINSTALL_ORPHAN_IP_ROOT/stderr.txt"
+orphan_ip_status=$?
+set -e
+[ "$orphan_ip_status" -ne 0 ]
+grep -F 'owned IP state is not proven empty' "$UNINSTALL_ORPHAN_IP_ROOT/stderr.txt" >/dev/null
 
 UNINSTALL_DNS_READY_ROOT="$TMP/uninstall-dns-ready"
 mkdir -p "$UNINSTALL_DNS_READY_ROOT/bin"

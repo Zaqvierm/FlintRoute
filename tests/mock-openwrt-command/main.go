@@ -48,6 +48,9 @@ func main() {
 	if name == "xray-init" || name == "zapret-init" {
 		os.Exit(handleService(name, args))
 	}
+	if name == "wget" && strings.Contains(strings.Join(args, " "), "127.0.0.1:8787") && os.Getenv("MOCK_LOOPBACK_API_HEALTH") == "0" {
+		os.Exit(1)
+	}
 	if name == "nft" {
 		os.Exit(handleNFT(args))
 	}
@@ -68,6 +71,10 @@ func handleNFT(args []string) int {
 		return 0
 	}
 	if len(args) == 4 && args[0] == "list" && args[1] == "table" && args[2] == "inet" && args[3] == "router_policy" {
+		if os.Getenv("MOCK_NFT_FOREIGN_TABLE") == "1" {
+			fmt.Println(`table inet router_policy { comment "foreign owner=unrelated" }`)
+			return 0
+		}
 		fmt.Println(`table inet router_policy { comment "router-policy owner=flintroute" }`)
 		return 0
 	}

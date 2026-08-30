@@ -68,7 +68,20 @@ case "$*" in
   *) exit 2 ;;
 esac
 SH
-chmod +x "$BIN/timeout-coreutils" "$BIN/id" "$BIN/router-policy" "$BIN/nfqws" "$BIN/zapret-init" "$BIN/ip" "$TMP/blockcheck.sh"
+cat >"$BIN/nft" <<'SH'
+#!/bin/sh
+case "$*" in
+  *"list ruleset"*)
+    if [ -n "${NFT_STATE:-}" ] && [ -f "$NFT_STATE" ]; then
+      cat "$NFT_STATE"
+    else
+      printf '%s\n' 'table inet fixture { }'
+    fi
+    ;;
+  *) exit 2 ;;
+esac
+SH
+chmod +x "$BIN/timeout-coreutils" "$BIN/id" "$BIN/router-policy" "$BIN/nfqws" "$BIN/zapret-init" "$BIN/ip" "$BIN/nft" "$TMP/blockcheck.sh"
 printf '{}\n' >"$TMP/config.json"
 printf 'default via 192.0.2.1\n' >"$TMP/routes.state"
 printf '0: from all lookup local\n' >"$TMP/rules.state"
@@ -78,6 +91,8 @@ TIMEOUT_BIN=fake-timeout \
 ROUTER_POLICY_CONFIG="$TMP/config.json" \
 ROUTER_POLICY_BIN="$BIN/router-policy" \
 NFQWS_BIN="$BIN/nfqws" \
+NFT_BIN="$BIN/nft" \
+IP_BIN="$BIN/ip" \
 ZAPRET_INIT="$BIN/zapret-init" \
 ROUTER_POLICY_RUNTIME_DIR="$RUNTIME" \
 ZAPRET_CATALOG_OUT="$TMP/catalog/catalog.json" \
@@ -104,6 +119,8 @@ if PATH="$BIN:$PATH" \
   ROUTER_POLICY_CONFIG="$TMP/config.json" \
   ROUTER_POLICY_BIN="$BIN/router-policy" \
   NFQWS_BIN="$BIN/nfqws" \
+  NFT_BIN="$BIN/nft" \
+  IP_BIN="$BIN/ip" \
   ZAPRET_INIT="$BIN/zapret-init" \
   ROUTER_POLICY_RUNTIME_DIR="$RUNTIME" \
   ZAPRET_CATALOG_OUT="$TMP/catalog/catalog.json" \
@@ -120,6 +137,13 @@ fi
 grep -F 'bounded diagnostic tail follows' "$TMP/failed.log" >/dev/null
 grep -F 'provider probe failed at TLS check' "$TMP/failed.log" >/dev/null
 [ ! -e "$RUNTIME/zapret-calibration.lock" ]
+[ -d "$RUNTIME/zapret-calibration-failures" ]
+failed_bundle=$(find "$RUNTIME/zapret-calibration-failures" -mindepth 1 -maxdepth 1 -type d -name 'failure.*' | head -n 1)
+[ -n "$failed_bundle" ]
+[ -s "$failed_bundle/status.env" ]
+grep -Fx 'status=7' "$failed_bundle/status.env" >/dev/null
+[ -s "$failed_bundle/report.tail" ]
+grep -F 'provider probe failed at TLS check' "$failed_bundle/report.tail" >/dev/null
 
 cat >"$TMP/blockcheck-route-leak.sh" <<'SH'
 #!/bin/sh
@@ -132,6 +156,8 @@ if PATH="$BIN:$PATH" \
   ROUTER_POLICY_CONFIG="$TMP/config.json" \
   ROUTER_POLICY_BIN="$BIN/router-policy" \
   NFQWS_BIN="$BIN/nfqws" \
+  NFT_BIN="$BIN/nft" \
+  IP_BIN="$BIN/ip" \
   ZAPRET_INIT="$BIN/zapret-init" \
   ROUTER_POLICY_RUNTIME_DIR="$RUNTIME" \
   ZAPRET_CATALOG_OUT="$TMP/catalog/catalog.json" \
@@ -148,6 +174,37 @@ fi
 grep -F 'calibration cleanup changed routing tables' "$TMP/route-leak.log" >/dev/null
 [ ! -e "$RUNTIME/zapret-calibration.lock" ]
 
+cat >"$TMP/blockcheck-nft-leak.sh" <<'SH'
+#!/bin/sh
+printf '%s\n' 'table inet fixture { chain leaked { queue num 31337; } }' >"$NFT_STATE"
+exit 7
+SH
+chmod +x "$TMP/blockcheck-nft-leak.sh"
+printf '%s\n' 'table inet fixture { }' >"$TMP/nft.state"
+if PATH="$BIN:$PATH" \
+  TIMEOUT_BIN=fake-timeout \
+  ROUTER_POLICY_CONFIG="$TMP/config.json" \
+  ROUTER_POLICY_BIN="$BIN/router-policy" \
+  NFQWS_BIN="$BIN/nfqws" \
+  NFT_BIN="$BIN/nft" \
+  IP_BIN="$BIN/ip" \
+  NFT_STATE="$TMP/nft.state" \
+  ZAPRET_INIT="$BIN/zapret-init" \
+  ROUTER_POLICY_RUNTIME_DIR="$RUNTIME" \
+  ZAPRET_CATALOG_OUT="$TMP/catalog/catalog.json" \
+  ROUTE_STATE="$TMP/routes.state" RULE_STATE="$TMP/rules.state" \
+  BLOCKCHECK_TIMEOUT=30 \
+  sh "$ROOT/scripts/calibrate-zapret.sh" --apply --mode exhaustive \
+    --domain observed.example \
+    --bundle-id auto-observed \
+    --network-fingerprint sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --blockcheck "$TMP/blockcheck-nft-leak.sh" >"$TMP/nft-leak.json" 2>"$TMP/nft-leak.log"; then
+  echo "nft-leaking blockcheck unexpectedly passed" >&2
+  exit 1
+fi
+grep -F 'calibration cleanup changed nftables state or left a temporary NFQUEUE object' "$TMP/nft-leak.log" >/dev/null
+[ ! -e "$RUNTIME/zapret-calibration.lock" ]
+
 cat >"$TMP/blockcheck-timeout.sh" <<'SH'
 #!/bin/sh
 echo 'last bounded strategy'
@@ -159,6 +216,8 @@ if PATH="$BIN:$PATH" \
   ROUTER_POLICY_CONFIG="$TMP/config.json" \
   ROUTER_POLICY_BIN="$BIN/router-policy" \
   NFQWS_BIN="$BIN/nfqws" \
+  NFT_BIN="$BIN/nft" \
+  IP_BIN="$BIN/ip" \
   ZAPRET_INIT="$BIN/zapret-init" \
   ROUTER_POLICY_RUNTIME_DIR="$RUNTIME" \
   ZAPRET_CATALOG_OUT="$TMP/catalog/catalog.json" \
@@ -175,6 +234,7 @@ fi
 grep -F 'upstream blockcheck timed out after 30s' "$TMP/timeout.log" >/dev/null
 grep -F 'last bounded strategy' "$TMP/timeout.log" >/dev/null
 [ ! -e "$RUNTIME/zapret-calibration.lock" ]
+[ "$(find "$RUNTIME/zapret-calibration-failures" -mindepth 1 -maxdepth 1 -type d -name 'failure.*' | wc -l | tr -d ' ')" -le 3 ]
 
 # The explicit exhaustive mode selects upstream force scanning and a separate
 # long-running budget without executing the scan in this fixture.
@@ -209,10 +269,66 @@ if PATH="$BIN:$PATH" TIMEOUT_BIN=fake-timeout \
 fi
 grep -F 'quick calibration requires the separate curated dataplane evidence runner' "$TMP/quick.log" >/dev/null
 
+# A concurrent nfqws that did not originate from this calibration must remain
+# alive. Cleanup reports the ownership conflict and fails closed instead of
+# killing a foreign dataplane process merely because its executable is named
+# nfqws.
+cp "$(command -v sleep)" "$TMP/nfqws"
+cat >"$TMP/blockcheck-foreign.sh" <<'SH'
+#!/bin/sh
+sleep 2
+exit 7
+SH
+chmod +x "$TMP/blockcheck-foreign.sh"
+PATH="$BIN:$PATH" \
+  TIMEOUT_BIN=fake-timeout \
+  ROUTER_POLICY_CONFIG="$TMP/config.json" \
+  ROUTER_POLICY_BIN="$BIN/router-policy" \
+  NFQWS_BIN="$BIN/nfqws" \
+  NFT_BIN="$BIN/nft" \
+  IP_BIN="$BIN/ip" \
+  ZAPRET_INIT="$BIN/zapret-init" \
+  ROUTER_POLICY_RUNTIME_DIR="$RUNTIME" \
+  ZAPRET_CATALOG_OUT="$TMP/catalog/catalog.json" \
+  ROUTE_STATE="$TMP/routes.state" RULE_STATE="$TMP/rules.state" \
+  BLOCKCHECK_TIMEOUT=30 \
+  sh "$ROOT/scripts/calibrate-zapret.sh" --apply --mode exhaustive \
+    --domain observed.example \
+    --bundle-id auto-observed \
+    --network-fingerprint sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --blockcheck "$TMP/blockcheck-foreign.sh" >"$TMP/foreign.json" 2>"$TMP/foreign.log" &
+foreign_calibration_pid=$!
+i=0
+while [ ! -d "$RUNTIME/zapret-calibration.lock" ] && [ "$i" -lt 10 ]; do
+  sleep 1
+  i=$((i + 1))
+done
+[ -d "$RUNTIME/zapret-calibration.lock" ] || {
+  echo "foreign process fixture did not start calibration" >&2
+  kill "$foreign_calibration_pid" 2>/dev/null || true
+  wait "$foreign_calibration_pid" 2>/dev/null || true
+  exit 1
+}
+setsid "$TMP/nfqws" 60 >/dev/null 2>&1 &
+foreign_nfqwss_pid=$!
+sleep 1
+if wait "$foreign_calibration_pid"; then
+  echo "calibration with foreign nfqws unexpectedly passed" >&2
+  kill "$foreign_nfqwss_pid" 2>/dev/null || true
+  wait "$foreign_nfqwss_pid" 2>/dev/null || true
+  exit 1
+fi
+foreign_state=$(awk '{print $3}' "/proc/$foreign_nfqwss_pid/stat" 2>/dev/null || true)
+if ! kill -0 "$foreign_nfqwss_pid" 2>/dev/null || [ "$foreign_state" = "Z" ]; then
+  echo "calibration cleanup killed the foreign nfqws" >&2
+  exit 1
+fi
+grep -F 'new nfqws has no provable calibration ownership' "$TMP/foreign.log" >/dev/null
+kill -KILL "$foreign_nfqwss_pid" 2>/dev/null || true
+wait "$foreign_nfqwss_pid" 2>/dev/null || true
 
 # A provider script may daemonize nfqws before timing out.  The calibration
 # finally path must reap that exact executable rather than leaving PPid=1.
-cp "$(command -v sleep)" "$TMP/nfqws"
 cat >"$TMP/blockcheck-orphan.sh" <<'SH'
 #!/bin/sh
 setsid "$ORPHAN_NFQWS" 60 >/dev/null 2>&1 &
@@ -226,6 +342,8 @@ if PATH="$BIN:$PATH" \
   ROUTER_POLICY_CONFIG="$TMP/config.json" \
   ROUTER_POLICY_BIN="$BIN/router-policy" \
   NFQWS_BIN="$BIN/nfqws" \
+  NFT_BIN="$BIN/nft" \
+  IP_BIN="$BIN/ip" \
   ZAPRET_INIT="$BIN/zapret-init" \
   ROUTER_POLICY_RUNTIME_DIR="$RUNTIME" \
   ZAPRET_CATALOG_OUT="$TMP/catalog/catalog.json" \
@@ -249,4 +367,61 @@ if kill -0 "$orphan_pid" 2>/dev/null && [ "$orphan_state" != "Z" ]; then
   exit 1
 fi
 [ ! -e "$RUNTIME/zapret-calibration.lock" ]
+
+# SIGTERM must still run the same ownership/network cleanup, but the cancelled
+# calibration must not be reported as a successful operation.
+cat >"$TMP/blockcheck-cancel.sh" <<'SH'
+#!/bin/sh
+sleep 60
+SH
+cat >"$TMP/nfqws-version" <<'SH'
+#!/bin/sh
+echo 'github version v1'
+SH
+chmod +x "$TMP/blockcheck-cancel.sh" "$TMP/nfqws-version"
+PATH="$BIN:$PATH" \
+  TIMEOUT_BIN=fake-timeout \
+  ROUTER_POLICY_CONFIG="$TMP/config.json" \
+  ROUTER_POLICY_BIN="$BIN/router-policy" \
+  NFQWS_BIN="$TMP/nfqws-version" \
+  NFT_BIN="$BIN/nft" \
+  IP_BIN="$BIN/ip" \
+  ZAPRET_INIT="$BIN/zapret-init" \
+  ROUTER_POLICY_RUNTIME_DIR="$RUNTIME" \
+  ZAPRET_CATALOG_OUT="$TMP/catalog/catalog.json" \
+  ROUTE_STATE="$TMP/routes.state" RULE_STATE="$TMP/rules.state" \
+  BLOCKCHECK_TIMEOUT=30 \
+  sh "$ROOT/scripts/calibrate-zapret.sh" --apply --mode exhaustive \
+    --domain observed.example \
+    --bundle-id auto-observed \
+    --network-fingerprint sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --blockcheck "$TMP/blockcheck-cancel.sh" >"$TMP/cancel.json" 2>"$TMP/cancel.log" &
+cancel_pid=$!
+i=0
+while [ ! -d "$RUNTIME/zapret-calibration.lock" ] && [ "$i" -lt 10 ]; do
+  sleep 1
+  i=$((i + 1))
+done
+[ -d "$RUNTIME/zapret-calibration.lock" ] || {
+  echo "cancel fixture did not start calibration" >&2
+  kill "$cancel_pid" 2>/dev/null || true
+  wait "$cancel_pid" 2>/dev/null || true
+  exit 1
+}
+kill -TERM "$cancel_pid"
+if wait "$cancel_pid"; then
+  echo "SIGTERM calibration unexpectedly passed" >&2
+  exit 1
+else
+  cancel_status=$?
+fi
+[ "$cancel_status" -eq 143 ] || {
+  echo "SIGTERM returned unexpected status: $cancel_status" >&2
+  exit 1
+}
+[ ! -e "$RUNTIME/zapret-calibration.lock" ] || {
+  echo "SIGTERM cleanup left calibration lock" >&2
+  exit 1
+}
 echo "zapret_calibration_resolves_timeout_from_path=true"
+echo "zapret_calibration_sigterm_is_nonzero=true"

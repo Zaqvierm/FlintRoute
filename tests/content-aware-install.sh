@@ -40,7 +40,11 @@ fi
 RUNTIME_DIR="$TMP/install/runtime"
 ROUTER_POLICY_INSTALL_LIB_ONLY=1
 SYSTEM_ROOT="$TMP/install/system"
-export RUNTIME_DIR ROUTER_POLICY_INSTALL_LIB_ONLY SYSTEM_ROOT
+# install.sh derives its internal root from the namespaced environment
+# override.  Supplying only the fixture-local variable would silently select
+# the host root and make atomic_copy attempt a privileged chown.
+ROUTER_POLICY_SYSTEM_ROOT="$SYSTEM_ROOT"
+export RUNTIME_DIR ROUTER_POLICY_INSTALL_LIB_ONLY ROUTER_POLICY_SYSTEM_ROOT
 # shellcheck source=install.sh
 . "$PROJECT_ROOT/install.sh"
 

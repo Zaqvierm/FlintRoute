@@ -52,6 +52,8 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "== frontend =="
 Invoke-Npm @("run", "typecheck")
+Invoke-Npm @("test")
+Invoke-Npm @("run", "browser:test")
 Invoke-Npm @("run", "build")
 
 Write-Host "== build =="
@@ -106,6 +108,18 @@ if (Test-Path $gitSh) {
   throw "Git sh is required for installer backup behavior test"
 }
 
+Write-Host "== installer disk preflight =="
+& $gitSh tests/installer-disk-preflight.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "installer disk preflight test failed"
+}
+
+Write-Host "== installer durability =="
+& $gitSh tests/installer-durability.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "installer durability test failed"
+}
+
 Write-Host "== OpenWrt package =="
 & $gitSh tests/package-openwrt.sh
 if ($LASTEXITCODE -ne 0) {
@@ -116,6 +130,30 @@ Write-Host "== installer lifecycle =="
 & $gitSh tests/installer-lifecycle.sh
 if ($LASTEXITCODE -ne 0) {
   throw "installer lifecycle test failed"
+}
+
+Write-Host "== installer secret ownership =="
+& $gitSh tests/installer-secret-ownership.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "installer secret ownership test failed"
+}
+
+Write-Host "== installer secret rollback =="
+& $gitSh tests/installer-secret-rollback.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "installer secret rollback test failed"
+}
+
+Write-Host "== installer dnsmasq runtime rollback =="
+& $gitSh tests/installer-dnsmasq-rollback.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "installer dnsmasq runtime rollback test failed"
+}
+
+Write-Host "== installer prefix switch =="
+& $gitSh tests/installer-prefix-switch.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "installer prefix switch test failed"
 }
 
 Write-Host "== content-aware install =="
@@ -140,6 +178,12 @@ Write-Host "== bounded boot guard service =="
 & $gitSh tests/boot-guard-service.sh
 if ($LASTEXITCODE -ne 0) {
   throw "boot guard service test failed"
+}
+
+Write-Host "== baseline-bound boot guard clear =="
+& $gitSh tests/boot-guard-baseline.sh
+if ($LASTEXITCODE -ne 0) {
+  throw "baseline boot guard clear test failed"
 }
 
 Write-Host "== controller bind safety =="
@@ -256,7 +300,9 @@ $scanFiles = foreach ($scanRoot in $scanRoots) {
 $secretHits = $scanFiles |
   Where-Object { $_.FullName -notmatch '\\node_modules\\|\\.tools\\|\\.git\\|\\dist\\|tests\\run-all\.(ps1|sh)$' } |
   Select-String -Pattern 'TELEGRAM_BOT_TOKEN=[A-Za-z0-9]|-----BEGIN (OPENSSH |RSA |EC )?PRIVATE KEY-----|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' |
-  Where-Object { $_.Line -notmatch 'UUID_PLACEHOLDER|11111111-1111-4111-8111-111111111111|22222222-2222-4222-8222-222222222222|33333333-3333-4333-8333-333333333333' }
+  # HWID is a device identifier, not a subscription credential. Its explicit
+  # fixture/UI contract is safe to retain; URLs and tokens remain blocked.
+  Where-Object { $_.Line -notmatch 'UUID_PLACEHOLDER|a330268d-7d9d-4343-8672-f6191f80a25c|11111111-1111-4111-8111-111111111111|22222222-2222-4222-8222-222222222222|33333333-3333-4333-8333-333333333333|44444444-4444-4444-8444-444444444444|55555555-5555-4555-8555-555555555555|66666666-6666-4666-8666-666666666666|77777777-7777-4777-8777-777777777777|88888888-8888-4888-8888-888888888888' }
 if ($secretHits) {
   $secretHits | Format-Table -AutoSize | Out-String | Write-Host
   throw "secret-like values found"
