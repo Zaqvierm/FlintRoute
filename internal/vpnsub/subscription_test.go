@@ -12,6 +12,18 @@ import (
 	"router-policy/internal/remotefetch"
 )
 
+func TestEffectiveSubscriptionMaxBytesUpgradesLegacyDefault(t *testing.T) {
+	if got, want := effectiveSubscriptionMaxBytes(2<<20), int64(4<<20); got != want {
+		t.Fatalf("legacy default max bytes=%d, want %d", got, want)
+	}
+	if got, want := effectiveSubscriptionMaxBytes(1<<20), int64(1<<20); got != want {
+		t.Fatalf("explicit smaller max bytes=%d, want %d", got, want)
+	}
+	if got, want := effectiveSubscriptionMaxBytes(0), int64(4<<20); got != want {
+		t.Fatalf("unset max bytes=%d, want %d", got, want)
+	}
+}
+
 func TestSubscriptionServiceDownloadsChecksAndStagesBundle(t *testing.T) {
 	root := t.TempDir()
 	subscription := mustManagerSubscriptionBytes(t, root)

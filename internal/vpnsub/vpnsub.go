@@ -398,6 +398,10 @@ func canonicalizeVLESSOutbound(raw json.RawMessage) (json.RawMessage, error) {
 	}
 	if err := rejectUnknownKeys(object, map[string]struct{}{
 		"tag": {}, "remarks": {}, "protocol": {}, "settings": {}, "streamSettings": {},
+		// Happ providers attach a numeric account/access level to each
+		// outbound. It is provider metadata, not an Xray setting; accept it
+		// at the boundary but deliberately omit it from the generated config.
+		"level": {},
 	}); err != nil {
 		return nil, err
 	}
@@ -447,6 +451,7 @@ func canonicalSettings(raw json.RawMessage) (json.RawMessage, error) {
 	if err := json.Unmarshal(settings["vnext"], &endpoints); err != nil || len(endpoints) == 0 || len(endpoints) > 8 {
 		return nil, errors.New("invalid VLESS endpoint list")
 	}
+	canonicalEndpoints := make([]map[string]json.RawMessage, 0, len(endpoints))
 	for _, endpoint := range endpoints {
 		if err := rejectUnknownKeys(endpoint, map[string]struct{}{"address": {}, "port": {}, "users": {}}); err != nil {
 			return nil, err
@@ -463,13 +468,39 @@ func canonicalSettings(raw json.RawMessage) (json.RawMessage, error) {
 		if err := json.Unmarshal(endpoint["users"], &users); err != nil || len(users) == 0 || len(users) > 16 {
 			return nil, errors.New("invalid VLESS user list")
 		}
+		canonicalUsers := make([]map[string]json.RawMessage, 0, len(users))
 		for _, user := range users {
-			if err := rejectUnknownKeys(user, map[string]struct{}{"id": {}, "encryption": {}, "flow": {}}); err != nil {
+			if err := rejectUnknownKeys(user, map[string]struct{}{"id": {}, "encryption": {}, "flow": {}, "level": {}}); err != nil {
 				return nil, err
 			}
+			// Happ adds a numeric account/access level to each user. It is
+			// provider metadata, not an Xray user setting. Validate it at the
+			// trust boundary, then omit it from the generated config.
+			if rawLevel, ok := user["level"]; ok {
+				var level int
+				if err := json.Unmarshal(rawLevel, &level); err != nil || level < 0 || level > 255 {
+					return nil, errors.New("invalid VLESS user level")
+				}
+			}
+			canonicalUser := make(map[string]json.RawMessage, 3)
+			for _, key := range []string{"id", "encryption", "flow"} {
+				if value, ok := user[key]; ok {
+					canonicalUser[key] = value
+				}
+			}
+			canonicalUsers = append(canonicalUsers, canonicalUser)
 		}
+		usersRaw, err := json.Marshal(canonicalUsers)
+		if err != nil {
+			return nil, errors.New("could not canonicalize VLESS users")
+		}
+		canonicalEndpoints = append(canonicalEndpoints, map[string]json.RawMessage{
+			"address": endpoint["address"],
+			"port":    endpoint["port"],
+			"users":   usersRaw,
+		})
 	}
-	return json.Marshal(map[string]any{"vnext": endpoints})
+	return json.Marshal(map[string]any{"vnext": canonicalEndpoints})
 }
 
 func canonicalStreamSettings(raw json.RawMessage) (json.RawMessage, error) {
@@ -485,7 +516,7 @@ func canonicalStreamSettings(raw json.RawMessage) (json.RawMessage, error) {
 	}
 	for key, allowed := range map[string]map[string]struct{}{
 		"tlsSettings":         {"serverName": {}, "alpn": {}, "fingerprint": {}, "allowInsecure": {}},
-		"realitySettings":     {"serverName": {}, "publicKey": {}, "shortId": {}, "fingerprint": {}, "spiderX": {}},
+		"realitySettings":     {"serverName": {}, "publicKey": {}, "password": {}, "shortId": {}, "fingerprint": {}, "spiderX": {}},
 		"wsSettings":          {"path": {}, "headers": {}},
 		"grpcSettings":        {"serviceName": {}, "authority": {}, "multiMode": {}},
 		"httpupgradeSettings": {"path": {}, "host": {}},
@@ -498,6 +529,14 @@ func canonicalStreamSettings(raw json.RawMessage) (json.RawMessage, error) {
 			}
 			if err := rejectUnknownKeys(nested, allowed); err != nil {
 				return nil, err
+			}
+			if key == "realitySettings" {
+				if rawPassword, ok := nested["password"]; ok {
+					var password string
+					if err := json.Unmarshal(rawPassword, &password); err != nil || strings.TrimSpace(password) == "" || len(password) > 1024 {
+						return nil, errors.New("invalid Reality password")
+					}
+				}
 			}
 		}
 	}

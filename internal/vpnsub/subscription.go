@@ -23,11 +23,27 @@ type CheckerFactory func(*config.Config, config.Service) OutboundChecker
 type SubscriptionService struct {
 	Runner         XrayRunner
 	HTTPClient     *http.Client
+	Resolver       SourceResolving
+	HWIDProvider   FingerprintProvider
+	HWIDSettings   HWIDSettings
 	CheckerFactory CheckerFactory
 	Parallelism    int
 	CheckAttempts  int
 	ProbeBudget    chan struct{}
 	SpeedTester    ThroughputTester
+}
+
+// effectiveSubscriptionMaxBytes keeps the packaged v2 default compatible with
+// current Happ providers.  Older active revisions may still carry the former
+// 2 MiB default, while the provider response is now slightly larger.  Treat
+// that exact legacy default as an implicit default rather than rejecting a
+// valid subscription; explicit smaller limits remain respected.
+func effectiveSubscriptionMaxBytes(configured int64) int64 {
+	const legacyDefault = int64(2 << 20)
+	if configured <= 0 || configured == legacyDefault || configured > maxSubscriptionFileBytes {
+		return maxSubscriptionFileBytes
+	}
+	return configured
 }
 
 // SetProbeBudget wires subscription candidate checks into the same global
@@ -76,17 +92,14 @@ func (s *SubscriptionService) Prepare(ctx context.Context, cfg *config.Config) (
 
 	subscriptionURLs := []string{}
 	if info, statErr := os.Lstat(cfg.Xray.SubscriptionSecretFile); statErr == nil && info.Size() > 0 {
-		subscriptionURLs, err = ReadSubscriptionURLFiles(cfg.Xray.SubscriptionSecretFile)
+		subscriptionURLs, err = ReadSubscriptionSourceFiles(cfg.Xray.SubscriptionSecretFile)
 		if err != nil {
-			return PreparedBundle{}, errors.New("VPN subscription secret file is invalid")
+			return PreparedBundle{}, fmt.Errorf("VPN subscription secret file is invalid: %w", err)
 		}
 	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 		return PreparedBundle{}, errors.New("VPN subscription secret file is invalid")
 	}
-	maxBytes := cfg.Policy.MaxSubscriptionBytes
-	if maxBytes <= 0 || maxBytes > maxSubscriptionFileBytes {
-		maxBytes = maxSubscriptionFileBytes
-	}
+	maxBytes := effectiveSubscriptionMaxBytes(cfg.Policy.MaxSubscriptionBytes)
 	timeout := time.Duration(cfg.Policy.MaxProbeSeconds) * time.Second
 	if timeout <= 0 || timeout > time.Minute {
 		timeout = 30 * time.Second
@@ -94,9 +107,30 @@ func (s *SubscriptionService) Prepare(ctx context.Context, cfg *config.Config) (
 	downloadPaths := make([]string, 0, len(subscriptionURLs))
 	fetchSummaries := make([]FetchSummary, 0, len(subscriptionURLs))
 	totalBytes := 0
+	resolver := s.Resolver
+	if resolver == nil {
+		resolver = NewDefaultSourceResolver()
+	}
+	hwidSettings := s.HWIDSettings
+	if settings, settingsErr := LoadHWIDSettings(HWIDSettingsPath(cfg.Xray.SubscriptionSecretFile)); settingsErr != nil {
+		return PreparedBundle{}, errors.New("VPN subscription HWID settings are invalid")
+	} else if s.HWIDSettings == (HWIDSettings{}) {
+		hwidSettings = settings
+	}
+	var hwid string
+	if len(subscriptionURLs) > 0 {
+		provider := s.HWIDProvider
+		if provider == nil {
+			provider = SystemFingerprintProvider{}
+		}
+		hwid, err = ResolveHWID(ctx, hwidSettings, provider)
+		if err != nil {
+			return PreparedBundle{}, fmt.Errorf("VPN subscription HWID could not be prepared: %w", err)
+		}
+	}
 	for index, subscriptionURL := range subscriptionURLs {
 		downloadPath := filepath.Join(temporaryDir, fmt.Sprintf("subscription-%d.json", index+1))
-		fetched, err := FetchSubscription(ctx, s.HTTPClient, subscriptionURL, downloadPath, FetchOptions{MaxBytes: maxBytes, MaxRedirects: 3, Timeout: timeout})
+		fetched, err := FetchSource(ctx, s.HTTPClient, subscriptionURL, downloadPath, FetchOptions{MaxBytes: maxBytes, MaxRedirects: 3, Timeout: timeout, HWID: hwid}, resolver)
 		if err != nil {
 			return PreparedBundle{}, fmt.Errorf("VPN subscription source %d failed: %w", index+1, err)
 		}

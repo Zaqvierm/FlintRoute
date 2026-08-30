@@ -129,7 +129,10 @@ func (s *Server) handleXrayPoolSpeedTest(w http.ResponseWriter, r *http.Request)
 		writeError(w, r, http.StatusServiceUnavailable, "vless_pool_unavailable", "VLESS storage is not configured")
 		return
 	}
-	s.subscriptionMu.Lock()
+	if !s.tryLockSubscription() {
+		writeError(w, r, http.StatusTooManyRequests, "subscription_operation_busy", "Another subscription operation is still running")
+		return
+	}
 	defer s.subscriptionMu.Unlock()
 	if measurer, ok := s.subscriptionPreparer.(managedVLESSSpeedMeasurer); ok {
 		measurement, server, err := measurer.MeasureServer(r.Context(), cfg, request.LogicalID)
