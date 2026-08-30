@@ -1,13 +1,11 @@
 # Поток домена и трафика
 
-> **Статус:** это целевой и software-проверенный поток. Без отдельного
-> hardware-run он не доказывает, что каждый LAN-клиент на текущем SHA проходит
-> весь путь DNS interception → route apply.
->
-> В текущем production-коде фоновая проверка неизвестного домена и автоматическое
-> обновление route mapping отключены: результат публикуется как observation или
-> suggestion. Пункты ниже описывают целевой route-only flow и не являются обещанием
-> уже работающего auto-apply.
+> **Статус:** planner и API проверены локально/в CI, но без hardware-run это не
+> доказывает путь каждого LAN-клиента. Route-only assignment теперь fenced до
+> регистрации отдельного runtime consumer: один только bbolt decision не
+> считается изменением production nft/dnsmasq dataplane. Consumer обязан
+> вернуть semantic, revision-bound receipt и пройти post-apply probe; hardware
+> и end-to-end assignment остаются отдельными gates.
 
 > Основные реализации: `internal/probe`, `internal/domaincache`,
 > `internal/artifact`, `internal/policy`.
@@ -30,11 +28,15 @@
 
 ## Неизвестный домен
 
-- если домен не похож на защищённую категорию, первый запрос можно пустить
-  напрямую (`policy.unknown_domain_first_path`);
-- в целевом route-only режиме — bounded фоновая проверка direct/zapret/smart_dns/VLESS;
-- в целевом route-only режиме при подтверждённой блокировке — обновить маршрут для
-  следующих соединений; текущий код сохраняет suggestion до явного ChangeSet;
+- если домен не похож на защищённую категорию, initial policy сообщает выбранный
+  режим (`balanced`, `privacy_first`, `fail_closed`), но фактическое enforcement
+  первого соединения требует отдельной dataplane-интеграции;
+- в route-only режиме — bounded фоновая проверка direct/zapret/smart_dns/VLESS;
+- после проверки route-only runtime consumer должен атомарно применить только
+  exact-owned mapping, вернуть receipt и дождаться повторной проверки пути;
+- без dataplane-backed consumer автоматический режим оставляет suggestion и
+  возвращает `route_assignment_runtime_unavailable`, не выдавая bbolt-запись за
+  фактическое изменение nft/dnsmasq mapping;
 - существующее TCP-соединение не переносится между маршрутами (новое решение
   применяется к новым соединениям; conntrack purge — только для критических
   переключений).
@@ -103,6 +105,20 @@ policy routing для IPv6, `GEO_LOCKED` не утекает через AAAA. П
 — дырка, не фича.
 
 ## QUIC / UDP 443
+
+## Current route-only runtime status
+
+The route-only assignment path is now backed by a production consumer. It is
+not a full dataplane apply: the typed helper can only update the owned
+`router-policy-route-assignments.conf` overlay for an already enabled route.
+The request is bound to the committed revision, candidate hash, artifact
+manifest hash and deterministic domain/route object IDs. dnsmasq restart plus
+the `running` action are required before the helper returns a verified receipt.
+
+Assignments from an older full revision are invalidated into an empty,
+newly-bound manifest. Cleanup refuses an include without the FlintRoute
+ownership marker. The software proof is local/CI only; route behavior on a
+physical OpenWrt dataplane still requires a separate hardware gate.
 
 - `GEO_LOCKED`: UDP/443 только через TProxy/VLESS или DROP;
 - `TSPU_RESTRICTED`: можно блокировать UDP/443 → клиент откатится на TCP

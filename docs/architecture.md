@@ -1,6 +1,6 @@
 # Архитектура
 
-> **Статус на `effa938`:** software-описание актуально. Раздел «Проверенные
+> **Статус на `e97f8dd`:** software-описание актуально. Раздел «Проверенные
 > аппаратные факты» ниже — исторический и имеет `STALE FOR CURRENT SHA`: в этом
 > цикле Flint 2 не подключался.
 
@@ -123,10 +123,13 @@ Smart DNS — conditional DNS, не туннель и не VPN. Его resolver 
 ответу resolver. Proof живёт десять минут и повторно проверяется перед apply.
 
 Discovery отделяет наблюдение от изменения конфигурации: `observe_only` только
-пишет решение в bounded runtime/event stream, `suggest` сохраняет предложение,
-`auto_apply_verified` описывает будущий gated route-only контракт, но в текущем
-production-коде остаётся fenced и не создаёт ChangeSet из DNS-события, `locked`
-не запускает probe.
+пишет решение в bounded runtime/event stream, `suggest` сохраняет предложение.
+`auto_apply_verified` — доступный, но узкий route-only контракт: при наличии
+зарегистрированного production consumer он меняет только exact-owned dnsmasq
+overlay для уже включённого маршрута, с revision-bound receipt и post-apply
+proof. При отсутствии consumer режим остаётся fenced и возвращает
+`route_assignment_runtime_unavailable`; полный ChangeSet из DNS-события не
+создаётся. `locked` не запускает probe.
 Предложения ограничены 256 доменами и не пишутся в persistent DB. Заводской
 режим — `observe_only`.
 

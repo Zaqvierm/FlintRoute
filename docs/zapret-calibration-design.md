@@ -71,12 +71,27 @@ Quick-runner возвращает полную bounded-таблицу прове
 это не ложный успех и не должно превращаться в `NO_SAFE_ROUTE` доменного решения.
 
 Production связывает `ExecCalibrationRunner.QuickScript` со
-`scripts/quick-zapret-check.sh`. Runner последовательно выполняет четыре
+`scripts/quick-zapret-check.sh`. Runner последовательно выполняет шесть
 встроенных проверенных профиля, выделяет bounded private NFQUEUE, создаёт только
 свою временную output-table для отдельного probe UID и запускает одну
 принадлежащую ему process group `nfqws` на попытку. В отчёт попадают delta
-счётчика, target IP, HTTP-результат, latency и cleanup proof. Ответ HTTP 200 при
+счётчика, target IP, kernel route lookup до запроса, HTTP-результат, latency и
+cleanup proof. Запрос принудительно идёт без переменных HTTP-прокси
+(`--noproxy '*'`), иначе локальный proxy мог бы дать ложное доказательство пути.
+Ответ HTTP 200 при
 неизменившемся счётчике собственной NFQUEUE — `INFRA_ERROR`, а не `PASS`.
+Профиль, который публикуется в каталоге, и профиль конкретной попытки хранятся
+в разных файлах: первый привязан к production NFQUEUE, второй — к выделенной
+временной очереди. Поэтому digest/queue каталога никогда не маскируют другую
+стратегию, реально использованную в probe.
+
+На embedded OpenWrt `su` часто отсутствует. Это не блокирует quick-check:
+если `/bin/su` (или эквивалентный доверенный helper) недоступен, runner
+переходит в явно обозначенный `probe_privilege_mode=root_fallback`, запускает
+ограниченный curl от root и ставит в owned output rule `meta skuid 0`. Такой
+результат всё равно обязан содержать NFQUEUE counter/path evidence и cleanup
+proof; отсутствие privilege-drop helper не превращается в «PASS по старту
+nfqws».
 
 Quick и exhaustive используют один runtime lock
 `/tmp/router-policy/zapret-calibration.lock` (или настроенный runtime-каталог).
@@ -105,3 +120,22 @@ limits are enforced by config validation and again at the probe boundary.
 Malformed in-memory configuration therefore fails closed before starting
 remote GeoIP requests; one DNS observation cannot turn into an unbounded
 DNS/HTTP/SOCKS fan-out.
+
+## Cancellation and signal semantics
+
+Calibration has one finally-style cleanup path for normal completion, failure,
+timeout, and termination. `SIGTERM`, `SIGINT`, and `SIGHUP` are recorded as
+non-successful outcomes (`143`, `130`, and `129` respectively); cleanup still
+validates the owned process group, nfqws/NFQUEUE objects, nft state, routes, and
+rules before removing the run lock. A cancelled run therefore cannot be
+reported as a successful calibration merely because its cleanup completed.
+
+The exhaustive wrapper snapshots the complete `nft list ruleset` output and the
+complete route/rule state before starting the provider. The same configured
+`NFT_BIN`/`IP_BIN` tools are used after cleanup and the snapshots must compare
+byte-for-byte. This deliberately fails closed if a provider leaves an
+unregistered NFQUEUE rule/table or if another actor changes the network while
+calibration is running; it is not a claim that concurrent mutation is safe.
+An nfqws process that was not present in the baseline is killable only with a
+matching process-group or per-run ownership marker. An unmarked process is
+reported as a foreign-resource conflict and is left alive.

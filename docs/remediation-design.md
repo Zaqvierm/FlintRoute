@@ -24,6 +24,12 @@
    компонентов `.` и `..`. Пути с `..`, двойными разделителями и завершающим
    разделителем отклоняются до любого рекурсивного удаления/копирования/restore.
 
+Атомарность nft не равна атомарности всего dataplane: owned nft table
+заменяется одним `nft` batch, но конфиги, listeners, IP plan и dnsmasq
+обновляются отдельными шагами. На время этой последовательности включён
+fail-closed transition guard; при любой ошибке операция отклоняется/откатывается,
+а не объявляется атомарной.
+
 ## Машина состояний транзакции
 
 Durable journal и adapter проходят состояния в таком порядке:
@@ -75,11 +81,34 @@ generation/revision/token. Allowlist покрывает transaction verbs, пр�
 артефактов. У helper нет HTTP-клиента, remote fetch, parser подписок/provider
 JSON или произвольного command/path input.
 
-Текущий root-controller включает helper только при явно заданном socket. Поэтому
-эта ветка не заявляет, что весь controller уже non-root. При настроенном socket
-recovery reconciliation теперь тоже идёт через typed `transaction.reconcile`, а
-не через прямую shell mutation. Read-only `status` и `diagnose` остаются вне этой
-mutation boundary. Перенос самого controller — отдельный follow-up.
+Production entrypoint требует non-root peer и настроенный helper socket:
+`validateProductionPrivilege` отвергает root и запуск без socket, а OpenWrt
+procd init задаёт `daemon:daemon`; installer включает и запускает
+`router-policy-helper` до controller и блокирует восстановление controller без
+его running-состояния. Upgrade и rollback останавливают helper после controller
+до замены файлов и восстанавливают его running-состояние только по snapshot.
+При настроенном socket recovery reconciliation
+идёт через typed `transaction.reconcile`, а не через прямую shell mutation.
+Read-only `status` и `diagnose` остаются вне этой mutation boundary. Runtime
+проверка UID/peer credentials и hardware proof ещё не выполнены, поэтому
+acceptance остаётся `PARTIAL`, хотя production startup contract уже fail-closed.
+
+### Ранний boot fence и committed classifier
+
+После cold boot conntrack пуст, поэтому один только match по `meta mark` не
+защищает новый поток. `router-policy-boot-guard` сначала ставит отдельную
+owned-таблицу с `forward policy drop`. Если в
+`state/last-good/active-transaction.env` доказаны `transaction_state=committed`,
+candidate hash, artifact manifest hash и ownership `router_policy`, guard в том
+же атомарном `nft` batch загружает этот committed classifier. В guard разрешаются
+только не-DROP marks, полученные typed-командой
+`internal-print-managed-marks`; нулевые и foreign marks остаются под DROP.
+
+При отсутствующем/повреждённом binding, недоступном parser/helper или конфликте
+чужой `router_policy` classifier не загружается: безопасный fallback — полный
+transit DROP до reconcile. Это fail-closed degraded mode, а не обещание
+доступности WAN. Guard не ставит hook на loopback management plane и снимается
+только generation-bound операцией после полного reconcile.
 
 Lifecycle socket также проверяет ownership: regular file, symlink или живой
 listener в `helper.sock` считается чужим и не удаляется. Перед bind можно убрать
@@ -143,12 +172,15 @@ fault-injection тестами. Полная reboot/fault matrix и hardware evi
 ## Текущий статус privilege boundary
 
 `router-policy-helper` — упакованный typed helper с фиксированным путём и Unix
-socket; его контракт протестирован. Production-controller `router-policy` в этой
-ветке всё ещё запускается от root, поэтому разделение привилегий **PARTIAL**, а
-не завершено. Helper path — предпочтительный allowlisted путь; прямой shell
-adapter оставлен только как legacy/development путь. Пока controller root, LAN
-exposure по умолчанию запрещён. Для закрытия finding нужно запустить controller
-non-root и удалить его прямой privileged execution path.
+socket; его контракт протестирован. Production-controller запускается через
+procd как `daemon`, а root и запуск без helper отвергаются. Разделение
+привилегий всё ещё **PARTIAL** до Linux runtime/peer-credential и hardware
+evidence. Основной transaction/route dataplane использует helper path; прямой
+shell adapter оставлен только legacy/development режимом. Для component API
+отдельно действует fail-closed ограждение: пока helper-backed component
+executor не подключён, production controller может читать inventory/status, но
+не имеет права выполнять install/update/restart/rollback/uninstall через
+прямой `OpenWrtDriver`. LAN exposure по умолчанию запрещён.
 
 ## Порядок remediation
 

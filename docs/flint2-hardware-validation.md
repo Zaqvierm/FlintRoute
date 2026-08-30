@@ -1,8 +1,12 @@
 # P13: полная аппаратная проверка Flint 2
 
 > **STALE FOR CURRENT SHA.** Это план и историческая матрица аппаратной
-> приёмки. Для `effa938` роутер не подключался, поэтому ни один PASS ниже не
-> является текущим hardware evidence.
+> приёмки. Для текущего software HEAD
+> `7f8c480c511d028d876b63d11a0c03e8a383ff79` Flint 2 не подключался, поэтому
+> ни один PASS ниже не является текущим hardware evidence. Любая новая запись
+> должна содержать exact SHA, build digest, firmware/kernel и отдельный
+> read-only/controlled evidence bundle; старые PASS автоматически не
+> наследуются.
 
 ## Цель
 

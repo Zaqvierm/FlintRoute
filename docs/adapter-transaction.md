@@ -168,7 +168,9 @@ transaction ID, revision ID, creation time. Stale lock удаляется тол
 Snapshots покрывают: active router-policy config, nft include, dnsmasq include,
 Xray активная конфигурация, Zapret активная конфигурация, активные метаданные транзакций, UCI
 flow-offloading state. Manifest SHA-256 + каждый file hash/size проверяются до
-изменения любого target. Restore атомарен. Absent markers удаляют только
+изменения любого target или остановки owned-профиля. Некорректный snapshot
+остаётся read-only ошибкой и не может оставить живой профиль остановленным.
+Restore атомарен. Absent markers удаляют только
 жестко запрограммированные цели, принадлежащие проекту. `last-good` = полный снимок + фиксированный
 метаданные транзакции.
 
@@ -181,6 +183,9 @@ baseline. Factory adapter не зависит от внешнего GNU `stat`: 
 
 Rollback timer — transaction-bound и revision-bound, PID + process start time
 для wrapper и sleeper. Никогда не ищет process command lines.
+Отмена идемпотентна к гонке завершения: если привязанный процесс успел выйти
+между проверкой `/proc` и `kill`, повторная проверка принимает его как уже
+остановленный; живой процесс с другим start-time по-прежнему блокирует cleanup.
 
 ## No-op apply и cleanup после commit
 

@@ -28,14 +28,20 @@
 
 ## Если путь умер
 
-| Категория | Цепочка | Запрещено |
+| Категория | Допустимые кандидаты | Запрещено |
 |---|---|---|
-| `GEO_LOCKED` | smart_dns → VLESS (non-RU) → DROP | прямой, Zapret, RU выход |
-| `TELEGRAM` | external_socks → VLESS → DROP | внешний SOCKS должен пройти preflight и PathVerified |
-| `TSPU_RESTRICTED` | zapret → VLESS → DROP | небезопасный direct, Smart DNS как DPI bypass |
-| `DIRECT_ONLY` | только direct; при отказе — ошибка, не VLESS | зарубежный proxy |
-| `DIRECT_PREFERRED` | direct; расширение только после конкретного GEO/TSPU evidence | глобальный VLESS |
+| `GEO_LOCKED` | все Smart DNS, VLESS (non-RU), DROP | Direct, Zapret, RU/unknown egress |
+| `TELEGRAM` | все external SOCKS, VLESS, DROP | каждый внешний SOCKS должен пройти preflight и PathVerified |
+| `TSPU_RESTRICTED` | все Zapret, Smart DNS, VLESS, DROP | небезопасный Direct |
+| `DIRECT_ONLY` | Direct; при отказе — явный DROP | зарубежный proxy |
+| `DIRECT_PREFERRED` | Direct, Zapret, Smart DNS, VLESS, DROP | выбор по порядку списка; hard filter обязателен |
 | `BLOCKED` | DROP | любой обход |
+
+Порядок в столбце «Допустимые кандидаты» не является приоритетом победителя.
+Все кандидаты с terminal evidence проходят hard filter (`PathVerified`,
+`ServiceOK`, policy/egress), затем сравниваются по сопоставимому
+end-to-end latency и health evidence. Hysteresis/cooldown предотвращают
+переключение из-за незначительной разницы.
 
 ## Четыре уровня при отказе
 

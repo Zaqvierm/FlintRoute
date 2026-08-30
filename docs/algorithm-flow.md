@@ -37,10 +37,13 @@ DNS observation и изменение committed config — разные дейс
   bounded observation/reason в runtime/event stream; активные DNS/TLS/HTTP/SOCKS
   probes и новые правила не запускаются;
 - `suggest` дополнительно сохраняет предложение для UI;
-- `auto_apply_verified` в текущем production-коде не выполняет автоматическую
-  запись: после проверки `PathVerified` результат остаётся suggestion, потому
-  что безопасный route-only assignment ещё не реализован. Полный ChangeSet из
-  фонового DNS-события запрещён; режим оставлен как явно fenced capability.
+- `auto_apply_verified` может выполнить только узкий route-only assignment,
+  если production consumer зарегистрирован и проверены `PathVerified`,
+  service/egress evidence, revision-bound receipt и post-apply proof. Consumer
+  меняет только exact-owned dnsmasq overlay уже существующего маршрута; при его
+  отсутствии результат остаётся suggestion с
+  `route_assignment_runtime_unavailable`. Полный ChangeSet из фонового
+  DNS-события запрещён.
 - `locked` останавливает discovery до probe.
 
 Direct и Drop не фиксируются автоматически: перехват обычного прямого трафика и
@@ -123,13 +126,13 @@ flowchart TD
     MANUAL -- "BLOCKED" --> DROP_MANUAL["DROP"]
     MANUAL -- "DIRECT_ONLY" --> BUILD_DIRECT["Очередь: direct"]
     MANUAL -- "GEO_LOCKED" --> KILLSWITCH["Kill-switch на WAN, запрет direct/zapret"]
-    MANUAL -- "TELEGRAM" --> BUILD_TG["Проверенный внешний SOCKS -> VLESS -> DROP"]
-    MANUAL -- "TSPU_RESTRICTED" --> BUILD_TSPU["Очередь: zapret -> VLESS -> DROP"]
-    MANUAL -- "DIRECT_PREFERRED" --> BUILD_DP["Очередь: direct; расширение только по evidence"]
+    MANUAL -- "TELEGRAM" --> BUILD_TG["Eligible: external SOCKS, VLESS, DROP"]
+    MANUAL -- "TSPU_RESTRICTED" --> BUILD_TSPU["Eligible: Zapret, Smart DNS, VLESS, DROP"]
+    MANUAL -- "DIRECT_PREFERRED" --> BUILD_DP["Eligible: Direct, Zapret, Smart DNS, VLESS, DROP"]
     MANUAL -- "обычная/unknown" --> TSPU_LIST{"TSPU evidence match?"}
     TSPU_LIST -- "да" --> BUILD_TSPU
-    TSPU_LIST -- "нет" --> BUILD_UNKNOWN["Очередь: direct"]
-    KILLSWITCH --> BUILD_GEO["Очередь: smart_dns -> VLESS по рейтингу"]
+    TSPU_LIST -- "нет" --> BUILD_UNKNOWN["Eligible: Direct, Zapret, Smart DNS, VLESS, DROP"]
+    KILLSWITCH --> BUILD_GEO["Eligible: Smart DNS, VLESS, DROP"]
     BUILD_DIRECT --> POLICY_READY
     BUILD_GEO --> POLICY_READY
     BUILD_TG --> POLICY_READY
@@ -141,7 +144,8 @@ flowchart TD
     CACHE -- "нет/stale/запрещён" --> START_PROBE["Проверка очереди кандидатов"]
     USE_ACTIVE --> RETURN_DNS["Вернуть клиенту DNS-ответ"]
     START_PROBE --> NEXT_ROUTE{"Непроверенный кандидат?"}
-    NEXT_ROUTE -- "нет" --> SELECT["Оценить все результаты"]
+    NEXT_ROUTE -- "нет" --> FILTER["Hard filter, then score comparable end-to-end evidence"]
+    FILTER --> SELECT["Select best result with hysteresis/cooldown"]
     NEXT_ROUTE -- "да" --> ROUTE_ALLOWED{"Разрешён политикой и компонент доступен?"}
     ROUTE_ALLOWED -- "нет" --> SAVE_FORBIDDEN["FORBIDDEN/UNAVAILABLE"]
     SAVE_FORBIDDEN --> NEXT_ROUTE
@@ -157,12 +161,12 @@ flowchart TD
     CLASSIFY -- "SUSPECTED_TSPU" --> SAVE_TSPU
     CLASSIFY -- "RU_EXIT" --> SAVE_RU
     CLASSIFY -- "FAIL/DEGRADED" --> SAVE_FAIL
-    SAVE_OK --> DISCOVERY
-    SAVE_UNVERIFIED --> DISCOVERY
-    SAVE_REGION --> DISCOVERY
-    SAVE_TSPU --> DISCOVERY
-    SAVE_RU --> DISCOVERY
-    SAVE_FAIL --> DISCOVERY
+    SAVE_OK --> NEXT_ROUTE
+    SAVE_UNVERIFIED --> NEXT_ROUTE
+    SAVE_REGION --> NEXT_ROUTE
+    SAVE_TSPU --> NEXT_ROUTE
+    SAVE_RU --> NEXT_ROUTE
+    SAVE_FAIL --> NEXT_ROUTE
     DISCOVERY{"Discovery: regional/TSPU/fallback?"}
     DISCOVERY -- "regional, не GEO_LOCKED" --> MARK_GEO["Пометить GEO_LOCKED, убрать direct/zapret"]
     DISCOVERY -- "TSPU на direct, нет zapret" --> ADD_ZAPRET["Добавить zapret в очередь"]
@@ -228,13 +232,17 @@ flowchart TD
 
 ## Отклонения от flowchart
 
-`APPLY_ATOMIC` реализован как полная транзакция control plane + production
-helper (`adapter.Interface`), а не ad-hoc shell. `VERIFY` требует все четыре
-уровня, включая bound path proof (`evidence.ValidateRouteProof`). Reboot
-recovery (`adapter.Reconcile` через `api.recoverCommittedDataplane`) восстанавливает
-committed dataplane после рестарта — отдельный путь, не показан в hot-path flow.
+`APPLY_ATOMIC` реализован как транзакция control plane + production helper
+(`adapter.Interface`) с атомарной заменой owned nft table и fail-closed
+transition guard, а не как обещание атомарности всей системы. Конфиги,
+listeners, IP plan и dnsmasq меняются отдельными шагами под этим guard; при
+сбое защищённый трафик остаётся fenced и операция уходит в rollback/recovery.
+`VERIFY` требует все четыре уровня, включая bound path proof
+(`evidence.ValidateRouteProof`). Reboot recovery (`adapter.Reconcile` через
+`api.recoverCommittedDataplane`) восстанавливает committed dataplane после
+рестарта — отдельный путь, не показан в hot-path flow.
 
-## Фактическая сверка с кодом на `effa938`
+## Фактическая сверка с кодом на `e97f8dd`
 
 Эта секция отделяет реализованный control flow от целевого flowchart. Проверка
 выполнена по `internal/planner/planner.go`, `internal/api/server.go`,
@@ -265,10 +273,11 @@ committed dataplane после рестарта — отдельный путь,
 - Узел `TSPU evidence match` реализован только для загруженного локального
   кеша. При недоступном/повреждённом кеше результат — `UNAVAILABLE`, а не
   выдуманная классификация.
-- Автоматическое назначение уже существующего route ID пока отсутствует:
-  `discoveryAutoAllowed` и `commitAutomaticDomain` возвращают
-  `automatic_route_assignment_unavailable`. Поэтому ветка `TX` на схеме не
-  выполняется из фонового discovery.
+- Автоматическое назначение уже существующего route ID выполняется только
+  через зарегистрированный `RouteAssignmentRuntime`; без него
+  `discoveryAutoAllowed`/`commitAutomaticDomain` fail closed и возвращают
+  `route_assignment_runtime_unavailable`. Ветка `TX` не имеет права менять
+  topology или компоненты.
 - В flowchart показаны гипотетические `GEO_LOCKED`/`TSPU_RESTRICTED`
   fallback-ветви. В production они формируются только после результата
   `CheckDomain`; discovery не редактирует topology, Xray, nft или firewall.
@@ -276,15 +285,13 @@ committed dataplane после рестарта — отдельный путь,
   discovery является фоновой очередью после записи dnsmasq-наблюдения. Она не
   является доказательством полного LAN DNS interception на каждом устройстве.
 
-### Не реализовано на этом SHA
+### Не доказано на этом SHA
 
-- Безопасный route-only writer с TTL, атомарным mapping rollback и отдельным
-  ownership proof.
-- Автоматическое подтверждение/применение предложения из `auto_apply_verified`.
-- Hardware acceptance этого flow на текущем SHA. Старые записи Flint 2
-  являются историческим evidence и не наследуются `effa938`.
+- Hardware acceptance и end-to-end поведение этого flow на физическом Flint 2.
+  Старые записи Flint 2 являются историческим evidence и не наследуются
+  текущим кодом.
 
-Итог: flowchart корректен как целевая модель probe/selection/transaction, но не
-как обещание полного автоматического применения. Для пользователя текущий
-гарантированный результат discovery — наблюдение или suggestion; изменение
-production policy требует явного ChangeSet.
+Итог: flowchart корректен как модель probe/selection/route-only transaction,
+но не как обещание полного topology apply. Для пользователя гарантированы
+наблюдение или suggestion; автоматическое назначение возможно только при
+зарегистрированном consumer, его semantic receipt и post-apply proof.

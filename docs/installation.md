@@ -45,6 +45,11 @@ sh scripts/build-go.sh
 Listener по умолчанию устанавливается как loopback-only в
 `/etc/router-policy/config/listener.conf`. При upgrade существующий regular file
 сохраняется; symlink вместо listener config отклоняется.
+Чтобы открывать панель напрямую с LAN, укажите точный адрес LAN роутера
+(например, `listen_address=192.168.0.1:8787`) и явно включите
+`allow_firewalled_bind=1`. Wildcard (`0.0.0.0`) и публичные адреса для этого
+режима отклоняются; firewall должен отдельно ограничивать TCP/8787 доверенной
+management subnet.
 
 ## Первая установка
 
@@ -84,10 +89,12 @@ sh install.sh --install
 подтверждённого плана миграции и backup текущего dataplane.
 
 Команда устанавливает ARM64-бинарник, OpenWrt adapter, init-скрипты и hotplug
-hooks. DNS observer, `router-policy`, boot guard и watchdog включаются для
-следующей загрузки; control plane и watchdog запускаются сразу. Одноразовый
-observer bootstrap выполняется до штатного dnsmasq и не перезапускает DHCP/DNS
-в конце загрузки. Xray и nfqws не включаются вслепую: ими управляет
+hooks. DNS observer, `router-policy-helper`, `router-policy`, boot guard и
+watchdog включаются для следующей загрузки; helper запускается перед
+непривилегированным controller, а control plane и watchdog запускаются сразу.
+Если helper не поднялся, controller не получает fallback на прямое выполнение:
+health остаётся fail-closed. Одноразовый observer bootstrap выполняется до
+штатного dnsmasq и не перезапускает DHCP/DNS в конце загрузки. Xray и nfqws не включаются вслепую: ими управляет
 подтверждённая dataplane-транзакция.
 
 Установщик также ставит `scripts/calibrate-zapret.sh` и
@@ -132,8 +139,17 @@ procd не подтверждает остановку, файлы не трог
 `blocked-managed-services-still-running`. Это лучше, чем собирать на живом
 роутере смесь старой базы и нового бинарника.
 
-Временный boot guard блокирует только пакеты с настроенными марками FlintRoute.
-Безусловного drop для всего forwarding и обычного трафика OpenWrt больше нет.
+Временный boot guard до доказанного reconcile применяет fail-closed drop ко
+всему transit-forwarding. Он не опирается на conntrack/meta mark: после
+холодной загрузки новые соединения имеют mark=0, поэтому mark-only guard был
+бы дырой. Management plane (loopback-диагностика и recovery status) не
+блокируется этим transit guard. Снятие guard разрешено только для exact
+committed generation через transaction-bound проверку revision/hash.
+
+Обычный `router-policy-boot-guard stop` не очищает таблицу и не снимает
+forwarding fence. Это намеренно: procd restart, recovery и операторская
+ошибка не должны создавать fail-open окно. Guard очищается только доказанным
+generation-bound reconcile либо ownership-checked teardown при uninstall.
 
 ## Обновление
 
@@ -149,6 +165,21 @@ sh install.sh --install --enable-services
 health и только после этого возвращает watchdog. Production Xray и Zapret не
 перезапускаются; installer проверяет, что их исходное running/stopped состояние
 не изменилось.
+
+Rollback treats `/etc/router-policy/secrets` as an owned container whose mode and
+uid/gid are restored, not as a recursive deletion target. The four FlintRoute
+secret files are snapshotted as separate exact targets. Other files in that
+directory are foreign unless explicitly allowlisted: they are excluded from the
+archive and are never recreated or removed by rollback; if an originally absent
+container is non-empty during rollback, recovery stops instead of deleting its
+contents.
+
+При финализации versioned prefix старое поколение удаляется только после
+проверки allowlisted top-level shape и типов вложенных объектов; неизвестный
+файл или symlink оставляет установку в fenced состоянии. При rollback активный
+`$PREFIX` проходит ту же проверку перед удалением: каталог, не доказанный как
+owned prefix, не очищается рекурсивно, а rollback возвращает ошибку и сохраняет
+его содержимое для forensic recovery.
 
 Сохранённый GL-MT6000 evidence включает повторный clean install, upgrade,
 rollback timer, compatible downgrade, uninstall и reinstall/reconcile после
@@ -214,3 +245,42 @@ Installer не активирует маршруты напрямую. Перв�
 через ChangeSet: validate, apply, route proof, commit или rollback. Параметры
 `install.sh --activate` и `install.sh --rollback` намеренно не обходят эту
 транзакцию.
+
+Uninstall backup retention is fail-safe: the fallback backup is registered
+before teardown, but older backups are pruned only after owned services are
+stopped, project resources are removed, and the final dnsmasq readiness check
+passes. A failed uninstall therefore keeps older recovery points.
+
+Uninstaller ownership is fail-closed. The fixed runtime root is enumerated and
+unknown files, symlinks, or unrecognized transaction children block teardown;
+cleanup removes only known files and empty owned directories. Static binaries,
+init scripts and hotplug hooks are additionally bound to the root-owned
+`/usr/lib/router-policy/.managed-files.manifest`; a missing, malformed, or
+content-mismatched manifest blocks before service teardown, so a foreign file
+with a FlintRoute-looking name is not deleted. The product prefix itself is
+also enumerated against its top-level allowlist and removed file-by-file with
+`rmdir`; an unknown or unsafe entry blocks before teardown, and an ownership
+enumeration error is also fatal, so uninstall never uses recursive deletion for
+the managed code tree. Zapret profiles are stopped
+and disabled in a first phase, and their files are removed only after every
+owned profile stop succeeds.
+
+If the committed binding is absent and transaction journals are empty, that is
+not proof that the kernel dataplane is empty. The uninstaller therefore calls
+the typed read-only `internal-verify-no-owned-ip-state` command, which checks
+project marks, the reserved rule-priority range, and project route tables for
+both IPv4 and IPv6. An inspection error, malformed JSON, remaining rule, or
+non-empty table blocks uninstall; `dataplane_deactivation=verified-empty` is
+printed only after this proof succeeds.
+
+The typed IP rollback command also re-snapshots the owned route/rule boundary
+before returning success. A failed delete or an orphaned resource therefore
+cannot be reported as a verified deactivation; the uninstaller stops and keeps
+the managed state intact for forensic recovery.
+
+Installer path ownership is fail-closed as well. Before `mkdir`/copy and again
+at the mutation boundary, all managed roots are checked for unsafe path
+components or symlinks. Controller state/config/runtime entries are inspected
+before ownership is changed; only root-owned entries or the pinned daemon
+owner are accepted, and ownership is assigned per exact entry. The preserved
+component runtime is not recursively chmod'ed during controller setup.

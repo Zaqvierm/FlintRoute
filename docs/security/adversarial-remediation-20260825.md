@@ -55,7 +55,7 @@ has proved the absence of split-brain.
 | 5 | Secret permissions were broader than manifest | CONFIRMED / SEV-2 | `install.sh:894-900` | Only owned secret files may be normalized and restored |
 | 6 | Prefix switch was not power-loss durable | CONFIRMED / SEV-2 | `install.sh:850-878` | Durable switch marker and last-good retention |
 | 7 | No disk-space preflight | CONFIRMED / SEV-2 | `install.sh:68-79,966` | Size estimate before snapshot/staging mutation |
-| 8 | Root helper was opt-in while controller stayed root | PARTIAL / SEV-2 | `openwrt/init.d/router-policy`; `cmd/router-policy/main.go` | Keep helper optional but force loopback-only while root |
+| 8 | Root helper was opt-in while controller stayed root | PARTIALLY CLOSED / SEV-2 (runtime evidence pending) | `openwrt/init.d/router-policy`; `openwrt/init.d/router-policy-helper`; `cmd/router-policy/main.go`; `internal/adapter/openwrt.go` | Production procd starts the controller as `daemon:daemon`; startup rejects root or a missing fixed helper socket; `NewOpenWrt` rejects every non-allowlisted socket and all production mutations use the typed helper path. Linux runtime peer-credential and hardware evidence remain open. |
 | 9 | Exact-SHA full CI gate was missing | CONFIRMED / SEV-2 | `.github/workflows` and `tests/run-all.*` | Reproducible full-gate workflow |
 | 10 | Clean-clone runner depended on local artifacts | CONFIRMED / SEV-2 | `tests/run-all.sh:5-41`; `tests/run-all.ps1` | Build artifacts/toolchain explicitly before tests |
 
@@ -68,8 +68,10 @@ read-only diagnostics and a saved recovery point.
 
 ## Current evidence checkpoint
 
-- Remediation commit: `7089d3167a16a2536af5ea102a41d73f3528912f` (pushed to
-  `main`).
+- Current software checkpoint: `09397c83a4bd756dcbbad1ab02295bd2acc73c2f` on
+  `integration/discovery-smartdns-local-dod` (pushed; PR open; `main` untouched).
+- The original audited SHA and older commit/run IDs in this document are
+  historical evidence. They are not inherited by the current checkpoint.
 - Local Windows gate: `gofmt`, `go test ./...`, `go test -race ./...`,
   `go vet ./...`, frontend typecheck/unit/build, installer/adapter/recovery
   fixtures, helper/hotplug checks, secret scan, shell syntax, and

@@ -77,3 +77,27 @@ privacy отменяет предыдущую generation, а отменённы�
 отдельными gate. Playwright Chromium проходит локально, если установлен browser
 binary; authoritative повторяемая проверка выполняется в CI. UI-работа намеренно
 не трогает hardware.
+
+### Decomposition checkpoint
+
+Сетевые экраны, правила и route-интеграции вынесены в
+`ui/src/features/network.tsx`, `ui/src/features/rules.tsx`,
+`ui/src/features/vless.tsx` и `ui/src/features/route-integrations.tsx`, а
+повторно используемые UI-примитивы — в `ui/src/components/ui.tsx`.
+`main.tsx` отвечает за shell, загрузку данных и маршрутизацию экранов; остаток
+системных экранов сохраняет тот же контракт и выносится отдельными
+изменениями только вместе с тестами. Это проверено `npm run typecheck`,
+`npm test -- --run` и production build; software evidence не является
+hardware proof. Текущий decomposition checkpoint фиксируется отдельным
+grouped commit и должен быть привязан к его exact SHA в evidence ledger.
+
+### System-screen decomposition checkpoint
+
+The remaining operational screens are now isolated in `ui/src/features/system.tsx`:
+components, discovery, traffic, external SOCKS, TG WS, Telegram, decision flow,
+diagnostics, security, recovery, settings, and login. The setup wizard is isolated
+in `ui/src/features/setup.tsx`; route definitions and location parsing live in
+`ui/src/app/routes.ts`, and shared unavailable/stale-state fallbacks live in
+`ui/src/app/messages.ts`. `ui/src/app/App.tsx` keeps shell, data refresh, screen
+dispatch, and the recovery banner; `main.tsx` only mounts `App`. This is a software-only
+refactor; it does not change dataplane behavior or provide hardware evidence.

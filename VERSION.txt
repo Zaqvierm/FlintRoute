@@ -1,0 +1,5 @@
+FlintRoute 0.2.0-alpha.4
+
+Status: development alpha snapshot; not a hardware-validated release.
+This version is a software/CI checkpoint and is not a Git tag or GitHub Release.
+Hardware evidence is never inherited from an earlier SHA.

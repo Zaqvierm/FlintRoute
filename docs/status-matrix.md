@@ -1,5 +1,22 @@
 # Матрица состояния
 
+## Current truth (2026-08-29)
+
+The authoritative current code tree is `3d3f910` on
+`integration/discovery-smartdns-local-dod`; the exact docs HEAD is recorded in
+the external ledger. Local and exact-SHA CI evidence for this tree is
+software/CI only. Linux-only checks are `NOT RUN LOCALLY` on
+Windows, and Flint 2 has not been accessed, installed, mutated, or rebooted.
+
+All hardware PASS statements and readiness percentages in the historical tables
+below belong to their named older SHA and are `STALE FOR CURRENT SHA`; they must
+not be read as current hardware proof. Current item-by-item status is maintained
+in the external ledger `H:\LAN\Internal\Context\flintroute-unfinished-work-20260828.md`.
+
+The current UI branch also isolates browser navigation state in
+`ui/src/app/useNavigation.ts`; this does not change the hardware evidence
+boundary described below.
+
 > **Примечание о текущем SHA:** эта матрица содержит исторические фазы и
 > проценты. Hardware claims и PASS старых ревизий имеют статус `STALE FOR
 > CURRENT SHA`; remediation-ветка не содержит hardware evidence. Точный
@@ -7,6 +24,15 @@
 
 > Здесь отдельно указаны реализация, локальная проверка и подтверждение на
 > реальном роутере.
+
+## Актуальная граница текущего SHA
+
+Текущий code head — `98a30e069572d7b672605ecccb68f38b5bcea8d9` на
+`integration/discovery-smartdns-local-dod`. Проценты и аппаратные формулировки
+в исторических таблицах ниже не являются PASS для этого SHA. Для текущего SHA
+действует правило: software unit/mock, Linux CI и Flint 2 hardware — разные
+уровни evidence. В частности, route-only decision cache не доказывает, что
+production nft/dnsmasq mapping изменился.
 
 ## Фазы
 
@@ -79,6 +105,13 @@ legacy in-place upgrade на указанном commit не повторялис
   управляется FlintRoute, но upstream является server-side transport и не
   заменяет client-side `external_socks`; end-to-end Telegram path требует
   отдельной конфигурации и проверки.
+
+> Current boot-guard semantics (current code): the forwarding fence has no
+> wall-clock lease and is not cleared by a generic procd stop/restart. It is
+> removed only after a generation-bound reconcile proves the committed
+> revision, or by the ownership-checked uninstall teardown. Any older row
+> mentioning a bounded 120-second boot-guard lease is historical evidence and
+> must not be read as the current fail-closed contract.
 
 ### P14: lifecycle и storage
 

@@ -1,10 +1,15 @@
 # Актуальность документации
 
-Проверено: `2026-08-23`, база production-кода
-`f7a36e63542ef92047c17cca0d5be90987cdd1a4` плюс текущий onboarding-fence delta.
+Проверено: `2026-08-29`, база production-кода
+latest grouped UI decomposition commit (exact SHA is recorded in the external
+evidence ledger; this document is kept free of self-referential commit hashes).
+
+The status table below retains historical labels from earlier checkpoints;
+the authoritative implementation SHA is recorded in the external evidence ledger. Historical
+rows are not current evidence unless explicitly rebound to that SHA.
 Документационный commit фиксирует этот code SHA; hardware claims для него не
 наследуются.
-Ветка: `remediation/transaction-and-privilege-boundaries-consolidated`.
+Ветка: `integration/discovery-smartdns-local-dod`.
 
 Это не декоративная таблица процентов. Статус означает, можно ли использовать
 документ как описание текущего software-кода. Исторические аппаратные PASS не
@@ -22,15 +27,15 @@
 
 ## Полный реестр
 
-| Документ | Статус на `f7a36e6` + текущий delta | Что подтверждено / что нельзя обещать |
+| Документ | Статус на code `e97f8dd` | Что подтверждено / что нельзя обещать |
 |---|---|---|
 | `adapter-transaction.md` | АКТУАЛЕН | Typed adapter, recovery и fail-closed состояния; hardware-абзацы исторические. |
 | `adaptive-zapret-strategy.md` | ЧАСТИЧНО | Bounded health/calibration contract есть; старые Flint 2/P12 PASS требуют нового прогона. |
-| `algorithm-flow.md` | АКТУАЛЕН с оговорками | Добавлена сверка с `CheckDomain`, TSPU и disabled route-only auto-apply. |
-| `api.md` | АКТУАЛЕН software | Endpoint-контракты сверены; hardware claims не наследуются текущим SHA. |
-| `architecture.md` | АКТУАЛЕН software | OpenWrt boundary и ownership актуальны; раздел «Проверенные аппаратные факты» исторический. |
+| `algorithm-flow.md` | АКТУАЛЕН с оговорками | CheckDomain, TSPU и bounded route-only consumer описаны; hardware proof отсутствует. |
+| `api.md` | АКТУАЛЕН software | Endpoint-контракты и gated route-only assignment сверены; hardware claims не наследуются. |
+| `architecture.md` | АКТУАЛЕН software | OpenWrt boundary, ownership и узкий route-only consumer актуальны; аппаратный раздел исторический. |
 | `component-manager.md` | АКТУАЛЕН | Lifecycle компонентов и TGWS contract; hardware activation не доказана на текущем SHA. |
-| `domain-flow.md` | ЧАСТИЧНО | Нормализация, кеш и probe описаны; automatic route-only assignment пока отсутствует. |
+| `domain-flow.md` | ЧАСТИЧНО | Нормализация, кеш, probe и production route-only consumer описаны; hardware assignment proof отсутствует. |
 | `documentation-status.md` | АКТУАЛЕН | Этот реестр — текущая точка проверки документации; его статус обновляется вместе с заметным docs-аудитом. |
 | `failure-model.md` | АКТУАЛЕН software | Recovery/fail-closed модель актуальна; аппаратные заявления требуют нового evidence. |
 | `flint2-diagnostics.md` | АКТУАЛЕН как процедура | Это read-only checklist, а не доказательство выполненного запуска. |
@@ -45,8 +50,8 @@
 | `network-platform-audit.md` | АКТУАЛЕН | Hardcode/GL.iNet audit; generic OpenWrt поддерживаемым не объявлен. |
 | `probe-route.md` | АКТУАЛЕН software | Единый route proof и раздельные latency/duration; hardware proof отсутствует. |
 | `README.md` | АКТУАЛЕН | Навигация по контрактам, evidence и ограничениям. |
-| `remediation-design.md` | АКТУАЛЕН | Safety design и privilege model; root-helper split остаётся PARTIAL. |
-| `remediation-evidence.md` | АКТУАЛЕН | Текущий SHA, локальные gates и CI run IDs; старое evidence помечено STALE. |
+| `remediation-design.md` | АКТУАЛЕН | Safety design и privilege model; code-level root-helper contract закрыт, runtime/hardware acceptance остаётся PARTIAL. |
+| `remediation-evidence.md` | АКТУАЛЕН | Текущий SHA, локальные gates и CI run IDs; исторические строки помечены STALE. |
 | `soak-test.md` | ПЛАН | 72-часовой прогон не выполнен на текущем SHA. |
 | `status-matrix.md` | ИСТОРИЯ | Старая фазовая матрица; использовать только вместе с текущим evidence. |
 | `storage-lifecycle.md` | АКТУАЛЕН software | Ownership, retention и write budget сверены; hardware не заявляется. |
@@ -61,22 +66,24 @@
 
 ## Что исправлено этим аудитом
 
-1. `algorithm-flow.md` больше не обещает, что `auto_apply_verified` уже
-   меняет production dataplane: код пока намеренно оставляет suggestion.
+1. `algorithm-flow.md`, `api.md` и `architecture.md` теперь различают
+   зарегистрированный route-only consumer и fenced режим без consumer; полный
+   topology apply из discovery по-прежнему запрещён.
 2. `tspu-sources.md` больше не выдаёт Antifilter за активный источник. Фактическая
    конфигурация — Re:filter и allow-domains; оба проходят `UpdateWithPrevious`,
    а match используется как evidence перед `ProbeRoute`.
 3. `tspu-cache.md` и `tspu-sources.md` явно отделяют старый Flint 2 report от
    текущего software/CI evidence.
-4. `remediation-evidence.md` привязан к baseline `f7a36e6` и отдельно отмечает текущий onboarding-fence delta.
+4. `remediation-evidence.md` привязан к текущему code HEAD `e97f8dd` и отдельно отмечает исторические SHA.
    и содержит свежие CI run IDs.
 5. DNS rotation, stale freshness, bounded login pressure, route-fetch SSRF
    fallback и Quick maintenance restart policy отражены в evidence matrix.
 
 ## Невыполненная очередь
 
-- Реализовать безопасный route-only assignment с TTL и атомарным rollback;
-  до этого `auto_apply_verified` остаётся fenced.
+- Подтвердить безопасный route-only assignment на отдельном hardware gate с TTL,
+  atomic rollback и post-apply path proof; local/CI consumer реализован,
+  hardware assignment proof отсутствует.
 - Провести новый read-only gate и затем отдельную hardware validation на
   текущем SHA; старые PASS не переиспользовать.
 - Для TSPU при необходимости добавить отдельный typed source-provider API,

@@ -1,6 +1,6 @@
 # API и плоскость управления
 
-> **Статус на `effa938`:** API-контракт и локальные проверки актуальны. Любые
+> **Статус на `e97f8dd`:** API-контракт и локальные проверки актуальны. Любые
 > аппаратные результаты, упомянутые ниже, относятся к старым SHA и имеют
 > `STALE FOR CURRENT SHA`.
 
@@ -19,9 +19,11 @@ state-changing операция идёт через API и ChangeSet.
 
 ## Аутентификация
 
-- Default listener `127.0.0.1:8787`. Non-loopback bind требует
-  `ROUTER_POLICY_ALLOW_FIREWALLED_BIND=1`; на OpenWrt его включает только
-  `/etc/router-policy/config/listener.conf` с `allow_firewalled_bind=1`.
+- Default listener `127.0.0.1:8787`. Для доступа из LAN можно явно указать
+  адрес самого LAN-интерфейса, например `192.168.0.1:8787`, и установить
+  `allow_firewalled_bind=1` в `/etc/router-policy/config/listener.conf`.
+  Init-скрипт включает узкий `ROUTER_POLICY_ALLOW_LAN_BIND`; бинарник принимает
+  только private unicast-адреса (не wildcard, loopback или link-local).
 - Нет default admin password. Первый admin — через one-time setup token.
 - Пароли — Argon2id hashes, bounded params, concurrency-limited.
 - User/setup файлы — atomic (temp + fsync + rename).
@@ -32,8 +34,9 @@ state-changing операция идёт через API и ChangeSet.
   temp-файлов создаются только через проверенный `crypto/rand`; ошибка entropy
   source останавливает операцию.
 - Security audit различает loopback, wildcard и non-loopback listeners.
-  Opt-in разрешает bind, но не создаёт firewall rule: доступ обязан быть
-  ограничен management subnet отдельным правилом firewall4.
+  LAN opt-in не создаёт firewall rule: адрес должен быть точным адресом LAN, а
+  входящий TCP/8787 всё равно обязан быть ограничен trusted management subnet
+  правилами firewall4. Значение по умолчанию остаётся loopback-only.
 
 ## Конечные точки
 
@@ -145,13 +148,16 @@ Discovery по умолчанию работает в `observe_only`: он то�
 не запускает активные route probes. `suggest` сохраняет
 классифицированное предложение в bounded RAM cache (до 256 доменов), `locked`
 останавливает probe, а
-`auto_apply_verified` — зарезервированный контракт будущего route-only writer;
-в текущем production-коде он fenced и не выполняет автоматический apply.
-Для будущего включения потребуются `PathVerified`, свободный transaction slot и
-rollback timer. Часовой лимит задаётся policy, management/firewall operations
-не допускаются, а серия rollback открывает circuit breaker. Direct/Drop
-наблюдения автоматически не закрепляются: блокировка и захват прямого трафика
-остаются явным действием администратора.
+`auto_apply_verified` — узкий route-only writer для уже существующего enabled
+route. При зарегистрированном consumer он допускает автоматическое назначение
+только после `PathVerified`, service/egress evidence, свободного transaction
+slot, rate/circuit-breaker и post-apply proof; consumer меняет лишь
+revision-bound exact-owned dnsmasq overlay. Если consumer отсутствует, API
+возвращает `route_assignment_runtime_unavailable` и оставляет результат
+suggestion. Полный ChangeSet, topology, Xray/Zapret, marks, IP rules и сервисы
+из DNS-события не запускаются. Direct/Drop наблюдения автоматически не
+закрепляются: блокировка и захват прямого трафика остаются явным действием
+администратора.
 
 Смена режима и лимитов Discovery является control-plane настройкой. Она
 сохраняется отдельно от route config и не создаёт ChangeSet, не перезапускает
@@ -253,3 +259,12 @@ DNS resolution, классификация, фактический egress, до�
 - Telegram delivery и внешний SOCKS endpoint требуют аппаратной проверки с
   пользовательскими credentials; собственный TGWS transport не поставляется.
 - Роли кроме admin.
+# Admin session lifecycle
+
+The default local administrator session is intentionally non-expiring. The
+HttpOnly `rp_session` cookie is a browser session cookie with no `Max-Age` or
+`Expires`; it ends only on explicit logout/revocation or controller restart.
+Transport failures during background refresh keep the current UI visible and
+mark only the affected data slices stale, with an explicit retry action. A
+real `401 Unauthorized` is different: the privileged state is cleared and the
+browser returns to the login form with a clear re-authentication message.
