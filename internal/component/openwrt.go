@@ -310,6 +310,9 @@ func (d OpenWrtDriver) installZapretRuntime(artifact string, release Release) er
 	if err := extractZapretRuntime(artifact, archivePrefix, staging); err != nil {
 		return err
 	}
+	if err := normalizeZapretRuntimeModes(staging); err != nil {
+		return err
+	}
 	if info, statErr := os.Lstat(target); statErr == nil {
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return errors.New("existing Zapret runtime is unsafe")
@@ -430,7 +433,7 @@ func zapretVersionRuntimeReady(target string) (bool, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o555 != 0o555 {
 		return false, errors.New("unsafe Zapret version runtime")
 	}
 	for _, relative := range zapretRuntimeMembers() {
@@ -440,11 +443,33 @@ func zapretVersionRuntimeReady(target string) (bool, error) {
 			return false, nil
 		}
 		if memberErr != nil || !member.Mode().IsRegular() || member.Mode()&os.ModeSymlink != 0 ||
-			(executableRequired && member.Mode()&0o111 == 0) {
+			member.Mode().Perm()&0o444 != 0o444 || (executableRequired && member.Mode()&0o111 == 0) {
 			return false, errors.New("unsafe Zapret runtime member")
 		}
 	}
 	return true, nil
+}
+
+func normalizeZapretRuntimeModes(root string) error {
+	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("Zapret runtime contains a symlink")
+		}
+		if info.IsDir() {
+			return os.Chmod(path, 0o755)
+		}
+		if !info.Mode().IsRegular() {
+			return errors.New("Zapret runtime contains a non-regular member")
+		}
+		perm := os.FileMode(0o755)
+		if filepath.Base(path) == "config.default" {
+			perm = 0o644
+		}
+		return os.Chmod(path, perm)
+	})
 }
 
 func removeOwnedTree(root string) error {

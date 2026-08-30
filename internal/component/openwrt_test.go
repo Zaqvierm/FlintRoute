@@ -176,9 +176,16 @@ func TestZapretRuntimeReadinessRequiresCompleteManagedTree(t *testing.T) {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(path, []byte("fixture"), 0o700); err != nil {
+		mode := os.FileMode(0o755)
+		if relative == "config.default" {
+			mode = 0o644
+		}
+		if err := os.WriteFile(path, []byte("fixture"), mode); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := os.Chmod(version, 0o755); err != nil {
+		t.Fatal(err)
 	}
 	driver := OpenWrtDriver{ZapretRoot: root}
 	ready, err := driver.zapretRuntimeReady()
@@ -191,6 +198,40 @@ func TestZapretRuntimeReadinessRequiresCompleteManagedTree(t *testing.T) {
 	ready, err = driver.zapretRuntimeReady()
 	if err != nil || ready {
 		t.Fatalf("incomplete runtime accepted: ready=%v err=%v", ready, err)
+	}
+}
+
+func TestZapretRuntimeReadinessRejectsUmaskLockedRuntime(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose OpenWrt executable mode bits")
+	}
+	root := filepath.Join(t.TempDir(), "zapret")
+	version := filepath.Join(root, "v72.13")
+	for _, relative := range []string{
+		"blockcheck.sh", "config.default", "common/base.sh",
+		"nfq/nfqws", "tpws/tpws", "mdig/mdig",
+	} {
+		path := filepath.Join(version, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		mode := os.FileMode(0o755)
+		if relative == "config.default" {
+			mode = 0o644
+		}
+		if err := os.WriteFile(path, []byte("fixture"), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ready, err := zapretVersionRuntimeReady(version); err == nil || ready {
+		t.Fatalf("umask-locked runtime was accepted: ready=%v err=%v", ready, err)
+	}
+	if err := normalizeZapretRuntimeModes(version); err != nil {
+		t.Fatal(err)
+	}
+	ready, err := zapretVersionRuntimeReady(version)
+	if err != nil || !ready {
+		t.Fatalf("normalized runtime was not accepted: ready=%v err=%v", ready, err)
 	}
 }
 
