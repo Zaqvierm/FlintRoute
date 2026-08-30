@@ -84,7 +84,7 @@ printf '%s\n' "$live" | grep -Fx 'dnsmasq_restart=performed' >/dev/null
 [ "$(wc -l < "$DNSMASQ_RESTART_LOG" | tr -d ' ')" -eq 2 ]
 
 grep -Eq '^START=18$' "$ROOT/openwrt/init.d/router-policy-dns-observer"
-if grep -F 'chmod 620 "$dns_observation_log"' "$ROOT/openwrt/adapter.sh" >/dev/null; then
+if grep -F 'chmod 620' "$ROOT/openwrt/adapter.sh" >/dev/null; then
   echo "adapter leaves observer log unreadable to daemon" >&2
   exit 1
 fi
