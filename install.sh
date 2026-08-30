@@ -1465,10 +1465,15 @@ remove_owned_prefix_switch_tree() {
           echo "install blocked: prefix switch tree is not a directory: $entry" >&2
           return 1
         }
-        if ! cleanup_unsafe="$(find "$entry" \( -type l -o ! -type f -a ! -type d \) -print -quit 2>/dev/null)"; then
+        # BusyBox find on OpenWrt does not implement GNU's `-quit`. Capture
+        # the bounded result and inspect its first line instead; the command
+        # status is still checked so an unsupported/failed traversal fences
+        # cleanup rather than silently accepting an unverified tree.
+        if ! cleanup_unsafe_all="$(find "$entry" \( -type l -o ! -type f -a ! -type d \) -print 2>/dev/null)"; then
           echo "install blocked: could not validate prefix switch entry: $entry" >&2
           return 1
         fi
+        cleanup_unsafe="$(printf '%s\n' "$cleanup_unsafe_all" | head -n 1)"
         [ -z "$cleanup_unsafe" ] || {
           echo "install blocked: unsafe prefix switch entry: $cleanup_unsafe" >&2
           return 1

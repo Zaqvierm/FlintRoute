@@ -358,10 +358,13 @@ validate_prefix_contents() {
           echo "uninstall blocked: project-prefix tree is not a directory: $entry" >&2
           return 1
         }
-        if ! nested_unsafe="$(find "$entry" \( -type l -o ! -type f -a ! -type d \) -print -quit 2>/dev/null)"; then
+        # OpenWrt BusyBox find has no GNU `-quit`; keep the traversal
+        # portable while preserving the fail-closed command-status check.
+        if ! nested_unsafe_all="$(find "$entry" \( -type l -o ! -type f -a ! -type d \) -print 2>/dev/null)"; then
           echo "uninstall blocked: could not validate project-prefix entry: $entry" >&2
           return 1
         fi
+        nested_unsafe="$(printf '%s\n' "$nested_unsafe_all" | head -n 1)"
         [ -z "$nested_unsafe" ] || {
           echo "uninstall blocked: unsafe project-prefix entry: $nested_unsafe" >&2
           return 1

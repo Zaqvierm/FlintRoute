@@ -167,6 +167,12 @@ fi
 # New install attempts must fence a pre-existing PID-named path instead of
 # recursively deleting it before staging a candidate.
 grep -F 'untracked prefix switch path already exists' "$PROJECT_ROOT/install.sh" >/dev/null
+# OpenWrt ships BusyBox find, which has no GNU `-quit`; installer and
+# uninstaller ownership walks must remain target-compatible.
+if grep -F -- '-print -quit' "$PROJECT_ROOT/install.sh" "$PROJECT_ROOT/uninstall.sh" >/dev/null; then
+  echo "installer ownership walk still requires GNU find -quit" >&2
+  exit 1
+fi
 
 echo "installer_prefix_switch_recovery=true"
 echo "installer_prefix_switch_ambiguous_state_blocks=true"
