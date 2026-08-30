@@ -433,6 +433,14 @@ func ServeUnix(ctx context.Context, options ServerOptions) error {
 		return err
 	}
 	defer listener.Close()
+	// The controller connects as the declared peer UID. Keep the socket at
+	// mode 0600, but make that peer the owner; leaving a root-owned 0600 socket
+	// makes the production non-root boundary self-contradictory. The parent
+	// runtime directory remains root-owned, so the peer cannot replace the
+	// pathname even though it can use the live socket.
+	if err := os.Chown(options.SocketPath, options.PeerUID, -1); err != nil {
+		return fmt.Errorf("helper socket ownership setup failed: %w", err)
+	}
 	if err := os.Chmod(options.SocketPath, 0o600); err != nil {
 		return err
 	}
