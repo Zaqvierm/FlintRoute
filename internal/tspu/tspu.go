@@ -151,7 +151,19 @@ func Save(path string, cache Cache) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	if current, err := readBoundedRegular(path, maxCacheBytes); err == nil {
+	info, statErr := os.Lstat(path)
+	if statErr == nil && info.Mode().IsRegular() && info.Size() > maxCacheBytes {
+		// Preserve an oversized legacy cache without reading it into memory. The
+		// copy completes before the atomic active-file replacement, so a failed
+		// copy or write cannot silently destroy the only usable artifact.
+		if err := copyFileAtomic(path, previousPath(path), 0o600); err != nil {
+			return fmt.Errorf("write previous oversized TSPU cache: %w", err)
+		}
+	} else if statErr == nil {
+		current, err := readBoundedRegular(path, maxCacheBytes)
+		if err != nil {
+			return err
+		}
 		currentCache, decodeErr := decodeCache(current)
 		if decodeErr != nil {
 			return fmt.Errorf("existing TSPU cache is invalid: %w", decodeErr)
@@ -165,13 +177,46 @@ func Save(path string, cache Cache) error {
 		if err := writeAtomic(previousPath(path), current, 0o600); err != nil {
 			return fmt.Errorf("write previous TSPU cache: %w", err)
 		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return statErr
 	}
 	if err := writeAtomic(path, raw, 0o600); err != nil {
 		return err
 	}
 	return saveFreshness(path, cache.SHA256, cache)
+}
+
+func copyFileAtomic(src, dst string, mode os.FileMode) error {
+	input, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(dst), ".tspu-copy-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(mode); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := io.Copy(temporary, input); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, dst)
 }
 
 func PreviousPath(path string) string  { return previousPath(path) }

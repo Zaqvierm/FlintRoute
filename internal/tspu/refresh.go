@@ -18,6 +18,8 @@ import (
 // decode when the retained cache exceeds the memory-safe refresh budget.
 const maxRefreshExistingCacheBytes = maxCacheBytes / 4
 
+var errOversizedExistingCache = errors.New("existing TSPU cache exceeds refresh memory budget")
+
 // RefreshFile updates a TSPU cache without replacing the last valid cache on
 // source, validation, or persistence failure.
 func RefreshFile(ctx context.Context, client *http.Client, cfg *config.Config, path string, now time.Time) (Cache, error) {
@@ -30,16 +32,21 @@ func RefreshFile(ctx context.Context, client *http.Client, cfg *config.Config, p
 	if len(cfg.TSPUSources) == 0 {
 		return Cache{}, errors.New("no TSPU sources configured")
 	}
-	if err := checkRefreshMemoryBudget(path); err != nil {
-		return Cache{}, err
-	}
-
 	var previous *Cache
-	current, err := Load(path)
-	if err == nil {
-		previous = &current
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return Cache{}, fmt.Errorf("load current TSPU cache: %w", err)
+	if err := checkRefreshMemoryBudget(path); err != nil {
+		if !errors.Is(err, errOversizedExistingCache) {
+			return Cache{}, err
+		}
+		// The old cache is deliberately not decoded: it may be much larger than
+		// the bounded in-memory representation. A fresh accepted source can
+		// replace it atomically; a failed refresh leaves the old file untouched.
+	} else {
+		current, loadErr := Load(path)
+		if loadErr == nil {
+			previous = &current
+		} else if !errors.Is(loadErr, os.ErrNotExist) {
+			return Cache{}, fmt.Errorf("load current TSPU cache: %w", loadErr)
+		}
 	}
 
 	ttl := time.Duration(cfg.Policy.TSPUListUpdateIntervalSeconds) * time.Second
@@ -69,7 +76,7 @@ func checkRefreshMemoryBudget(path string) error {
 		return errors.New("existing TSPU cache is not a regular file")
 	}
 	if info.Size() > maxRefreshExistingCacheBytes {
-		return fmt.Errorf("TSPU cache refresh deferred: existing cache is %d bytes, above memory-safe limit %d", info.Size(), maxRefreshExistingCacheBytes)
+		return fmt.Errorf("%w: %d bytes, above memory-safe limit %d", errOversizedExistingCache, info.Size(), maxRefreshExistingCacheBytes)
 	}
 	return nil
 }

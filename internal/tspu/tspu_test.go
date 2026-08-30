@@ -173,26 +173,62 @@ func TestRefreshFilePreservesValidCacheWhenAllSourcesFail(t *testing.T) {
 	}
 }
 
-func TestRefreshFileDefersOversizedExistingCacheBeforeDecode(t *testing.T) {
+func TestRefreshFilePreservesOversizedCacheWhenRefreshFails(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
 	path := filepath.Join(t.TempDir(), "tspu-cache.json")
-	file, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := file.Truncate(maxRefreshExistingCacheBytes + 1); err != nil {
-		_ = file.Close()
-		t.Fatal(err)
-	}
-	if err := file.Close(); err != nil {
+	before := bytes.Repeat([]byte("legacy-cache"), (maxRefreshExistingCacheBytes/len("legacy-cache"))+1)
+	if err := os.WriteFile(path, before, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{
 		Policy:      config.Policy{TSPUListUpdateIntervalSeconds: 3600, MaxTSPUListBytes: 4096},
-		TSPUSources: []config.TSPUSource{{Name: "fixture", Type: "domains", URL: "https://example.invalid/list"}},
+		TSPUSources: []config.TSPUSource{{Name: "fixture", Type: "domains", URL: server.URL}},
 	}
-	_, err = RefreshFile(context.Background(), nil, cfg, path, time.Now().UTC())
-	if err == nil || !strings.Contains(err.Error(), "memory-safe limit") {
-		t.Fatalf("oversized cache was not deferred before decode: %v", err)
+	_, err := RefreshFile(remotefetch.WithLoopbackForTests(context.Background()), server.Client(), cfg, path, time.Now().UTC())
+	if err == nil || !strings.Contains(err.Error(), "no fresh accepted TSPU source entries") {
+		t.Fatalf("oversized cache refresh failure was not reported: %v", err)
+	}
+	after, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("failed refresh replaced the oversized active cache")
+	}
+}
+
+func TestRefreshFileReplacesOversizedCacheAfterFreshSource(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte("youtube.com\nexample.com\n"))
+	}))
+	defer server.Close()
+	path := filepath.Join(t.TempDir(), "tspu-cache.json")
+	legacy := bytes.Repeat([]byte("legacy-cache"), (maxCacheBytes/len("legacy-cache"))+1)
+	if err := os.WriteFile(path, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Policy:      config.Policy{TSPUListUpdateIntervalSeconds: 3600, MaxTSPUListBytes: 4096},
+		TSPUSources: []config.TSPUSource{{Name: "fixture", Type: "domains", URL: server.URL, MinEntries: 2}},
+	}
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	updated, err := RefreshFile(remotefetch.WithLoopbackForTests(context.Background()), server.Client(), cfg, path, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.Entries) != 2 {
+		t.Fatalf("fresh bounded cache has wrong entries: %+v", updated)
+	}
+	loaded, err := Load(path)
+	if err != nil || len(loaded.Entries) != 2 {
+		t.Fatalf("replacement cache is not loadable: cache=%+v err=%v", loaded, err)
+	}
+	previousInfo, err := os.Stat(PreviousPath(path))
+	if err != nil || previousInfo.Size() != int64(len(legacy)) {
+		t.Fatalf("oversized legacy cache was not preserved by streaming copy: info=%v err=%v", previousInfo, err)
 	}
 }
 

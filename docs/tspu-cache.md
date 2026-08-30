@@ -125,7 +125,9 @@ domain -> service lookup -> TSPU evidence -> candidate queue -> probe_route
 
 - `Save` атомарен: `writeAtomic` (tmp + fsync + rename, mode 0600). Перед
   заменой изменившегося entry set текущий валидный кеш копируется в
-  `<name>.previous.<ext>`. Если существующий файл невалиден — отказ.
+  `<name>.previous.<ext>`. Oversized legacy cache не читается в RAM: он
+  копируется потоково в `.previous`, затем новый bounded cache заменяет его
+  атомарно. Если refresh не удался, oversized active cache остаётся нетронутым.
 - Если domain/match/source/provenance/confidence не изменились, большой current
   и previous cache не заменяются. Новые validators, source reports и TTL
   записываются в `<name>.freshness.<ext>`, привязанный к SHA current cache.
