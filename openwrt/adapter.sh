@@ -1522,14 +1522,17 @@ ensure_dns_observation_log() {
   else
     : > "$dns_observation_log"
   fi
-  dnsmasq_group="$(id -g dnsmasq 2>/dev/null || true)"
-  if [ -n "$dnsmasq_group" ]; then
-    chown "0:$dnsmasq_group" "$dns_observation_log"
+  controller_group="$(id -g daemon 2>/dev/null || true)"
+  if [ -n "$controller_group" ]; then
+    # The controller consumes this log as daemon. Keep the writer's inherited
+    # descriptor valid while making the exact file readable after every
+    # dnsmasq restart/reconcile; never leave it at dnsmasq-only 0620.
+    chown "0:$controller_group" "$dns_observation_log"
     if [ "$log_parent" = "$runtime" ]; then
-      chown "0:$dnsmasq_group" "$runtime"
-      chmod 710 "$runtime"
+      chown "0:$controller_group" "$runtime"
+      chmod 750 "$runtime"
     fi
-    chmod 620 "$dns_observation_log"
+    chmod 640 "$dns_observation_log"
   else
     chmod 700 "$runtime"
     chmod 600 "$dns_observation_log"
