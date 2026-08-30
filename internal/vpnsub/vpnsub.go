@@ -516,7 +516,7 @@ func canonicalStreamSettings(raw json.RawMessage) (json.RawMessage, error) {
 	}
 	for key, allowed := range map[string]map[string]struct{}{
 		"tlsSettings":         {"serverName": {}, "alpn": {}, "fingerprint": {}, "allowInsecure": {}},
-		"realitySettings":     {"serverName": {}, "publicKey": {}, "shortId": {}, "fingerprint": {}, "spiderX": {}},
+		"realitySettings":     {"serverName": {}, "publicKey": {}, "password": {}, "shortId": {}, "fingerprint": {}, "spiderX": {}},
 		"wsSettings":          {"path": {}, "headers": {}},
 		"grpcSettings":        {"serviceName": {}, "authority": {}, "multiMode": {}},
 		"httpupgradeSettings": {"path": {}, "host": {}},
@@ -529,6 +529,14 @@ func canonicalStreamSettings(raw json.RawMessage) (json.RawMessage, error) {
 			}
 			if err := rejectUnknownKeys(nested, allowed); err != nil {
 				return nil, err
+			}
+			if key == "realitySettings" {
+				if rawPassword, ok := nested["password"]; ok {
+					var password string
+					if err := json.Unmarshal(rawPassword, &password); err != nil || strings.TrimSpace(password) == "" || len(password) > 1024 {
+						return nil, errors.New("invalid Reality password")
+					}
+				}
 			}
 		}
 	}

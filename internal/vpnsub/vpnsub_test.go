@@ -151,6 +151,21 @@ func TestVLESSUserLevelMetadataIsValidatedAndOmitted(t *testing.T) {
 	}
 }
 
+func TestVLESSRealityPasswordIsTypedAndPreserved(t *testing.T) {
+	raw := json.RawMessage(`{"protocol":"vless","settings":{"vnext":[{"address":"good.example","port":443,"users":[{"id":"11111111-1111-4111-8111-111111111111","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"serverName":"good.example","password":"provider-reality-password","shortId":"SHORT"}}}`)
+	canonical, err := canonicalizeVLESSOutbound(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(canonical), `"password":"provider-reality-password"`) {
+		t.Fatalf("typed Reality password was not preserved: %s", canonical)
+	}
+	invalid := json.RawMessage(`{"protocol":"vless","settings":{"vnext":[{"address":"good.example","port":443,"users":[{"id":"11111111-1111-4111-8111-111111111111"}]}]},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"password":42}}}`)
+	if _, err := canonicalizeVLESSOutbound(invalid); err == nil || !strings.Contains(err.Error(), "invalid Reality password") {
+		t.Fatalf("invalid Reality password was accepted: %v", err)
+	}
+}
+
 func TestPortExhaustionIsRejectedBeforeWrite(t *testing.T) {
 	tmp := t.TempDir()
 	subscription := filepath.Join(tmp, "subscription.json")
