@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"router-policy/internal/config"
+	"router-policy/internal/planner"
 	"router-policy/internal/probe"
 )
 
@@ -275,7 +276,10 @@ func (s *Server) runDueFailedRouteRecovery(ctx context.Context, now time.Time) {
 			continue
 		}
 		result := s.probeRouteOnce(ctx, cfg, service.Domains[0], serviceID, service, route)
-		recovered := result.Status == "OK" && result.PathVerified && result.ServiceOK
+		// Recovery must use the same semantic evidence gate as selection. A
+		// legacy OK result with simulation, regional, auth, or WAF evidence is
+		// not proof that the failed route recovered.
+		recovered := planner.SelectionEvidence(result)
 		s.healthTracker.Observe(result, cfg.Policy, now)
 		s.scheduleRecoveryBackoff(route.Tag, now, recovered)
 		s.publishEvent(Event{Type: "route.recovery", Severity: map[bool]string{true: "info", false: "warning"}[recovered], Domain: service.Domains[0], Route: route.Tag, ReasonCode: map[bool]string{true: "failed_route_recovered", false: "failed_route_still_unhealthy"}[recovered], Details: map[string]any{"probe_count": 1, "path_verified": result.PathVerified, "status": result.Status}})
@@ -443,7 +447,10 @@ func (s *Server) RevalidateClassifiedDomain(ctx context.Context, domain string) 
 		return nil
 	}
 	result := s.probeRouteOnce(ctx, cfg, domain, serviceID, service, direct)
-	verified := result.Status == "OK" && result.PathVerified && result.ServiceOK
+	// Revalidation may create a suggestion, but it must not weaken the
+	// production evidence contract. Contradictory or simulated OK output is
+	// not a recovered Direct path.
+	verified := planner.SelectionEvidence(result)
 	details := map[string]any{"category": service.Category, "route": direct.Tag, "path_verified": result.PathVerified, "status": result.Status, "reason": result.ReasonCode, "probe_count": 1}
 	if verified {
 		details["action"] = "suggest_policy_review"

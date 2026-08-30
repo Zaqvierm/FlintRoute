@@ -2104,7 +2104,7 @@ func (s *Server) latestConfiguredServiceProof(serviceID string, service config.S
 		return probe.RouteResult{}, false
 	}
 	for _, item := range items {
-		if item.Service != serviceID || !serviceDomainContains(service, item.Domain) || !item.PathVerified || !item.ServiceOK {
+		if item.Service != serviceID || !serviceDomainContains(service, item.Domain) || !planner.SelectionEvidence(item) {
 			continue
 		}
 		if service.SelectedRouteTag != "" && item.Route != service.SelectedRouteTag {
@@ -2236,7 +2236,9 @@ func (s *Server) selectVerifiedServiceRoute(ctx context.Context, serviceID strin
 			check.Reason = "candidate_transport_verified_requires_bound_path_apply"
 		}
 	}
-	if check.Selected == nil || !check.Selected.ServiceOK || (!check.Selected.PathVerified && check.Selected.ReasonCode != "route_not_bound_to_verification_plan") {
+	if check.Selected == nil ||
+		(check.Selected.ReasonCode == "route_not_bound_to_verification_plan" && !guardedApplyCandidateEvidence(*check.Selected)) ||
+		(check.Selected.ReasonCode != "route_not_bound_to_verification_plan" && !planner.SelectionEvidence(*check.Selected)) {
 		return check, errors.New("no safe route passed DNS, service and data-path verification")
 	}
 	if _, ok := candidate.RouteByTag(check.Selected.Route); !ok {
@@ -2256,7 +2258,7 @@ func candidateRequiringGuardedApply(results []probe.RouteResult, allowedPaths []
 		if _, ok := allowed[result.RouteType]; !ok || result.PathVerified || result.ReasonCode != "route_not_bound_to_verification_plan" {
 			continue
 		}
-		if !result.DNSOK || !result.TransportOK || !result.ServiceOK || result.RegionalBlock || result.SuspectedTSPU {
+		if !guardedApplyCandidateEvidence(result) {
 			continue
 		}
 		if best == nil || planner.ScoreRouteResult(result, policy, health) < planner.ScoreRouteResult(*best, policy, health) ||
@@ -2266,6 +2268,16 @@ func candidateRequiringGuardedApply(results []probe.RouteResult, allowedPaths []
 		}
 	}
 	return best
+}
+
+// guardedApplyCandidateEvidence is intentionally separate from
+// planner.SelectionEvidence: this candidate has passed DNS/transport/service
+// checks but has not yet been bound to a live route path. It may only proceed
+// to the explicit guarded-apply workflow, never to automatic assignment.
+func guardedApplyCandidateEvidence(result probe.RouteResult) bool {
+	return result.ReasonCode == "route_not_bound_to_verification_plan" && !result.PathVerified &&
+		result.DNSOK && result.TransportOK && result.ServiceOK && !result.RegionalBlock &&
+		!result.SuspectedTSPU && !result.AuthenticationRequired && !result.WAFOrRateLimit && !result.Simulation
 }
 
 func serviceRouteSelectionState(result *probe.RouteResult) string {

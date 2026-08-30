@@ -104,6 +104,37 @@ func TestConfiguredServiceWithoutEvidenceRemainsNotChecked(t *testing.T) {
 	}
 }
 
+func TestConfiguredServiceProofRejectsContradictoryEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*probe.RouteResult)
+	}{
+		{name: "regional_denial", mutate: func(result *probe.RouteResult) { result.RegionalBlock = true }},
+		{name: "authentication_required", mutate: func(result *probe.RouteResult) { result.AuthenticationRequired = true }},
+		{name: "waf_or_rate_limit", mutate: func(result *probe.RouteResult) { result.WAFOrRateLimit = true }},
+		{name: "simulation", mutate: func(result *probe.RouteResult) { result.Simulation = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newTestServer(t)
+			defer srv.Close()
+			result := probe.RouteResult{
+				Domain: "github.com", Service: "github", Route: "direct", RouteType: "direct",
+				Status: "OK", ApplicationStatus: "OK", PathVerified: true, ServiceOK: true,
+				CheckedAt: time.Now().UTC().Format(time.RFC3339),
+			}
+			tc.mutate(&result)
+			if err := srv.store.StoreProbeResult(result); err != nil {
+				t.Fatal(err)
+			}
+			service := srv.currentConfig().Services["github"]
+			service.SelectedRouteTag = "direct"
+			if _, ok := srv.latestConfiguredServiceProof("github", service, time.Now().UTC()); ok {
+				t.Fatalf("contradictory proof was returned as fresh configured evidence: %+v", result)
+			}
+		})
+	}
+}
+
 func TestAutomaticDecisionRouteIDWithoutMatchingProofRemainsVerifying(t *testing.T) {
 	decision := domaincache.Decision{
 		Status:        "SELECTED",

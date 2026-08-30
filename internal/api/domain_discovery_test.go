@@ -193,6 +193,54 @@ func TestManualServiceRuleStoresOnlyVerifiedSelectedRoute(t *testing.T) {
 	}
 }
 
+func TestManualServiceRuleRejectsContradictorySelectedEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*probe.RouteResult)
+	}{
+		{name: "regional_denial", mutate: func(result *probe.RouteResult) { result.RegionalBlock = true }},
+		{name: "authentication_required", mutate: func(result *probe.RouteResult) { result.AuthenticationRequired = true }},
+		{name: "waf_or_rate_limit", mutate: func(result *probe.RouteResult) { result.WAFOrRateLimit = true }},
+		{name: "simulation", mutate: func(result *probe.RouteResult) { result.Simulation = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testAPIConfig(t)
+			cfg.Routes = append(cfg.Routes, config.Route{Type: "vless", Tag: "vpn"})
+			srv := &Server{activeConfig: cfg, activeRevision: "rev-test"}
+			srv.domainChecker = func(context.Context, *config.Config, string, string, planner.Options) (planner.DomainCheck, error) {
+				selected := probe.RouteResult{Route: "vpn", RouteType: "vless", Status: "OK", ServiceOK: true, PathVerified: true}
+				tc.mutate(&selected)
+				return planner.DomainCheck{Selected: &selected}, nil
+			}
+			_, err := srv.selectVerifiedServiceRoute(context.Background(), "user_service", config.Service{
+				Category: "GEO_LOCKED", Domains: []string{"chatgpt.com"}, AllowedPaths: []string{"vless", "drop"},
+			})
+			if err == nil || !strings.Contains(err.Error(), "no safe route") {
+				t.Fatalf("contradictory selected evidence was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestGuardedApplyCandidateRejectsContradictoryEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*probe.RouteResult)
+	}{
+		{name: "authentication_required", mutate: func(result *probe.RouteResult) { result.AuthenticationRequired = true }},
+		{name: "waf_or_rate_limit", mutate: func(result *probe.RouteResult) { result.WAFOrRateLimit = true }},
+		{name: "simulation", mutate: func(result *probe.RouteResult) { result.Simulation = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := probe.RouteResult{Route: "vpn", RouteType: "vless", Status: "UNVERIFIED", DNSOK: true, TransportOK: true, ServiceOK: true, ReasonCode: "route_not_bound_to_verification_plan"}
+			tc.mutate(&result)
+			if got := candidateRequiringGuardedApply([]probe.RouteResult{result}, []string{"vless"}, config.Policy{}, nil); got != nil {
+				t.Fatalf("contradictory guarded-apply candidate was accepted: %+v", got)
+			}
+		})
+	}
+}
+
 func TestManualServiceRuleAcceptsTransportVerifiedCandidateForGuardedApply(t *testing.T) {
 	cfg := testAPIConfig(t)
 	cfg.Routes = append(cfg.Routes, config.Route{Type: "vless", Tag: "vpn"})

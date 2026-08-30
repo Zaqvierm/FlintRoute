@@ -54,6 +54,12 @@ Hard filters run before scoring:
 Health-control quorum applies the same principle: simulation results and
 results carrying regional-denial, authentication, or WAF/rate-limit flags are
 never promoted to healthy merely because legacy status fields contain `OK`.
+The same gate is required for manual service preflight, classified-route
+revalidation, failed-route recovery, and fresh configured-service readback;
+these paths must not turn contradictory or simulated evidence into a route,
+health recovery, or policy suggestion. A transport-verified but not-yet-bound
+manual candidate is the sole explicit exception and must carry the dedicated
+`route_not_bound_to_verification_plan` reason plus its own bounded checks.
 
 `GEO_LOCKED` is confirmed only when the Direct baseline reports a regional
 denial and at least one alternate non-DROP route passes the same service
