@@ -93,7 +93,9 @@ func TestClassifiedRevalidationUsesOnlyOneDirectProbe(t *testing.T) {
 	defer srv.Close()
 	active := srv.currentConfig()
 	service := active.Services["github"]
-	service.Category = "TSPU_RESTRICTED"
+	service.Category = "GEO_LOCKED"
+	active.Policy.GeoLockedAllowDirect = true
+	service.RequireNonRUEgress = true
 	service.AllowedPaths = []string{"direct", "vless", "drop"}
 	service.SelectedRouteTag = "vless-a"
 	active.Services["github"] = service

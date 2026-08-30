@@ -67,7 +67,7 @@ func TestAdaptiveEvaluationCommitsConfiguredRouteFallback(t *testing.T) {
 	cfg := testAPIConfig(t)
 	cfg.Routes = append(cfg.Routes, config.Route{Type: "zapret", Tag: "zapret"})
 	cfg.Services["discord"] = config.Service{
-		Category: "TSPU_RESTRICTED", Domains: []string{"discord.com"},
+		Category: "DIRECT_PREFERRED", Domains: []string{"discord.com"},
 		AllowedPaths: []string{"zapret", "direct", "drop"},
 		ProbeURLs:    []config.ProbeCheck{{Name: "web", URL: "https://discord.com/", Required: true, ExpectedCodes: []int{200}, BodyMode: "optional"}},
 	}
