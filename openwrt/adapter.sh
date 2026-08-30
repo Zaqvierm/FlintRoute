@@ -1522,7 +1522,11 @@ ensure_dns_observation_log() {
   else
     : > "$dns_observation_log"
   fi
-  controller_group="$(id -g daemon 2>/dev/null || true)"
+  current_uid="$(id -u 2>/dev/null || true)"
+  controller_group=""
+  if [ "$current_uid" = "0" ]; then
+    controller_group="$(id -g daemon 2>/dev/null || true)"
+  fi
   if [ -n "$controller_group" ]; then
     # The controller consumes this log as daemon. Keep the writer's inherited
     # descriptor valid while making the exact file readable after every
@@ -1534,6 +1538,9 @@ ensure_dns_observation_log() {
     fi
     chmod 640 "$dns_observation_log"
   else
+    # Unprivileged fixture/read-only callers may own this exact temporary
+    # file but cannot change its group. They can still normalize the mode;
+    # production adapter execution always runs through the root helper above.
     chmod 700 "$runtime"
     chmod 600 "$dns_observation_log"
   fi
