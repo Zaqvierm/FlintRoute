@@ -657,6 +657,15 @@ func TestLoginRequiresConfiguredAdmin(t *testing.T) {
 	}
 }
 
+func TestNonExpiringSessionCookieDoesNotSetExpiry(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	cookie := srv.sessionCookie(httptest.NewRequest(http.MethodGet, "/", nil), auth.Session{ID: "session"}, false)
+	if cookie.MaxAge != 0 || !cookie.Expires.IsZero() {
+		t.Fatalf("non-expiring session cookie still has a timer: max_age=%d expires=%s", cookie.MaxAge, cookie.Expires)
+	}
+}
+
 func TestUnknownAPIIsJSON404(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()

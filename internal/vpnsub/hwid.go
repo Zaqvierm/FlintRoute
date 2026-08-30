@@ -313,7 +313,15 @@ func PreviewHWIDs(ctx context.Context, settings HWIDSettings, provider Fingerpri
 		var err error
 		components, err = provider.Components(ctx)
 		if err != nil {
-			return nil, errors.New("HWID fingerprint could not be collected")
+			// A preset is self-contained and must remain usable even when
+			// optional platform fingerprint sources are unavailable.  Keep the
+			// selectable rows visible as unavailable instead of turning the whole
+			// settings endpoint into a 500.  Generated modes still fail closed:
+			// they cannot claim a value without their fingerprint evidence.
+			if settings.Mode != HWIDModePreset {
+				return nil, errors.New("HWID fingerprint could not be collected")
+			}
+			components = FingerprintComponents{}
 		}
 	}
 	components.CustomSeed = settings.CustomSeed

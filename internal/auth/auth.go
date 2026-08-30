@@ -30,7 +30,11 @@ const (
 )
 
 const (
-	defaultSessionTTL             = 12 * time.Hour
+	// Admin sessions are intentionally non-expiring.  The control plane is a
+	// local router UI, and an in-flight configuration operation must not be
+	// interrupted by an arbitrary wall-clock timeout.  A session still ends on
+	// explicit logout/revocation or when the auth store is restarted.
+	defaultSessionTTL             = 0
 	maxSessionsTotal              = 64
 	maxSessionsPerUser            = 8
 	maxLoginFailures              = 12
@@ -265,7 +269,11 @@ func (s *Store) Login(username, password, remote string) (Session, LoginAudit, e
 		audit.Reason = "entropy_unavailable"
 		return Session{}, audit, fmt.Errorf("generate CSRF token: %w", err)
 	}
-	session := Session{ID: sessionID, User: user.Username, Role: user.Role, CSRFToken: csrfToken, ExpiresAt: time.Now().UTC().Add(s.sessionTTL)}
+	expiresAt := time.Time{}
+	if s.sessionTTL > 0 {
+		expiresAt = time.Now().UTC().Add(s.sessionTTL)
+	}
+	session := Session{ID: sessionID, User: user.Username, Role: user.Role, CSRFToken: csrfToken, ExpiresAt: expiresAt}
 	s.sessions[session.ID] = session
 	audit.Success = true
 	audit.Reason = "login_success"
@@ -292,7 +300,7 @@ func (s *Store) Session(id string) (Session, bool) {
 	now := time.Now().UTC()
 	s.cleanupLocked(now)
 	session, ok := s.sessions[id]
-	if !ok || session.Revoked || now.After(session.ExpiresAt) {
+	if !ok || session.Revoked || (!session.ExpiresAt.IsZero() && now.After(session.ExpiresAt)) {
 		return Session{}, false
 	}
 	return session, true
@@ -397,7 +405,7 @@ func (s *Store) clearFailureLocked(username, remote string) {
 
 func (s *Store) cleanupLocked(now time.Time) {
 	for id, session := range s.sessions {
-		if session.Revoked || now.After(session.ExpiresAt) {
+		if session.Revoked || (!session.ExpiresAt.IsZero() && now.After(session.ExpiresAt)) {
 			delete(s.sessions, id)
 		}
 	}
@@ -418,7 +426,7 @@ func (s *Store) enforceUserSessionLimitLocked(username string) {
 	for len(ids) >= s.perUserMax {
 		oldest := ids[0]
 		for _, id := range ids[1:] {
-			if s.sessions[id].ExpiresAt.Before(s.sessions[oldest].ExpiresAt) {
+			if sessionExpiresBefore(s.sessions[id].ExpiresAt, s.sessions[oldest].ExpiresAt) {
 				oldest = id
 			}
 		}
@@ -435,13 +443,26 @@ func (s *Store) enforceUserSessionLimitLocked(username string) {
 func (s *Store) dropOldestSessionLocked() {
 	var oldest string
 	for id, session := range s.sessions {
-		if oldest == "" || session.ExpiresAt.Before(s.sessions[oldest].ExpiresAt) {
+		if oldest == "" || sessionExpiresBefore(session.ExpiresAt, s.sessions[oldest].ExpiresAt) {
 			oldest = id
 		}
 	}
 	if oldest != "" {
 		delete(s.sessions, oldest)
 	}
+}
+
+// sessionExpiresBefore orders finite sessions before non-expiring sessions
+// when enforcing bounded session counts. Zero is the explicit non-expiring
+// sentinel, not the year-one timestamp.
+func sessionExpiresBefore(a, b time.Time) bool {
+	if a.IsZero() {
+		return false
+	}
+	if b.IsZero() {
+		return true
+	}
+	return a.Before(b)
 }
 
 func (s *Store) loadUsersLocked() (map[string]User, error) {

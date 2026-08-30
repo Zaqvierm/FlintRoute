@@ -3155,9 +3155,12 @@ func writeSSE(w http.ResponseWriter, ev Event) {
 }
 
 func (s *Server) sessionCookie(r *http.Request, session auth.Session, clear bool) *http.Cookie {
-	maxAge := int(time.Until(session.ExpiresAt).Seconds())
+	maxAge := 0 // session cookie for the non-expiring default session
 	value := session.ID
 	expires := session.ExpiresAt
+	if !session.ExpiresAt.IsZero() {
+		maxAge = int(time.Until(session.ExpiresAt).Seconds())
+	}
 	if clear {
 		maxAge = -1
 		value = ""

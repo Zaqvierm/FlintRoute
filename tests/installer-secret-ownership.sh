@@ -35,7 +35,7 @@ for file in default.json schema.json listener.conf helper.env; do
     : > "$TMP/etc/router-policy/config/$file"
   fi
 done
-for file in vpn-subscription-url happ-crypt4-private-key.pem telegram.json webhook.env foreign-secret; do
+for file in vpn-subscription-url vpn-subscription-url.hwid.json happ-crypt4-private-key.pem telegram.json webhook.env foreign-secret; do
   : > "$TMP/etc/router-policy/secrets/$file"
 done
 export PATH="$TMP/bin:$PATH"
@@ -113,7 +113,7 @@ if grep -F -- '-R' "$CHOWN_LOG" >/dev/null; then
   echo "controller ownership used recursive chown" >&2
   exit 1
 fi
-for file in vpn-subscription-url happ-crypt4-private-key.pem telegram.json webhook.env; do
+for file in vpn-subscription-url vpn-subscription-url.hwid.json happ-crypt4-private-key.pem telegram.json webhook.env; do
   grep -F "$TMP/etc/router-policy/secrets/$file" "$CHOWN_LOG" >/dev/null || {
     echo "managed secret was not assigned: $file" >&2
     exit 1

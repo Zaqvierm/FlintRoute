@@ -31,7 +31,7 @@ DF_BIN="${DF_BIN:-df}"
 DU_BIN="${DU_BIN:-du}"
 SERVICES="router-policy-helper router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
 ENABLE_SERVICES="router-policy-dns-observer router-policy-boot-guard $SERVICES"
-INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $ROUTER_POLICY_HELPER_BIN $INIT_DIR/router-policy-helper $INIT_DIR/router-policy $INIT_DIR/router-policy-dns-observer $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/config/listener.conf $ETC_DIR/helper.env $ETC_DIR/secrets/vpn-subscription-url $ETC_DIR/secrets/happ-crypt4-private-key.pem $ETC_DIR/secrets/telegram.json $ETC_DIR/secrets/webhook.env $ETC_DIR/secrets $DNSMASQ_DIR/router-policy.conf $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
+INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $ROUTER_POLICY_HELPER_BIN $INIT_DIR/router-policy-helper $INIT_DIR/router-policy $INIT_DIR/router-policy-dns-observer $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/config/listener.conf $ETC_DIR/helper.env $ETC_DIR/secrets/vpn-subscription-url $ETC_DIR/secrets/vpn-subscription-url.hwid.json $ETC_DIR/secrets/happ-crypt4-private-key.pem $ETC_DIR/secrets/telegram.json $ETC_DIR/secrets/webhook.env $ETC_DIR/secrets $DNSMASQ_DIR/router-policy.conf $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
 
 PREFIX_SWITCH_MARKER="$STATE_DIR/prefix-switch.env"
 MANAGED_FILE_MANIFEST="$PREFIX/.managed-files.manifest"
@@ -1844,6 +1844,7 @@ prepare_controller_identity() {
   chmod 640 "$ETC_DIR/config/default.json" "$ETC_DIR/config/schema.json" "$ETC_DIR/config/listener.conf" "$ETC_DIR/helper.env"
   for secret_file in \
     "$ETC_DIR/secrets/vpn-subscription-url" \
+    "$ETC_DIR/secrets/vpn-subscription-url.hwid.json" \
     "$ETC_DIR/secrets/happ-crypt4-private-key.pem" \
     "$ETC_DIR/secrets/telegram.json" \
     "$ETC_DIR/secrets/webhook.env"; do
@@ -1863,6 +1864,7 @@ validate_managed_secret_paths() {
   }
   for secret_file in \
     "$ETC_DIR/secrets/vpn-subscription-url" \
+    "$ETC_DIR/secrets/vpn-subscription-url.hwid.json" \
     "$ETC_DIR/secrets/happ-crypt4-private-key.pem" \
     "$ETC_DIR/secrets/telegram.json" \
     "$ETC_DIR/secrets/webhook.env"; do

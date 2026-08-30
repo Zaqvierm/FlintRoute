@@ -135,6 +135,30 @@ func TestHWIDPreviewContainsRequestedRowsAndUnavailableState(t *testing.T) {
 	}
 }
 
+type failingPreviewFingerprintProvider struct{}
+
+func (failingPreviewFingerprintProvider) Components(context.Context) (FingerprintComponents, error) {
+	return FingerprintComponents{}, os.ErrPermission
+}
+
+func TestPresetHWIDPreviewSurvivesUnavailableOptionalFingerprintSources(t *testing.T) {
+	rows, err := PreviewHWIDs(context.Background(), HWIDSettings{
+		Mode:   HWIDModePreset,
+		Preset: "a330268d-7d9d-4343-8672-f6191f80a25c",
+	}, failingPreviewFingerprintProvider{})
+	if err != nil {
+		t.Fatalf("preset preview failed when optional fingerprint sources were unavailable: %v", err)
+	}
+	if len(rows) != 9 || !rows[0].Selected || rows[0].HWID == "" {
+		t.Fatalf("preset row was not preserved: %+v", rows)
+	}
+	for _, row := range rows[1:] {
+		if row.Available || row.Reason == "" {
+			t.Fatalf("unavailable fingerprint row was reported as usable: %+v", row)
+		}
+	}
+}
+
 func TestSystemFingerprintProviderReadsStablePaths(t *testing.T) {
 	root := t.TempDir()
 	machine := filepath.Join(root, "machine-id")

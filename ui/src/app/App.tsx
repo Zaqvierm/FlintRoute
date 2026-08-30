@@ -42,7 +42,12 @@ function App() {
     session,
     privacyHidden,
     navigate: selectScreen,
-    onUnauthorized: () => setSession(null)
+    // Do not throw the user back to the login screen from a background
+    // refresh.  A transient 401/API failure must leave the current read-only
+    // view intact; SessionBar exposes the error and offers an explicit retry.
+    // The server only expires sessions on logout/revocation (or a process
+    // restart), so this is not a silent privilege extension.
+    onUnauthorized: () => undefined
   });
   const { overview, onboarding, topology, devices, services, routes, discovery, events, changes, security, securitySummary, system, diagnostics, lifecycle, storage, settings, backups, revisions, configVersion, traffic, loading, refreshing, lastUpdated, apiError, sliceErrors, retryingSlice, refresh, retrySlice, clearPrivacySensitive, reset, updateOnboardingState } = dashboard;
 

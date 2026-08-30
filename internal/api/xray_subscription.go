@@ -397,6 +397,12 @@ func (s *Server) handleXraySubscriptionPrepare(w http.ResponseWriter, r *http.Re
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
 		return
 	}
+	// Preparing a subscription starts a bounded candidate Xray and checks the
+	// configured server pool. With the current maximum (15 servers, three
+	// attempts, four workers) this can legitimately exceed the HTTP server's
+	// short 30-second default write deadline. Extend only this response; SSE
+	// and ordinary API requests keep their normal bounded deadline.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(5 * time.Minute))
 	if failure := s.mutationFailureNow(); failure != nil {
 		writeError(w, r, failure.Status, failure.Code, failure.Message)
 		return
