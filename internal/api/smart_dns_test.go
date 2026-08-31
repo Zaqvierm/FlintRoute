@@ -31,6 +31,145 @@ func TestNormalizeSmartDNSEndpointRejectsUnsafeAddresses(t *testing.T) {
 	}
 }
 
+func TestSmartDNSCardsSupportNamedPairsAndBoundedExpansion(t *testing.T) {
+	active := testAPIConfig(t)
+	inputs := []smartDNSResolverInput{
+		{Name: "Google", IP: "8.8.8.8", FallbackIP: "8.8.4.4"},
+		{Name: "Cloudflare", IP: "1.1.1.1"},
+		{Name: "Quad9", IP: "9.9.9.9"},
+	}
+	routes, cards, err := smartDNSRoutesForInputs(active, inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cards) != 3 || cards[0].Name != "Google" || cards[0].Primary != "8.8.8.8:53" || cards[0].Fallback != "8.8.4.4:53" {
+		t.Fatalf("unexpected Smart DNS cards: %+v", cards)
+	}
+	if len(routes) != len(active.Routes)+2 {
+		t.Fatalf("expected two new Smart DNS route slots, got %d routes", len(routes))
+	}
+	var google config.Route
+	for _, route := range routes {
+		if route.Name == "Google" {
+			google = route
+		}
+	}
+	if google.DNSServer != "8.8.8.8:53" || google.DNSFallbackServer != "8.8.4.4:53" || google.Priority != 30 {
+		t.Fatalf("named pair was not represented as one ordered route: %+v", google)
+	}
+	if _, _, err := smartDNSRoutesForInputs(active, make([]smartDNSResolverInput, maxSmartDNSCards+1)); err == nil {
+		t.Fatal("Smart DNS card limit was not enforced")
+	}
+}
+
+func TestSmartDNSConfiguredTagsFollowExplicitPriorityOrder(t *testing.T) {
+	active := testAPIConfig(t)
+	active.Routes = append(active.Routes,
+		config.Route{Type: "smart_dns", Tag: "smart-third", Name: "Third", Priority: 32, DNSServer: "9.9.9.9:53", ConnectToResolvedIP: true},
+	)
+	if got := smartDNSConfiguredTags(active.Routes); strings.Join(got, ",") != "smart,smart-third" {
+		t.Fatalf("unexpected Smart DNS order: %v", got)
+	}
+}
+
+func TestSmartDNSConfigureReusesEnabledTagsBeforeClearedSlots(t *testing.T) {
+	active := testAPIConfig(t)
+	active.Routes[1].Disabled = true
+	active.Routes[1].Status = "NOT_CONFIGURED"
+	active.Routes = append(active.Routes, config.Route{Type: "smart_dns", Tag: "smart-secondary", Priority: 31, DNSServer: "8.8.8.8:53", ConnectToResolvedIP: true})
+	routes, _, err := smartDNSRoutesForInputs(active, []smartDNSResolverInput{{Name: "Cloudflare", IP: "1.1.1.1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if routes[1].Enabled() || routes[3].Tag != "smart-secondary" || routes[3].DNSServer != "1.1.1.1:53" {
+		t.Fatalf("cleared slot was reused ahead of the enabled route: %+v", routes)
+	}
+}
+
+func TestSmartDNSConfigureValidatesBothMembersOfPair(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	var checked []string
+	srv.smartDNSValidator = func(_ context.Context, endpoint, domain string) (probe.SmartDNSValidationResult, error) {
+		checked = append(checked, endpoint)
+		return probe.SmartDNSValidationResult{
+			Endpoint: endpoint, Domain: domain,
+			UDP:       probe.DNSResolverTransportResult{Transport: "udp", Safe: true, Addresses: []string{"93.184.216.34"}},
+			TCP:       probe.DNSResolverTransportResult{Transport: "tcp", Safe: true, Addresses: []string{"93.184.216.34"}},
+			Addresses: []string{"93.184.216.34"}, ConnectedIP: "93.184.216.34", HTTPStatus: 200, TLSOK: true, HTTPOK: true,
+		}, nil
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/smart-dns/configure", strings.NewReader(`{"base_version":1,"resolvers":[{"name":"Google","ip":"8.8.8.8","fallback_ip":"8.8.4.4"}],"test_domain":"example.com"}`))
+	srv.handleSmartDNSConfigure(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("pair configure status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Join(checked, ",") != "8.8.8.8:53,8.8.4.4:53" {
+		t.Fatalf("pair members were not validated in order: %v", checked)
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(envelope.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"endpoint_count":1`) || !strings.Contains(string(raw), `"name":"Google"`) {
+		t.Fatalf("pair response lacks named-card metadata: %s", raw)
+	}
+}
+
+func TestSmartDNSRemoveDisablesNamedCardThroughAutoApply(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	srv.mu.Lock()
+	clone := *srv.activeConfig
+	clone.Routes = append([]config.Route(nil), srv.activeConfig.Routes...)
+	clone.Routes[1].Name = "Cloudflare"
+	clone.Routes[1].DNSServer = "1.1.1.1:53"
+	clone.Routes[1].Disabled = false
+	clone.Routes[1].Status = "CONFIGURED"
+	srv.activeConfig = &clone
+	srv.mu.Unlock()
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/smart-dns/remove", strings.NewReader(`{"base_version":1,"route_tag":"smart"}`))
+	recorder := httptest.NewRecorder()
+	srv.handleSmartDNSRemove(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("remove status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(envelope.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data struct {
+		Change ChangeSet `json:"change"`
+	}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		t.Fatal(err)
+	}
+	if !data.Change.AutoApply {
+		t.Fatal("remove operation was not marked for automatic continuation")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		srv.mu.Lock()
+		removed := srv.activeConfig.Routes[1]
+		srv.mu.Unlock()
+		if removed.Disabled && removed.DNSServer == "" && removed.Name == "" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("Smart DNS card was not cleared after automatic removal")
+}
+
 func TestSmartDNSConfigureCreatesDraft(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()

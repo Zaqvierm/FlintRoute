@@ -92,12 +92,19 @@ rollback errors stop the operation and never fan out into an apply storm.
 
 ## Smart DNS is a route candidate
 
-Each configured Smart DNS endpoint is an independent route candidate. It is
-not a global resolver health flag. For a domain, verification must query the
-selected endpoint, validate the response, connect to a returned safe address
-while preserving the original Host and TLS SNI, and complete the configured
-HTTP/TLS/content/region checks. Only that candidate then receives
-`PathVerified=true` and may be selected.
+Each configured Smart DNS card is an independent route candidate. A card may
+contain one resolver or an ordered primary/fallback pair; it is not a global
+resolver health flag. Verification checks every address in the card, and the
+runtime queries the primary first, then the fallback when the primary fails.
+For a domain, verification must query the selected resolver, validate the
+response, connect to a returned safe address while preserving the original
+Host and TLS SNI, and complete the configured HTTP/TLS/content/region checks.
+Only that card then receives `PathVerified=true` and may be selected.
+
+Cards are bounded to 16 and carry a user display name plus an explicit
+failover order. Reordering or removal is a normal AutoApply ChangeSet over
+the owned route list; removing a card clears and disables its route slot, so
+foreign routes and service bindings are never deleted implicitly.
 
 The planner enumerates eligible candidates by category; this list is not a
 winner order. Every terminal candidate is scored from comparable evidence and

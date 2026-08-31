@@ -189,6 +189,18 @@ main { min-width: 0; padding: 0 1.3rem 2.2rem; }
 .route-path-editor, .actions, .chips, .domain-list { display: flex; gap: .45rem; flex-wrap: wrap; }
 .route-path-editor button.selected { border-color: var(--accent); color: var(--accent); }
 .chip { display: inline-flex; gap: .3rem; align-items: center; border: 1px solid var(--line); border-radius: 999px; padding: .3rem .55rem; font-size: .72rem; color: #c7d1df; }
+.resolver-mode { display: flex; gap: .45rem; flex-wrap: wrap; }
+.resolver-mode button.selected { border-color: var(--accent); color: var(--accent); }
+.resolver-draft { display: grid; gap: .55rem; padding: .7rem; border: 1px solid var(--line); border-radius: 10px; background: #111a25; }
+.resolver-table { display: grid; gap: .4rem; }
+.resolver-table-row { display: grid; grid-template-columns: auto minmax(120px, 1fr) minmax(130px, auto) minmax(130px, auto) auto auto; align-items: center; gap: .55rem; padding: .55rem .65rem; border: 1px solid var(--line); border-radius: 10px; background: #111a25; }
+.resolver-table-row .resolver-actions { display: flex; gap: .3rem; flex-wrap: wrap; justify-content: flex-end; }
+.resolver-table-row .resolver-actions button { min-height: 36px; }
+@media (max-width: 720px) {
+  .resolver-table-row { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .resolver-table-row > :nth-child(3), .resolver-table-row > :nth-child(4) { grid-column: 2 / -1; }
+  .resolver-table-row .resolver-actions { grid-column: 1 / -1; justify-content: flex-start; }
+}
 
 .subscription-slots, .subscription-source-list { display: grid; gap: .55rem; margin-bottom: .7rem; }
 .subscription-slot { display: grid; grid-template-columns: 28px 1fr auto; align-items: center; gap: .5rem; }

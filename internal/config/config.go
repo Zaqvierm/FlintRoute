@@ -268,10 +268,12 @@ type OpenWrt struct {
 type Route struct {
 	Type                string `json:"type"`
 	Tag                 string `json:"tag"`
+	Name                string `json:"name,omitempty"`
 	Priority            int    `json:"priority"`
 	Disabled            bool   `json:"disabled,omitempty"`
 	Status              string `json:"status,omitempty"`
 	DNSServer           string `json:"dns_server"`
+	DNSFallbackServer   string `json:"dns_fallback_server,omitempty"`
 	ConnectToResolvedIP bool   `json:"connect_to_resolved_ip"`
 	SOCKS5              string `json:"socks5"`
 	HTTPProxy           string `json:"http_proxy"`
@@ -404,6 +406,9 @@ func (c *Config) Validate() error {
 		if !routeTagPattern.MatchString(r.Tag) || !validRouteType(r.Type) {
 			return fmt.Errorf("route with empty tag/type")
 		}
+		if strings.ContainsAny(r.Name, "\r\n") || len([]rune(r.Name)) > 64 {
+			return fmt.Errorf("route %s has invalid display name", r.Tag)
+		}
 		if seenRoutes[r.Tag] {
 			return fmt.Errorf("duplicate route tag: %s", r.Tag)
 		}
@@ -422,12 +427,13 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("smart_dns route %s has no real dns_server", r.Tag)
 		}
 		if r.Enabled() && r.Type == "smart_dns" {
-			host, portText, err := net.SplitHostPort(r.DNSServer)
-			port, portErr := strconv.Atoi(portText)
-			ip := net.ParseIP(host)
-			addr, addrErr := netip.ParseAddr(host)
-			if err != nil || portErr != nil || port < 1 || port > 65535 || ip == nil || addrErr != nil || !netpolicy.PublicResolverAddr(addr) || !r.ConnectToResolvedIP {
+			if err := validateSmartDNSResolverEndpoint(r.DNSServer); err != nil || !r.ConnectToResolvedIP {
 				return fmt.Errorf("smart_dns route %s requires a public resolver endpoint and connect_to_resolved_ip", r.Tag)
+			}
+			if r.DNSFallbackServer != "" {
+				if err := validateSmartDNSResolverEndpoint(r.DNSFallbackServer); err != nil || r.DNSFallbackServer == r.DNSServer {
+					return fmt.Errorf("smart_dns route %s has an invalid or duplicate fallback resolver", r.Tag)
+				}
 			}
 		}
 		if r.Enabled() && r.Type == "vless" {
@@ -1046,6 +1052,22 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func validateSmartDNSResolverEndpoint(endpoint string) error {
+	host, portText, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return err
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("invalid resolver port")
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil || !netpolicy.PublicResolverAddr(addr) {
+		return fmt.Errorf("resolver endpoint is not a public address")
+	}
+	return nil
 }
 
 func parseFirewallMark(value string) (uint64, error) {

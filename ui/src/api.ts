@@ -257,7 +257,7 @@ export type ZapretCalibrationStatus = {
   activation_required: boolean;
 };
 
-export type SmartDNSResolver = { ip: string; port: number };
+export type SmartDNSResolver = { name?: string; ip: string; port: number; fallback_ip?: string; fallback_port?: number };
 export type SmartDNSValidation = {
   endpoint: string;
   domain: string;
@@ -495,6 +495,18 @@ export async function configureSmartDNS(resolvers: SmartDNSResolver[], testDomai
   return request('/smart-dns/configure', {
     method: 'POST',
     body: JSON.stringify({ resolvers, test_domain: testDomain, base_version: baseVersion, auto_apply: autoApply })
+  });
+}
+export async function removeSmartDNS(routeTag: string, baseVersion: number): Promise<{ change: ChangeSet; auto_apply_requested?: boolean; auto_apply_started?: boolean }> {
+  return request('/smart-dns/remove', {
+    method: 'POST',
+    body: JSON.stringify({ route_tag: routeTag, base_version: baseVersion })
+  });
+}
+export async function reorderSmartDNS(routeTags: string[], baseVersion: number): Promise<{ change: ChangeSet; auto_apply_requested?: boolean; auto_apply_started?: boolean }> {
+  return request('/smart-dns/reorder', {
+    method: 'POST',
+    body: JSON.stringify({ route_tags: routeTags, base_version: baseVersion })
   });
 }
 export async function getDiscovery(signal?: AbortSignal): Promise<DiscoveryStatus> { return request('/discovery', { signal }); }

@@ -375,6 +375,35 @@ func TestSmartDNSFallsBackToTCPWhenUDPIsTruncated(t *testing.T) {
 	}
 }
 
+func TestSmartDNSRouteUsesFallbackResolverWhenPrimaryFails(t *testing.T) {
+	primaryConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := primaryConn.LocalAddr().String()
+	primaryServer := &dns.Server{PacketConn: primaryConn, Handler: dns.HandlerFunc(func(writer dns.ResponseWriter, request *dns.Msg) {
+		response := new(dns.Msg)
+		response.SetReply(request)
+		_ = writer.WriteMsg(response)
+	})}
+	go func() { _ = primaryServer.ActivateAndServe() }()
+	defer primaryServer.Shutdown()
+	fallback, closeDNS := startTestDNSServer(t, net.ParseIP("203.0.113.10"))
+	defer closeDNS()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	addrs, resolver, _, err := resolveForRoute(ctx, testConfig(), config.Route{
+		Type: "smart_dns", Tag: "pair", DNSServer: primary, DNSFallbackServer: fallback, ConnectToResolvedIP: true,
+	}, "smart.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolver != fallback || len(addrs) != 1 || addrs[0].String() != "203.0.113.10" {
+		t.Fatalf("fallback resolver was not selected: resolver=%q addrs=%v", resolver, addrs)
+	}
+}
+
 func TestDNSRejectsUnrelatedAddressRecord(t *testing.T) {
 	request := new(dns.Msg)
 	request.SetQuestion("smart.test.", dns.TypeA)

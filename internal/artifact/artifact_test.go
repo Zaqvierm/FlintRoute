@@ -484,7 +484,7 @@ func TestGeneratedDNSMasqBindsDomainsToRouteSetsAndFormatsResolver(t *testing.T)
 	cfg.Policy.UnknownDomainBackgroundCheck = true
 	cfg.Storage.RuntimeDir = filepath.Join(root, "runtime")
 	cfg.Routes = append(cfg.Routes, config.Route{
-		Type: "smart_dns", Tag: "smart-primary", Priority: 15, DNSServer: "1.1.1.1:5353", ConnectToResolvedIP: true,
+		Type: "smart_dns", Tag: "smart-primary", Priority: 15, DNSServer: "1.1.1.1:5353", DNSFallbackServer: "8.8.8.8:53", ConnectToResolvedIP: true,
 	})
 	cfg.Services["smart"] = config.Service{
 		Category: "GEO_LOCKED", Domains: []string{"smart.example"}, AllowedPaths: []string{"smart_dns", "vless", "drop"}, RequireNonRUEgress: true,
@@ -500,7 +500,7 @@ func TestGeneratedDNSMasqBindsDomainsToRouteSetsAndFormatsResolver(t *testing.T)
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, fragment := range []string{"stop-dns-rebind", "log-queries=extra", "log-async=25", "dns-observations.log", "svc_", "route_", "4#inet#router_policy#", "6#inet#router_policy#", "server=/smart.example/1.1.1.1#5353"} {
+	for _, fragment := range []string{"stop-dns-rebind", "log-queries=extra", "log-async=25", "dns-observations.log", "svc_", "route_", "4#inet#router_policy#", "6#inet#router_policy#", "server=/smart.example/1.1.1.1#5353", "server=/smart.example/8.8.8.8#53"} {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("generated dnsmasq config lacks %q:\n%s", fragment, text)
 		}

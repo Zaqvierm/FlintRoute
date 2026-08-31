@@ -693,6 +693,13 @@ func renderDNSMasq(cfg *config.Config, binding Binding, plan IPPlan, domainPolic
 				return "", fmt.Errorf("route %s: %w", policy.Route.Tag, err)
 			}
 			fmt.Fprintf(&b, "server=/%s/%s\n", policy.Domain, server)
+			if policy.Route.DNSFallbackServer != "" {
+				fallback, err := dnsmasqServer(policy.Route.DNSFallbackServer)
+				if err != nil {
+					return "", fmt.Errorf("route %s fallback DNS: %w", policy.Route.Tag, err)
+				}
+				fmt.Fprintf(&b, "server=/%s/%s\n", policy.Domain, fallback)
+			}
 		case "vless":
 			proxy, ok := dnsProxyForRoute(plan.DNSProxies, policy.Route.Tag)
 			if !ok {

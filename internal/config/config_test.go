@@ -135,6 +135,18 @@ func TestValidateRejectsPrivateSmartDNS(t *testing.T) {
 	}
 }
 
+func TestValidateSmartDNSAcceptsDistinctFallbackResolver(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes = append(cfg.Routes, Route{Type: "smart_dns", Tag: "smart-pair", DNSServer: "1.1.1.1:53", DNSFallbackServer: "8.8.8.8:53", ConnectToResolvedIP: true})
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("distinct Smart DNS fallback was rejected: %v", err)
+	}
+	cfg.Routes[len(cfg.Routes)-1].DNSFallbackServer = "1.1.1.1:53"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate fallback") {
+		t.Fatalf("duplicate Smart DNS fallback was accepted: %v", err)
+	}
+}
+
 func TestValidateRejectsDuplicateDomainOwnership(t *testing.T) {
 	cfg := validConfig()
 	cfg.Services["other"] = Service{

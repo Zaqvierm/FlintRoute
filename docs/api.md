@@ -276,3 +276,14 @@ Production CLI commands resolve `/etc/router-policy/config/default.json` when
 exclusive lock; a concurrent CLI state reader reports `persistent state is
 busy` and does not enter rescue mode or create a forensic copy. Rescue mode is
 reserved for an unreadable or structurally invalid database.
+### Smart DNS cards
+
+`POST /api/v1/smart-dns/configure` accepts named cards. Each card has one
+primary resolver (`ip`, optional `port`) and may have one ordered fallback
+resolver (`fallback_ip`, optional `fallback_port`). The endpoint validates
+each address independently before the bounded background ChangeSet continues.
+
+`POST /api/v1/smart-dns/remove` clears and disables one owned card by
+`route_tag`. `POST /api/v1/smart-dns/reorder` accepts the complete ordered
+`route_tags` list. Both operations use the normal recovery fence and
+transaction protocol; no foreign route is deleted or overwritten.

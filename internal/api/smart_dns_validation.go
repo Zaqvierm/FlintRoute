@@ -58,15 +58,20 @@ func (s *Server) smartDNSCandidateValidations(active, candidate *config.Config) 
 			continue
 		}
 		previous, existed := activeByTag[route.Tag]
-		if existed && previous.Enabled() && previous.DNSServer == route.DNSServer {
+		if existed && previous.Enabled() && previous.DNSServer == route.DNSServer && previous.DNSFallbackServer == route.DNSFallbackServer {
 			continue
 		}
-		record, ok := s.loadSmartDNSValidation(route.DNSServer)
-		if !ok {
-			validations = append(validations, Validation{Level: "error", Code: "smart_dns_validation_required", Message: fmt.Sprintf("Smart DNS route %s must pass UDP, TCP and HTTP/TLS validation before apply", route.Tag)})
-			continue
+		for _, endpoint := range []string{route.DNSServer, route.DNSFallbackServer} {
+			if endpoint == "" {
+				continue
+			}
+			record, ok := s.loadSmartDNSValidation(endpoint)
+			if !ok {
+				validations = append(validations, Validation{Level: "error", Code: "smart_dns_validation_required", Message: fmt.Sprintf("Smart DNS route %s endpoint %s must pass UDP, TCP and HTTP/TLS validation before apply", route.Tag, endpoint)})
+				continue
+			}
+			validations = append(validations, Validation{Level: "info", Code: "smart_dns_validation_passed", Message: fmt.Sprintf("Smart DNS route %s passed validation for %s", route.Tag, record.Domain)})
 		}
-		validations = append(validations, Validation{Level: "info", Code: "smart_dns_validation_passed", Message: fmt.Sprintf("Smart DNS route %s passed validation for %s", route.Tag, record.Domain)})
 	}
 	return validations
 }

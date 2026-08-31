@@ -9,6 +9,8 @@ import {
   getSmartDNS,
   getZapret,
   getZapretCalibration,
+  removeSmartDNS,
+  reorderSmartDNS,
   startZapretCalibration,
   type ComponentStatus,
   type SessionInfo,
@@ -43,7 +45,8 @@ function humanSmartDNSReason(reason?: string): string {
     route_nft_counter_did_not_advance: 'DNS-сервер доступен, но FlintRoute пока не увидел трафик через новое правило.',
     smart_dns_socket_mark_or_policy_missing: 'DNS-сервер доступен, но правило маршрутизации не подтвердилось на роутере.',
     probe_adapter_revision_mismatch: 'Старая проверка относится к предыдущей конфигурации. Нужна свежая проверка пути.',
-    dnsmasq_not_ready: 'dnsmasq не принял новую конфигурацию. FlintRoute восстановил предыдущую.'
+    dnsmasq_not_ready: 'dnsmasq не принял новую конфигурацию. FlintRoute восстановил предыдущую.',
+    waf_or_rate_limit: 'DNS и TCP/TLS доступны, но application probe получил WAF или rate limit; маршрут не считается подтверждённым.'
   };
   return messages[reason ?? ''] ?? (reason ? `Проверка пути не пройдена: ${reason}.` : 'Конфигурация сохранена, но путь ещё не подтверждён.');
 }
@@ -65,6 +68,25 @@ function smartDNSOperationLabel(operation: any): string {
 
 function smartDNSOperationActive(operation: any): boolean {
   return ['draft', 'validated', 'applying', 'awaiting_confirmation', 'committing'].includes(textValue(operation?.state, ''));
+}
+
+function resolverEndpointText(ip: unknown, port: unknown): string {
+  const host = textValue(ip, '');
+  const service = textValue(port, '53');
+  return host.includes(':') ? `[${host}]:${service}` : `${host}:${service}`;
+}
+
+function resolverDraftsFromStatus(value: any): Array<{ name: string; primary: string; fallback: string }> {
+  const configured = (value?.routes ?? [])
+    .filter((route: any) => route.resolver_configured)
+    .sort((left: any, right: any) => (left.order ?? 0) - (right.order ?? 0));
+  const drafts = configured.map((route: any) => ({
+    name: textValue(route.name, ''),
+    primary: resolverEndpointText(route.resolver_ip, route.resolver_port),
+    fallback: route.fallback_resolver_ip ? resolverEndpointText(route.fallback_resolver_ip, route.fallback_resolver_port) : ''
+  }));
+  if (drafts.length < 16) drafts.push({ name: '', primary: '', fallback: '' });
+  return drafts.length ? drafts : [{ name: '', primary: '', fallback: '' }];
 }
 
 export function RouteType({ title, type, routes }: { title: string; type: string; routes: any[] }) {
@@ -258,11 +280,14 @@ export function SmartDNS({
 }) {
   const [status, setStatus] = useState<any>(null);
   const [error, setError] = useState('');
-  const [resolvers, setResolvers] = useState(['']);
+  const [addMode, setAddMode] = useState<'single' | 'pair'>('single');
+  const [resolvers, setResolvers] = useState([{ name: '', primary: '', fallback: '' }]);
   const [testDomain, setTestDomain] = useState('example.com');
   const [validations, setValidations] = useState<any[]>([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [removeConfirm, setRemoveConfirm] = useState('');
+  const [draftInitialized, setDraftInitialized] = useState(false);
   useEffect(() => {
     const controller = new AbortController();
     getSmartDNS(controller.signal)
@@ -273,6 +298,11 @@ export function SmartDNS({
       });
     return () => controller.abort();
   }, []);
+  useEffect(() => {
+    if (!status || draftInitialized) return;
+    setResolvers(resolverDraftsFromStatus(status));
+    setDraftInitialized(true);
+  }, [status, draftInitialized]);
   useEffect(() => {
     if (!smartDNSOperationActive(status?.automatic_operation)) return;
     const controller = new AbortController();
@@ -293,7 +323,21 @@ export function SmartDNS({
     if (mutationLocked) { setMessage('Smart DNS нельзя изменить до подтверждения recovery state.'); return; }
     let values;
     try {
-      values = resolvers.filter((value) => value.trim()).map(parseResolverInput);
+      if (addMode === 'pair' && resolvers.some((value) => value.primary.trim() && !value.fallback.trim())) {
+        setMessage('В режиме «Связка» у каждой карточки должны быть основной и запасной резолверы.');
+        return;
+      }
+      values = resolvers
+        .filter((value) => value.primary.trim())
+        .map((value) => {
+          const primary = parseResolverInput(value.primary);
+          const fallback = addMode === 'pair' && value.fallback.trim() ? parseResolverInput(value.fallback) : undefined;
+          return {
+            name: value.name.trim() || undefined,
+            ...primary,
+            ...(fallback ? { fallback_ip: fallback.ip, fallback_port: fallback.port } : {})
+          };
+        });
     } catch (reason) {
       const info = errorInfo(reason);
       setMessage(`${info.code}: Проверь IP и необязательный порт.`);
@@ -312,14 +356,55 @@ export function SmartDNS({
     try {
       const result = await configureSmartDNS(values, testDomain.trim(), configVersion, true);
       setValidations(result.validations ?? []);
-      setResolvers(['']);
+      const nextStatus = await getSmartDNS();
+      setStatus(nextStatus);
+      setResolvers(resolverDraftsFromStatus(nextStatus));
       setMessage(result.auto_apply_started
         ? `Smart DNS проверен. Автоматическое применение для ${result.endpoint_count} резолверов запущено в фоне; результат появится в центре операций.`
         : `Smart DNS проверен. Создан черновик для ${result.endpoint_count} резолверов; автоматическое продолжение не запущено.`);
-      setStatus(await getSmartDNS());
       await refresh();
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : 'Smart DNS не прошёл проверку. Предыдущая конфигурация сохранена.');
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function removeResolver(routeTag: string) {
+    if (removeConfirm !== routeTag) {
+      setRemoveConfirm(routeTag);
+      return;
+    }
+    if (mutationLocked) { setMessage('Smart DNS нельзя изменить до подтверждения recovery state.'); return; }
+    setBusy(true);
+    setMessage('Удаляю карточку Smart DNS через безопасную транзакцию…');
+    try {
+      const result = await removeSmartDNS(routeTag, configVersion);
+      setRemoveConfirm('');
+      setMessage(result.auto_apply_started ? 'Карточка удалена. Изменение применяется в фоне.' : 'Карточка удалена из очереди, но автоматическое применение не запустилось.');
+      setStatus(await getSmartDNS());
+      await refresh();
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Карточку Smart DNS не удалось удалить. Активная конфигурация сохранена.');
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function moveResolver(routeTag: string, direction: -1 | 1) {
+    if (mutationLocked) { setMessage('Smart DNS нельзя изменить до подтверждения recovery state.'); return; }
+    const ordered = (status.routes ?? []).filter((route: any) => route.resolver_configured).sort((left: any, right: any) => (left.order ?? 0) - (right.order ?? 0));
+    const index = ordered.findIndex((route: any) => route.tag === routeTag);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= ordered.length) return;
+    [ordered[index], ordered[nextIndex]] = [ordered[nextIndex], ordered[index]];
+    setBusy(true);
+    setMessage('Обновляю порядок failover…');
+    try {
+      const result = await reorderSmartDNS(ordered.map((route: any) => route.tag), configVersion);
+      setMessage(result.auto_apply_started ? 'Порядок обновляется в фоне.' : 'Порядок поставлен в очередь.');
+      setStatus(await getSmartDNS());
+      await refresh();
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Порядок Smart DNS не удалось изменить.');
     } finally {
       setBusy(false);
     }
@@ -337,11 +422,24 @@ export function SmartDNS({
         <div class="chips">{(status.success_contract ?? []).map((item: string) => <span class="chip">{item}</span>)}</div>
         {role === 'administrator' && (
           <div class="smart-dns-editor">
-            {resolvers.map((resolver, index) => <label key={index}><span>{index === 0 ? 'Основной резолвер' : 'Резервный резолвер'}</span><span class="inline-field"><input class="mono" value={resolver} placeholder={index ? '[2606:4700:4700::1111]:53' : '1.1.1.1'} onInput={(event) => {
-              const next = [...resolvers]; next[index] = (event.target as HTMLInputElement).value; setResolvers(next);
-            }} />{index > 0 && <button type="button" onClick={() => setResolvers((items) => items.filter((_, itemIndex) => itemIndex !== index))}>Убрать</button>}</span></label>)}
-            {resolvers.length < 2 && <button type="button" onClick={() => setResolvers((items) => [...items, ''])}>Добавить резервный резолвер</button>}
-            <small>Порт необязателен. По умолчанию используется 53. Поддерживаются IPv4, IPv4:порт, IPv6 и [IPv6]:порт.</small>
+            <div class="resolver-mode" role="group" aria-label="Режим добавления DNS">
+              <button type="button" class={addMode === 'single' ? 'selected' : ''} onClick={() => setAddMode('single')}>Один DNS-сервер</button>
+              <button type="button" class={addMode === 'pair' ? 'selected' : ''} onClick={() => setAddMode('pair')}>Связка DNS-серверов</button>
+            </div>
+            {resolvers.map((resolver, index) => <div class="resolver-draft" key={index}>
+              <label><span>Имя карточки</span><input value={resolver.name} placeholder={`Smart DNS #${index + 1}`} onInput={(event) => {
+                const next = [...resolvers]; next[index] = { ...next[index], name: (event.target as HTMLInputElement).value }; setResolvers(next);
+              }} /></label>
+              <label><span>{addMode === 'pair' ? 'Основной резолвер' : 'DNS-сервер'}</span><input class="mono" value={resolver.primary} placeholder="1.1.1.1" onInput={(event) => {
+                const next = [...resolvers]; next[index] = { ...next[index], primary: (event.target as HTMLInputElement).value }; setResolvers(next);
+              }} /></label>
+              {addMode === 'pair' && <label><span>Запасной резолвер</span><input class="mono" value={resolver.fallback} placeholder="8.8.4.4" onInput={(event) => {
+                const next = [...resolvers]; next[index] = { ...next[index], fallback: (event.target as HTMLInputElement).value }; setResolvers(next);
+              }} /></label>}
+              {index > 0 && <button type="button" onClick={() => setResolvers((items) => items.filter((_, itemIndex) => itemIndex !== index))}>Убрать карточку</button>}
+            </div>)}
+            {resolvers.length < 16 && <button type="button" onClick={() => setResolvers((items) => [...items, { name: '', primary: '', fallback: '' }])}>Добавить DNS-карточку</button>}
+            <small>Порт необязателен: по умолчанию 53. В режиме «Связка» основной адрес проверяется первым, затем резервный.</small>
             <label><span>Домен для DNS + HTTP/TLS</span><input class="mono" value={testDomain} placeholder="example.com" onInput={(event) => setTestDomain((event.target as HTMLInputElement).value)} /></label>
             <button class="primary" disabled={busy || mutationLocked || !configVersion} onClick={save}>
               {busy ? 'Проверяю…' : 'Добавить и проверить endpoint'}
@@ -356,21 +454,36 @@ export function SmartDNS({
         <div class="chips">{(validation.addresses ?? []).map((address: string) => <span class="chip mono">{address}</span>)}</div>
         <small>Соединение: {validation.connected_ip || 'не установлено'} · Host/SNI: {validation.domain}</small>
       </Card>)}
-      {(status.routes ?? []).map((route: any) => (
-        <Card title={textValue(route.tag, 'Smart DNS route')} key={textValue(route.tag, 'smart-dns-route')}>
-          <div class="row"><RouteBadge type="smart_dns" /><StatusBadge value={statusWithFreshness(route.status || 'не проверен', route)} /><span>{route.resolver_configured ? 'endpoint задан' : 'нужен endpoint'}</span></div>
-          {route.resolver_ip && <small>DNS endpoint: <span class="mono">{route.resolver_ip}:{route.resolver_port || '53'}</span></small>}
+      <Card title="Резолверы и порядок failover">
+        <div class="resolver-table" role="table" aria-label="Smart DNS резолверы">
+          {(status.routes ?? []).filter((route: any) => route.resolver_configured).map((route: any, index: number, configured: any[]) => <div class="resolver-table-row" role="row" key={route.tag}>
+            <b role="cell">#{index + 1}</b>
+            <strong role="cell">{textValue(route.name, textValue(route.tag, `Smart DNS #${index + 1}`))}</strong>
+            <span role="cell" class="mono">{resolverEndpointText(route.resolver_ip, route.resolver_port)}</span>
+            {route.fallback_resolver_ip && <span role="cell" class="mono">→ {resolverEndpointText(route.fallback_resolver_ip, route.fallback_resolver_port)}</span>}
+            <StatusBadge value={statusWithFreshness(route.status || 'не проверен', route)} />
+            <span class="resolver-actions">
+              <button type="button" disabled={busy || mutationLocked || index === 0} onClick={() => moveResolver(route.tag, -1)} aria-label={`Поднять ${textValue(route.name, route.tag)}`}>↑</button>
+              <button type="button" disabled={busy || mutationLocked || index === configured.length - 1} onClick={() => moveResolver(route.tag, 1)} aria-label={`Опустить ${textValue(route.name, route.tag)}`}>↓</button>
+              <button type="button" disabled={busy || mutationLocked} onClick={() => removeResolver(route.tag)}>{removeConfirm === route.tag ? 'Подтвердить удаление' : 'Удалить'}</button>
+            </span>
+          </div>)}
+        </div>
+        <small>Сначала используется верхняя карточка. Если её проверка недоступна, FlintRoute переходит к следующей; порядок не меняет глобальный выбор между Smart DNS, VLESS и другими типами маршрутов.</small>
+      </Card>
+      {(status.routes ?? []).filter((route: any) => route.resolver_configured).map((route: any, index: number) => (
+        <Card title={textValue(route.name, textValue(route.tag, `Smart DNS #${index + 1}`))} key={textValue(route.tag, 'smart-dns-route')}>
+          <div class="row"><RouteBadge type="smart_dns" /><StatusBadge value={statusWithFreshness(route.status || 'не проверен', route)} /><span>приоритет #{index + 1}</span></div>
+          <small>Основной: <span class="mono">{resolverEndpointText(route.resolver_ip, route.resolver_port)}</span></small>
+          {route.fallback_resolver_ip && <small>Запасной: <span class="mono">{resolverEndpointText(route.fallback_resolver_ip, route.fallback_resolver_port)}</span></small>}
           {route.last_validation && <div class="row"><b>{route.last_validation.result?.udp?.safe ? 'UDP OK' : 'UDP FAIL'}</b><b>{route.last_validation.result?.tcp?.safe ? 'TCP OK' : 'TCP FAIL'}</b><b>{route.last_validation.result?.tls_ok ? 'TLS OK' : 'TLS FAIL'}</b><b>{route.last_validation.result?.http_ok ? `HTTP ${route.last_validation.result.http_status}` : 'HTTP FAIL'}</b></div>}
-          {route.status === 'validated_idle' && <p>DNS-сервер проверен и готов к автоматическому выбору. Он будет использован, когда политика конкретного сервиса выберет Smart DNS.</p>}
+          {route.fallback_validation && <div class="row"><b>Запасной UDP {route.fallback_validation.result?.udp?.safe ? 'OK' : 'FAIL'}</b><b>TCP {route.fallback_validation.result?.tcp?.safe ? 'OK' : 'FAIL'}</b></div>}
+          {route.status === 'validated_idle' && <p>Карточка проверена и готова к автоматическому failover.</p>}
           {route.status !== 'validated_idle' && route.health?.last_reason && <p>{humanSmartDNSReason(textValue(route.health.last_reason, 'Причина не указана'))}</p>}
-          <small>{route.connect_to_resolved_ip ? 'HTTP/TLS проверяется по адресу из ответа DNS' : 'Маршрут выключен: resolver ещё не проверен'}</small>
+          <small>{route.connect_to_resolved_ip ? 'HTTP/TLS проверяется по адресу из ответа DNS' : 'Маршрут выключен: резолвер ещё не проверен'}</small>
           <small>Conditional DNS, не VPN.</small>
         </Card>
       ))}
-      <Card title="Порядок fallback">
-        <div class="row"><b>GEO</b><span>{(status.fallback_order?.geo ?? []).join(' → ')}</span></div>
-        <div class="row"><b>TSPU</b><span>{(status.fallback_order?.tspu ?? []).join(' → ')}</span></div>
-      </Card>
     </section>
   );
 }

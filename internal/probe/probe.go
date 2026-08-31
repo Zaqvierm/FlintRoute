@@ -519,14 +519,38 @@ func resolveForRoute(ctx context.Context, cfg *config.Config, route config.Route
 		if !route.ConnectToResolvedIP {
 			return nil, "", "", errors.New("smart_dns_connect_to_answer_required")
 		}
-		addrs, protocol, err := queryDNS(ctx, route.DNSServer, host)
-		return preferIPv4(addrs), normalizeDNSServer(route.DNSServer), protocol, err
+		var lastErr error
+		for _, resolver := range smartDNSResolvers(route) {
+			addrs, protocol, err := queryDNS(ctx, resolver, host)
+			if err == nil && len(addrs) > 0 {
+				return preferIPv4(addrs), normalizeDNSServer(resolver), protocol, nil
+			}
+			lastErr = err
+		}
+		return nil, normalizeDNSServer(route.DNSServer), "udp", lastErr
 	}
 	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 	if err != nil {
 		return nil, "system", "system", err
 	}
 	return preferIPv4(addrs), "system", "system", nil
+}
+
+func smartDNSResolvers(route config.Route) []string {
+	resolvers := make([]string, 0, 2)
+	seen := make(map[string]struct{}, 2)
+	for _, resolver := range []string{route.DNSServer, route.DNSFallbackServer} {
+		resolver = strings.TrimSpace(resolver)
+		if resolver == "" || strings.Contains(resolver, "PLACEHOLDER") {
+			continue
+		}
+		if _, ok := seen[resolver]; ok {
+			continue
+		}
+		seen[resolver] = struct{}{}
+		resolvers = append(resolvers, resolver)
+	}
+	return resolvers
 }
 
 func preferIPv4(addrs []netip.Addr) []netip.Addr {

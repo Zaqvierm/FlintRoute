@@ -1541,6 +1541,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/xray/pool/speedtest", s.requireRole(auth.RoleAdministrator, s.handleXrayPoolSpeedTest))
 	s.mux.HandleFunc("/api/v1/smart-dns", s.requireRole(auth.RoleViewer, s.handleSmartDNS))
 	s.mux.HandleFunc("/api/v1/smart-dns/configure", s.requireRole(auth.RoleAdministrator, s.handleSmartDNSConfigure))
+	s.mux.HandleFunc("/api/v1/smart-dns/remove", s.requireRole(auth.RoleAdministrator, s.handleSmartDNSRemove))
+	s.mux.HandleFunc("/api/v1/smart-dns/reorder", s.requireRole(auth.RoleAdministrator, s.handleSmartDNSReorder))
 	s.mux.HandleFunc("/api/v1/zapret", s.requireRole(auth.RoleViewer, s.handleZapret))
 	s.mux.HandleFunc("/api/v1/zapret/setup/check", s.requireRole(auth.RoleAdministrator, s.handleZapretSetupCheck))
 	s.mux.HandleFunc("/api/v1/zapret/setup/activate", s.requireRole(auth.RoleAdministrator, s.handleZapretSetupActivate))
@@ -2365,7 +2367,7 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusServiceUnavailable, "active_config_unavailable", "Smart DNS state is unavailable until a committed config is restored")
 		return
 	}
-	routes := filterRoutes(active, "smart_dns")
+	routes := smartDNSRoutesInOrder(filterRoutes(active, "smart_dns"))
 	healthIntervalSeconds := 300
 	if active != nil && active.Policy.HealthCheckIntervalSeconds > 0 {
 		healthIntervalSeconds = active.Policy.HealthCheckIntervalSeconds
@@ -2380,7 +2382,7 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 	ready := 0
 	configured := 0
 	now := time.Now().UTC()
-	for _, route := range routes {
+	for order, route := range routes {
 		health, observed := healthByTag[route.Tag]
 		healthFresh := observed && smartDNSHealthFresh(health, now, healthIntervalSeconds)
 		freshness := "stale"
@@ -2389,7 +2391,9 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 		}
 		status := route.Status
 		resolverConfigured := route.DNSServer != "" && !strings.Contains(route.DNSServer, "PLACEHOLDER")
-		validation, validationOK := s.loadSmartDNSValidation(route.DNSServer)
+		validation, primaryValidationOK := s.loadSmartDNSValidation(route.DNSServer)
+		fallbackValidation, fallbackValidationOK := s.loadSmartDNSValidation(route.DNSFallbackServer)
+		validationOK := primaryValidationOK && (route.DNSFallbackServer == "" || fallbackValidationOK)
 		resolverReady, nextStatus := smartDNSResolverState(route, health, healthFresh, validationOK)
 		status = nextStatus
 		if observed && health.State == "healthy" && !healthFresh && !validationOK && !route.Disabled && resolverConfigured {
@@ -2403,8 +2407,11 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 		}
 		item := map[string]any{
 			"tag": route.Tag, "status": status, "enabled": !route.Disabled,
+			"name":                   smartDNSRouteName(route, order+1),
 			"resolver_configured":    resolverConfigured,
+			"order":                  order + 1,
 			"connect_to_resolved_ip": route.ConnectToResolvedIP,
+			"validation_complete":    validationOK,
 			"health":                 health,
 			"freshness":              freshness,
 			"health_fresh":           healthFresh,
@@ -2415,8 +2422,16 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 			host, port, _ := net.SplitHostPort(route.DNSServer)
 			item["resolver_ip"] = host
 			item["resolver_port"] = port
-			if validationOK {
+			if primaryValidationOK {
 				item["last_validation"] = validation
+			}
+			if route.DNSFallbackServer != "" {
+				fallbackHost, fallbackPort, _ := net.SplitHostPort(route.DNSFallbackServer)
+				item["fallback_resolver_ip"] = fallbackHost
+				item["fallback_resolver_port"] = fallbackPort
+				if fallbackValidationOK {
+					item["fallback_validation"] = fallbackValidation
+				}
 			}
 		}
 		items = append(items, item)
@@ -2444,7 +2459,7 @@ func (s *Server) smartDNSAutomaticOperation() map[string]any {
 	defer s.mu.Unlock()
 	var selected *ChangeSet
 	for _, change := range s.changes {
-		if !change.AutoApply || change.Title != "Configure Smart DNS resolvers" {
+		if !change.AutoApply || !isSmartDNSAutoChangeTitle(change.Title) {
 			continue
 		}
 		switch change.State {
@@ -2469,6 +2484,15 @@ func (s *Server) smartDNSAutomaticOperation() map[string]any {
 		"data_plane_verified": selected.DataPlaneVerified,
 		"recovery_required":   selected.State == "recovery_required",
 		"requires_device":     selected.State == "requires_device",
+	}
+}
+
+func isSmartDNSAutoChangeTitle(title string) bool {
+	switch title {
+	case "Configure Smart DNS resolvers", "Remove Smart DNS resolver", "Reorder Smart DNS resolvers":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -2519,8 +2543,11 @@ type smartDNSConfigureRequest struct {
 }
 
 type smartDNSResolverInput struct {
-	IP   string `json:"ip"`
-	Port int    `json:"port"`
+	Name         string `json:"name,omitempty"`
+	IP           string `json:"ip"`
+	Port         int    `json:"port"`
+	FallbackIP   string `json:"fallback_ip,omitempty"`
+	FallbackPort int    `json:"fallback_port,omitempty"`
 }
 
 func (s *Server) handleSmartDNSConfigure(w http.ResponseWriter, r *http.Request) {
@@ -2542,16 +2569,6 @@ func (s *Server) handleSmartDNSConfigure(w http.ResponseWriter, r *http.Request)
 		writeError(w, r, http.StatusServiceUnavailable, "active_config_unavailable", "Smart DNS cannot be configured without a committed config")
 		return
 	}
-	routeIndexes := make([]int, 0, 2)
-	for index, route := range active.Routes {
-		if route.Type == "smart_dns" {
-			routeIndexes = append(routeIndexes, index)
-		}
-	}
-	if len(routeIndexes) == 0 {
-		writeError(w, r, http.StatusConflict, "smart_dns_routes_missing", "configuration has no Smart DNS route slots")
-		return
-	}
 	if request.BaseVersion <= 0 {
 		writeError(w, r, http.StatusBadRequest, "invalid_base_version", "base_version must be positive")
 		return
@@ -2562,65 +2579,44 @@ func (s *Server) handleSmartDNSConfigure(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	request.TestDomain = testDomain
-	rawEndpoints := append([]string{}, request.Endpoints...)
-	for _, resolver := range request.Resolvers {
-		if resolver.Port == 0 {
-			rawEndpoints = append(rawEndpoints, strings.TrimSpace(resolver.IP))
-			continue
-		}
-		rawEndpoints = append(rawEndpoints, net.JoinHostPort(strings.TrimSpace(resolver.IP), strconv.Itoa(resolver.Port)))
+	inputs := append([]smartDNSResolverInput{}, request.Resolvers...)
+	for _, endpoint := range request.Endpoints {
+		inputs = append(inputs, smartDNSResolverInput{IP: endpoint})
 	}
-	endpoints := make([]string, 0, len(rawEndpoints))
-	seen := map[string]bool{}
-	for _, raw := range rawEndpoints {
-		endpoint, err := normalizeSmartDNSEndpoint(raw)
-		if err != nil {
-			writeError(w, r, http.StatusBadRequest, "invalid_smart_dns_endpoint", err.Error())
-			return
-		}
-		if !seen[endpoint] {
-			seen[endpoint] = true
-			endpoints = append(endpoints, endpoint)
-		}
-	}
-	if len(endpoints) == 0 || len(endpoints) > len(routeIndexes) {
-		writeError(w, r, http.StatusBadRequest, "invalid_smart_dns_endpoint_count", fmt.Sprintf("provide 1..%d unique Smart DNS endpoints", len(routeIndexes)))
+	routes, cards, err := smartDNSRoutesForInputs(active, inputs)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_smart_dns_endpoint", err.Error())
 		return
 	}
-	validationResults := make([]probe.SmartDNSValidationResult, 0, len(endpoints))
-	for _, endpoint := range endpoints {
-		validationContext, cancel := context.WithTimeout(r.Context(), 25*time.Second)
-		result, validationErr := s.smartDNSValidator(validationContext, endpoint, request.TestDomain)
-		cancel()
-		if validationErr != nil {
-			writeError(w, r, http.StatusUnprocessableEntity, "smart_dns_validation_failed", fmt.Sprintf("%s: %v", endpoint, validationErr))
-			return
+	validationResults := make([]probe.SmartDNSValidationResult, 0, len(cards)*2)
+	validationFailures := make([]string, 0)
+	for _, card := range cards {
+		cardEndpoints := []string{card.Primary}
+		if card.Fallback != "" {
+			cardEndpoints = append(cardEndpoints, card.Fallback)
 		}
-		if err := s.saveSmartDNSValidation(endpoint, request.TestDomain, result); err != nil {
+		for _, endpoint := range cardEndpoints {
+			validationContext, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+			result, validationErr := s.smartDNSValidator(validationContext, endpoint, request.TestDomain)
+			cancel()
+			if validationErr != nil {
+				validationFailures = append(validationFailures, fmt.Sprintf("%s: %v", endpoint, validationErr))
+				continue
+			}
+			validationResults = append(validationResults, result)
+		}
+	}
+	if len(validationFailures) > 0 {
+		writeError(w, r, http.StatusUnprocessableEntity, "smart_dns_validation_failed", strings.Join(validationFailures, "; "))
+		return
+	}
+	for _, result := range validationResults {
+		if err := s.saveSmartDNSValidation(result.Endpoint, request.TestDomain, result); err != nil {
 			writeError(w, r, http.StatusInternalServerError, "smart_dns_validation_store_failed", err.Error())
 			return
 		}
-		validationResults = append(validationResults, result)
 	}
-	operations := make([]ChangeOp, 0, len(routeIndexes)*4)
-	for slot, routeIndex := range routeIndexes {
-		prefix := fmt.Sprintf("/routes/%d", routeIndex)
-		if slot < len(endpoints) {
-			operations = append(operations,
-				ChangeOp{Type: "set", Path: prefix + "/dns_server", Value: endpoints[slot]},
-				ChangeOp{Type: "set", Path: prefix + "/connect_to_resolved_ip", Value: true},
-				ChangeOp{Type: "set", Path: prefix + "/disabled", Value: false},
-				ChangeOp{Type: "set", Path: prefix + "/status", Value: "CONFIGURED"},
-			)
-			continue
-		}
-		operations = append(operations,
-			ChangeOp{Type: "set", Path: prefix + "/dns_server", Value: ""},
-			ChangeOp{Type: "set", Path: prefix + "/connect_to_resolved_ip", Value: false},
-			ChangeOp{Type: "set", Path: prefix + "/disabled", Value: true},
-			ChangeOp{Type: "set", Path: prefix + "/status", Value: "NOT_CONFIGURED"},
-		)
-	}
+	operations := []ChangeOp{{Type: "set", Path: "/routes", Value: routes}}
 	session := currentSession(r)
 	change, err := s.createDraftChangeWithOptions("Configure Smart DNS resolvers", "Validate resolvers before using VPN fallback", request.BaseVersion, operations, session.User, request.AutoApply)
 	if err != nil {
@@ -2633,7 +2629,7 @@ func (s *Server) handleSmartDNSConfigure(w http.ResponseWriter, r *http.Request)
 	}
 	autoApplyStarted := request.AutoApply && s.startAutoApplyChange(change.ID)
 	writeData(w, r, map[string]any{
-		"change": change, "endpoint_count": len(endpoints), "validations": validationResults,
+		"change": change, "endpoint_count": len(cards), "validations": validationResults,
 		"auto_apply_requested": request.AutoApply, "auto_apply_started": autoApplyStarted,
 	})
 }
