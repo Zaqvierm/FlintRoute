@@ -6,6 +6,7 @@ import {
   getSubscriptionHWID,
   getSubscriptionSecretStatus,
   getVLESSPool,
+  isChangePending,
   prepareSubscription,
   removeSubscriptionSource,
   runVLESSSpeedTest,
@@ -344,7 +345,9 @@ export function Vless({
         const change = await waitForChangeTerminal(result.change.id);
         setMessage(change.state === 'committed'
           ? 'Managed Xray включён, commit подтверждён.'
-          : `Managed Xray не включён: операция завершилась состоянием ${change.state}. Предыдущая конфигурация сохранена.`);
+          : isChangePending(change.state)
+            ? 'Managed Xray всё ещё применяется. Открой «Операции» для текущего этапа.'
+            : `Managed Xray не включён: операция завершилась состоянием ${change.state}. Предыдущая конфигурация сохранена.`);
         if (change.state !== 'committed') setManagedAvailable(true);
       } else {
         setManagedAvailable(true);

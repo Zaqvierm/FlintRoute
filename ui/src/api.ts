@@ -575,6 +575,7 @@ export async function getSystem(signal?: AbortSignal): Promise<any> { return req
 export async function getChanges(signal?: AbortSignal): Promise<ChangeSet[]> { return request('/changes', { signal }); }
 export async function getChange(id: string, signal?: AbortSignal): Promise<ChangeSet> { return request(`/changes/${encodeURIComponent(id)}`, { signal }); }
 const pendingChangeStates = new Set(['draft', 'validated', 'applying', 'awaiting_confirmation', 'committing']);
+export function isChangePending(state: string): boolean { return pendingChangeStates.has(state); }
 export async function waitForChangeTerminal(id: string, timeoutMs = 30000): Promise<ChangeSet> {
   const deadline = Date.now() + timeoutMs;
   let current = await getChange(id);

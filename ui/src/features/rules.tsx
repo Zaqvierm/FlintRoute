@@ -5,6 +5,7 @@ import {
   createChange,
   deleteServiceRule,
   getVLESSPool,
+  isChangePending,
   verifyService,
   waitForChangeTerminal,
   type ChangeOp,
@@ -206,7 +207,9 @@ export function Services({
         const current = await waitForChangeTerminal(result.change.id);
         setMessage(current.state === 'committed'
           ? `Правило ${serviceID} удалено, commit подтверждён.`
-          : `Правило не удалено: операция завершилась состоянием ${current.state}. Активная конфигурация сохранена.`);
+          : isChangePending(current.state)
+            ? 'Удаление всё ещё выполняется. Открой «Операции» для текущего этапа.'
+            : `Правило не удалено: операция завершилась состоянием ${current.state}. Активная конфигурация сохранена.`);
       }
       await refresh();
     } catch (error) {

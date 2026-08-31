@@ -9,6 +9,7 @@ import {
   getSmartDNS,
   getZapret,
   getZapretCalibration,
+  isChangePending,
   removeSmartDNS,
   reorderSmartDNS,
   startZapretCalibration,
@@ -225,7 +226,9 @@ export function Zapret({ routes, configVersion, role, mutationLocked, refresh, n
         const change = await waitForChangeTerminal(result.change.id);
         setMessage(change.state === 'committed'
           ? `Managed Zapret включён${result.calibrated_profile_id ? ` с профилем ${result.calibrated_profile_id}` : ''}; commit подтверждён.`
-          : `Managed Zapret не включён: операция завершилась состоянием ${change.state}. Предыдущая конфигурация сохранена.`);
+          : isChangePending(change.state)
+            ? 'Managed Zapret всё ещё применяется. Открой «Операции» для текущего этапа.'
+            : `Managed Zapret не включён: операция завершилась состоянием ${change.state}. Предыдущая конфигурация сохранена.`);
       } else {
         setMessage('Операция managed Zapret создана, но worker не запустился. Открой «Операции» для ручного продолжения.');
         navigate('Операции');

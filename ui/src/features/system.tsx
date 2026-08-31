@@ -15,6 +15,7 @@ import {
   getTGWS,
   getVLESSPool,
   ignoreDiscoverySuggestion,
+  isChangePending,
   runVLESSSpeedTest,
   setVLESSTariff,
   testTelegram,
@@ -418,7 +419,9 @@ export function ExternalSOCKS({ configVersion, role, mutationLocked, refresh, na
         const change = await waitForChangeTerminal(result.change.id);
         setMessage(change.state === 'committed'
           ? 'Внешний SOCKS-маршрут включён, commit подтверждён.'
-          : `Внешний SOCKS не включён: операция завершилась состоянием ${change.state}. Предыдущая конфигурация сохранена.`);
+          : isChangePending(change.state)
+            ? 'Внешний SOCKS всё ещё применяется. Открой «Операции» для текущего этапа.'
+            : `Внешний SOCKS не включён: операция завершилась состоянием ${change.state}. Предыдущая конфигурация сохранена.`);
       } else {
         setMessage('Операция внешнего SOCKS создана, но worker не запустился. Открой «Операции» для ручного продолжения.');
         navigate('Операции');
