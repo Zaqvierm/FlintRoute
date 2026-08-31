@@ -16,6 +16,32 @@ import (
 	"router-policy/internal/zapret"
 )
 
+func TestAdaptiveBindingSkipsUnrelatedServiceChange(t *testing.T) {
+	active := &config.Config{Zapret: config.Zapret{
+		AdaptiveEnabled:     true,
+		AdaptiveCatalogFile: "/etc/router-policy/zapret/catalog.json",
+		AdaptiveAssignments: []config.ZapretProfileAssignment{{BundleID: "youtube", ProfileID: "general-alt"}},
+	}}
+	candidate := *active
+	candidate.Services = map[string]config.Service{"chatgpt": {Domains: []string{"chatgpt.com"}}}
+	if adaptiveBindingRequired(active, &candidate) {
+		t.Fatal("unrelated service change unexpectedly requires adaptive artifact rebinding")
+	}
+}
+
+func TestAdaptiveBindingRequiredForAssignmentChange(t *testing.T) {
+	active := &config.Config{Zapret: config.Zapret{
+		AdaptiveEnabled:     true,
+		AdaptiveCatalogFile: "/etc/router-policy/zapret/catalog.json",
+		AdaptiveAssignments: []config.ZapretProfileAssignment{{BundleID: "youtube", ProfileID: "general"}},
+	}}
+	candidate := *active
+	candidate.Zapret.AdaptiveAssignments = []config.ZapretProfileAssignment{{BundleID: "youtube", ProfileID: "general-alt"}}
+	if !adaptiveBindingRequired(active, &candidate) {
+		t.Fatal("adaptive assignment change did not require artifact rebinding")
+	}
+}
+
 func TestAdaptiveEvaluationCommitsThroughChangeSet(t *testing.T) {
 	cfg := testAPIConfig(t)
 	cfg.Routes = append(cfg.Routes, config.Route{Type: "zapret", Tag: "zapret"})

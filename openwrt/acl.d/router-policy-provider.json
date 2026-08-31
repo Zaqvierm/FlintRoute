@@ -1,0 +1,17 @@
+{
+	"user": "daemon",
+	"access": {
+		"system": {
+			"methods": [ "board", "info" ]
+		},
+		"network.interface": {
+			"methods": [ "dump" ]
+		},
+		"network.device": {
+			"methods": [ "status" ]
+		},
+		"network.wireless": {
+			"methods": [ "status" ]
+		}
+	}
+}

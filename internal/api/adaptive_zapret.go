@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"sort"
 	"sync"
 	"time"
@@ -88,8 +89,26 @@ func buildAdaptiveRuntime(cfg *config.Config, store *state.Store) (*adaptiveRunt
 	return newAdaptiveRuntime(cfg, store)
 }
 
-func bindAdaptiveCandidate(tx *adapter.Transaction, candidate *config.Config) error {
+func adaptiveBindingRequired(active, candidate *config.Config) bool {
 	if candidate == nil || !candidate.Zapret.AdaptiveEnabled {
+		return false
+	}
+	if active == nil || !active.Zapret.AdaptiveEnabled {
+		return true
+	}
+	return candidate.Zapret.AdaptiveCatalogFile != active.Zapret.AdaptiveCatalogFile ||
+		!reflect.DeepEqual(candidate.Zapret.AdaptiveAssignments, active.Zapret.AdaptiveAssignments) ||
+		!reflect.DeepEqual(candidate.Zapret.DeviceProfiles, active.Zapret.DeviceProfiles)
+}
+
+func bindAdaptiveCandidate(tx *adapter.Transaction, active, candidate *config.Config) error {
+	if candidate == nil || !candidate.Zapret.AdaptiveEnabled {
+		return nil
+	}
+	// Ordinary service/route edits inherit the already-bound adaptive artifact.
+	// Rebinding it here would incorrectly require a new deployment-ready
+	// transaction even though no Zapret profile changed.
+	if !adaptiveBindingRequired(active, candidate) {
 		return nil
 	}
 	profiles, bundles, err := zapret.LoadCatalogFile(candidate.Zapret.AdaptiveCatalogFile)

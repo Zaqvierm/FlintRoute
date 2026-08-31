@@ -229,7 +229,7 @@ func (s *Server) validateChangeSet(cs ChangeSet) (ChangeSet, *actionFailure) {
 	tx.ArtifactsReady = manifest.DeploymentReady
 	tx.ArtifactBlockReason = manifest.BlockReason
 	tx.ArtifactsSimulation = manifest.Simulation
-	if err := bindAdaptiveCandidate(&tx, candidate); err != nil {
+	if err := bindAdaptiveCandidate(&tx, active, candidate); err != nil {
 		if cleanupErr := adapter.RetireCapability(tx); cleanupErr != nil {
 			err = fmt.Errorf("%w; cleanup rollback capability: %v", err, cleanupErr)
 		}

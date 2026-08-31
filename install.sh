@@ -14,6 +14,7 @@ INIT_DIR="${INIT_DIR:-$SYSTEM_ROOT/etc/init.d}"
 RC_DIR="${RC_DIR:-$SYSTEM_ROOT/etc/rc.d}"
 HOTPLUG_IFACE_DIR="${HOTPLUG_IFACE_DIR:-$SYSTEM_ROOT/etc/hotplug.d/iface}"
 HOTPLUG_FIREWALL_DIR="${HOTPLUG_FIREWALL_DIR:-$SYSTEM_ROOT/etc/hotplug.d/firewall}"
+UBUS_ACL_DIR="${UBUS_ACL_DIR:-$SYSTEM_ROOT/usr/share/acl.d}"
 DNSMASQ_DIR="${DNSMASQ_DIR:-$SYSTEM_ROOT/tmp/dnsmasq.d}"
 ROUTER_POLICY_BIN="${ROUTER_POLICY_BIN:-$BIN_DIR/router-policy}"
 ROUTER_POLICY_HELPER_BIN="${ROUTER_POLICY_HELPER_BIN:-$BIN_DIR/router-policy-helper}"
@@ -22,7 +23,7 @@ SOURCE_HELPER_BINARY="${SOURCE_HELPER_BINARY:-$ROOT/dist/router-policy-helper-li
 BACKUP_ROOT="${BACKUP_ROOT:-$SYSTEM_ROOT/root/router-policy-backups}"
 BACKUP_DIR="${BACKUP_DIR:-$BACKUP_ROOT/install-$(date -u +%Y%m%dT%H%M%SZ)}"
 ROUTER_POLICY_VERSION="${ROUTER_POLICY_VERSION:-unknown}"
-BACKUP_SOURCES="${BACKUP_SOURCES:-$SYSTEM_ROOT/etc/config/network $SYSTEM_ROOT/etc/config/firewall $SYSTEM_ROOT/etc/config/dhcp $SYSTEM_ROOT/etc/dnsmasq.d $SYSTEM_ROOT/etc/nftables.d $ETC_DIR}"
+BACKUP_SOURCES="${BACKUP_SOURCES:-$SYSTEM_ROOT/etc/config/network $SYSTEM_ROOT/etc/config/firewall $SYSTEM_ROOT/etc/config/dhcp $SYSTEM_ROOT/etc/dnsmasq.d $SYSTEM_ROOT/etc/nftables.d $UBUS_ACL_DIR/router-policy-provider.json $ETC_DIR}"
 TAR_BIN="${TAR_BIN:-tar}"
 UBUS_BIN="${UBUS_BIN:-ubus}"
 UCI_BIN="${UCI_BIN:-uci}"
@@ -31,7 +32,7 @@ DF_BIN="${DF_BIN:-df}"
 DU_BIN="${DU_BIN:-du}"
 SERVICES="router-policy-helper router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
 ENABLE_SERVICES="router-policy-dns-observer router-policy-boot-guard $SERVICES"
-INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $ROUTER_POLICY_HELPER_BIN $INIT_DIR/router-policy-helper $INIT_DIR/router-policy $INIT_DIR/router-policy-dns-observer $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/config/listener.conf $ETC_DIR/helper.env $ETC_DIR/secrets/vpn-subscription-url $ETC_DIR/secrets/vpn-subscription-url.hwid.json $ETC_DIR/secrets/happ-crypt4-private-key.pem $ETC_DIR/secrets/telegram.json $ETC_DIR/secrets/webhook.env $ETC_DIR/secrets $DNSMASQ_DIR/router-policy.conf $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
+INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $ROUTER_POLICY_HELPER_BIN $INIT_DIR/router-policy-helper $INIT_DIR/router-policy $INIT_DIR/router-policy-dns-observer $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $UBUS_ACL_DIR/router-policy-provider.json $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/config/listener.conf $ETC_DIR/helper.env $ETC_DIR/secrets/vpn-subscription-url $ETC_DIR/secrets/vpn-subscription-url.hwid.json $ETC_DIR/secrets/happ-crypt4-private-key.pem $ETC_DIR/secrets/telegram.json $ETC_DIR/secrets/webhook.env $ETC_DIR/secrets $DNSMASQ_DIR/router-policy.conf $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
 
 PREFIX_SWITCH_MARKER="$STATE_DIR/prefix-switch.env"
 MANAGED_FILE_MANIFEST="$PREFIX/.managed-files.manifest"
@@ -212,7 +213,8 @@ managed_static_paths() {
     "$INIT_DIR/router-policy-xray" \
     "$INIT_DIR/router-policy-zapret" \
     "$HOTPLUG_IFACE_DIR/95-router-policy" \
-    "$HOTPLUG_FIREWALL_DIR/95-router-policy"
+    "$HOTPLUG_FIREWALL_DIR/95-router-policy" \
+    "$UBUS_ACL_DIR/router-policy-provider.json"
 }
 
 write_managed_file_manifest() {
@@ -1682,6 +1684,7 @@ install_files() {
   atomic_copy "$ROOT/openwrt/init.d/router-policy-zapret" "$INIT_DIR/router-policy-zapret" 755
   atomic_copy "$ROOT/openwrt/hotplug/iface/95-router-policy" "$HOTPLUG_IFACE_DIR/95-router-policy" 755
   atomic_copy "$ROOT/openwrt/hotplug/firewall/95-router-policy" "$HOTPLUG_FIREWALL_DIR/95-router-policy" 755
+  atomic_copy "$ROOT/openwrt/acl.d/router-policy-provider.json" "$UBUS_ACL_DIR/router-policy-provider.json" 644
   write_managed_file_manifest
 }
 
