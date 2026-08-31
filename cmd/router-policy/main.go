@@ -1659,19 +1659,28 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 			SpeedTester: vlessThroughputTester,
 		}
 		zapretSetupChecker = zapret.LocalSetupChecker{}
+		baseComponentDriver := component.OpenWrtDriver{
+			StateDir:   cfg.Storage.StateDir,
+			XrayBinary: cfg.Xray.Binary, XrayService: cfg.Xray.InitScript,
+			ZapretBinary: cfg.Zapret.Binary, ZapretService: cfg.Zapret.InitScript,
+			ZapretRoot: "/usr/lib/router-policy/components/zapret",
+		}
+		helperSocket := os.Getenv("ROUTER_POLICY_HELPER_SOCKET")
+		if helperSocket == "" {
+			helperSocket = "/var/run/router-policy/helper.sock"
+		}
+		helperComponentDriver, helperDriverErr := component.NewHelperDriver(baseComponentDriver, helperSocket, cfg.Storage.StateDir, cfg.Storage.RuntimeDir)
+		if helperDriverErr != nil {
+			return helperDriverErr
+		}
 		componentManager = &component.Manager{
 			StateDir: cfg.Storage.StateDir, RuntimeDir: cfg.Storage.RuntimeDir,
-			// The production controller is non-root.  Until component operations
-			// have a typed helper backend, keep this manager read-only rather than
-			// allowing a direct OpenWrtDriver mutation attempt.
-			DirectMutationAllowed: false,
-			Driver: component.OpenWrtDriver{
-				StateDir:   cfg.Storage.StateDir,
-				XrayBinary: cfg.Xray.Binary, XrayService: cfg.Xray.InitScript,
-				ZapretBinary: cfg.Zapret.Binary, ZapretService: cfg.Zapret.InitScript,
-				ZapretRoot: "/usr/lib/router-policy/components/zapret",
-			},
-			Releases: component.GitHubReleaseSource{},
+			// Lifecycle changes are allowed only through HelperDriver, which
+			// admits typed start/reload calls and rejects direct package/file
+			// mutation from the controller process.
+			DirectMutationAllowed: true,
+			Driver:                helperComponentDriver,
+			Releases:              component.GitHubReleaseSource{},
 		}
 		zapretRelease := component.SupportedCatalog()[component.KindZapret]
 		zapretCalibration = zapret.NewCalibrationManager(zapret.ExecCalibrationRunner{
