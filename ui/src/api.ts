@@ -569,6 +569,7 @@ export async function getSettings(signal?: AbortSignal): Promise<any> { return r
 export async function getBackups(signal?: AbortSignal): Promise<any> { return request('/backups', { signal }); }
 export async function getSystem(signal?: AbortSignal): Promise<any> { return request('/system', { signal }); }
 export async function getChanges(signal?: AbortSignal): Promise<ChangeSet[]> { return request('/changes', { signal }); }
+export async function getChange(id: string, signal?: AbortSignal): Promise<ChangeSet> { return request(`/changes/${encodeURIComponent(id)}`, { signal }); }
 export async function getRevisions(signal?: AbortSignal): Promise<RevisionSummary> { return request('/revisions', { signal }); }
 export async function getSubscriptionSecretStatus(signal?: AbortSignal): Promise<SubscriptionSecretStatus> {
   return request('/xray/subscription/secret', { signal });

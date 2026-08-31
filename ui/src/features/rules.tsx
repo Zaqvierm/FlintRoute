@@ -4,6 +4,7 @@ import {
   classifyService,
   createChange,
   deleteServiceRule,
+  getChange,
   getVLESSPool,
   verifyService,
   type ChangeOp,
@@ -184,9 +185,19 @@ export function Services({
       const result = await deleteServiceRule(serviceID, configVersion);
       setDeleteConfirm('');
       setSelectedService(null);
-      setVerificationMessage(result.auto_apply_started
-        ? 'Правило поставлено на удаление. Жду подтверждённый commit.'
-        : 'Удаление сохранено как операция, но worker ещё не начал применение.');
+      if (!result.auto_apply_started) {
+        setMessage('Удаление создано, но worker не начал применение. Активное правило пока сохранено.');
+      } else {
+        setMessage('Удаление выполняется; жду конечное состояние операции…');
+        let current = await getChange(result.change.id);
+        for (let attempt = 0; attempt < 60 && ['draft', 'validated', 'applying', 'awaiting_confirmation', 'committing'].includes(current.state); attempt += 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 500));
+          current = await getChange(result.change.id);
+        }
+        setMessage(current.state === 'committed'
+          ? `Правило ${serviceID} удалено, commit подтверждён.`
+          : `Правило не удалено: операция завершилась состоянием ${current.state}. Активная конфигурация сохранена.`);
+      }
       await refresh();
     } catch (error) {
       const info = errorInfo(error);
