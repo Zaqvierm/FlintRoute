@@ -84,10 +84,11 @@ table inet router_policy {
 }
 table inet router_policy_boot_guard {
   chain forward {
-    type filter hook forward priority -300; policy drop;
+    type filter hook forward priority -300; policy accept;
     meta mark 0x110 counter accept comment "rp boot_guard allow=verified-classifier"
     ct mark 0x110 counter accept comment "rp boot_guard allow=verified-conntrack"
-    counter drop comment "rp boot_guard action=drop-unclassified"
+    meta mark 0x7f counter drop comment "rp boot_guard action=drop_mark"
+    ct mark 0x7f counter drop comment "rp boot_guard action=drop_conntrack"
   }
 }
 NFT
@@ -95,8 +96,9 @@ NFT
 cat >"$guard_only" <<'NFT'
 table inet router_policy_boot_guard {
   chain forward {
-    type filter hook forward priority -300; policy drop;
-    counter drop comment "rp boot_guard action=drop-unclassified"
+    type filter hook forward priority -300; policy accept;
+    meta mark 0x7f counter drop comment "rp boot_guard action=drop_mark"
+    ct mark 0x7f counter drop comment "rp boot_guard action=drop_conntrack"
   }
 }
 NFT
@@ -113,7 +115,7 @@ if ! ip netns exec "$client" ping -c 3 -W 1 198.18.1.2 >/dev/null 2>&1; then
   exit 1
 fi
 
-drop_target="$(run_nft list chain inet router_policy_boot_guard forward | awk '/drop-unclassified/ {for (i = 1; i <= NF; i++) if ($i == "packets") {print $(i + 1); exit}}')"
+drop_target="$(run_nft list chain inet router_policy_boot_guard forward | awk '/drop_mark/ {for (i = 1; i <= NF; i++) if ($i == "packets") {print $(i + 1); exit}}')"
 case "$drop_target" in ''|*[!0-9]*) echo 'boot guard drop counter missing' >&2; exit 1 ;; esac
 [ "$drop_target" -eq 0 ] || { echo "protected traffic hit unclassified drop: $drop_target" >&2; exit 1; }
 classifier_packets="$(run_nft list chain inet router_policy prerouting | awk '/verified-committed-classifier/ {for (i = 1; i <= NF; i++) if ($i == "packets") {print $(i + 1); exit}}')"
@@ -124,18 +126,17 @@ foreign_after="$(run_nft list table inet foreign)"
 foreign_packets="$(run_nft list chain inet foreign forward | awk '/foreign-direct-escape/ {for (i = 1; i <= NF; i++) if ($i == "packets") {print $(i + 1); exit}}')"
 case "$foreign_packets" in 0|'') ;; *) echo "protected traffic reached foreign hook: $foreign_packets" >&2; exit 1 ;; esac
 
-# A new/unmarked flow is fail-closed while the classifier is absent.  This
-# models an empty conntrack table immediately after reboot.
+# A new/unmarked flow must retain the normal WAN path while the classifier is
+# absent.  The old global DROP policy caused the real router outage: every
+# ordinary flow has mark=0 immediately after reboot.
 run_nft delete table inet router_policy
 run_nft delete table inet router_policy_boot_guard
 run_nft -f "$guard_only"
-if ip netns exec "$client" ping -c 1 -W 1 198.18.1.3 >/dev/null 2>&1; then
-  echo 'unmarked traffic escaped guard while classifier was absent' >&2
+if ! ip netns exec "$client" ping -c 1 -W 1 198.18.1.3 >/dev/null 2>&1; then
+  echo 'unmarked traffic was incorrectly blocked while classifier was absent' >&2
   exit 1
 fi
-guard_only_packets="$(run_nft list chain inet router_policy_boot_guard forward | awk '/drop-unclassified/ {for (i = 1; i <= NF; i++) if ($i == "packets") {print $(i + 1); exit}}')"
-case "$guard_only_packets" in ''|*[!0-9]*) echo 'guard-only drop counter missing' >&2; exit 1 ;; esac
-[ "$guard_only_packets" -gt 0 ] || { echo 'guard-only DROP did not see unmarked flow' >&2; exit 1; }
+grep -F 'rp boot_guard action=drop_mark' "$guard_only" >/dev/null
 
 # Simulated reboot/reconcile: restore the exact committed classifier and guard
 # in one batch, then prove the protected path works again.

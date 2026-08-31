@@ -139,12 +139,15 @@ procd не подтверждает остановку, файлы не трог
 `blocked-managed-services-still-running`. Это лучше, чем собирать на живом
 роутере смесь старой базы и нового бинарника.
 
-Временный boot guard до доказанного reconcile применяет fail-closed drop ко
-всему transit-forwarding. Он не опирается на conntrack/meta mark: после
-холодной загрузки новые соединения имеют mark=0, поэтому mark-only guard был
-бы дырой. Management plane (loopback-диагностика и recovery status) не
-блокируется этим transit guard. Снятие guard разрешено только для exact
-committed generation через transaction-bound проверку revision/hash.
+Временный boot guard до доказанного reconcile не должен превращать весь
+transit-forwarding в DROP: после холодной загрузки обычные соединения имеют
+mark=0 и должны сохранить штатный WAN-путь. Guard использует `policy accept` и
+добавляет только explicit drop-mark rules; проверенный committed classifier
+загружается атомарно вместе с guard, поэтому защищённые назначения получают
+свой route/drop mark до появления controller. Management plane (loopback-
+диагностика и recovery status) не блокируется этим transit guard. Снятие guard
+разрешено только для exact committed generation через transaction-bound
+проверку revision/hash.
 
 Обычный `router-policy-boot-guard stop` не очищает таблицу и не снимает
 forwarding fence. Это намеренно: procd restart, recovery и операторская

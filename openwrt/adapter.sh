@@ -287,6 +287,7 @@ guard_accept_marks() {
   guard_name=""
   guard_value=""
   guard_marks=""
+  guard_drop_mark=""
   while IFS= read -r guard_line; do
     case "$guard_line" in
       managed_mark=*)
@@ -295,7 +296,11 @@ guard_accept_marks() {
       managed_mark_name=*)
         guard_name="${guard_line#managed_mark_name=}"
         case "$guard_name" in
-          drop) guard_value="" ;;
+          drop)
+            printf '%s\n' "${guard_value:-}" | grep -Eq '^(0x[0-9a-fA-F]+|[0-9]+)$' || return 1
+            guard_drop_mark="$guard_value"
+            guard_value=""
+            ;;
           direct|zapret|xray|xray_tproxy|xray_bypass)
             printf '%s\n' "${guard_value:-}" | grep -Eq '^(0x[0-9a-fA-F]+|[0-9]+)$' || return 1
             case " $guard_marks " in
@@ -317,6 +322,19 @@ EOF
   printf '%s\n' "$guard_marks"
 }
 
+guard_drop_mark_value() {
+  guard_config="$1"
+  [ -f "$guard_config" ] || return 1
+  guard_output="$(ROUTER_POLICY_CONFIG="$guard_config" "$router_policy_bin" internal-print-managed-marks 2>/dev/null)" || return 1
+  guard_value="$(printf '%s\n' "$guard_output" | awk -F= '
+    $1 == "managed_mark" { value=$2; next }
+    $1 == "managed_mark_name" && $2 == "drop" { print value; found=1; exit }
+    END { if (!found) exit 1 }
+  ')" || return 1
+  printf '%s\n' "$guard_value" | grep -Eq '^(0x[0-9a-fA-F]+|[0-9]+)$' || return 1
+  printf '%s\n' "$guard_value"
+}
+
 classifier_table_owned_or_absent() {
   classifier_table="$("$nft_bin" list table inet router_policy 2>/dev/null)" || return 0
   printf '%s\n' "$classifier_table" | grep -F 'comment "router-policy owner=flintroute"' >/dev/null
@@ -328,8 +346,15 @@ install_boot_guard() {
   # On a cold boot the kernel has no conntrack marks and the normal owned
   # classifier table is not present yet.  If (and only if) the durable
   # last-good binding and its artifacts verify, stage that exact classifier so
-  # the guard can admit already-protected marks.  Any missing/ambiguous proof
-  # deliberately falls back to the all-forwarding DROP below.
+  # protected destinations are classified before forwarding starts.  A guard
+  # must never use a global DROP policy: ordinary/unclassified traffic keeps
+  # the normal WAN path while explicit protected/drop marks stay fail-closed.
+  guard_drop_mark=""
+  if guard_drop_mark="$(guard_drop_mark_value "$state/last-good/router-policy-config.json")"; then
+    :
+  else
+    guard_drop_mark=""
+  fi
   if early_classifier_source="$(early_committed_classifier_source 2>/dev/null)" &&
     early_classifier_marks="$(guard_accept_marks "$state/last-good/router-policy-config.json" 2>/dev/null)" &&
     classifier_table_owned_or_absent &&
@@ -344,20 +369,20 @@ install_boot_guard() {
     echo 'table inet router_policy_boot_guard {'
     echo '  comment "router-policy owner=flintroute"'
     echo '  chain forward {'
-    echo '    type filter hook forward priority -300; policy drop;'
+    echo '    type filter hook forward priority -300; policy accept;'
     if [ -n "${early_classifier_marks:-}" ]; then
       # The classifier is loaded in the same nft transaction and runs before
-      # this chain.  Admit only marks emitted by the verified candidate; all
-      # unmarked/foreign marks remain fenced.  DROP is never admitted here.
+      # this chain.  Keep known marks explicit for auditability; ordinary
+      # unclassified forwarding is accepted by the chain policy.
       for guard_mark in $early_classifier_marks; do
         printf '    meta mark %s counter accept comment "rp boot_guard allow=meta"\n' "$guard_mark"
         printf '    ct mark %s counter accept comment "rp boot_guard allow=conntrack"\n' "$guard_mark"
       done
     fi
-    # A mark-only guard would be fail-open after reboot: new flows have mark=0.
-    # The default policy remains DROP until the exact committed generation is
-    # proven, even when the optional early classifier is admitted above.
-    echo '    counter comment "rp boot_guard action=drop_unclassified"'
+    if [ -n "${guard_drop_mark:-}" ]; then
+      printf '    meta mark %s counter drop comment "rp boot_guard action=drop_mark"\n' "$guard_drop_mark"
+      printf '    ct mark %s counter drop comment "rp boot_guard action=drop_conntrack"\n' "$guard_drop_mark"
+    fi
     echo '  }'
     echo '}'
   } > "$boot_guard_file.tmp"
