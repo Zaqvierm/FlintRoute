@@ -1659,15 +1659,7 @@ apply_candidate() {
   ROUTER_POLICY_IP_BIN="$ip_bin" ROUTER_POLICY_UCI_BIN="$uci_bin" "$router_policy_bin" internal-apply-ip-plan --plan "$generated/ip-plan.json" --transaction "$txid" --revision "$revision" --candidate-hash "$candidate_hash"
   reload_project_firewall
   restart_dnsmasq
-  {
-    echo "transaction_id=$txid"
-    echo "revision_id=$revision"
-    echo "candidate_hash=$candidate_hash"
-    echo "artifact_manifest_hash=$artifact_manifest_hash"
-    echo "transaction_state=applied"
-    echo "updated_at=$(now_utc)"
-  } > "$active_file.tmp"
-  mv "$active_file.tmp" "$active_file"
+  write_active_transaction_state "applied"
   write_status "applied"
   emit_operation_binding apply-candidate
   echo "applied=true"
@@ -1897,6 +1889,13 @@ write_active_transaction_state() {
     echo "updated_at=$(now_utc)"
   } > "$active_file.tmp"
   mv "$active_file.tmp" "$active_file"
+  # The controller is intentionally unprivileged and must be able to read the
+  # generation binding for ProbeRoute/recovery. The file contains hashes and
+  # state only, never rollback secrets; publish it as root:daemon 0640.
+  if command -v id >/dev/null 2>&1 && id -u daemon >/dev/null 2>&1; then
+    chown 0:daemon "$active_file" || return 1
+  fi
+  chmod 640 "$active_file"
 }
 
 commit_prepared_tx() {
