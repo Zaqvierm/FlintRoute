@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -122,7 +123,7 @@ func NewActiveOpenWrtPathVerifier(cfg *config.Config, allowSimulation bool) (*Op
 	if err != nil {
 		return nil, err
 	}
-	commands, err := NewExecOpenWrtCommands()
+	commands, err := newBoundOpenWrtCommands(active.Binding, active.ManifestHash)
 	if err != nil {
 		return nil, err
 	}
@@ -131,6 +132,17 @@ func NewActiveOpenWrtPathVerifier(cfg *config.Config, allowSimulation bool) (*Op
 		ArtifactRoot: root, ActiveBindingPath: activePath, Binding: active.Binding, ManifestHash: active.ManifestHash,
 		Commands: commands, AllowSimulation: allowSimulation,
 	})
+}
+
+func newBoundOpenWrtCommands(binding artifact.Binding, manifestHash string) (OpenWrtCommands, error) {
+	if socket := strings.TrimSpace(os.Getenv("ROUTER_POLICY_HELPER_SOCKET")); socket != "" {
+		commands, err := NewHelperOpenWrtCommands(socket, binding, manifestHash)
+		if err != nil {
+			return nil, fmt.Errorf("initialize privileged probe commands: %w", err)
+		}
+		return commands, nil
+	}
+	return NewExecOpenWrtCommands()
 }
 
 func NewOpenWrtPathVerifier(opts OpenWrtPathOptions) (*OpenWrtPathVerifier, error) {

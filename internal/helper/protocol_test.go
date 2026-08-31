@@ -63,6 +63,29 @@ func TestValidateRequestBindsGenerationAndHashes(t *testing.T) {
 	}
 }
 
+func TestValidateRequestAllowsOnlyBoundProbeReads(t *testing.T) {
+	request := validRequest("probe.nft_policy")
+	request.Generation = request.RevisionID
+	request.TransactionID = "probe"
+	request.RollbackTokenHash = ""
+	request.Probe = &ProbeRequest{Operation: "nft_policy", RouteTag: "vless-de"}
+	if err := ValidateRequest(request); err != nil {
+		t.Fatalf("bound read-only probe was rejected: %v", err)
+	}
+	request.Probe.RouteTag = "../../etc"
+	if err := ValidateRequest(request); err == nil {
+		t.Fatal("probe accepted an unsafe route tag")
+	}
+	request = validRequest("probe.route_get")
+	request.Generation = request.RevisionID
+	request.TransactionID = "probe"
+	request.RollbackTokenHash = ""
+	request.Probe = &ProbeRequest{Operation: "route_get", Destination: "198.51.100.10", Mark: "0x42"}
+	if err := ValidateRequest(request); err != nil {
+		t.Fatalf("bound route probe was rejected: %v", err)
+	}
+}
+
 func TestValidateRequestRequiresTypedOperationAndAllBindings(t *testing.T) {
 	request := validRequest("transaction.commit_prepared")
 	request.Transaction = &TransactionRequest{Operation: "commit"}
