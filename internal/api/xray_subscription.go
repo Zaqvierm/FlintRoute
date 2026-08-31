@@ -20,6 +20,7 @@ import (
 type xraySubscriptionPrepareRequest struct {
 	BaseVersion     int64 `json:"base_version"`
 	ActivateManaged bool  `json:"activate_managed"`
+	AutoApply       bool  `json:"auto_apply"`
 }
 
 type xraySubscriptionSecretRequest struct {
@@ -480,7 +481,7 @@ func (s *Server) handleXraySubscriptionPrepare(w http.ResponseWriter, r *http.Re
 		{Type: "set", Path: "/routes", Value: routes},
 	}
 	session := currentSession(r)
-	change, err := s.createDraftChange("Activate managed Xray", "Bind verified VLESS routes and transparent proxy activation in one transaction", request.BaseVersion, operations, session.User)
+	change, err := s.createDraftChangeWithOptions("Activate managed Xray", "Bind verified VLESS routes and transparent proxy activation in one transaction", request.BaseVersion, operations, session.User, request.AutoApply)
 	if err != nil {
 		if errors.Is(err, errBaseVersionConflict) {
 			writeError(w, r, http.StatusConflict, "base_version_conflict", "active revision changed while the subscription was being checked")
@@ -490,6 +491,8 @@ func (s *Server) handleXraySubscriptionPrepare(w http.ResponseWriter, r *http.Re
 		return
 	}
 	response["change"] = change
+	response["auto_apply_requested"] = request.AutoApply
+	response["auto_apply_started"] = request.AutoApply && s.startAutoApplyChange(change.ID)
 	s.publishEvent(Event{Type: "xray.managed_activation_prepared", Severity: "info", ReasonCode: "transaction_required", Details: map[string]any{"change_id": change.ID, "bundle_hash": prepared.BundleHash, "selected_tag": prepared.SelectedTag}})
 	writeData(w, r, response)
 }

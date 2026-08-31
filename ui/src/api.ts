@@ -437,16 +437,20 @@ export async function classifyService(
   category: string,
   baseVersion: number,
   allowedPaths?: string[],
-  allowDisableFlowOffloading = false
-): Promise<{ change: ChangeSet }> {
+  allowDisableFlowOffloading = false,
+  autoApply = true,
+  serviceID?: string
+): Promise<{ change: ChangeSet; auto_apply_requested?: boolean; auto_apply_started?: boolean }> {
   return request('/services/classify', {
     method: 'POST',
     body: JSON.stringify({
       domain,
+      service_id: serviceID,
       category,
       allowed_paths: allowedPaths,
       base_version: baseVersion,
-      allow_disable_flow_offloading: allowDisableFlowOffloading
+      allow_disable_flow_offloading: allowDisableFlowOffloading,
+      auto_apply: autoApply
     })
   });
 }
@@ -533,8 +537,8 @@ export async function getExternalSOCKS(signal?: AbortSignal): Promise<any> { ret
 export async function checkExternalSOCKS(endpoint: string, testDomain: string, baseVersion: number): Promise<{ report: ExternalSOCKSReport }> {
   return request('/external-socks/check', { method: 'POST', body: JSON.stringify({ endpoint, test_domain: testDomain, base_version: baseVersion }) });
 }
-export async function activateExternalSOCKS(endpoint: string, testDomain: string, baseVersion: number): Promise<{ report: ExternalSOCKSReport; change: ChangeSet }> {
-  return request('/external-socks/activate', { method: 'POST', body: JSON.stringify({ endpoint, test_domain: testDomain, base_version: baseVersion }) });
+export async function activateExternalSOCKS(endpoint: string, testDomain: string, baseVersion: number, autoApply = true): Promise<{ report: ExternalSOCKSReport; change: ChangeSet; auto_apply_requested?: boolean; auto_apply_started?: boolean }> {
+  return request('/external-socks/activate', { method: 'POST', body: JSON.stringify({ endpoint, test_domain: testDomain, base_version: baseVersion, auto_apply: autoApply }) });
 }
 export async function getTGWS(signal?: AbortSignal): Promise<TGWSStatus> { return request('/tgws', { signal }); }
 export async function configureTGWS(port: number, fakeTLSDomain: string): Promise<{ status: TGWSStatus; connect_link: string; one_time: boolean }> {
@@ -570,6 +574,16 @@ export async function getBackups(signal?: AbortSignal): Promise<any> { return re
 export async function getSystem(signal?: AbortSignal): Promise<any> { return request('/system', { signal }); }
 export async function getChanges(signal?: AbortSignal): Promise<ChangeSet[]> { return request('/changes', { signal }); }
 export async function getChange(id: string, signal?: AbortSignal): Promise<ChangeSet> { return request(`/changes/${encodeURIComponent(id)}`, { signal }); }
+const pendingChangeStates = new Set(['draft', 'validated', 'applying', 'awaiting_confirmation', 'committing']);
+export async function waitForChangeTerminal(id: string, timeoutMs = 30000): Promise<ChangeSet> {
+  const deadline = Date.now() + timeoutMs;
+  let current = await getChange(id);
+  while (pendingChangeStates.has(current.state) && Date.now() < deadline) {
+    await new Promise((resolve) => window.setTimeout(resolve, 500));
+    current = await getChange(id);
+  }
+  return current;
+}
 export async function getRevisions(signal?: AbortSignal): Promise<RevisionSummary> { return request('/revisions', { signal }); }
 export async function getSubscriptionSecretStatus(signal?: AbortSignal): Promise<SubscriptionSecretStatus> {
   return request('/xray/subscription/secret', { signal });
@@ -586,8 +600,8 @@ export async function getSubscriptionHWID(signal?: AbortSignal): Promise<Subscri
 export async function saveSubscriptionHWID(settings: { mode: string; source: string; preset?: string; custom_seed?: string }): Promise<SubscriptionHWIDSettings> {
   return request('/xray/subscription/hwid', { method: 'PUT', body: JSON.stringify(settings) });
 }
-export async function prepareSubscription(baseVersion: number, activateManaged = false): Promise<SubscriptionPreparation> {
-  return request('/xray/subscription/prepare', { method: 'POST', body: JSON.stringify({ base_version: baseVersion, activate_managed: activateManaged }) });
+export async function prepareSubscription(baseVersion: number, activateManaged = false, autoApply = false): Promise<SubscriptionPreparation & { auto_apply_requested?: boolean; auto_apply_started?: boolean }> {
+  return request('/xray/subscription/prepare', { method: 'POST', body: JSON.stringify({ base_version: baseVersion, activate_managed: activateManaged, auto_apply: autoApply }) });
 }
 export async function getManualVLESSServers(signal?: AbortSignal): Promise<ManualVLESSInventory> {
   return request('/xray/manual-servers', { signal });
@@ -616,8 +630,8 @@ export async function cancelZapretCalibration(): Promise<ZapretCalibrationStatus
 export async function checkZapretSetup(input: ZapretSetupRequest, baseVersion: number): Promise<{ report: ZapretSetupReport }> {
   return request('/zapret/setup/check', { method: 'POST', body: JSON.stringify({ ...input, base_version: baseVersion }) });
 }
-export async function activateZapretSetup(input: ZapretSetupRequest, baseVersion: number): Promise<{ report: ZapretSetupReport; change: ChangeSet; calibrated_profile_id?: string }> {
-  return request('/zapret/setup/activate', { method: 'POST', body: JSON.stringify({ ...input, base_version: baseVersion }) });
+export async function activateZapretSetup(input: ZapretSetupRequest, baseVersion: number, autoApply = true): Promise<{ report: ZapretSetupReport; change: ChangeSet; calibrated_profile_id?: string; auto_apply_requested?: boolean; auto_apply_started?: boolean }> {
+  return request('/zapret/setup/activate', { method: 'POST', body: JSON.stringify({ ...input, base_version: baseVersion, auto_apply: autoApply }) });
 }
 export async function createChange(title: string, baseVersion: number, operations: ChangeOp[]): Promise<ChangeSet> {
   if (!Number.isSafeInteger(baseVersion) || baseVersion < 1) throw new Error('Некорректная версия конфигурации');

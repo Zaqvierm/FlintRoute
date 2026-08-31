@@ -48,7 +48,7 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/topology` | топология, собранная из ubus, аренды, соседей, мостовой FDB и беспроводных станций; `privacy=hidden` редактирует адреса клиентов |
 | `/api/v1/devices` | LAN/гостевые/удаленные клиенты; адреса видны по умолчанию, и `privacy=hidden` удаляет необработанные значения перед сериализацией |
 | `/api/v1/services` | сконфигурированные и динамически наблюдаемые сервисы |
-| `/api/v1/services/classify` | создание или редактирование правила домена через черновик ChangeSet; `allowed_paths` задаёт только допустимые типы маршрутов, а не победный порядок |
+| `/api/v1/services/classify` | проверить и применить правило домена через bounded ChangeSet; `service_id` сохраняет существующее правило при переносе, `allowed_paths` задаёт только допустимые типы маршрутов |
 | `/api/v1/services/delete` | удалить committed service rule через bounded ChangeSet и автоматическое подтверждение |
 | `/api/v1/discovery` | текущий режим discovery, лимиты, состояние circuit breaker и suggestions |
 | `/api/v1/discovery/configure` | сохранение режима/ограничений обнаружения плоскости управления без изменения плоскости данных; при необходимости сбросить паузу отката |
@@ -290,3 +290,9 @@ each address independently before the bounded background ChangeSet continues.
 for DNS fallback only. Neither field is a winner-order for cross-type route
 selection. Both operations use the normal recovery fence and transaction
 protocol; no foreign route is deleted or overwritten.
+
+Product actions from the UI request `auto_apply=true` only for an explicit
+administrator action. The API still persists the draft first, then advances it
+through validate/apply/confirm. A background failure is persisted as
+`failed`, `requires_device` or `recovery_required`; it is never left as an
+unexplained permanent `draft`.

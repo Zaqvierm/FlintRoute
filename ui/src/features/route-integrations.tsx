@@ -12,6 +12,7 @@ import {
   removeSmartDNS,
   reorderSmartDNS,
   startZapretCalibration,
+  waitForChangeTerminal,
   type ComponentStatus,
   type SessionInfo,
   type ZapretCalibrationStatus
@@ -62,6 +63,7 @@ function smartDNSOperationLabel(operation: any): string {
     case 'recovery_required': return 'заблокировано: требуется recovery';
     case 'failed': return 'автоматическое применение не удалось';
     case 'rolled_back': return 'откачено после неудачной проверки';
+    case 'committed': return 'изменение подтверждено';
     default: return 'обрабатывается';
   }
 }
@@ -215,13 +217,19 @@ export function Zapret({ routes, configVersion, role, mutationLocked, refresh, n
     finally { setBusy(false); }
   }
   async function activate() {
-    setBusy(true); setMessage('Создаю черновик включения managed Zapret…');
+    setBusy(true); setMessage('Проверяю и включаю managed Zapret…');
     try {
-      const result = await activateZapretSetup(input, configVersion);
+      const result = await activateZapretSetup(input, configVersion, true);
       setChecked(false); setReport(result.report);
-      setMessage(result.calibrated_profile_id
-        ? `Создан черновик включения Zapret с профилем ${result.calibrated_profile_id}. Открой очередь, проверь diff и запусти применение отдельно.`
-        : 'Создан черновик включения managed Zapret. Открой очередь, проверь diff и запусти применение отдельно.');
+      if (result.auto_apply_started) {
+        const change = await waitForChangeTerminal(result.change.id);
+        setMessage(change.state === 'committed'
+          ? `Managed Zapret включён${result.calibrated_profile_id ? ` с профилем ${result.calibrated_profile_id}` : ''}; commit подтверждён.`
+          : `Managed Zapret не включён: операция завершилась состоянием ${change.state}. Предыдущая конфигурация сохранена.`);
+      } else {
+        setMessage('Операция managed Zapret создана, но worker не запустился. Открой «Операции» для ручного продолжения.');
+        navigate('Операции');
+      }
       await refresh();
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Zapret не включён; транзакция откатилась или ждёт устройство.'); }
     finally { setBusy(false); }
@@ -244,7 +252,7 @@ export function Zapret({ routes, configVersion, role, mutationLocked, refresh, n
         </div>}
         <small>Параллельность: {textValue(calibration?.concurrency, '1')}. {textValue(calibration?.concurrency_reason, 'Общие nft/NFQUEUE ресурсы upstream требуют последовательного прогона.')}</small>
       </div>}
-      {message && <div class="action-status"><p>{message}</p>{message.includes('черновик') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
+      {message && <div class="action-status"><p>{message}</p>{message.includes('Операции') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
     </Card>
     {calibration && calibration.state !== 'idle' && <Card title="Подбор стратегии">
       <div class="row"><b>{humanStatus(calibration.state)}</b><span>{calibration.mode === 'exhaustive' ? 'полный подбор' : 'быстрый тест'} · {textValue(calibration.scan_level, 'quick')}</span><small>{textValue(calibration.domain, 'домен не указан')} · {calibration.duration_ms ? `${Math.round(calibration.duration_ms / 1000)} сек` : 'идёт'}</small></div>
@@ -262,11 +270,11 @@ export function Zapret({ routes, configVersion, role, mutationLocked, refresh, n
       {calibration.recommended_profile_id && <p class="action-status">Рекомендован: <span>{zapretProfileLabel({ profile_id: calibration.recommended_profile_id })}</span> <span class="mono">({calibration.recommended_profile_id})</span>. Именно он будет привязан при явном включении ниже.</p>}
       <h4>Живой лог</h4>
       <pre>{(calibration.log_tail ?? []).join('\n') || 'blockcheck ещё не успел вывести данные'}</pre>
-      {calibration.activation_required && <p>Профили записаны в проверенный каталог. Выбор не применяется молча: создай отдельный черновик, проверь diff и запусти транзакцию в центре операций.</p>}
+      {calibration.activation_required && <p>Профили записаны в проверенный каталог. Чтобы включить выбранный профиль, нажми «Применить Zapret» и дождись подтверждённого результата.</p>}
     </Card>}
     {component?.installed && <Card title="Явное включение маршрута">
       <p>Установка бинарника и включение маршрута — разные операции. Apply проверит NFQUEUE, data path и подтвердится только через штатную транзакцию.</p>
-       {role === 'administrator' && <div class="actions"><button disabled={busy || !configVersion} onClick={check}>{busy ? 'Проверяю…' : 'Проверить перед черновиком'}</button><button class="primary" disabled={busy || mutationLocked || !checked || !configVersion} onClick={activate}>Создать черновик Zapret</button></div>}
+       {role === 'administrator' && <div class="actions"><button disabled={busy || !configVersion} onClick={check}>{busy ? 'Проверяю…' : 'Проверить перед применением'}</button><button class="primary" disabled={busy || mutationLocked || !checked || !configVersion} onClick={activate}>Применить Zapret</button></div>}
       <details><summary>Advanced · закреплённый источник</summary><div class="change-editor">
         <label><span>HTTPS source</span><input class="mono" value={sourceURL} onInput={(event) => { setSourceURL((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
         <label><span>Версия</span><input class="mono" value={version} onInput={(event) => { setVersion((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
@@ -369,12 +377,20 @@ export function SmartDNS({
     try {
       const result = await configureSmartDNS(values, testDomain.trim(), configVersion, true);
       setValidations(result.validations ?? []);
-      const nextStatus = await getSmartDNS();
-      setStatus(nextStatus);
-      setResolvers(resolverDraftsFromStatus(nextStatus));
-      setMessage(result.auto_apply_started
-        ? `Smart DNS проверен. Автоматическое применение для ${result.endpoint_count} резолверов запущено в фоне; результат появится в центре операций.`
-        : `Smart DNS проверен. Создан черновик для ${result.endpoint_count} резолверов; автоматическое продолжение не запущено.`);
+      if (result.auto_apply_started) {
+        setMessage(`Smart DNS проверен. Применяю ${result.endpoint_count} резолверов и жду commit…`);
+        const outcome = await waitForSmartDNSCommit(result.change.id);
+        setStatus(outcome.status);
+        setResolvers(resolverDraftsFromStatus(outcome.status));
+        setMessage(outcome.state === 'committed'
+          ? `Smart DNS применён, commit подтверждён (${result.endpoint_count} резолвера).`
+          : `Smart DNS не применён: операция завершилась состоянием ${outcome.state}. Предыдущая конфигурация сохранена.`);
+      } else {
+        const nextStatus = await getSmartDNS();
+        setStatus(nextStatus);
+        setResolvers(resolverDraftsFromStatus(nextStatus));
+        setMessage(`Изменение Smart DNS создано, но worker не начал применение. Активная конфигурация пока сохранена.`);
+      }
       await refresh();
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : 'Smart DNS не прошёл проверку. Предыдущая конфигурация сохранена.');
@@ -421,8 +437,17 @@ export function SmartDNS({
     setMessage('Обновляю порядок failover…');
     try {
       const result = await reorderSmartDNS(ordered.map((route: any) => route.tag), configVersion);
-      setMessage(result.auto_apply_started ? 'Порядок обновляется в фоне.' : 'Порядок поставлен в очередь.');
-      setStatus(await getSmartDNS());
+      if (result.auto_apply_started) {
+        setMessage('Порядок Smart DNS обновляется; жду подтверждённый commit…');
+        const outcome = await waitForSmartDNSCommit(result.change.id);
+        setStatus(outcome.status);
+        setMessage(outcome.state === 'committed'
+          ? 'Порядок Smart DNS изменён, commit подтверждён.'
+          : `Порядок не изменён: операция завершилась состоянием ${outcome.state}.`);
+      } else {
+        setMessage('Изменение порядка создано, но worker не начал применение. Активный порядок сохранён.');
+        setStatus(await getSmartDNS());
+      }
       await refresh();
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : 'Порядок Smart DNS не удалось изменить.');

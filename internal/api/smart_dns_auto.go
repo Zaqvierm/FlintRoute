@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -68,6 +69,7 @@ func (s *Server) runAutoApplyChange(id string) {
 		return
 	}
 	if failure := s.mutationFailureNow(); failure != nil {
+		s.recordAutoApplyFailure(id, failure.Code, failure.Message, "recovery_required")
 		s.publishEvent(Event{Type: "change.auto_apply", Severity: "warning", ReasonCode: "smart_dns_auto_apply_fenced", Details: map[string]any{
 			"change_id": id, "code": failure.Code,
 		}})
@@ -78,6 +80,7 @@ func (s *Server) runAutoApplyChange(id string) {
 		var failure *actionFailure
 		change, failure = s.validateChangeSet(change)
 		if failure != nil {
+			s.recordAutoApplyFailure(id, failure.Code, failure.Message, "failed")
 			s.publishEvent(Event{Type: "change.auto_apply", Severity: "warning", ReasonCode: "smart_dns_auto_validate_failed", Details: map[string]any{
 				"change_id": id, "code": failure.Code,
 			}})
@@ -88,6 +91,7 @@ func (s *Server) runAutoApplyChange(id string) {
 		var failure *actionFailure
 		change, failure = s.applyChangeSet(withAutomaticManagementProof(ctx), change)
 		if failure != nil {
+			s.recordAutoApplyFailure(id, failure.Code, failure.Message, "failed")
 			s.publishEvent(Event{Type: "change.auto_apply", Severity: "warning", ReasonCode: "smart_dns_auto_apply_failed", Details: map[string]any{
 				"change_id": id, "code": failure.Code,
 			}})
@@ -101,6 +105,7 @@ func (s *Server) runAutoApplyChange(id string) {
 	}
 
 	if _, failure := s.confirmChangeSet(ctx, change); failure != nil {
+		s.recordAutoApplyFailure(id, failure.Code, failure.Message, "failed")
 		s.publishEvent(Event{Type: "change.auto_apply", Severity: "warning", ReasonCode: "smart_dns_auto_confirm_failed", Details: map[string]any{
 			"change_id": id, "code": failure.Code,
 		}})
@@ -109,6 +114,38 @@ func (s *Server) runAutoApplyChange(id string) {
 	s.publishEvent(Event{Type: "change.auto_apply", Severity: "info", ReasonCode: "smart_dns_auto_apply_committed", Details: map[string]any{
 		"change_id": id,
 	}})
+}
+
+// recordAutoApplyFailure makes a background product action observable.  Before
+// this, a recovery fence or validation error could leave the journal at draft
+// forever while the UI kept saying "waiting".  Existing terminal transaction
+// states (requires_device, rolled_back, recovery_required) remain authoritative.
+func (s *Server) recordAutoApplyFailure(id, code, message, fallbackState string) {
+	if s == nil || id == "" {
+		return
+	}
+	s.mu.Lock()
+	change, ok := s.changes[id]
+	s.mu.Unlock()
+	if !ok || !isAutoApplyPendingState(change.State) {
+		return
+	}
+	if strings.TrimSpace(code) != "" || strings.TrimSpace(message) != "" {
+		change.Validation = append(change.Validation, Validation{Level: "error", Code: code, Message: message})
+	}
+	if err := s.saveChange(&change, fallbackState); err != nil {
+		return
+	}
+	s.publishChangeEvent(change, "auto_apply_terminal_failure")
+}
+
+func isAutoApplyPendingState(state string) bool {
+	switch state {
+	case "draft", "validated", "applying", "awaiting_confirmation", "committing":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) resumeAutoApplyChanges() {

@@ -1922,10 +1922,12 @@ func routeTypeInOrder(order []string, routeType string) bool {
 
 type serviceClassifyRequest struct {
 	Domain                     string   `json:"domain"`
+	ServiceID                  string   `json:"service_id,omitempty"`
 	Category                   string   `json:"category"`
 	AllowedPaths               []string `json:"allowed_paths,omitempty"`
 	BaseVersion                int64    `json:"base_version"`
 	AllowDisableFlowOffloading bool     `json:"allow_disable_flow_offloading,omitempty"`
+	AutoApply                  bool     `json:"auto_apply,omitempty"`
 }
 
 func serviceForClassifyRequest(request serviceClassifyRequest) (string, config.Service, error) {
@@ -2178,6 +2180,17 @@ func (s *Server) handleServiceClassify(w http.ResponseWriter, r *http.Request) {
 	}
 	domain := service.Domains[0]
 	id := "user_" + strings.NewReplacer(".", "_", "-", "_").Replace(tspu.ETLDPlusOne(domain))
+	if requestedID := strings.TrimSpace(request.ServiceID); requestedID != "" {
+		if strings.ContainsAny(requestedID, "/\\\r\n\t") || len(requestedID) > 128 {
+			writeError(w, r, http.StatusBadRequest, "invalid_service_id", "service_id contains unsupported characters")
+			return
+		}
+		if _, exists := s.currentConfig().Services[requestedID]; !exists {
+			writeError(w, r, http.StatusNotFound, "service_rule_missing", "service_id was not found")
+			return
+		}
+		id = requestedID
+	}
 	check, err := s.selectVerifiedServiceRoute(r.Context(), id, service)
 	if err != nil {
 		writeError(w, r, http.StatusUnprocessableEntity, "route_verification_failed", err.Error())
@@ -2188,12 +2201,13 @@ func (s *Server) handleServiceClassify(w http.ResponseWriter, r *http.Request) {
 	if request.AllowDisableFlowOffloading {
 		operations = append(operations, ChangeOp{Type: "set", Path: "/openwrt/flow_offloading_policy", Value: "disable"})
 	}
-	change, err := s.createDraftChange(
+	change, err := s.createDraftChangeWithOptions(
 		"Change route class for "+domain,
 		"Persist the selected route class for an observed domain",
 		request.BaseVersion,
 		operations,
 		currentSession(r).User,
+		request.AutoApply,
 	)
 	if err != nil {
 		if errors.Is(err, errBaseVersionConflict) {
@@ -2207,7 +2221,9 @@ func (s *Server) handleServiceClassify(w http.ResponseWriter, r *http.Request) {
 		"change": change, "domain": domain, "category": category,
 		"selected_route_tag": check.Selected.Route, "selected_route_type": check.Selected.RouteType,
 		"path_verified": check.Selected.PathVerified, "selection_state": serviceRouteSelectionState(check.Selected),
-		"candidates": discoveryCandidateDetails(check.Results),
+		"candidates":           discoveryCandidateDetails(check.Results),
+		"auto_apply_requested": request.AutoApply,
+		"auto_apply_started":   request.AutoApply && s.startAutoApplyChange(change.ID),
 	})
 }
 

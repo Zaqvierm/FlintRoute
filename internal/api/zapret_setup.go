@@ -18,6 +18,7 @@ type zapretSetupRequest struct {
 	ProviderVersion string `json:"provider_version"`
 	BinarySHA256    string `json:"binary_sha256"`
 	TestDomain      string `json:"test_domain"`
+	AutoApply       bool   `json:"auto_apply,omitempty"`
 }
 
 func (s *Server) handleZapretSetupCheck(w http.ResponseWriter, r *http.Request) {
@@ -75,7 +76,7 @@ func (s *Server) handleZapretSetupActivate(w http.ResponseWriter, r *http.Reques
 			calibratedProfile = profileID
 		}
 	}
-	change, err := s.createDraftChange("Activate managed Zapret", "Bind the verified nfqws component and enable its route in one transaction", request.BaseVersion, operations, currentSession(r).User)
+	change, err := s.createDraftChangeWithOptions("Activate managed Zapret", "Bind the verified nfqws component and enable its route in one transaction", request.BaseVersion, operations, currentSession(r).User, request.AutoApply)
 	if err != nil {
 		if errors.Is(err, errBaseVersionConflict) {
 			writeError(w, r, http.StatusConflict, "base_version_conflict", "active revision changed while Zapret was being checked")
@@ -85,7 +86,7 @@ func (s *Server) handleZapretSetupActivate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.publishEvent(Event{Type: "zapret.managed_activation_prepared", Severity: "info", ReasonCode: "transaction_required", Details: map[string]any{"change_id": change.ID, "provider_version": request.ProviderVersion, "test_domain": report.TestDomain}})
-	writeData(w, r, map[string]any{"report": report, "change": change, "calibrated_profile_id": calibratedProfile})
+	writeData(w, r, map[string]any{"report": report, "change": change, "calibrated_profile_id": calibratedProfile, "auto_apply_requested": request.AutoApply, "auto_apply_started": request.AutoApply && s.startAutoApplyChange(change.ID)})
 }
 
 func calibratedZapretActivationOps(active *config.Config, status zapret.CalibrationStatus, currentFingerprint, catalogPath, domain string) ([]ChangeOp, string, error) {

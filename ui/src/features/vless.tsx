@@ -12,6 +12,7 @@ import {
   saveSubscriptionHWID,
   saveSubscriptionSecrets,
   setVLESSTariff,
+  waitForChangeTerminal,
   type ComponentStatus,
   type ManualVLESSServer,
   type SessionInfo,
@@ -334,14 +335,25 @@ export function Vless({
   async function activateManaged() {
     if (mutationLocked) { setMessage('Включение managed Xray временно заблокировано recovery fence.'); return; }
     setBusy(true);
-    setMessage('Создаю черновик включения managed Xray…');
+    setMessage('Проверяю и включаю managed Xray…');
     try {
-      const result = await prepareSubscription(configVersion, true);
+      const result = await prepareSubscription(configVersion, true, true);
       if (!result.change) throw new Error('Backend не создал транзакцию managed Xray.');
       setManagedAvailable(false);
-      setMessage('Черновик managed Xray создан. Проверь diff и запусти применение отдельно в очереди изменений.');
+      if (result.auto_apply_started) {
+        const change = await waitForChangeTerminal(result.change.id);
+        setMessage(change.state === 'committed'
+          ? 'Managed Xray включён, commit подтверждён.'
+          : `Managed Xray не включён: операция завершилась состоянием ${change.state}. Предыдущая конфигурация сохранена.`);
+        if (change.state !== 'committed') setManagedAvailable(true);
+      } else {
+        setManagedAvailable(true);
+        setMessage('Операция managed Xray создана, но worker не запустился. Открой «Операции» для ручного продолжения.');
+        navigate('Операции');
+      }
       await refresh();
     } catch (error) {
+      setManagedAvailable(true);
       setMessage(error instanceof Error ? error.message : 'Managed Xray не включён; транзакция откатилась или ждёт устройство.');
     } finally {
       setBusy(false);
@@ -447,7 +459,7 @@ export function Vless({
               <div class="row"><span>Текущий HWID</span><code>{hwidMode === 'disabled' ? 'отключён' : hwid?.current_hwid || 'недоступен'}</code><button type="button" onClick={() => void copyHWID()} disabled={!hwid?.current_hwid || hwidMode === 'disabled'}>Копировать</button></div>
               <div class="actions"><button type="button" onClick={() => setHWIDOpen(false)}>Отмена</button><button class="primary" disabled={busy || mutationLocked || role !== 'administrator'} onClick={() => void saveHWIDSettings()}>Сохранить выбор</button></div>
             </section></div>}
-            {message && <div class="action-status"><p>{message}</p>{message.includes('черновик') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
+            {message && <div class="action-status"><p>{message}</p>{message.includes('Операции') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
           </div>
         ) : <p>Импорт подписки доступен администратору.</p>}
       </Card>

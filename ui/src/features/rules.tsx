@@ -4,9 +4,9 @@ import {
   classifyService,
   createChange,
   deleteServiceRule,
-  getChange,
   getVLESSPool,
   verifyService,
+  waitForChangeTerminal,
   type ChangeOp,
   type ChangeSet,
   type SessionInfo
@@ -48,10 +48,13 @@ function humanChangeBlock(reason?: string): string {
 }
 
 function humanChangeFailure(change: ChangeSet): string {
+  const detail = change.validation?.find((item) => item.level === 'error' || item.level === 'warning');
+  const suffix = detail?.message ? ` Причина: ${detail.message}` : '';
   if (change.state === 'requires_device') return humanChangeBlock(change.artifact_block_reason);
-  if (change.state === 'rolled_back') return 'Проверка нового правила не прошла. FlintRoute восстановил предыдущую рабочую конфигурацию.';
-  if (change.state === 'failed') return 'Не удалось применить правило. FlintRoute остановил изменение и сохранил прежнюю конфигурацию.';
-  return `Правило не применено. Техническое состояние: ${change.state}.`;
+  if (change.state === 'rolled_back') return `Проверка нового правила не прошла. FlintRoute восстановил предыдущую рабочую конфигурацию.${suffix}`;
+  if (change.state === 'failed') return `Не удалось применить правило. FlintRoute сохранил прежнюю конфигурацию.${suffix}`;
+  if (change.state === 'recovery_required') return `Изменение остановлено: требуется recovery.${suffix}`;
+  return `Правило не применено. Техническое состояние: ${change.state}.${suffix}`;
 }
 
 const serviceColumns = [
@@ -92,7 +95,7 @@ export function Services({
 }) {
   const [moving, setMoving] = useState('');
   const [message, setMessage] = useState('');
-  const [editor, setEditor] = useState<{ domain: string; category: string; paths: string[] } | null>(null);
+  const [editor, setEditor] = useState<{ domain: string; category: string; paths: string[]; serviceID?: string } | null>(null);
   const [selectedService, setSelectedService] = useState<any>(null);
   const [verificationBusy, setVerificationBusy] = useState(false);
   const [verificationMessage, setVerificationMessage] = useState('');
@@ -109,16 +112,27 @@ export function Services({
     return configuredServices.filter((item) => `${textValue(item.id, '')} ${asArray(item.domains).map((domain) => textValue(domain, '')).join(' ')}`.toLowerCase().includes(query));
   }, [configuredServices, serviceQuery]);
 
-  async function commitRule(domain: string, category: string, paths?: string[]) {
+  async function commitRule(domain: string, category: string, paths?: string[], serviceID?: string) {
     if (role !== 'administrator' || mutationLocked || !configVersion || moving) return;
     setMoving(domain);
-    setMessage(`Создаю черновик правила для ${domain}…`);
+    setMessage(`Проверяю и применяю правило для ${domain}…`);
     try {
-      await classifyService(domain, category, configVersion, paths);
-      setMessage(`${domain}: черновик создан. Проверь изменения перед применением.`);
+      const result = await classifyService(domain, category, configVersion, paths, false, true, serviceID);
       setEditor(null);
       await refresh();
-      navigate('Операции');
+      if (!result.auto_apply_started) {
+        setMessage(`${domain}: операция создана, но worker не запущен. Открой «Операции» для ручного продолжения.`);
+        navigate('Операции');
+        return;
+      }
+      const change = await waitForChangeTerminal(result.change.id);
+      if (change.state === 'committed') {
+        setMessage(`${domain}: правило применено, commit подтверждён.`);
+      } else {
+        setMessage(`${domain}: правило не применено (${change.state}). Активная конфигурация сохранена; открой «Операции» для причины.`);
+        navigate('Операции');
+      }
+      await refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Не удалось изменить маршрут');
     } finally {
@@ -189,11 +203,7 @@ export function Services({
         setMessage('Удаление создано, но worker не начал применение. Активное правило пока сохранено.');
       } else {
         setMessage('Удаление выполняется; жду конечное состояние операции…');
-        let current = await getChange(result.change.id);
-        for (let attempt = 0; attempt < 60 && ['draft', 'validated', 'applying', 'awaiting_confirmation', 'committing'].includes(current.state); attempt += 1) {
-          await new Promise((resolve) => window.setTimeout(resolve, 500));
-          current = await getChange(result.change.id);
-        }
+        const current = await waitForChangeTerminal(result.change.id);
         setMessage(current.state === 'committed'
           ? `Правило ${serviceID} удалено, commit подтверждён.`
           : `Правило не удалено: операция завершилась состоянием ${current.state}. Активная конфигурация сохранена.`);
@@ -212,7 +222,8 @@ export function Services({
     setEditor({
       domain: service?.domain ?? service?.domains?.[0] ?? '',
       category,
-      paths: [...(service?.allowed_paths?.length ? service.allowed_paths : defaultServicePaths(category))]
+      paths: [...(service?.allowed_paths?.length ? service.allowed_paths : defaultServicePaths(category))],
+      serviceID: service?.id
     });
   }
 
@@ -230,7 +241,7 @@ export function Services({
       <div class="service-toolbar">
         <div>
           <b>Правила сервисов</b>
-          <span>Изменение сначала попадёт в очередь черновиков. Dataplane меняется только после отдельного review и apply.</span>
+          <span>«Применить» запускает bounded-проверку и транзакцию. Текущий этап и причина всегда видны в «Операциях».</span>
         </div>
         <div class="actions">
           <label class="service-search"><span class="sr-only">Поиск сервиса или домена</span><input value={serviceQuery} placeholder="Поиск сервиса или домена" onInput={(event) => setServiceQuery(event.currentTarget.value)} /></label>
@@ -244,7 +255,7 @@ export function Services({
           class="service-editor"
           onSubmit={(event) => {
             event.preventDefault();
-            if (editor.paths.length) void commitRule(editor.domain, editor.category, editor.paths);
+            if (editor.paths.length) void commitRule(editor.domain, editor.category, editor.paths, editor.serviceID);
           }}
         >
           <label>Домен<input value={editor.domain} placeholder="example.com" onInput={(event) => setEditor({ ...editor, domain: event.currentTarget.value })} /></label>
@@ -275,7 +286,7 @@ export function Services({
             </div>
           </div>
           <div class="actions">
-            <button class="primary" disabled={mutationLocked || !editor.domain.trim() || editor.paths.length === 0 || Boolean(moving)}>Создать черновик</button>
+            <button class="primary" disabled={mutationLocked || !editor.domain.trim() || editor.paths.length === 0 || Boolean(moving)}>Применить правило</button>
             <button type="button" onClick={() => setEditor(null)}>Отмена</button>
           </div>
         </form>
@@ -299,8 +310,14 @@ export function Services({
             onDragOver={(event) => event.preventDefault()}
             onDrop={(event) => {
               event.preventDefault();
-              const domain = event.dataTransfer?.getData('text/plain');
-              if (domain) void commitRule(domain, column.category);
+              const payload = event.dataTransfer?.getData('application/json') || event.dataTransfer?.getData('text/plain');
+              if (!payload) return;
+              try {
+                const value = JSON.parse(payload);
+                if (value?.domain) void commitRule(String(value.domain), column.category, undefined, value.service_id ? String(value.service_id) : undefined);
+              } catch {
+                void commitRule(payload, column.category);
+              }
             }}
           >
             <header><h2>{column.title}</h2><small>{column.hint}</small></header>
@@ -335,7 +352,7 @@ export function Services({
         </div>
       </section>}
        {mutationLocked && <p class="action-status">Изменения заблокированы: FlintRoute ещё не подтвердил безопасное состояние восстановления.</p>}
-       <p class={message.includes('создан') ? 'action-status ok' : 'action-status'}>{message || 'Домены появляются после наблюдения и проверки. Перетащи карточку, чтобы создать черновик правила.'}</p>
+       <p class={message.includes('применено') ? 'action-status ok' : 'action-status'}>{message || 'Домены появляются после наблюдения и проверки. Перемещение создаёт и применяет безопасную транзакцию.'}</p>
       <DetailDrawer title={textValue(selectedService?.id, 'Сервис')} open={Boolean(selectedService)} onClose={() => setSelectedService(null)}>
          <ServiceDetails
            service={selectedService}
@@ -382,7 +399,11 @@ export function ServiceGroup({
     <article
       class={`service-card ${busy ? 'busy' : ''}`}
       draggable={draggable}
-      onDragStart={(event) => event.dataTransfer?.setData('text/plain', service.domains?.[0] ?? '')}
+      onDragStart={(event) => {
+        const payload = { domain: service.domains?.[0] ?? '', service_id: service.id };
+        event.dataTransfer?.setData('application/json', JSON.stringify(payload));
+        event.dataTransfer?.setData('text/plain', payload.domain);
+      }}
     >
       <div class="service-card-title"><b>{textValue(service.display_name ?? service.id, 'Неизвестный сервис')}</b><span class={`source ${observation ? 'automatic' : 'configured'}`}>{observation ? 'наблюдение' : 'применено'}</span></div>
       <small>{asArray(service.domains).length} доменов</small>

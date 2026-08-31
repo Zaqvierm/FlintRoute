@@ -75,3 +75,22 @@ func TestServicesExposeDynamicCandidateMatrixForLegacyTSPUPolicy(t *testing.T) {
 		t.Fatalf("dynamic candidate matrix omitted eligible routes: %s", recorder.Body.String())
 	}
 }
+
+func TestAutoApplyFailureDoesNotLeaveDraftForever(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	change, err := srv.createDraftChangeWithOptions("test product action", "test", srv.configVersion, []ChangeOp{{Type: "set", Path: "/policy/route_hold_seconds", Value: 600}}, "admin", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.recordAutoApplyFailure(change.ID, "candidate_invalid", "candidate rejected", "failed")
+	srv.mu.Lock()
+	got := srv.changes[change.ID]
+	srv.mu.Unlock()
+	if got.State != "failed" {
+		t.Fatalf("auto-apply failure left change in %q", got.State)
+	}
+	if len(got.Validation) == 0 || got.Validation[len(got.Validation)-1].Code != "candidate_invalid" {
+		t.Fatalf("auto-apply failure did not persist actionable validation: %+v", got.Validation)
+	}
+}

@@ -18,6 +18,7 @@ import {
   runVLESSSpeedTest,
   setVLESSTariff,
   testTelegram,
+  waitForChangeTerminal,
   type ChangeSet,
   type ComponentAction,
   type ComponentKind,
@@ -409,11 +410,19 @@ export function ExternalSOCKS({ configVersion, role, mutationLocked, refresh, na
   }
   async function activate() {
     if (mutationLocked) { setMessage('Внешний SOCKS-маршрут заблокирован до подтверждения recovery state.'); return; }
-    setBusy(true); setMessage('Создаю черновик внешнего SOCKS-маршрута…');
+    setBusy(true); setMessage('Проверяю и включаю внешний SOCKS-маршрут…');
     try {
-      const result = await activateExternalSOCKS(endpoint.trim(), domain.trim(), configVersion);
-      if (!result.change) throw new Error('Backend не создал черновик внешнего SOCKS-маршрута.');
-      setMessage('Черновик внешнего SOCKS-маршрута создан. Проверь diff и запусти применение отдельно в очереди изменений.');
+      const result = await activateExternalSOCKS(endpoint.trim(), domain.trim(), configVersion, true);
+      if (!result.change) throw new Error('Backend не создал транзакцию внешнего SOCKS-маршрута.');
+      if (result.auto_apply_started) {
+        const change = await waitForChangeTerminal(result.change.id);
+        setMessage(change.state === 'committed'
+          ? 'Внешний SOCKS-маршрут включён, commit подтверждён.'
+          : `Внешний SOCKS не включён: операция завершилась состоянием ${change.state}. Предыдущая конфигурация сохранена.`);
+      } else {
+        setMessage('Операция внешнего SOCKS создана, но worker не запустился. Открой «Операции» для ручного продолжения.');
+        navigate('Операции');
+      }
       setChecked(false); await refresh();
     } catch (error) { setMessage(error instanceof Error ? error.message : 'External SOCKS не включён; транзакция откатилась или ждёт устройство.'); }
     finally { setBusy(false); }
@@ -425,8 +434,8 @@ export function ExternalSOCKS({ configVersion, role, mutationLocked, refresh, na
         <label><span>Адрес внешнего SOCKS5</span><input class="mono" placeholder="host:port" value={endpoint} onInput={(event) => { setEndpoint((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
         <label><span>Домен для remote DNS + TLS/HTTP</span><input class="mono" placeholder="example.com" value={domain} onInput={(event) => { setDomain((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
         <button class="primary" disabled={busy || !configVersion} onClick={check}>{busy ? 'Проверяю…' : 'Проверить endpoint'}</button>
-        <button class="primary" disabled={busy || mutationLocked || !checked || !configVersion} onClick={activate}>Создать черновик маршрута</button>
-        {message && <div class="action-status"><p>{message}</p>{message.includes('черновик') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
+        <button class="primary" disabled={busy || mutationLocked || !checked || !configVersion} onClick={activate}>Применить маршрут</button>
+        {message && <div class="action-status"><p>{message}</p>{message.includes('Операции') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
       </div>}
     </Card>
     {report && <Card title="Результат проверки"><div class="row"><b>{report.ready ? 'READY' : 'FAILED'}</b><span>SOCKS5: {report.socks5_handshake ? 'OK' : 'FAIL'}</span><small>TLS: {report.tls_verified ? 'OK' : 'FAIL'} · HTTP {report.http_status || '—'}</small></div></Card>}
