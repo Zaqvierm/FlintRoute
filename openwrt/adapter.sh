@@ -1275,6 +1275,12 @@ atomic_install() {
   [ ! -L "$install_target" ] || { echo "reason=refusing_symlink_install_target" >&2; return 1; }
   verify_install_target_ownership || return 1
   install_mode="$(file_mode_bits "$install_source")"
+  # The production controller runs as daemon and reads the active config to
+  # construct path proofs. Keep the exact config bytes root-owned but
+  # group-readable; rollback must accept the same mode as a normal apply.
+  if [ "$install_target" = "$config" ] && command -v id >/dev/null 2>&1 && id -u daemon >/dev/null 2>&1; then
+    install_mode=640
+  fi
   install_event="file_created"
   [ ! -f "$install_target" ] || install_event="file_replaced"
   if [ -f "$install_target" ] && cmp -s "$install_source" "$install_target"; then
@@ -1291,6 +1297,9 @@ atomic_install() {
   if ! { sync -f "$install_tmp" 2>/dev/null || sync "$install_tmp" 2>/dev/null || sync; } || ! mv "$install_tmp" "$install_target"; then
     rm -f "$install_tmp"
     return 1
+  fi
+  if [ "$install_target" = "$config" ] && command -v id >/dev/null 2>&1 && id -u daemon >/dev/null 2>&1; then
+    chown 0:daemon "$install_target" || return 1
   fi
   install_bytes="$(wc -c < "$install_source" | tr -d ' ')"
   directory_sync_scope="exact"

@@ -1742,7 +1742,7 @@ prepare_controller_identity() {
       entry_uid="${ownership%%|*}"
       entry_gid="${ownership#*|}"
       case "$entry_uid:$entry_gid" in
-        "0:0"|"$controller_uid:$controller_gid") ;;
+        "0:0"|"0:$controller_gid"|"$controller_uid:$controller_gid") ;;
         *)
           ownership_error="foreign owner in controller-owned tree: $owned_entry uid=$entry_uid gid=$entry_gid"
           break
