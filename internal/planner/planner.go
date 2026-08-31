@@ -23,8 +23,12 @@ type RouteProber interface {
 }
 
 type Options struct {
-	TSPUMatch      bool
-	TSPUResult     tspu.Match
+	TSPUMatch  bool
+	TSPUResult tspu.Match
+	// FullCheck disables the normal short-circuit after a verified Direct
+	// result.  It is used by explicit "check every path" actions; background
+	// discovery should keep the cheap event-driven path.
+	FullCheck      bool
 	ProbeEngine    *probe.Engine
 	RouteProber    RouteProber
 	HealthTracker  *probe.HealthTracker
@@ -210,6 +214,13 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 			service.AllowedPaths = []string{"smart_dns", "vless", "drop"}
 			service.ForbiddenPaths = []string{"direct", "zapret"}
 			out.Category = "GEO_LOCKED"
+		}
+		// A normal observation stops at the first fully verified Direct path.
+		// Explicit verification requests set FullCheck and continue through the
+		// complete eligible inventory so the UI can show the comparison matrix.
+		if route.Type == "direct" && !opts.FullCheck && selectionEvidence(result) &&
+			!result.RegionalBlock && !result.SuspectedTSPU && !looksLikeTSPU(result) {
+			break
 		}
 		// An exact user override is an explicit policy decision. Keep the
 		// verified override route and retain DROP only as its failure fallback;

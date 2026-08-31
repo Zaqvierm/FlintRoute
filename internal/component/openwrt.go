@@ -536,7 +536,10 @@ func (d OpenWrtDriver) healthFor(ctx context.Context, kind Kind, binary, service
 			Ready: status.LocalListener && status.UpstreamReachable, Reason: status.Reason, LastSuccessful: status.CheckedAt,
 		}, nil
 	}
-	return Health{State: state, ServiceState: map[bool]string{true: "running", false: "stopped"}[running], Ready: true, Reason: reason, LastSuccessful: d.now()}, nil
+	// Installation only proves that the binary exists.  Readiness requires the
+	// managed service to be running; an installed-but-stopped Xray must never
+	// be presented as a usable route component.
+	return Health{State: state, ServiceState: map[bool]string{true: "running", false: "stopped"}[running], Ready: running, Reason: reason, LastSuccessful: d.now()}, nil
 }
 
 func (d OpenWrtDriver) installTGWS(ctx context.Context, release Release, asset Asset, artifact string, previous Record) (Record, error) {

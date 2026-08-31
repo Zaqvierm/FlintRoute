@@ -70,6 +70,19 @@ function smartDNSOperationActive(operation: any): boolean {
   return ['draft', 'validated', 'applying', 'awaiting_confirmation', 'committing'].includes(textValue(operation?.state, ''));
 }
 
+async function waitForSmartDNSCommit(changeID: string): Promise<{ status: any; state: string }> {
+  let latest = await getSmartDNS();
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const operation = latest?.automatic_operation;
+    if (operation?.id === changeID && ['committed', 'failed', 'rolled_back', 'recovery_required', 'requires_device'].includes(textValue(operation.state, ''))) {
+      return { status: latest, state: textValue(operation.state, '') };
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 500));
+    latest = await getSmartDNS();
+  }
+  return { status: latest, state: textValue(latest?.automatic_operation?.state, 'timeout') };
+}
+
 function resolverEndpointText(ip: unknown, port: unknown): string {
   const host = textValue(ip, '');
   const service = textValue(port, '53');
@@ -380,8 +393,16 @@ export function SmartDNS({
     try {
       const result = await removeSmartDNS(routeTag, configVersion);
       setRemoveConfirm('');
-      setMessage(result.auto_apply_started ? 'Карточка удалена. Изменение применяется в фоне.' : 'Карточка удалена из очереди, но автоматическое применение не запустилось.');
-      setStatus(await getSmartDNS());
+      if (!result.auto_apply_started) {
+        setMessage('Удаление создано, но worker не начал применение. Активная карточка пока сохранена.');
+      } else {
+        setMessage('Удаление применяется. Жду подтверждённый commit…');
+        const outcome = await waitForSmartDNSCommit(result.change.id);
+        setMessage(outcome.state === 'committed'
+          ? 'Карточка удалена и commit подтверждён.'
+          : `Карточка не удалена: операция завершилась состоянием ${outcome.state}. Активная конфигурация сохранена.`);
+        setStatus(outcome.status);
+      }
       await refresh();
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : 'Карточку Smart DNS не удалось удалить. Активная конфигурация сохранена.');

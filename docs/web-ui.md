@@ -185,9 +185,10 @@ concurrency отображаются явно. Upstream blockcheck исполь�
 upstream не публикует его заранее. Найденные кандидаты не включаются молча:
 apply проходит через ChangeSet и PathVerified.
 
-Для TSPU основной порядок проверки — `Zapret → VLESS → Drop`. Smart DNS не
-вклинивается в эту цепочку: он проверяется перед VLESS для GEO-сервисов, где
-порядок равен `Smart DNS → VLESS → Drop`. Перед blockcheck FlintRoute может
+Для TSPU формируется набор доступных кандидатов `Zapret`, `Smart DNS`, `VLESS`
+и `Drop`; это не фиксированный порядок победы. Каждый кандидат проверяется по
+единому evidence-контракту, после чего hard filter и score выбирают результат.
+Перед blockcheck FlintRoute может
 получить свежие IPv4-ответы тестового домена через настроенный Smart DNS и
 передать только эти проверенные адреса в DNS cache upstream-скрипта. Системный
 resolver и `resolv.conf` при этом не подменяются.

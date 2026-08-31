@@ -48,7 +48,8 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/topology` | топология, собранная из ubus, аренды, соседей, мостовой FDB и беспроводных станций; `privacy=hidden` редактирует адреса клиентов |
 | `/api/v1/devices` | LAN/гостевые/удаленные клиенты; адреса видны по умолчанию, и `privacy=hidden` удаляет необработанные значения перед сериализацией |
 | `/api/v1/services` | сконфигурированные и динамически наблюдаемые сервисы |
-| `/api/v1/services/classify` | создание или редактирование правила домена через черновик ChangeSet; необязательный `allowed_paths` сохраняет определенный пользователем резервный порядок |
+| `/api/v1/services/classify` | создание или редактирование правила домена через черновик ChangeSet; `allowed_paths` задаёт только допустимые типы маршрутов, а не победный порядок |
+| `/api/v1/services/delete` | удалить committed service rule через bounded ChangeSet и автоматическое подтверждение |
 | `/api/v1/discovery` | текущий режим discovery, лимиты, состояние circuit breaker и suggestions |
 | `/api/v1/discovery/configure` | сохранение режима/ограничений обнаружения плоскости управления без изменения плоскости данных; при необходимости сбросить паузу отката |
 | `/api/v1/domains` | кэш политики / решения домена |
@@ -65,7 +66,7 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/diagnostics` | Происхождение диагностики сети (источник/хэш/срок действия/моделирование) |
 | `/api/v1/lifecycle` | procd ownership, PID/start time/executable/config и test-run manifests |
 | `/api/v1/storage` | storage sizes, rollback state и логические write counters |
-| `/api/v1/smart-dns` | отредактированное состояние и резервный порядок Smart DNS |
+| `/api/v1/smart-dns` | состояние именованных Smart DNS-кандидатов и динамическая selection semantics |
 | `/api/v1/smart-dns/configure` | проверить преобразователь IP/Port по UDP+ TCP DNS и HTTP/TLS, затем создать черновик ChangeSet |
 | `/api/v1/zapret` | управляемое состояние Zapret/nfqws И состояние контактов |
 | `/api/v1/zapret/setup/check` | проверить закрепленный источник/версию/SHA, двоичный, архитектура, NFQUEUE и nfqws сухой запуск без изменения конфигурации |
@@ -284,6 +285,8 @@ resolver (`fallback_ip`, optional `fallback_port`). The endpoint validates
 each address independently before the bounded background ChangeSet continues.
 
 `POST /api/v1/smart-dns/remove` clears and disables one owned card by
-`route_tag`. `POST /api/v1/smart-dns/reorder` accepts the complete ordered
-`route_tags` list. Both operations use the normal recovery fence and
-transaction protocol; no foreign route is deleted or overwritten.
+`route_tag`, then returns the ChangeSet whose committed state is authoritative.
+`POST /api/v1/smart-dns/reorder` accepts the complete resolver preference list
+for DNS fallback only. Neither field is a winner-order for cross-type route
+selection. Both operations use the normal recovery fence and transaction
+protocol; no foreign route is deleted or overwritten.

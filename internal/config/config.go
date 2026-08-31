@@ -1132,6 +1132,22 @@ func PathAllowed(svc Service, route Route, policy Policy) bool {
 	if svc.Category == "TSPU_RESTRICTED" && route.Type == "direct" {
 		return false
 	}
+	// TSPU_RESTRICTED is an eligibility class, not a persisted fallback chain.
+	// Older calibration records often contain only zapret/direct/drop and would
+	// otherwise silently prevent newly configured Smart DNS and VLESS routes
+	// from ever becoming candidates.  The category admits every supported
+	// non-Direct recovery path; explicit ForbiddenPaths still wins.
+	if svc.Category == "TSPU_RESTRICTED" {
+		switch route.Type {
+		case "zapret", "smart_dns", "vless", "drop":
+			for _, forbidden := range svc.ForbiddenPaths {
+				if forbidden == route.Type {
+					return false
+				}
+			}
+			return true
+		}
+	}
 	if svc.Category == "GEO_LOCKED" {
 		if route.Type == "direct" && !policy.GeoLockedAllowDirect {
 			return false

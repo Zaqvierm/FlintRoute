@@ -1519,6 +1519,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/services", s.requireRole(auth.RoleViewer, s.handleServices))
 	s.mux.HandleFunc("/api/v1/services/classify", s.requireRole(auth.RoleAdministrator, s.handleServiceClassify))
 	s.mux.HandleFunc("/api/v1/services/verify", s.requireRole(auth.RoleAdministrator, s.handleServiceVerify))
+	s.mux.HandleFunc("/api/v1/services/delete", s.requireRole(auth.RoleAdministrator, s.handleServiceDelete))
 	s.mux.HandleFunc("/api/v1/discovery", s.requireRole(auth.RoleViewer, s.handleDiscovery))
 	s.mux.HandleFunc("/api/v1/discovery/suggestions/", s.requireRole(auth.RoleAdministrator, s.handleDiscoverySuggestionAction))
 	s.mux.HandleFunc("/api/v1/discovery/configure", s.requireRole(auth.RoleAdministrator, s.handleDiscoveryConfigure))
@@ -1770,6 +1771,9 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 			"probe_state": "not_checked", "verification_state": "not_checked",
 			"verification_reason": "policy_applied_path_not_verified", "policy_state": "applied",
 		}
+		matrix := s.serviceCandidateMatrix(id, svc)
+		item["candidate_matrix"] = matrix
+		item["eligible_route_types"] = uniqueRouteTypes(matrix)
 		if proof, ok := s.latestConfiguredServiceProof(id, svc, time.Now().UTC()); ok {
 			item["status"] = "VERIFIED"
 			item["probe_state"] = "verified_candidate"
@@ -1854,6 +1858,7 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 				"classification_state":      classificationState,
 				"probe_state":               probeState,
 				"policy_state":              policyState,
+				"candidate_matrix":          discoveryCandidateDetails(decision.Results),
 			})
 		}
 	}
@@ -2243,7 +2248,7 @@ func (s *Server) selectVerifiedServiceRoute(ctx context.Context, serviceID strin
 		routeProber = s.probeEngineFactory(&candidate)
 	}
 	check, err := s.domainChecker(probeCtx, &candidate, domain, serviceID, planner.Options{
-		TSPUResult: match, RouteProber: routeProber, HealthTracker: s.healthTracker,
+		TSPUResult: match, FullCheck: true, RouteProber: routeProber, HealthTracker: s.healthTracker,
 		ActiveRevision: revision,
 	})
 	if err != nil {
@@ -2442,12 +2447,9 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 		"ready":               ready,
 		"automatic_operation": s.smartDNSAutomaticOperation(),
 		"routes":              items,
-		"fallback_order": map[string][]string{
-			"geo":  {"smart_dns", "vless", "drop"},
-			"tspu": {"zapret", "smart_dns", "vless", "drop"},
-		},
-		"success_contract": []string{"safe DNS answer", "connection to returned address", "content check", "egress check when required"},
-		"route_semantics":  "conditional DNS; not a VPN or tunnel",
+		"selection_semantics": "route types are eligibility constraints; every available candidate is probed and the winner is selected from hard-filtered evidence",
+		"success_contract":    []string{"safe DNS answer", "connection to returned address", "content check", "egress check when required"},
+		"route_semantics":     "conditional DNS; not a VPN or tunnel",
 	})
 }
 

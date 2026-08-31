@@ -47,6 +47,8 @@ export function NetworkMap({ topology, devices, system, expanded = false }: { to
   const viewportRef = useRef<HTMLDivElement>(null);
   const nodes = asArray(topology?.nodes).map(asRecord);
   const router = nodes.find((n: any) => n.type === 'router');
+  const topologyStatus = textValue(topology?.status, 'unavailable').toLowerCase();
+  const topologyUnavailable = !router || topologyStatus === 'unavailable' || topologyStatus === 'error';
   const internet = nodes.find((node: any) => node.type === 'internet');
   const wan = nodes.filter((node: any) => node.type === 'wan');
   const ports = nodes.filter((node: any) => node.type === 'ethernet');
@@ -82,6 +84,7 @@ export function NetworkMap({ topology, devices, system, expanded = false }: { to
   return (
     <section class={`network-map ${expanded ? 'expanded' : ''}`}>
       <PageHeader title="Карта сети" text="Связи строятся по DHCP, neighbour table, bridge FDB и данным Wi‑Fi станций. Неизвестное не угадывается." />
+      {topologyUnavailable && <div class="warning-panel" role="status"><b>Карта сети пока недоступна</b><p>{textValue(topology?.reason, 'Backend не вернул topology snapshot. Повтори загрузку после восстановления platform provider.')}</p><small>Источник: {textValue(topology?.source, 'неизвестен')} · состояние: {textValue(topology?.status, 'unavailable')}</small></div>}
       <div class="network-map-scroll" ref={viewportRef}>
         <div class="topology-canvas" style={{ width: `${canvasWidth}px`, height: `${mapHeight}px` }}>
           <svg class="topology-wires" viewBox={`0 0 ${canvasWidth} ${mapHeight}`} aria-hidden="true">

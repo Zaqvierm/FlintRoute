@@ -409,7 +409,7 @@ func TestSmartDNSConfigureDoesNotCreateDraftWhenValidationFails(t *testing.T) {
 	}
 }
 
-func TestSmartDNSStatusPublishesConditionalDNSFallback(t *testing.T) {
+func TestSmartDNSStatusPublishesDynamicSelectionSemantics(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
 	ts := httptest.NewServer(srv.Handler())
@@ -429,8 +429,8 @@ func TestSmartDNSStatusPublishesConditionalDNSFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), `"tspu":["zapret","smart_dns","vless","drop"]`) {
-		t.Fatalf("Smart DNS fallback contract is wrong: %s", raw)
+	if !strings.Contains(string(raw), `"selection_semantics"`) || strings.Contains(string(raw), `"fallback_order"`) {
+		t.Fatalf("Smart DNS must expose dynamic selection semantics without a winner-order contract: %s", raw)
 	}
 }
 

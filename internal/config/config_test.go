@@ -178,6 +178,9 @@ func TestPathAllowedRejectsDirectForTSPURestricted(t *testing.T) {
 	if !PathAllowed(service, Route{Type: "zapret", Tag: "zapret"}, Policy{}) {
 		t.Fatal("TSPU_RESTRICTED should allow an explicitly permitted zapret route")
 	}
+	if !PathAllowed(service, Route{Type: "smart_dns", Tag: "smart"}, Policy{}) || !PathAllowed(service, Route{Type: "vless", Tag: "vless"}, Policy{}) {
+		t.Fatal("TSPU_RESTRICTED must keep Smart DNS and VLESS eligible despite legacy path lists")
+	}
 }
 
 func TestValidateRejectsSelectedDirectForTSPURestricted(t *testing.T) {

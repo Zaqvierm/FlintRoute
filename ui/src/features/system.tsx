@@ -107,10 +107,12 @@ function componentNextStep(status: ComponentStatus): string {
   }
   if (!status.installed) return 'Компонент не установлен. FlintRoute сам выберет закреплённый build для архитектуры роутера и проверит SHA-256.';
   if (['stopped', 'disabled', 'not_used'].includes(String(status.service_state).toLowerCase()) && !status.health_ready) {
-    return 'Компонент установлен, но сейчас не используется. Настрой сервисы, чтобы подключить его к маршрутам.';
+    return status.kind === 'xray'
+      ? 'Xray установлен, но runtime остановлен. Наличие серверов в inventory ещё не означает активный VLESS-маршрут.'
+      : 'Компонент установлен, но сейчас не используется. Настрой сервисы, чтобы подключить его к маршрутам.';
   }
   if (!status.health_ready) return status.health_reason || 'Компонент установлен, но health check не пройден.';
-  if (status.kind === 'xray') return 'Готово. Следующий шаг — добавить VLESS-подписку или свой сервер.';
+  if (status.kind === 'xray') return 'Runtime готов. Активные VLESS-маршруты должны подтверждаться отдельным path evidence.';
   if (status.kind === 'zapret') return 'Готово. Следующий шаг — запустить безопасную калибровку стратегии для текущей сети.';
   return 'Сервис установлен. Для PASS нужна фактическая проверка Telegram transport, а не один открытый TCP-порт.';
 }
@@ -644,10 +646,10 @@ function DecisionDetails({ decision }: { decision: ReturnType<typeof toDecisionC
 
 export function Diagnostics({ system, diagnostics, lifecycle, storage }: { system: any; diagnostics: any; lifecycle: any; storage: any }) {
   const sections = [
-    { title: 'Платформа', value: system, summary: `${textValue(system?.hostname, 'Router')} · ${textValue(system?.model)}` },
-    { title: 'Сеть и возможности', value: diagnostics, summary: humanStatus(diagnostics?.status) },
-    { title: 'Lifecycle', value: lifecycle, summary: humanStatus(lifecycle?.status) },
-    { title: 'Хранилище', value: storage, summary: humanStatus(storage?.status) }
+    { title: 'Платформа', value: system, summary: `${textValue(system?.hostname, 'Router')} · ${textValue(system?.model)}${system?.reason ? ` · ${system.reason}` : ''}` },
+    { title: 'Сеть и возможности', value: diagnostics, summary: `${humanStatus(diagnostics?.status)}${diagnostics?.reason ? ` · ${diagnostics.reason}` : ''}` },
+    { title: 'Lifecycle', value: lifecycle, summary: `${humanStatus(lifecycle?.status)}${lifecycle?.reason ? ` · ${lifecycle.reason}` : ''}` },
+    { title: 'Хранилище', value: storage, summary: `${humanStatus(storage?.status)}${storage?.reason ? ` · ${storage.reason}` : ''}` }
   ];
   const [selected, setSelected] = useState<any>(null);
   return <section><PageHeader title="Диагностика" text="Сначала — понятное состояние. Полный технический ответ API открывается отдельно." /><Grid>{sections.map((item) => <EntityCard title={item.title} status={item.value?.status} onOpen={() => setSelected(item)}><p>{item.summary}</p><small>{formatDateTime(item.value?.collected_at)}</small></EntityCard>)}</Grid>
