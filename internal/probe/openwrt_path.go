@@ -128,10 +128,30 @@ func NewActiveOpenWrtPathVerifier(cfg *config.Config, allowSimulation bool) (*Op
 		return nil, err
 	}
 	root := filepath.Join(cfg.Storage.StateDir, "transactions", active.Binding.RevisionID, active.Binding.TransactionID, "generated")
-	return NewOpenWrtPathVerifier(OpenWrtPathOptions{
+	verifier, err := NewOpenWrtPathVerifier(OpenWrtPathOptions{
 		ArtifactRoot: root, ActiveBindingPath: activePath, Binding: active.Binding, ManifestHash: active.ManifestHash,
 		Commands: commands, AllowSimulation: allowSimulation,
 	})
+	if err != nil {
+		return nil, err
+	}
+	// Rev3 artifacts on routers upgraded from the pre-candidate-proof format
+	// legitimately contain only proofs for routes referenced by policies. Keep
+	// those artifacts valid, but make all enabled routes available for a
+	// revision-bound route-only preflight. This is deterministic from the
+	// committed config and never bypasses VerifyRouteProof binding/evidence.
+	known := make(map[string]struct{}, len(verifier.plan.CandidateRouteProof))
+	for _, proof := range verifier.plan.CandidateRouteProof {
+		known[proof.Tag+"\x00"+proof.Type] = struct{}{}
+	}
+	for _, proof := range artifact.CandidateRouteProofs(cfg) {
+		key := proof.Tag + "\x00" + proof.Type
+		if _, ok := known[key]; ok {
+			continue
+		}
+		verifier.plan.CandidateRouteProof = append(verifier.plan.CandidateRouteProof, proof)
+	}
+	return verifier, nil
 }
 
 func newBoundOpenWrtCommands(binding artifact.Binding, manifestHash string) (OpenWrtCommands, error) {
@@ -358,6 +378,14 @@ func (v *OpenWrtPathVerifier) requiredProof(tag, routeType string) (artifact.Rou
 	for _, required := range v.plan.RequiredRouteProof {
 		if required.Tag == tag && required.Type == routeType {
 			return required, true
+		}
+	}
+	// Route-only selection may probe an enabled route before any committed
+	// policy references it. Candidate proofs are bound to the exact artifact
+	// and revision, so this expands eligibility without weakening evidence.
+	for _, candidate := range v.plan.CandidateRouteProof {
+		if candidate.Tag == tag && candidate.Type == routeType {
+			return candidate, true
 		}
 	}
 	return artifact.RouteProof{}, false

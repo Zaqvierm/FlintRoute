@@ -866,6 +866,36 @@ func TestRoutesUsedByPoliciesExcludesConfiguredButUnusedRoutes(t *testing.T) {
 	}
 }
 
+func TestVerificationPlanCarriesCandidateProofsForUnusedEnabledRoutes(t *testing.T) {
+	root := t.TempDir()
+	cfg := testConfig(t, root)
+	cfg.Services = map[string]config.Service{"github": cfg.Services["github"]}
+	cfg.Routes = append(cfg.Routes, config.Route{Type: "smart_dns", Tag: "smart", Priority: 30, DNSServer: "1.1.1.1:53", ConnectToResolvedIP: true})
+	binding := Binding{TransactionID: "tx_0011223344556677", RevisionID: "rev_2_001122334455", CandidateHash: "sha256:candidate"}
+	generated := filepath.Join(root, "generated")
+	if _, _, err := Generate(cfg, generated, binding, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := LoadVerificationPlan(filepath.Join(generated, VerifyPlanFile), binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, proof := range plan.RequiredRouteProof {
+		if proof.Tag == "smart" {
+			t.Fatalf("unused Smart DNS route became mandatory: %+v", plan.RequiredRouteProof)
+		}
+	}
+	found := false
+	for _, proof := range plan.CandidateRouteProof {
+		if proof.Tag == "smart" && proof.Type == "smart_dns" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("unused enabled route unavailable for candidate probing: %+v", plan.CandidateRouteProof)
+	}
+}
+
 func TestRequiredProofsKeepInstalledRulePriority(t *testing.T) {
 	cfg := testConfig(t, t.TempDir())
 	routes := []config.Route{

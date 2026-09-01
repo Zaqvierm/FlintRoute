@@ -196,8 +196,12 @@ func WriteNetworkDiagnostics(cfg *config.Config, diagnostics NetworkDiagnostics)
 }
 
 type VerificationPlan struct {
-	Binding              Binding      `json:"binding"`
-	RequiredRouteProof   []RouteProof `json:"required_route_proofs"`
+	Binding            Binding      `json:"binding"`
+	RequiredRouteProof []RouteProof `json:"required_route_proofs"`
+	// CandidateRouteProof covers enabled, owned routes that are not currently
+	// selected by a committed policy. Route selection must be able to verify
+	// a candidate before assignment without making every route mandatory.
+	CandidateRouteProof  []RouteProof `json:"candidate_route_proofs,omitempty"`
 	RequireDNSLeakCheck  bool         `json:"require_dns_leak_check"`
 	RequireIPv6LeakCheck bool         `json:"require_ipv6_leak_check"`
 	RequireManagementLAN bool         `json:"require_management_lan"`
@@ -262,7 +266,7 @@ func Generate(cfg *config.Config, root string, binding Binding, generatedAt time
 		return Manifest{}, "", err
 	}
 	ipPlan.DNSProxies = dnsProxies
-	files, err := renderFiles(cfg, binding, routes, proofs, ipPlan, domainPolicies)
+	files, err := renderFiles(cfg, binding, routes, proofs, allProofs, ipPlan, domainPolicies)
 	if err != nil {
 		return Manifest{}, "", err
 	}
@@ -417,7 +421,7 @@ func Verify(root string, expected Binding, expectedManifestHash string) (Manifes
 	return manifest, nil
 }
 
-func renderFiles(cfg *config.Config, binding Binding, routes []config.Route, proofs []RouteProof, plan IPPlan, domainPolicies []domainPolicy) ([]generatedFile, error) {
+func renderFiles(cfg *config.Config, binding Binding, routes []config.Route, proofs, candidateProofs []RouteProof, plan IPPlan, domainPolicies []domainPolicy) ([]generatedFile, error) {
 	nft, err := renderNFT(cfg, binding, routes, plan, domainPolicies)
 	if err != nil {
 		return nil, err
@@ -438,7 +442,7 @@ func renderFiles(cfg *config.Config, binding Binding, routes []config.Route, pro
 	if err != nil {
 		return nil, err
 	}
-	verifyPlan, err := json.MarshalIndent(VerificationPlan{Binding: binding, RequiredRouteProof: proofs, RequireDNSLeakCheck: len(proofs) > 0, RequireIPv6LeakCheck: len(proofs) > 0, RequireManagementLAN: true}, "", "  ")
+	verifyPlan, err := json.MarshalIndent(VerificationPlan{Binding: binding, RequiredRouteProof: proofs, CandidateRouteProof: candidateProofs, RequireDNSLeakCheck: len(proofs) > 0, RequireIPv6LeakCheck: len(proofs) > 0, RequireManagementLAN: true}, "", "  ")
 	if err != nil {
 		return nil, err
 	}
@@ -1041,6 +1045,19 @@ func buildProofPlan(cfg *config.Config, routes []config.Route) []RouteProof {
 		})
 	}
 	return proofs
+}
+
+// CandidateRouteProofs returns the exact proof descriptors for every enabled
+// route in a committed configuration.  The descriptors are useful when an
+// older committed artifact predates the separate candidate_route_proofs field:
+// the active binding still authenticates the artifact, while this deterministic
+// derivation restores route-only eligibility without making unused routes
+// mandatory for the data-plane gate.
+func CandidateRouteProofs(cfg *config.Config) []RouteProof {
+	if cfg == nil {
+		return nil
+	}
+	return buildProofPlan(cfg, enabledRoutes(cfg))
 }
 
 var interfaceNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,32}$`)

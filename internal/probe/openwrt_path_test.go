@@ -147,6 +147,43 @@ func TestOpenWrtPathVerifierProvesBoundDirectFlow(t *testing.T) {
 	}
 }
 
+func TestOpenWrtPathVerifierAcceptsExactCandidateProofForUnusedRoute(t *testing.T) {
+	root, activePath, binding, manifestHash := generateDirectArtifacts(t)
+	commands := &fakeOpenWrtCommands{counter: 10, advance: true, routeTable: 100, conntrackMark: "0x41"}
+	verifier, err := NewOpenWrtPathVerifier(OpenWrtPathOptions{
+		ArtifactRoot: root, ActiveBindingPath: activePath, Binding: binding, ManifestHash: manifestHash,
+		Commands: commands, AllowSimulation: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fixture's route is mandatory for its only policy. Injecting an
+	// additional candidate proof models a configured route that is not yet
+	// selected by any policy but is still eligible for route-only probing.
+	verifier.plan.RequiredRouteProof = nil
+	verifier.plan.CandidateRouteProof = []artifact.RouteProof{{
+		Tag: "direct", Type: "direct", Mark: "0x41", Table: 100, RulePriority: 10010,
+		RequiresDNS: true, RequiresIPv4: true, RequiresEgress: true,
+	}}
+	started := time.Now().UTC()
+	session, err := verifier.Begin(context.Background(), PathProofStart{Domain: "example.test", Route: config.Route{Type: "direct", Tag: "direct"}, StartedAt: started})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := verifier.Verify(context.Background(), PathProofRequest{
+		Route: config.Route{Type: "direct", Tag: "direct"}, Session: session,
+		Observation: PathObservation{
+			Domain: "example.test", DNSResolver: "192.0.2.53", ResolvedIPs: []string{"203.0.113.10"}, ConnectedIP: "203.0.113.10", ConnectedPort: 443,
+			LocalIP: "192.0.2.2", AddressFamily: "ipv4", Transport: "direct", SocketMark: "0x41",
+			HostPreserved: true, SNIPreserved: true, TLSResult: "OK", HTTPResult: "OK", ContentResult: "OK",
+			ExternalIPHash: "sha256:egress", ExternalCountry: "DE", StartedAt: started, CompletedAt: started.Add(20 * time.Millisecond),
+		},
+	})
+	if err != nil || proof.Status != "OK" {
+		t.Fatalf("candidate proof was not accepted: proof=%+v err=%v", proof, err)
+	}
+}
+
 func TestOpenWrtPathVerifierRejectsCounterThatDidNotAdvance(t *testing.T) {
 	root, activePath, binding, manifestHash := generateDirectArtifacts(t)
 	commands := &fakeOpenWrtCommands{counter: 10, routeTable: 100, conntrackMark: "0x41"}

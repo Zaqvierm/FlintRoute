@@ -510,6 +510,9 @@ file_mode_bits() {
   permissions="$(LC_ALL=C ls -ld "$target" 2>/dev/null | awk '{print substr($1, 1, 10)}')"
   case "$permissions" in
     -rw-------) echo 600 ;;
+    # Controller-readable project files are intentionally root:daemon 0640.
+    # Rollback must accept that exact mode just like install/preflight does.
+    -rw-r-----) echo 640 ;;
     -rw-r--r--) echo 644 ;;
     -rwx------) echo 700 ;;
     -rwxr-xr-x) echo 755 ;;

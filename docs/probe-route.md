@@ -57,6 +57,12 @@ test-платформы. Для `RequireNonRUEgress` страна `RU` → `RU_E
 — в `evidence.ValidateRouteProof` (см. `adapter-transaction.md`).
 
 `PathVerified=false` → маршрут `UNVERIFIED`, production не выбирается.
+Для route-only preflight verification plan также содержит `candidate_route_proofs`
+для всех enabled owned routes. Это позволяет проверить новый маршрут до того,
+как политика начнёт на него ссылаться, но не делает неиспользуемые маршруты
+обязательным data-plane gate. Старые committed artifacts без этого поля
+достраиваются детерминированно из той же committed config после проверки exact
+active binding.
 `external_socks` не выдаётся за встроенный Telegram transport. Preflight проверяет
 внешний loopback endpoint, а PathVerified подтверждает binding и фактический поток;
 process lifecycle остаётся ответственностью внешнего компонента.
