@@ -227,7 +227,23 @@ export function Vless({
     if (mutationLocked) { setMessage('Подписка временно заблокирована recovery fence. Просмотр серверов доступен.'); return; }
     const values = urls.map((value) => value.trim()).filter(Boolean);
     if (!values.length) {
-      setMessage('Вставь хотя бы одну HTTPS-ссылку подписки.');
+      // Stored sources are intentionally never returned to the browser in
+      // plaintext.  The primary action must still be useful after a reload:
+      // with an existing protected source, refresh its provider bundle rather
+      // than asking the user to paste the secret again.
+      if (sourceStatuses.length === 0 && !(present === true && configuredCount > 0)) {
+        setMessage('Вставь хотя бы одну HTTPS-ссылку подписки.');
+        return;
+      }
+      setBusy(true);
+      setMessage('Проверяю сохранённую подписку и серверы. Это может занять несколько минут.');
+      try {
+        await prepareCandidates('Сохранённые подписки проверены');
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : 'Не удалось проверить сохранённую подписку.');
+      } finally {
+        setBusy(false);
+      }
       return;
     }
     setBusy(true);
