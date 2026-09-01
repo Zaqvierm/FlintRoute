@@ -50,6 +50,9 @@ func (e AdapterExecutor) Execute(ctx context.Context, request Request) Response 
 	if strings.HasPrefix(request.Command, "probe.") {
 		return e.executeProbe(ctx, request)
 	}
+	if request.Command == "diagnostics.capabilities" {
+		return e.executeDiagnostics(ctx, request)
+	}
 	if strings.HasPrefix(request.Command, "route_assignment.") {
 		if request.Command == "route_assignment.reconcile" {
 			return e.executeRouteAssignmentReconcile(ctx, request)
@@ -58,6 +61,38 @@ func (e AdapterExecutor) Execute(ctx context.Context, request Request) Response 
 	}
 	response.ErrorCode = "unknown_command"
 	response.Error = "helper command is not allowlisted"
+	return response
+}
+
+func (e AdapterExecutor) executeDiagnostics(ctx context.Context, request Request) Response {
+	response := ResponseFrom(request, false, "", "")
+	if request.Diagnostics == nil || request.Diagnostics.Operation != "capabilities" {
+		response.ErrorCode = "invalid_diagnostics_request"
+		response.Error = "diagnostics request is missing"
+		return response
+	}
+	response.Operation = "capabilities"
+	response.SemanticState = "read_only"
+	evidence := map[string]string{}
+	modules, modulesErr := runFixedProbeCommand(ctx, "/bin/cat", "/proc/modules")
+	if modulesErr == nil {
+		evidence["kernel_modules"] = string(modules)
+	} else {
+		evidence["kernel_modules_error"] = "read_failed"
+	}
+	if _, err := runFixedProbeCommand(ctx, "/sbin/fw4", "check"); err == nil {
+		evidence["firewall_check"] = "ok"
+	} else {
+		evidence["firewall_check"] = "failed"
+	}
+	if tables, err := runFixedProbeCommand(ctx, "/usr/sbin/nft", "list", "tables"); err == nil {
+		evidence["nft_tables"] = string(tables)
+	} else {
+		evidence["nft_tables_error"] = "read_failed"
+	}
+	response.Evidence = evidence
+	response.Accepted = true
+	response.State = "accepted"
 	return response
 }
 

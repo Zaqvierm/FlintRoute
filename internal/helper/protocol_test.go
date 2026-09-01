@@ -86,6 +86,30 @@ func TestValidateRequestAllowsOnlyBoundProbeReads(t *testing.T) {
 	}
 }
 
+func TestValidateRequestAllowsOnlyUnboundReadOnlyDiagnostics(t *testing.T) {
+	request := Request{
+		ProtocolVersion: ProtocolVersion,
+		RequestID:       "diag-1",
+		Command:         "diagnostics.capabilities",
+		Generation:      "diagnostics",
+		RevisionID:      "diagnostics",
+		TransactionID:   "diagnostics",
+		Diagnostics:     &DiagnosticsRequest{Operation: "capabilities"},
+	}
+	if err := ValidateRequest(request); err != nil {
+		t.Fatalf("read-only diagnostics request was rejected: %v", err)
+	}
+	request.Diagnostics.Operation = "shell"
+	if err := ValidateRequest(request); err == nil {
+		t.Fatal("unknown diagnostics operation was accepted")
+	}
+	request.Diagnostics.Operation = "capabilities"
+	request.Global = &GlobalRequest{Operation: "status"}
+	if err := ValidateRequest(request); err == nil {
+		t.Fatal("diagnostics request carrying a second resource was accepted")
+	}
+}
+
 func TestValidateRequestRequiresTypedOperationAndAllBindings(t *testing.T) {
 	request := validRequest("transaction.commit_prepared")
 	request.Transaction = &TransactionRequest{Operation: "commit"}

@@ -42,6 +42,7 @@ type Request struct {
 	Artifact             *ArtifactRequest        `json:"artifact,omitempty"`
 	Global               *GlobalRequest          `json:"global,omitempty"`
 	Probe                *ProbeRequest           `json:"probe,omitempty"`
+	Diagnostics          *DiagnosticsRequest     `json:"diagnostics,omitempty"`
 	RouteAssignment      *RouteAssignmentRequest `json:"route_assignment,omitempty"`
 }
 
@@ -100,6 +101,13 @@ type ProbeRequest struct {
 	LocalIP     string `json:"local_ip,omitempty"`
 	ConnectedIP string `json:"connected_ip,omitempty"`
 	RouteTag    string `json:"route_tag,omitempty"`
+}
+
+// DiagnosticsRequest is intentionally unbound and read-only. It exposes only
+// the fixed capability snapshot needed by the unprivileged platform provider;
+// no path, executable, or provider payload crosses the socket.
+type DiagnosticsRequest struct {
+	Operation string `json:"operation"`
 }
 
 // RouteAssignmentRequest describes the only dynamic mapping mutation exposed
@@ -234,6 +242,10 @@ func ValidateRequest(request Request) error {
 		if err := validateProbeRequest(*request.Probe); err != nil {
 			return err
 		}
+	case "diagnostics.capabilities":
+		if request.Diagnostics == nil || request.Diagnostics.Operation != "capabilities" || request.Generation != "diagnostics" || request.RevisionID != "diagnostics" || request.TransactionID != "diagnostics" || request.RollbackTokenHash != "" || request.CandidateHash != "" || request.ArtifactManifestHash != "" || hasAnyNonDiagnosticsPayload(request) {
+			return ErrInvalidRequest
+		}
 	case "route_assignment.apply", "route_assignment.rollback":
 		if !routeAssignmentRequestValid(request) {
 			return ErrInvalidRequest
@@ -288,15 +300,18 @@ func hasResourcePayload(request Request, allowed string) bool {
 	if allowed != "probe" && request.Probe != nil {
 		return true
 	}
+	if allowed != "diagnostics" && request.Diagnostics != nil {
+		return true
+	}
 	return false
 }
 
 func hasAnyResourcePayload(request Request) bool {
-	return request.Transaction != nil || request.Baseline != nil || request.NFT != nil || request.IPPlan != nil || request.Service != nil || request.Artifact != nil || request.Global != nil || request.Probe != nil
+	return request.Transaction != nil || request.Baseline != nil || request.NFT != nil || request.IPPlan != nil || request.Service != nil || request.Artifact != nil || request.Global != nil || request.Probe != nil || request.Diagnostics != nil
 }
 
 func hasAnyNonProbeResourcePayload(request Request) bool {
-	return request.Transaction != nil || request.Baseline != nil || request.NFT != nil || request.IPPlan != nil || request.Service != nil || request.Artifact != nil || request.Global != nil || request.RouteAssignment != nil
+	return request.Transaction != nil || request.Baseline != nil || request.NFT != nil || request.IPPlan != nil || request.Service != nil || request.Artifact != nil || request.Global != nil || request.RouteAssignment != nil || request.Diagnostics != nil
 }
 
 func routeAssignmentRequestValid(request Request) bool {
@@ -466,6 +481,10 @@ func allowlistedService(name string) bool {
 		return true
 	}
 	return false
+}
+
+func hasAnyNonDiagnosticsPayload(request Request) bool {
+	return request.Transaction != nil || request.Baseline != nil || request.NFT != nil || request.IPPlan != nil || request.Service != nil || request.Artifact != nil || request.Global != nil || request.Probe != nil || request.RouteAssignment != nil
 }
 
 func allowlistedArtifact(kind string) bool {
