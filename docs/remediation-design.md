@@ -227,3 +227,21 @@ Decision cache отдельно сохраняет полную verification dur
 и не подставляет wall-clock поиска в кэше. Ответ RouteProber с пустым или
 in-progress status также non-terminal и не может стать `NO_SAFE_ROUTE` без
 bounded terminal result.
+
+Helper request deadlines are bounded to 70 seconds. This is intentionally longer
+than the one-minute hardware dataplane proof budget: nft/NFQUEUE/Xray evidence
+collection must not be cut off by a shorter transport deadline and misreported as
+a failed rollback. The bound remains finite for every helper request and socket.
+
+Managed Xray activation records unchanged Zapret topology as a reused committed
+route proof instead of forcing a fresh Zapret probe during an unrelated Xray
+transaction. The candidate records the reused route tag in its verification plan;
+if the route object changes, it becomes a normal required proof again.
+
+Recovery also admits an adapter-committed transaction when its ChangeSet was
+left in a recovery-phase failure state. The exact bound is checked against the
+active revision, candidate hash, artifact hash, and adapter state before the
+control-plane record is finalized. Route-assignment reconciliation reads the
+daemon-readable runtime binding (`/tmp/router-policy/active-transaction.env`)
+before the root-owned last-good directory; this keeps restart recovery usable
+without weakening ownership or generation checks.

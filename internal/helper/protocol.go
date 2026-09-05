@@ -507,6 +507,13 @@ type ServerOptions struct {
 
 const defaultMaxConnections = 16
 
+// maxRequestDuration is deliberately longer than the production dataplane
+// proof budget (which is at least one minute on hardware).  The old 15-second
+// wire deadline expired while nft/NFQUEUE/Xray evidence was still being
+// collected, turning a bounded proof into a false rollback.  It remains a
+// hard upper bound for every helper request.
+const maxRequestDuration = 70 * time.Second
+
 func ServeUnix(ctx context.Context, options ServerOptions) error {
 	if options.SocketPath == "" {
 		options.SocketPath = "/var/run/router-policy/helper.sock"
@@ -598,7 +605,7 @@ func prepareSocketPath(path string) error {
 
 func serveConnection(ctx context.Context, connection net.Conn, executor Executor, expectedPeerUID int) {
 	defer connection.Close()
-	_ = connection.SetDeadline(time.Now().Add(15 * time.Second))
+	_ = connection.SetDeadline(time.Now().Add(maxRequestDuration))
 	if uid, err := peerUID(connection); err != nil || ValidatePeerUID(uid, expectedPeerUID) != nil {
 		_ = writeResponse(connection, Response{ProtocolVersion: ProtocolVersion, State: "rejected", ErrorCode: "peer_rejected", Error: "helper peer credentials rejected"})
 		return

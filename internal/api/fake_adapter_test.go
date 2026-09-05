@@ -39,6 +39,7 @@ type splitFakeAdapter struct {
 type idempotentRollbackAdapter struct {
 	*fakeAdapter
 	baseline adapter.RecoveryTarget
+	omitRollbackEvidence bool
 }
 
 func (f *idempotentRollbackAdapter) Rollback(_ context.Context, tx adapter.Transaction) adapter.StepResult {
@@ -51,14 +52,18 @@ func (f *idempotentRollbackAdapter) Rollback(_ context.Context, tx adapter.Trans
 	f.transactionState = "committed"
 	f.calls = append(f.calls, "rollback")
 	f.mu.Unlock()
+	evidence := map[string]any{
+		"transaction_id": tx.ID, "revision_id": tx.RevisionID,
+		"candidate_hash": tx.CandidateHash, "artifact_manifest_hash": tx.ArtifactManifestHash,
+		"rollback": false,
+	}
+	if f.omitRollbackEvidence {
+		delete(evidence, "rollback")
+	}
 	return adapter.StepResult{
 		ProtocolVersion: adapter.AdapterProtocolVersion, Operation: "rollback", Step: "rollback",
 		Status: "ERROR", SemanticState: "rolled_back", Reason: "active revision changed",
-		Evidence: map[string]any{
-			"transaction_id": tx.ID, "revision_id": tx.RevisionID,
-			"candidate_hash": tx.CandidateHash, "artifact_manifest_hash": tx.ArtifactManifestHash,
-			"rollback": false,
-		}, StartedAt: now, FinishedAt: time.Now().UTC(),
+		Evidence: evidence, StartedAt: now, FinishedAt: time.Now().UTC(),
 	}
 }
 

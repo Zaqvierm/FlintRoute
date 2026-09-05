@@ -202,6 +202,7 @@ type VerificationPlan struct {
 	// selected by a committed policy. Route selection must be able to verify
 	// a candidate before assignment without making every route mandatory.
 	CandidateRouteProof  []RouteProof `json:"candidate_route_proofs,omitempty"`
+	ReusedRouteProofTags []string     `json:"reused_route_proof_tags,omitempty"`
 	RequireDNSLeakCheck  bool         `json:"require_dns_leak_check"`
 	RequireIPv6LeakCheck bool         `json:"require_ipv6_leak_check"`
 	RequireManagementLAN bool         `json:"require_management_lan"`
@@ -231,6 +232,14 @@ type generatedFile struct {
 }
 
 func Generate(cfg *config.Config, root string, binding Binding, generatedAt time.Time) (Manifest, string, error) {
+	return GenerateWithOptions(cfg, root, binding, generatedAt, GenerateOptions{})
+}
+
+type GenerateOptions struct {
+	ReuseRouteProofTags []string
+}
+
+func GenerateWithOptions(cfg *config.Config, root string, binding Binding, generatedAt time.Time, options GenerateOptions) (Manifest, string, error) {
 	if cfg == nil {
 		return Manifest{}, "", fmt.Errorf("candidate config is required")
 	}
@@ -260,13 +269,22 @@ func Generate(cfg *config.Config, root string, binding Binding, generatedAt time
 	// unverified at apply time (for example zapret becoming 10010 in the
 	// manifest while the kernel rule is 10020).
 	proofs := selectProofs(allProofs, routesUsedByPolicies(routes, domainPolicies))
+	if len(options.ReuseRouteProofTags) > 0 {
+		reuse := make(map[string]bool, len(options.ReuseRouteProofTags))
+		for _, tag := range options.ReuseRouteProofTags { reuse[tag] = true }
+		filtered := proofs[:0]
+		for _, proof := range proofs {
+			if !reuse[proof.Tag] { filtered = append(filtered, proof) }
+		}
+		proofs = filtered
+	}
 	ipPlan := buildIPPlan(cfg, binding, allProofs, hasPolicyTraffic(domainPolicies), generatedAt.UTC())
 	dnsProxies, err := buildDNSProxyPlans(cfg, routes, domainPolicies)
 	if err != nil {
 		return Manifest{}, "", err
 	}
 	ipPlan.DNSProxies = dnsProxies
-	files, err := renderFiles(cfg, binding, routes, proofs, allProofs, ipPlan, domainPolicies)
+	files, err := renderFiles(cfg, binding, routes, proofs, allProofs, ipPlan, domainPolicies, options)
 	if err != nil {
 		return Manifest{}, "", err
 	}
@@ -421,7 +439,7 @@ func Verify(root string, expected Binding, expectedManifestHash string) (Manifes
 	return manifest, nil
 }
 
-func renderFiles(cfg *config.Config, binding Binding, routes []config.Route, proofs, candidateProofs []RouteProof, plan IPPlan, domainPolicies []domainPolicy) ([]generatedFile, error) {
+func renderFiles(cfg *config.Config, binding Binding, routes []config.Route, proofs, candidateProofs []RouteProof, plan IPPlan, domainPolicies []domainPolicy, options GenerateOptions) ([]generatedFile, error) {
 	nft, err := renderNFT(cfg, binding, routes, plan, domainPolicies)
 	if err != nil {
 		return nil, err
@@ -442,7 +460,7 @@ func renderFiles(cfg *config.Config, binding Binding, routes []config.Route, pro
 	if err != nil {
 		return nil, err
 	}
-	verifyPlan, err := json.MarshalIndent(VerificationPlan{Binding: binding, RequiredRouteProof: proofs, CandidateRouteProof: candidateProofs, RequireDNSLeakCheck: len(proofs) > 0, RequireIPv6LeakCheck: len(proofs) > 0, RequireManagementLAN: true}, "", "  ")
+	verifyPlan, err := json.MarshalIndent(VerificationPlan{Binding: binding, RequiredRouteProof: proofs, CandidateRouteProof: candidateProofs, ReusedRouteProofTags: append([]string(nil), options.ReuseRouteProofTags...), RequireDNSLeakCheck: len(proofs) > 0, RequireIPv6LeakCheck: len(proofs) > 0, RequireManagementLAN: true}, "", "  ")
 	if err != nil {
 		return nil, err
 	}

@@ -723,6 +723,30 @@ func TestRollbackFalseSuccessAcceptedWhenCommittedBaselineIsProven(t *testing.T)
 	}
 }
 
+func TestRollbackErrorIsAcceptedWhenCommittedBaselineIsProven(t *testing.T) {
+	fake := &idempotentRollbackAdapter{fakeAdapter: newFakeAdapter(), omitRollbackEvidence: true}
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer ts.Close()
+	defer srv.Close()
+
+	var baseline revisionRecord
+	if err := srv.store.LoadJSON("revisions", srv.activeRevision, &baseline); err != nil {
+		t.Fatal(err)
+	}
+	fake.baseline = adapter.RecoveryTarget{TransactionID: baseline.TransactionID, RevisionID: baseline.RevisionID, CandidateHash: baseline.CandidateHash, ArtifactManifestHash: baseline.ArtifactManifestHash}
+	cs := createValidatedChange(t, client, csrf, ts.URL, "GEO_LOCKED")
+	tx, failure := srv.loadTransaction(cs)
+	if failure != nil {
+		t.Fatal(failure)
+	}
+	srv.transactionMu.Lock()
+	rolled, rollbackFailure := srv.rollbackLocked(context.Background(), cs, tx, "rolled_back", "error_baseline_test")
+	srv.transactionMu.Unlock()
+	if rollbackFailure != nil || rolled.State != "rolled_back" {
+		t.Fatalf("baseline-proven adapter error was not idempotent: state=%s failure=%v", rolled.State, rollbackFailure)
+	}
+}
+
 func TestConfirmRejectsAdapterArtifactMismatch(t *testing.T) {
 	fake := newFakeAdapter()
 	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
