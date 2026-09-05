@@ -693,6 +693,36 @@ func TestSplitCommitRecoveryFinalizesAfterRestart(t *testing.T) {
 	}
 }
 
+func TestRollbackFalseSuccessAcceptedWhenCommittedBaselineIsProven(t *testing.T) {
+	fake := &idempotentRollbackAdapter{fakeAdapter: newFakeAdapter()}
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer ts.Close()
+	defer srv.Close()
+
+	var baseline revisionRecord
+	if err := srv.store.LoadJSON("revisions", srv.activeRevision, &baseline); err != nil {
+		t.Fatal(err)
+	}
+	fake.baseline = adapter.RecoveryTarget{
+		TransactionID: baseline.TransactionID, RevisionID: baseline.RevisionID,
+		CandidateHash: baseline.CandidateHash, ArtifactManifestHash: baseline.ArtifactManifestHash,
+	}
+	cs := createValidatedChange(t, client, csrf, ts.URL, "GEO_LOCKED")
+	tx, failure := srv.loadTransaction(cs)
+	if failure != nil {
+		t.Fatal(failure)
+	}
+	srv.transactionMu.Lock()
+	rolled, rollbackFailure := srv.rollbackLocked(context.Background(), cs, tx, "rolled_back", "idempotent_test")
+	srv.transactionMu.Unlock()
+	if rollbackFailure != nil || rolled.State != "rolled_back" {
+		t.Fatalf("proven baseline did not make rollback idempotent: state=%s failure=%v", rolled.State, rollbackFailure)
+	}
+	if got := srv.currentRecoveryStatus().Status; got == "recovery_required" {
+		t.Fatalf("idempotent rollback incorrectly fenced recovery: %+v", srv.currentRecoveryStatus())
+	}
+}
+
 func TestConfirmRejectsAdapterArtifactMismatch(t *testing.T) {
 	fake := newFakeAdapter()
 	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)

@@ -33,6 +33,35 @@ type splitFakeAdapter struct {
 	falseFinalize bool
 }
 
+// idempotentRollbackAdapter models a second rollback call after the adapter
+// has already restored the durable committed baseline. The old response is a
+// semantic false-success, but the status query proves the exact baseline.
+type idempotentRollbackAdapter struct {
+	*fakeAdapter
+	baseline adapter.RecoveryTarget
+}
+
+func (f *idempotentRollbackAdapter) Rollback(_ context.Context, tx adapter.Transaction) adapter.StepResult {
+	now := time.Now().UTC()
+	f.mu.Lock()
+	f.activeRevision = f.baseline.RevisionID
+	f.activeTransaction = f.baseline.TransactionID
+	f.activeCandidateHash = f.baseline.CandidateHash
+	f.activeArtifactManifestHash = f.baseline.ArtifactManifestHash
+	f.transactionState = "committed"
+	f.calls = append(f.calls, "rollback")
+	f.mu.Unlock()
+	return adapter.StepResult{
+		ProtocolVersion: adapter.AdapterProtocolVersion, Operation: "rollback", Step: "rollback",
+		Status: "ERROR", SemanticState: "rolled_back", Reason: "active revision changed",
+		Evidence: map[string]any{
+			"transaction_id": tx.ID, "revision_id": tx.RevisionID,
+			"candidate_hash": tx.CandidateHash, "artifact_manifest_hash": tx.ArtifactManifestHash,
+			"rollback": false,
+		}, StartedAt: now, FinishedAt: time.Now().UTC(),
+	}
+}
+
 func newSplitFakeAdapter() *splitFakeAdapter {
 	return &splitFakeAdapter{fakeAdapter: newFakeAdapter()}
 }

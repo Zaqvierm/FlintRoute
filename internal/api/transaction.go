@@ -725,6 +725,24 @@ func (s *Server) rollbackLocked(ctx context.Context, cs ChangeSet, tx adapter.Tr
 	cs.Steps = append(cs.Steps, result)
 	cs.AdapterStatus = result.Status
 	if result.Operation != "" || result.ProtocolVersion != 0 {
+		// The adapter can legitimately report rollback=false when a second
+		// idempotent rollback observes that the active binding already moved
+		// back to the committed revision. Prove that baseline before changing
+		// the semantic result; ValidateRollback still checks the exact tx bind.
+		rollbackReportedFalse := false
+		if value, present := result.Evidence["rollback"]; present {
+			rolled, ok := value.(bool)
+			rollbackReportedFalse = ok && !rolled
+		}
+		if rollbackReportedFalse && s.adapterAlreadyAtCommittedActive(ctx, tx) {
+			result.Status = "OK"
+			result.OK = true
+			result.SemanticState = "rolled_back"
+			result.Reason = "rollback already completed at committed active revision"
+			result.Evidence["rollback"] = true
+			cs.Steps[len(cs.Steps)-1] = result
+			cs.AdapterStatus = result.Status
+		}
 		if err := adapter.ValidateRollback(result, tx); err != nil {
 			if progressErr := s.saveProgress(&cs, tx, "rollback_failed"); progressErr != nil {
 				err = fmt.Errorf("%w; persist rollback_failed state: %v", err, progressErr)
@@ -771,6 +789,31 @@ func (s *Server) rollbackLocked(ctx context.Context, cs ChangeSet, tx adapter.Tr
 		s.publishEvent(Event{Type: "storage.cleanup_failed", Severity: "error", ReasonCode: "cleanup_status_persist_failed", Details: map[string]any{"revision_id": tx.RevisionID, "error": err.Error()}})
 	}
 	return cs, nil
+}
+
+func (s *Server) adapterAlreadyAtCommittedActive(ctx context.Context, failed adapter.Transaction) bool {
+	if s == nil || s.store == nil {
+		return false
+	}
+	s.mu.Lock()
+	activeRevision := s.activeRevision
+	s.mu.Unlock()
+	if activeRevision == "" || activeRevision == failed.RevisionID {
+		return false
+	}
+	var revision revisionRecord
+	if err := s.store.LoadJSON("revisions", activeRevision, &revision); err != nil || revision.State != "committed" {
+		return false
+	}
+	status := s.adapter.Status(ctx)
+	if !stepOK(status) || evidenceString(status, "active_revision") != revision.RevisionID || evidenceString(status, "active_candidate_hash") != revision.CandidateHash {
+		return false
+	}
+	if revision.Kind == baselineRevisionKind {
+		return evidenceString(status, "active_transaction") == "" && evidenceString(status, "active_artifact_manifest_hash") == "" && evidenceString(status, "transaction_state") == "committed"
+	}
+	return revision.TransactionID != "" && evidenceString(status, "active_transaction") == revision.TransactionID &&
+		evidenceString(status, "active_artifact_manifest_hash") == revision.ArtifactManifestHash && evidenceString(status, "transaction_state") == "committed"
 }
 
 type cleanupStatusStore interface {
@@ -940,7 +983,7 @@ func (s *Server) activeTransaction(exceptID string) string {
 			continue
 		}
 		switch cs.State {
-		case "prepared", "applying", "verifying", "awaiting_confirmation", "committing", "rolling_back":
+		case "prepared", "applying", "verifying", "data_plane_unverified", "awaiting_confirmation", "committing", "rolling_back", "rollback_failed":
 			return id
 		}
 	}
@@ -1003,7 +1046,7 @@ func (s *Server) recoverTransactions(ctx context.Context) error {
 	s.mu.Lock()
 	for id, cs := range s.changes {
 		switch cs.State {
-		case "prepared", "applying", "verifying", "awaiting_confirmation", "committing", "rolling_back":
+		case "prepared", "applying", "verifying", "data_plane_unverified", "awaiting_confirmation", "committing", "rolling_back", "rollback_failed":
 			ids = append(ids, id)
 		}
 	}
