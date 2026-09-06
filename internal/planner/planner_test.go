@@ -226,6 +226,50 @@ func TestBuildCandidatesUsesSmartDNSHealthOrder(t *testing.T) {
 	}
 }
 
+func TestFullCheckCapsVLESSInventoryButRetainsSelectedRoute(t *testing.T) {
+	routes := make([]config.Route, 0, 8)
+	for i := 1; i <= 8; i++ {
+		routes = append(routes, config.Route{
+			Type:     "vless",
+			Tag:      fmt.Sprintf("proxy-%d", i),
+			Priority: i,
+		})
+	}
+	cfg := &config.Config{
+		Version: 2,
+		Policy:  config.Policy{ProbeBudget: 2},
+		Routes:  routes,
+		Services: map[string]config.Service{
+			"web": {
+				Category:         "DIRECT_PREFERRED",
+				AllowedPaths:     []string{"vless", "drop"},
+				SelectedRouteTag: "proxy-8",
+			},
+		},
+	}
+	plan, err := BuildCandidates(cfg, "example.com", "web", Options{FullCheck: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vlessCount := 0
+	selectedPresent := false
+	for _, candidate := range plan.Candidates {
+		if candidate.Type != "vless" {
+			continue
+		}
+		vlessCount++
+		if candidate.Tag == "proxy-8" {
+			selectedPresent = true
+		}
+	}
+	if vlessCount > 3 {
+		t.Fatalf("full check exceeded probe budget while retaining the selected route: %d candidates (%+v)", vlessCount, plan.Candidates)
+	}
+	if !selectedPresent {
+		t.Fatalf("explicitly selected VLESS route was dropped by the full-check cap: %+v", plan.Candidates)
+	}
+}
+
 func TestUnknownDomainDirectSuccessIsCachedAndReused(t *testing.T) {
 	cfg := discoveryConfig(t)
 	cache := openDecisionCache(t, cfg)

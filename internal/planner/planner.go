@@ -654,6 +654,19 @@ func buildCandidates(cfg *config.Config, profile serviceProfile, opts Options) C
 		if routeType == "vless" && opts.HealthTracker != nil {
 			routes = opts.HealthTracker.OrderVLESS(routes)
 		}
+		if routeType == "vless" && opts.FullCheck {
+			// A full check compares route classes without turning the UI into
+			// an unbounded proxy benchmark.  Keep the policy's shared probe
+			// budget as the maximum number of VLESS candidates; the ordered
+			// inventory already puts the healthiest/fastest candidates first.
+			limit := cfg.Policy.ProbeBudget
+			if limit <= 0 || limit > 4 {
+				limit = 4
+			}
+			if len(routes) > limit {
+				routes = routes[:limit]
+			}
+		}
 		if selectedRouteOK && selectedRoute.Type == routeType && selectedRoute.Enabled() {
 			candidates = append(candidates, selectedRoute)
 			seen[selectedRoute.Tag] = true
