@@ -1,5 +1,31 @@
 # Evidence remediation
 
+## Current route-proof correction (working tree)
+
+The current route-proof correction fixes a real non-root failure observed on
+Flint 2: helper-backed nft marks were installed, but the daemon still tried
+`SO_MARK` and failed before opening the TCP socket. `system-default` is now
+kept unmarked, helper-owned marks are used without a controller capability,
+and conntrack matching ignores transient zero-mark tuples. Smart DNS keeps
+resolver identity as its route binding when Direct and Smart DNS share mark
+`0x41`.
+
+Hardware evidence captured after installation on OpenWrt 24.10.4 / kernel
+6.6.110 / GL-MT6000:
+
+- bundle `dist/flintroute-openwrt-arm64.tar.gz`: SHA-256 recorded in the
+  external hardware evidence directory;
+- controller health: `status=ok`, `recovery_status=ok`, active revision
+  `rev_8_576efd05a1db`;
+- UI quick check for `example.com`: `direct OK`, `PathVerified`,
+  `route_path_verified`, selected Direct;
+- Xray and nfqws remained running; legacy watchdog absent.
+
+This is runtime evidence for the installed exact artifacts, not a claim that
+all route types are universally healthy. Full candidate comparison is an
+explicit bounded operation; a quick Direct success intentionally stops before
+Zapret/Smart DNS/VLESS.
+
 ## Current evidence binding (2026-09-06)
 
 Current code checkpoint: `5fdaa637953bf4069356e0e28094c49e2778fa17` on

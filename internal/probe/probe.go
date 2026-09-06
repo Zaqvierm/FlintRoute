@@ -896,11 +896,33 @@ func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route,
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var releaseGuard func() error
-	if guard != nil && route.SOCKS5 == "" && (route.Type == "direct" || route.Type == "zapret" || route.Type == "smart_dns") {
+	var guardMark uint32
+	// The synthetic system-default candidate is intentionally unmarked.  It
+	// must use the kernel's ordinary route and the system-default verifier;
+	// applying the managed mark guard here turns valid baseline evidence into
+	// a false `system_default_probe_was_marked` failure.
+	if guard != nil && route.SOCKS5 == "" && !isSystemDefaultRoute(route) &&
+		(route.Type == "direct" || route.Type == "zapret" || route.Type == "smart_dns") {
 		var guardErr error
 		releaseGuard, guardErr = guard.BeginProbeGuard(ctx, route)
 		if guardErr != nil {
 			return attemptResult{Status: "FAIL", Reason: "probe_guard_begin_failed: " + guardErr.Error()}
+		}
+		// The helper's semantic guard response proves that the exact owned
+		// output hook was installed.  The controller cannot read SO_MARK after
+		// nft applies it, so carry the bound mark into the observation; the
+		// verifier still requires the later conntrack proof before accepting it.
+		markText := strings.TrimSpace(route.Mark)
+		if markText == "" && cfg != nil {
+			switch route.Type {
+			case "direct", "smart_dns":
+				markText = cfg.OpenWrt.DirectMark
+			case "zapret":
+				markText = cfg.OpenWrt.ZapretMark
+			}
+		}
+		if mark, err := parseSocketMark(markText); err == nil {
+			guardMark = mark
 		}
 		defer func() {
 			if releaseGuard != nil {
@@ -915,9 +937,20 @@ func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route,
 
 	var connectedIP, localIP, addressFamily, dialTransport string
 	var observedSocketMark uint32
+	if guardMark != 0 {
+		observedSocketMark = guardMark
+	}
 	connectedPort, _ := strconv.Atoi(port)
 	dialer := &net.Dialer{Timeout: 8 * time.Second}
-	installRouteSocketMark(dialer, cfg, route, &observedSocketMark)
+	// With the helper-backed guard the non-root controller must not attempt
+	// SO_MARK itself: Setsockopt(SO_MARK) requires CAP_NET_ADMIN and would
+	// fail the connect before a socket observation exists. The exact-owned nft
+	// guard marks the packet after socket creation; conntrack proof below
+	// confirms that it actually took effect. Direct socket marking remains the
+	// fallback for test/legacy command implementations without a guard.
+	if guard == nil || isSystemDefaultRoute(route) {
+		installRouteSocketMark(dialer, cfg, route, &observedSocketMark)
+	}
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12},
 	}

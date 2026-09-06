@@ -149,6 +149,20 @@ func TestProbeGuardCoversManagedDirectAttemptAndCleansUp(t *testing.T) {
 	}
 }
 
+func TestProbeGuardDoesNotMarkSystemDefaultAttempt(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	guard := &recordingProbeGuard{}
+	result := NewEngineWithGuard(nil, guard).ProbeRoute(context.Background(), testConfig(), "example.test", "svc", serviceWithProbe(srv.URL, []int{http.StatusOK}, "optional", nil), config.Route{
+		Type: "direct", Tag: "system-default", AdapterMode: "system_default",
+	})
+	if result.ApplicationStatus != "OK" || guard.begin != 0 || guard.end != 0 {
+		t.Fatalf("system-default probe was incorrectly marked/guarded: result=%+v begin=%d end=%d", result, guard.begin, guard.end)
+	}
+}
+
 func TestEngineRetriesEarlyBindingFailureAfterActiveFileAppears(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

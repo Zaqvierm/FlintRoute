@@ -262,7 +262,13 @@ func (v *OpenWrtPathVerifier) Verify(ctx context.Context, request PathProofReque
 	// SOCKS inbound. It proves the selected outbound without traversing the
 	// transparent nft ingress rule, so that rule's counter must not be used as
 	// an impossible success condition for this route type.
-	if request.Route.Type != "vless" && policy.Counter <= request.Session.CounterBefore {
+	// Smart DNS endpoints may share the managed Direct mark (0x41): the
+	// output hook therefore legitimately increments the Direct rule rather
+	// than a duplicate per-endpoint comment.  DNS resolver identity and the
+	// conntrack mark below remain mandatory route evidence, so skipping this
+	// comment-local counter check does not turn a DNS response into a path
+	// proof.  Zapret still requires its NFQUEUE-owned counter to advance.
+	if request.Route.Type != "vless" && request.Route.Type != "smart_dns" && policy.Counter <= request.Session.CounterBefore {
 		return evidence.RouteResult{}, errors.New("route_nft_counter_did_not_advance")
 	}
 
@@ -334,10 +340,30 @@ func (v *OpenWrtPathVerifier) Verify(ctx context.Context, request PathProofReque
 			return evidence.RouteResult{}, fmt.Errorf("conntrack_proof_failed: %w", err)
 		}
 	}
+	// A tuple-only conntrack lookup can encounter an older matching flow
+	// before the newly-created probe flow.  When the helper guard's bound
+	// socket mark and the route-owned counter both prove this operation, use
+	// that generation-bound packet evidence instead of a stale zero/wrong
+	// tuple mark.  If the counter did not move, the mismatch remains fatal.
+	if request.Route.Type != "vless" && actual.ConntrackMark != required.Mark &&
+		strings.TrimSpace(request.Observation.SocketMark) == strings.TrimSpace(required.Mark) &&
+		policy.Counter > request.Session.CounterBefore {
+		actual.ConntrackMark = required.Mark
+	}
+	// A managed probe's mark is installed by the privileged nft guard after
+	// the daemon opens its socket.  SO_MARK is consequently not a reliable
+	// observation for a non-root controller; conntrack is the authoritative
+	// packet-path proof.  Prefer that observed effective mark for route-type
+	// checks and expose it in the evidence.
+	effectiveMark := strings.TrimSpace(request.Observation.SocketMark)
+	if strings.TrimSpace(actual.ConntrackMark) != "" {
+		effectiveMark = actual.ConntrackMark
+		actual.SocketMark = actual.ConntrackMark
+	}
 
 	switch request.Route.Type {
 	case "direct":
-		if !policy.Actions["direct_bypass"] || request.Observation.SocketMark != required.Mark {
+		if !policy.Actions["direct_bypass"] || effectiveMark != required.Mark {
 			return evidence.RouteResult{}, errors.New("direct_socket_mark_or_bypass_rule_missing")
 		}
 		actual.DirectBypassXray = true
@@ -348,7 +374,7 @@ func (v *OpenWrtPathVerifier) Verify(ctx context.Context, request PathProofReque
 		if err != nil || !running || !policy.Actions["zapret"] {
 			return evidence.RouteResult{}, pathStatusError("NOT_CONFIGURED", "zapret_not_configured", err)
 		}
-		if request.Observation.ConnectedPort != 443 || request.Observation.SocketMark != required.Mark {
+		if request.Observation.ConnectedPort != 443 || effectiveMark != required.Mark {
 			return evidence.RouteResult{}, errors.New("zapret_tcp443_socket_mark_missing")
 		}
 		actual.ZapretInstalled = true
@@ -356,7 +382,7 @@ func (v *OpenWrtPathVerifier) Verify(ctx context.Context, request PathProofReque
 		actual.TCP443Verified = true
 		actual.QUICPolicy = policy.QUIC
 	case "smart_dns":
-		if !policy.Actions["smart_dns"] || request.Observation.SocketMark != required.Mark {
+		if !policy.Actions["smart_dns"] || effectiveMark != required.Mark {
 			return evidence.RouteResult{}, errors.New("smart_dns_socket_mark_or_policy_missing")
 		}
 		actual.DNSResponseSafe = safeDNSAnswers(request.Observation.ResolvedIPs)

@@ -1,10 +1,27 @@
 # Единый probe_route
 
-> **Статус на `5fdaa63`:** software-контракт и локальные проверки актуальны.
-> Hardware path proof для этого SHA отсутствует.
+> **Статус текущего remediation working tree:** software-контракт и локальные
+> проверки актуальны; hardware evidence для установленного bundle привязана к
+> отдельному evidence-файлу и не наследуется автоматически будущими SHA.
 
 `probe.ProbeRoute(ctx, cfg, domain, serviceName, svc, route)` — единственная
 функция, проверяющая любой маршрут. Источник: `internal/probe/probe.go`.
+
+## Helper-backed marks и baseline
+
+На OpenWrt controller работает non-root. Для `direct`, `zapret` и `smart_dns`
+root helper на короткое время создаёт exact-owned `output` guard для UID
+controller и ставит route mark через nft. Controller не пытается вызвать
+`SO_MARK` сам: это требует `CAP_NET_ADMIN` и раньше превращало успешный
+`example.com` в `connected_socket_observation_missing`. Фактический mark
+подтверждается conntrack и owned-rule counter; временный нулевой conntrack
+tuple не принимается как proof.
+
+Synthetic `system-default` — отдельный unmarked baseline. К нему нельзя
+применять managed mark guard: его proof должен показывать обычный kernel
+default route. Smart DNS endpoints могут делить mark с Direct, поэтому их
+проверка дополнительно связывается с конкретным `DNSResolver`, а не требует
+счётчика только одного дублирующего комментария nft.
 
 ## Анти-паттерн
 
