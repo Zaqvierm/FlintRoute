@@ -2012,6 +2012,7 @@ func serviceForClassifyRequest(request serviceClassifyRequest) (string, config.S
 type serviceVerifyRequest struct {
 	ServiceID string `json:"service_id,omitempty"`
 	Domain    string `json:"domain,omitempty"`
+	FullCheck bool   `json:"full_check,omitempty"`
 }
 
 // handleServiceVerify performs a read-only path check for an already persisted
@@ -2038,7 +2039,7 @@ func (s *Server) handleServiceVerify(w http.ResponseWriter, r *http.Request) {
 	// Read-only interactive verification stays bounded. A partial VERIFYING
 	// response is rendered with "Continue verification" instead of blocking
 	// the UI for a long opaque probe job.
-	check, verifyErr := s.selectVerifiedServiceRoute(r.Context(), serviceID, serviceWithVerificationDomain(service, domain))
+	check, verifyErr := s.selectVerifiedServiceRouteWithOptions(r.Context(), serviceID, serviceWithVerificationDomain(service, domain), 0, "", request.FullCheck)
 	persisted := 0
 	if s.store != nil {
 		for _, result := range check.Results {
@@ -2234,7 +2235,7 @@ func (s *Server) handleServiceClassify(w http.ResponseWriter, r *http.Request) {
 		}
 		id = requestedID
 	}
-	check, err := s.selectVerifiedServiceRouteWithOptions(r.Context(), id, service, 0, request.SelectedRouteTag)
+	check, err := s.selectVerifiedServiceRouteWithOptions(r.Context(), id, service, 0, request.SelectedRouteTag, false)
 	if err != nil {
 		writeError(w, r, http.StatusUnprocessableEntity, "route_verification_failed", err.Error())
 		return
@@ -2271,14 +2272,14 @@ func (s *Server) handleServiceClassify(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) selectVerifiedServiceRoute(ctx context.Context, serviceID string, service config.Service) (planner.DomainCheck, error) {
-	return s.selectVerifiedServiceRouteWithOptions(ctx, serviceID, service, 0, "")
+	return s.selectVerifiedServiceRouteWithOptions(ctx, serviceID, service, 0, "", false)
 }
 
 func (s *Server) selectVerifiedServiceRouteWithBudget(ctx context.Context, serviceID string, service config.Service, budget time.Duration) (planner.DomainCheck, error) {
-	return s.selectVerifiedServiceRouteWithOptions(ctx, serviceID, service, budget, "")
+	return s.selectVerifiedServiceRouteWithOptions(ctx, serviceID, service, budget, "", false)
 }
 
-func (s *Server) selectVerifiedServiceRouteWithOptions(ctx context.Context, serviceID string, service config.Service, budget time.Duration, requestedRouteTag string) (planner.DomainCheck, error) {
+func (s *Server) selectVerifiedServiceRouteWithOptions(ctx context.Context, serviceID string, service config.Service, budget time.Duration, requestedRouteTag string, fullCheck bool) (planner.DomainCheck, error) {
 	active := s.currentConfig()
 	if active == nil {
 		return planner.DomainCheck{}, errors.New("active configuration is unavailable")
@@ -2332,7 +2333,7 @@ func (s *Server) selectVerifiedServiceRouteWithOptions(ctx context.Context, serv
 		// rather than forcing a user to wait for every VLESS server. An
 		// explicit exhaustive comparison can opt into FullCheck through the
 		// dedicated discovery/full-check path.
-		FullCheck: requestedRouteTag != "", QuickCandidates: requestedRouteTag == "", RequestedRouteTag: requestedRouteTag, RouteProber: routeProber, HealthTracker: s.healthTracker,
+		FullCheck: fullCheck || requestedRouteTag != "", QuickCandidates: !fullCheck && requestedRouteTag == "", RequestedRouteTag: requestedRouteTag, RouteProber: routeProber, HealthTracker: s.healthTracker,
 		ActiveRevision: revision,
 	})
 	if err != nil {

@@ -420,6 +420,42 @@ test.describe('FlintRoute UI v2', () => {
     await expect.poll(() => classifyCalls).toBe(1);
   });
 
+  test('offers an explicit full route matrix after the quick direct check', async ({ page }) => {
+    const requests: Array<{ full_check?: boolean }> = [];
+    await mockAPI(page);
+    await page.route('**/api/v1/health', async (route) => {
+      await route.fulfill(envelope({ status: 'ok', recovery_status: 'ok', checked_at: new Date().toISOString() }));
+    });
+    await page.route('**/api/v1/services/verify', async (route) => {
+      const body = route.request().postDataJSON() as { full_check?: boolean };
+      requests.push(body);
+      const candidates = body.full_check
+        ? [
+            { route: 'direct', route_type: 'direct', status: 'OK', path_verified: true, service_ok: true, reason: 'route_path_verified' },
+            { route: 'zapret', route_type: 'zapret', status: 'OK', path_verified: true, service_ok: true, reason: 'route_path_verified' },
+            { route: 'smart-dns-primary', route_type: 'smart_dns', status: 'OK', path_verified: true, service_ok: true, reason: 'route_path_verified' }
+          ]
+        : [{ route: 'direct', route_type: 'direct', status: 'OK', path_verified: true, service_ok: true, reason: 'route_path_verified' }];
+      await route.fulfill(envelope({
+        service_id: 'preview_example_com', domain: 'example.com', status: 'SELECTED', verification_state: 'verified',
+        path_verified: true, selected_route_tag: 'direct', selected_route_type: 'direct',
+        checked_at: new Date().toISOString(), evidence_persisted: 0, candidates
+      }));
+    });
+    await page.goto('/?screen=Сервисы');
+    await page.getByRole('button', { name: '+ Новое правило' }).click();
+    const editor = page.getByRole('dialog');
+    await editor.getByPlaceholder('example.com').fill('example.com');
+    await editor.getByRole('button', { name: 'Проверить домен' }).click();
+    await expect.poll(() => requests.length).toBe(1);
+    await editor.getByRole('button', { name: 'Полная проверка маршрутов' }).click();
+    await expect.poll(() => requests.length).toBe(2);
+    expect(requests[0].full_check).not.toBe(true);
+    expect(requests[1].full_check).toBe(true);
+    await expect(editor.getByRole('button', { name: 'zapret', exact: true })).toBeVisible();
+    await expect(editor.getByText('smart-dns-primary', { exact: true }).last()).toBeVisible();
+  });
+
   test('confirms configured rule deletion and waits for a committed terminal state', async ({ page }) => {
     let deleteCalls = 0;
     let changePolls = 0;

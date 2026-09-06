@@ -94,6 +94,72 @@ func TestServiceVerifyIsReadOnlyAndPersistsFreshEvidence(t *testing.T) {
 	}
 }
 
+func TestServiceVerifyFullCheckRequestsCompleteCandidateMatrix(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	srv.mu.Lock()
+	clone := *srv.activeConfig
+	clone.Services = map[string]config.Service{
+		"example": {
+			Category: "DIRECT_PREFERRED", Domains: []string{"example.com"},
+			AllowedPaths: []string{"direct", "zapret", "smart_dns", "vless", "drop"},
+			ProbeURLs:    []config.ProbeCheck{{Name: "example", URL: "https://example.com/", Required: true}},
+		},
+	}
+	srv.activeConfig = &clone
+	srv.mu.Unlock()
+	var got planner.Options
+	srv.domainChecker = func(_ context.Context, _ *config.Config, domain, serviceID string, options planner.Options) (planner.DomainCheck, error) {
+		got = options
+		results := []probe.RouteResult{
+			{Domain: domain, Service: serviceID, Route: "direct", RouteType: "direct", Status: "OK", PathVerified: true, ServiceOK: true},
+			{Domain: domain, Service: serviceID, Route: "zapret", RouteType: "zapret", Status: "OK", PathVerified: true, ServiceOK: true},
+		}
+		return planner.DomainCheck{
+			Domain: domain, Service: serviceID, Status: "SELECTED", VerificationState: "verified",
+			Selected: &results[0], Results: results,
+		}, nil
+	}
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client, csrf := login(t, ts.URL)
+	request, err := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/verify", strings.NewReader(`{"service_id":"example","domain":"example.com","full_check":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", csrf)
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("full verification status=%d body=%s", response.StatusCode, body)
+	}
+	if !got.FullCheck || got.QuickCandidates {
+		t.Fatalf("full verification options were not propagated: %+v", got)
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	var data struct {
+		Candidates []map[string]any `json:"candidates"`
+	}
+	raw, _ := json.Marshal(envelope.Data)
+	if err := json.Unmarshal(raw, &data); err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Candidates) != 2 {
+		t.Fatalf("full verification returned %d candidates: %s", len(data.Candidates), raw)
+	}
+	if len(srv.changes) != 0 {
+		t.Fatalf("read-only full verification created changes: %d", len(srv.changes))
+	}
+}
+
 func TestServiceVerifyAcceptsDomainOnlyPreviewWithoutCreatingPolicy(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()

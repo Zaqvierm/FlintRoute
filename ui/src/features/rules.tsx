@@ -144,7 +144,7 @@ export function Services({
     }
   }
 
-  async function verifyEditorDomain() {
+  async function verifyEditorDomain(fullCheck = false) {
     if (!editor || editorVerificationBusy) return;
     const domain = editor.domain.trim();
     if (!domain) {
@@ -152,9 +152,9 @@ export function Services({
       return;
     }
     setEditorVerificationBusy(true);
-    setMessage(`Проверяю ${domain}: Direct → доступные альтернативы…`);
+    setMessage(fullCheck ? `Проверяю ${domain}: все доступные маршруты…` : `Проверяю ${domain}: Direct → доступные альтернативы…`);
     try {
-      const result = await verifyService('', domain);
+      const result = await verifyService('', domain, fullCheck);
       setEditorVerification((previous) => {
         if (!previous || previous.domain !== result.domain) return result;
         const byRoute = new Map<string, any>();
@@ -336,6 +336,9 @@ export function Services({
           <div class="actions">
             <button type="button" class="primary" disabled={editorVerificationBusy || !editor.domain.trim()} onClick={() => void verifyEditorDomain()}>
               {editorVerificationBusy ? 'Проверяю…' : editorVerification?.verification_state === 'in_progress' ? 'Продолжить проверку' : 'Проверить домен'}
+            </button>
+            <button type="button" disabled={editorVerificationBusy || !editor.domain.trim()} onClick={() => void verifyEditorDomain(true)}>
+              Полная проверка маршрутов
             </button>
           </div>
           <label>

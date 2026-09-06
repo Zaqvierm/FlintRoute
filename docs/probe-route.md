@@ -89,6 +89,18 @@ active binding.
 внешний loopback endpoint, а PathVerified подтверждает binding и фактический поток;
 process lifecycle остаётся ответственностью внешнего компонента.
 
+## Interactive quick and full checks
+
+The manual rule editor has two deliberately different read-only operations:
+
+- the normal check is a bounded quick check and may stop after the first
+  evidence-backed usable route;
+- POST /api/v1/services/verify with full_check=true runs the complete eligible
+  candidate inventory and returns the comparison matrix.
+
+Both operations persist probe evidence only. Neither one changes the committed
+policy; applying a selected route remains a separate ChangeSet operation.
+
 ## Route descriptor (`config.Route`)
 
 ```json
