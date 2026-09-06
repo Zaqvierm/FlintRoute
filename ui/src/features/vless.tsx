@@ -93,6 +93,7 @@ export function Vless({
   const [pool, setPool] = useState<any>({ tariff_mbps: 300, sources: [], servers: [], provider_matches: [] });
   const [tariff, setTariff] = useState(300);
   const [xrayAvailable, setXrayAvailable] = useState(false);
+  const [xrayComponent, setXrayComponent] = useState<ComponentStatus | null>(null);
   const confirmDialog = useConfirmDialog();
 
   function forceHappPreset(value: SubscriptionHWIDSettings): SubscriptionHWIDSettings {
@@ -126,6 +127,7 @@ export function Vless({
       }
       if (componentsResult.status === 'fulfilled') {
         const xrayComponent = componentsResult.value.find((item: ComponentStatus) => item.kind === 'xray');
+        setXrayComponent(xrayComponent ?? null);
         setXrayAvailable(Boolean(xrayComponent?.installed || xrayComponent?.health_ready || xrayComponent?.service_state === 'running'));
       }
       if (!subscription || !manual) return;
@@ -420,6 +422,9 @@ export function Vless({
   return (
     <section>
       <PageHeader title="VLESS-серверы" text="Подписки и ручные серверы разделены. Ping — задержка проверки, а не скорость канала." />
+      <Card title="Компонент Xray">
+        <div class="row"><b>{xrayComponent?.health_ready ? 'Готов' : xrayComponent?.installed ? 'Установлен · требуется проверка' : xrayComponent?.ownership === 'foreign' ? 'Обнаружен вне FlintRoute' : 'Не установлен'}</b><span>{textValue(xrayComponent?.service_state, 'состояние неизвестно')}</span><small>{textValue(xrayComponent?.health_reason, xrayComponent?.health_ready ? 'Health check подтверждён; VLESS inventory доступен.' : 'Установка сама по себе не доказывает готовность dataplane.')}</small></div>
+      </Card>
       <Card title="Выбор сервера">
         {candidateServers.find((server: any) => server.selected) ? (() => { const active = candidateServers.find((server: any) => server.selected); return <div class="row"><b>{textValue(active.name ?? active.tag, 'VLESS server')}</b><span>{active.latency_ms ? `${active.latency_ms} мс` : 'latency неизвестна'} · {active.measured_mbps ? `${active.measured_mbps.toFixed(0)} Мбит/с` : 'speedtest не запускался'}</span><small>{active.path_verified ? 'PathVerified' : 'путь не подтверждён'} · score {Number(active.score ?? 0).toFixed(1)}</small></div>; })() : <p>Активного проверенного сервера пока нет.</p>}
         <div class="smart-dns-editor">

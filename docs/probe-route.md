@@ -1,6 +1,6 @@
 # Единый probe_route
 
-> **Статус на `f052d022`:** software-контракт и локальные проверки актуальны.
+> **Статус на `c8a2de4`:** software-контракт и локальные проверки актуальны.
 > Hardware path proof для этого SHA отсутствует.
 
 `probe.ProbeRoute(ctx, cfg, domain, serviceName, svc, route)` — единственная
@@ -63,6 +63,11 @@ test-платформы. Для `RequireNonRUEgress` страна `RU` → `RU_E
 обязательным data-plane gate. Старые committed artifacts без этого поля
 достраиваются детерминированно из той же committed config после проверки exact
 active binding.
+Если active binding отсутствует или не совпадает, probe возвращает typed
+`INFRA_ERROR` (`active_binding_unavailable`/`active_binding_mismatch`). Это
+ошибка инфраструктуры проверки, а не доказательство недоступности сайта через
+каждый маршрут; planner останавливает проверку с диагностикой и не создаёт
+`NO_SAFE_ROUTE` и не назначает правило.
 `external_socks` не выдаётся за встроенный Telegram transport. Preflight проверяет
 внешний loopback endpoint, а PathVerified подтверждает binding и фактический поток;
 process lifecycle остаётся ответственностью внешнего компонента.

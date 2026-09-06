@@ -55,6 +55,58 @@ func TestAdaptiveBindingSkipsSmartDNSRouteChange(t *testing.T) {
 	}
 }
 
+func TestSmartDNSRouteChangeDoesNotRequireAdaptiveRedeployment(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	srv.mu.Lock()
+	clone := *srv.activeConfig
+	clone.Routes = append(clone.Routes,
+		config.Route{Type: "zapret", Tag: "zapret"},
+		config.Route{Type: "smart_dns", Tag: "smart-primary", DNSServer: "1.1.1.1:53", Status: "READY"},
+	)
+	clone.Services = map[string]config.Service{
+		"discord": {Category: "TSPU_RESTRICTED", Domains: []string{"discord.com"}, AllowedPaths: []string{"zapret", "smart_dns", "drop"}},
+	}
+	clone.Zapret.Binary = "/usr/bin/nfqws"
+	clone.Zapret.InitScript = "/etc/init.d/router-policy-zapret"
+	clone.Zapret.ActiveConfig = "/etc/router-policy/zapret/nfqws.conf"
+	clone.Zapret.ActivationMode = "managed"
+	clone.Zapret.Strategy = "tls-fake-ttl3-v1"
+	clone.Zapret.QueueNum = 200
+	clone.Zapret.AdaptiveEnabled = true
+	clone.Zapret.AdaptiveCatalogFile = filepath.Join(srv.cfg.Storage.StateDir, "catalog.json")
+	clone.Zapret.AdaptiveAssignments = []config.ZapretProfileAssignment{{BundleID: "discord", ProfileID: "profile-a"}}
+	writeAdaptiveCatalog(t, clone.Zapret.AdaptiveCatalogFile)
+	srv.activeConfig = &clone
+	srv.mu.Unlock()
+
+	remaining := append([]config.Route(nil), clone.Routes[:len(clone.Routes)-1]...)
+	change, err := srv.createDraftChangeWithOptions("Remove Smart DNS resolver", "test", srv.configVersion, []ChangeOp{{Type: "set", Path: "/routes", Value: remaining}}, "admin", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !srv.startAutoApplyChange(change.ID) {
+		t.Fatal("auto-apply worker did not start")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		srv.mu.Lock()
+		current := srv.changes[change.ID]
+		srv.mu.Unlock()
+		if current.State == "committed" {
+			return
+		}
+		if current.State == "failed" || current.State == "rolled_back" || current.State == "requires_device" || current.State == "recovery_required" {
+			t.Fatalf("Smart DNS route-only change unexpectedly failed: %s %+v", current.State, current.Validation)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	srv.mu.Lock()
+	current := srv.changes[change.ID]
+	srv.mu.Unlock()
+	t.Fatalf("Smart DNS route-only change stayed pending: %+v", current)
+}
+
 func TestValidateAdaptiveAssignmentsIgnoresDormantBundleWithoutService(t *testing.T) {
 	cfg := testAPIConfig(t)
 	cfg.Zapret = config.Zapret{
