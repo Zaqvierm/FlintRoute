@@ -2317,6 +2317,18 @@ func (s *Server) selectVerifiedServiceRouteWithOptions(ctx context.Context, serv
 
 	revision, _ := s.activeIdentity()
 	probeSeconds := time.Duration(maxInt(active.Policy.MaxProbeSeconds, 15)) * time.Second
+	if fullCheck {
+		// A full matrix is still bounded, but its deadline must cover the
+		// sequential candidate inventory.  The per-route probe timeout remains
+		// the policy value; this only prevents the last candidate from being
+		// cut off by the ordinary quick-check deadline.
+		fullSeconds := maxInt(active.Policy.MaxProbeSeconds, 15) * maxInt(len(active.Routes), 1)
+		fullSeconds = maxInt(fullSeconds, 60)
+		if fullSeconds > 120 {
+			fullSeconds = 120
+		}
+		probeSeconds = time.Duration(fullSeconds) * time.Second
+	}
 	if budget > probeSeconds {
 		probeSeconds = budget
 	}
