@@ -328,7 +328,7 @@ export function Services({
           onClick={(event) => event.stopPropagation()}
           onSubmit={(event) => {
             event.preventDefault();
-            if (editor.paths.length) void commitRule(editor.domain, editor.category, editor.paths, editor.serviceID);
+            if (editor.paths.length) void commitRule(editor.domain, editor.category, editor.paths, editor.serviceID, editorVerification?.selected_route_tag);
           }}
         >
           <header class="modal-header"><h2 id="service-rule-title">Новое правило</h2><button type="button" class="icon-button" aria-label="Закрыть" onClick={() => { setEditor(null); setEditorVerification(null); }}>×</button></header>
