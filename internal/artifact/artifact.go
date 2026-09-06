@@ -271,10 +271,14 @@ func GenerateWithOptions(cfg *config.Config, root string, binding Binding, gener
 	proofs := selectProofs(allProofs, routesUsedByPolicies(routes, domainPolicies))
 	if len(options.ReuseRouteProofTags) > 0 {
 		reuse := make(map[string]bool, len(options.ReuseRouteProofTags))
-		for _, tag := range options.ReuseRouteProofTags { reuse[tag] = true }
+		for _, tag := range options.ReuseRouteProofTags {
+			reuse[tag] = true
+		}
 		filtered := proofs[:0]
 		for _, proof := range proofs {
-			if !reuse[proof.Tag] { filtered = append(filtered, proof) }
+			if !reuse[proof.Tag] {
+				filtered = append(filtered, proof)
+			}
 		}
 		proofs = filtered
 	}

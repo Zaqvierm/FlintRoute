@@ -38,7 +38,7 @@ type splitFakeAdapter struct {
 // semantic false-success, but the status query proves the exact baseline.
 type idempotentRollbackAdapter struct {
 	*fakeAdapter
-	baseline adapter.RecoveryTarget
+	baseline             adapter.RecoveryTarget
 	omitRollbackEvidence bool
 }
 
