@@ -57,9 +57,13 @@ function smartDNSOperationLabel(operation: any): string {
   switch (textValue(operation?.state, '')) {
     case 'draft': return 'изменение поставлено в очередь';
     case 'validated': return 'кандидат проверен, применение запускается';
+    case 'prepared': return 'транзакция подготовлена, проверяется кандидат';
     case 'applying': return 'применяется к dataplane';
+    case 'verifying': return 'проверяется management path и dataplane';
+    case 'data_plane_unverified': return 'dataplane ещё не подтверждён';
     case 'awaiting_confirmation': return 'путь проверен, завершается подтверждение';
     case 'committing': return 'фиксируется активная ревизия';
+    case 'rolling_back': return 'откатывается к последней рабочей конфигурации';
     case 'requires_device': return 'нужна проверка устройства перед применением';
     case 'recovery_required': return 'заблокировано: требуется recovery';
     case 'failed': return 'автоматическое применение не удалось';
@@ -70,7 +74,7 @@ function smartDNSOperationLabel(operation: any): string {
 }
 
 function smartDNSOperationActive(operation: any): boolean {
-  return ['draft', 'validated', 'applying', 'awaiting_confirmation', 'committing'].includes(textValue(operation?.state, ''));
+  return ['draft', 'validated', 'prepared', 'applying', 'verifying', 'data_plane_unverified', 'awaiting_confirmation', 'committing', 'rolling_back'].includes(textValue(operation?.state, ''));
 }
 
 async function waitForSmartDNSCommit(changeID: string): Promise<{ status: any; state: string }> {

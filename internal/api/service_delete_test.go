@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -94,6 +95,59 @@ func TestServiceDeleteAutoApplyCommitsAndRemovesRule(t *testing.T) {
 	current := srv.changes[change.ID]
 	srv.mu.Unlock()
 	t.Fatalf("delete auto-apply stayed pending: state=%s adapter=%s steps=%+v validation=%+v", current.State, current.AdapterStatus, current.Steps, current.Validation)
+}
+
+func TestServiceDeleteWithDormantAdaptiveAssignmentCommits(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	srv.mu.Lock()
+	clone := *srv.activeConfig
+	clone.Services = map[string]config.Service{
+		"discord": {Category: "TSPU_RESTRICTED", Domains: []string{"discord.com"}, AllowedPaths: []string{"zapret", "smart_dns", "vless", "drop"}},
+	}
+	// Reproduce the production shape: the adaptive assignment is valid while
+	// the service exists, but becomes dormant when its last service is deleted.
+	clone.Zapret.Binary = "/usr/bin/nfqws"
+	clone.Zapret.InitScript = "/etc/init.d/router-policy-zapret"
+	clone.Zapret.ActiveConfig = "/etc/router-policy/zapret/nfqws.conf"
+	clone.Zapret.ActivationMode = "managed"
+	clone.Zapret.Strategy = "tls-fake-ttl3-v1"
+	clone.Zapret.QueueNum = 200
+	clone.Zapret.AdaptiveEnabled = true
+	clone.Zapret.AdaptiveCatalogFile = filepath.Join(srv.cfg.Storage.StateDir, "catalog.json")
+	clone.Zapret.AdaptiveAssignments = []config.ZapretProfileAssignment{{BundleID: "discord", ProfileID: "profile-a"}}
+	clone.Routes = append(clone.Routes, config.Route{Type: "zapret", Tag: "zapret"})
+	writeAdaptiveCatalog(t, clone.Zapret.AdaptiveCatalogFile)
+	srv.activeConfig = &clone
+	srv.mu.Unlock()
+	change, err := srv.createDraftChangeWithOptions("Delete service rule", "test", srv.configVersion, []ChangeOp{{Type: "set", Path: "/services", Value: map[string]config.Service{}}}, "admin", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !srv.startAutoApplyChange(change.ID) {
+		t.Fatal("auto-apply worker did not start")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		srv.mu.Lock()
+		current := srv.changes[change.ID]
+		active := srv.activeConfig
+		srv.mu.Unlock()
+		if current.State == "committed" {
+			if _, exists := active.Services["discord"]; exists {
+				t.Fatal("committed delete left discord in active config")
+			}
+			return
+		}
+		if current.State == "failed" || current.State == "rolled_back" || current.State == "requires_device" || current.State == "recovery_required" {
+			t.Fatalf("adaptive dormant-assignment delete terminated as %s: %+v", current.State, current.Validation)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	srv.mu.Lock()
+	current := srv.changes[change.ID]
+	srv.mu.Unlock()
+	t.Fatalf("adaptive dormant-assignment delete stayed pending: state=%s adapter=%s steps=%+v validation=%+v", current.State, current.AdapterStatus, current.Steps, current.Validation)
 }
 
 func TestServicesExposeDynamicCandidateMatrixForLegacyTSPUPolicy(t *testing.T) {

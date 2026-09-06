@@ -42,6 +42,39 @@ func TestAdaptiveBindingRequiredForAssignmentChange(t *testing.T) {
 	}
 }
 
+func TestAdaptiveBindingSkipsSmartDNSRouteChange(t *testing.T) {
+	active := &config.Config{Zapret: config.Zapret{
+		AdaptiveEnabled:     true,
+		AdaptiveCatalogFile: "/etc/router-policy/zapret/catalog.json",
+		AdaptiveAssignments: []config.ZapretProfileAssignment{{BundleID: "youtube", ProfileID: "general"}},
+	}, Routes: []config.Route{{Type: "zapret", Tag: "zapret"}}}
+	candidate := *active
+	candidate.Routes = append(append([]config.Route(nil), active.Routes...), config.Route{Type: "smart_dns", Tag: "smart-primary", DNSServer: "1.1.1.1:53"})
+	if adaptiveBindingRequired(active, &candidate) {
+		t.Fatal("Smart DNS route membership change unexpectedly required adaptive artifact rebinding")
+	}
+}
+
+func TestValidateAdaptiveAssignmentsIgnoresDormantBundleWithoutService(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Zapret = config.Zapret{
+		AdaptiveEnabled:     true,
+		AdaptiveCatalogFile: filepath.Join(cfg.Storage.StateDir, "catalog.json"),
+		AdaptiveAssignments: []config.ZapretProfileAssignment{{BundleID: "discord", ProfileID: "profile-a"}},
+	}
+	writeAdaptiveCatalog(t, cfg.Zapret.AdaptiveCatalogFile)
+	profiles, bundles, err := zapret.LoadCatalogFile(cfg.Zapret.AdaptiveCatalogFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The bundle/profile are known, but no committed service currently owns
+	// the bundle.  It is dormant state, not a reason to reject an unrelated
+	// service deletion or force a Zapret redeployment.
+	if err := validateAdaptiveAssignments(cfg, profiles, bundles); err != nil {
+		t.Fatalf("dormant adaptive assignment blocked candidate: %v", err)
+	}
+}
+
 func TestAdaptiveEvaluationCommitsThroughChangeSet(t *testing.T) {
 	cfg := testAPIConfig(t)
 	cfg.Routes = append(cfg.Routes, config.Route{Type: "zapret", Tag: "zapret"})

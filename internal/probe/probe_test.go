@@ -223,6 +223,16 @@ func TestPathProofFailureNormalizesCaseVariantSuccessStatus(t *testing.T) {
 	}
 }
 
+func TestPathProofInfrastructureFailureIsNotAPathFailure(t *testing.T) {
+	engine := NewEngine(fixedProofVerifier{})
+	result := engine.finishWithPathProof(context.Background(), testConfig(), config.Route{Type: "direct", Tag: "direct"}, RouteResult{
+		Domain: "example.test", Route: "direct", RouteType: "direct", Status: "OK", ApplicationStatus: "OK", ServiceOK: true,
+	}, time.Now(), PathProofSession{BeginStatus: "INFRA_ERROR", BeginError: "active_binding_unavailable: open active-transaction.env"})
+	if result.Status != "INFRA_ERROR" || result.PathVerified || result.ReasonCode != "active_binding_unavailable" {
+		t.Fatalf("infrastructure proof failure was misreported as route failure: %+v", result)
+	}
+}
+
 func TestFinalizeCheckResultDoesNotDeriveE2EFromVerificationDuration(t *testing.T) {
 	result := finalizeCheckResult(CheckResult{
 		Status: "ok", RouteLatencyMS: 12, RouteLatencyAvailable: true,

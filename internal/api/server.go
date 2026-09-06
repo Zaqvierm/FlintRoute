@@ -1938,6 +1938,7 @@ type serviceClassifyRequest struct {
 	BaseVersion                int64    `json:"base_version"`
 	AllowDisableFlowOffloading bool     `json:"allow_disable_flow_offloading,omitempty"`
 	AutoApply                  bool     `json:"auto_apply,omitempty"`
+	SelectedRouteTag           string   `json:"selected_route_tag,omitempty"`
 }
 
 func serviceForClassifyRequest(request serviceClassifyRequest) (string, config.Service, error) {
@@ -2233,7 +2234,7 @@ func (s *Server) handleServiceClassify(w http.ResponseWriter, r *http.Request) {
 		}
 		id = requestedID
 	}
-	check, err := s.selectVerifiedServiceRoute(r.Context(), id, service)
+	check, err := s.selectVerifiedServiceRouteWithOptions(r.Context(), id, service, 0, request.SelectedRouteTag)
 	if err != nil {
 		writeError(w, r, http.StatusUnprocessableEntity, "route_verification_failed", err.Error())
 		return
@@ -2270,10 +2271,14 @@ func (s *Server) handleServiceClassify(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) selectVerifiedServiceRoute(ctx context.Context, serviceID string, service config.Service) (planner.DomainCheck, error) {
-	return s.selectVerifiedServiceRouteWithBudget(ctx, serviceID, service, 0)
+	return s.selectVerifiedServiceRouteWithOptions(ctx, serviceID, service, 0, "")
 }
 
 func (s *Server) selectVerifiedServiceRouteWithBudget(ctx context.Context, serviceID string, service config.Service, budget time.Duration) (planner.DomainCheck, error) {
+	return s.selectVerifiedServiceRouteWithOptions(ctx, serviceID, service, budget, "")
+}
+
+func (s *Server) selectVerifiedServiceRouteWithOptions(ctx context.Context, serviceID string, service config.Service, budget time.Duration, requestedRouteTag string) (planner.DomainCheck, error) {
 	active := s.currentConfig()
 	if active == nil {
 		return planner.DomainCheck{}, errors.New("active configuration is unavailable")
@@ -2327,11 +2332,14 @@ func (s *Server) selectVerifiedServiceRouteWithBudget(ctx context.Context, servi
 		// rather than forcing a user to wait for every VLESS server. An
 		// explicit exhaustive comparison can opt into FullCheck through the
 		// dedicated discovery/full-check path.
-		FullCheck: false, QuickCandidates: true, RouteProber: routeProber, HealthTracker: s.healthTracker,
+		FullCheck: requestedRouteTag != "", QuickCandidates: requestedRouteTag == "", RequestedRouteTag: requestedRouteTag, RouteProber: routeProber, HealthTracker: s.healthTracker,
 		ActiveRevision: revision,
 	})
 	if err != nil {
 		return check, fmt.Errorf("route preflight failed: %w", err)
+	}
+	if check.VerificationState == "error" {
+		return check, errors.New(check.Reason)
 	}
 	if check.Selected == nil {
 		// A legacy persisted service may carry an old allowed_paths list

@@ -437,10 +437,10 @@ func (v *OpenWrtPathVerifier) requiredProof(tag, routeType string) (artifact.Rou
 func (v *OpenWrtPathVerifier) verifyActiveBinding() error {
 	active, err := loadActivePathBinding(v.activeBindingPath)
 	if err != nil {
-		return fmt.Errorf("active_binding_unavailable: %w", err)
+		return &PathStatusError{Status: "INFRA_ERROR", Code: "active_binding_unavailable", Err: err}
 	}
 	if active.Binding != v.binding || active.ManifestHash != v.manifestHash {
-		return errors.New("active_binding_mismatch")
+		return &PathStatusError{Status: "INFRA_ERROR", Code: "active_binding_mismatch"}
 	}
 	return nil
 }

@@ -33,13 +33,18 @@ type Options struct {
 	// discovery/interactive quick checks. FullCheck remains the explicit full
 	// comparison mode.
 	QuickCandidates bool
-	ProbeEngine     *probe.Engine
-	RouteProber     RouteProber
-	HealthTracker   *probe.HealthTracker
-	DecisionCache   *domaincache.Manager
-	ActiveRevision  string
-	DeviceMAC       string
-	Now             func() time.Time
+	// RequestedRouteTag is set only by an explicit user action such as
+	// "apply this verified route".  It forces a fresh proof of that exact
+	// route; a different healthy candidate must not silently replace the
+	// user's selection.
+	RequestedRouteTag string
+	ProbeEngine       *probe.Engine
+	RouteProber       RouteProber
+	HealthTracker     *probe.HealthTracker
+	DecisionCache     *domaincache.Manager
+	ActiveRevision    string
+	DeviceMAC         string
+	Now               func() time.Time
 }
 
 type CandidatePlan struct {
@@ -190,6 +195,15 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 		result := prober.ProbeRoute(ctx, cfg, profile.domain, profile.name, service, route)
 		result = bindResultToCandidate(result, route, opts.ActiveRevision)
 		out.Results = append(out.Results, result)
+		if strings.EqualFold(strings.TrimSpace(result.Status), "INFRA_ERROR") {
+			out.Status = "ERROR"
+			out.VerificationState = "error"
+			out.Reason = "verification_infrastructure_failed: " + result.ReasonCode
+			out.Confidence = 0
+			out.CheckedAt = optionNow(opts)
+			out.VerificationDurationMS = time.Since(verificationStarted).Milliseconds()
+			return out, nil
+		}
 		if !probeResultTerminal(result) {
 			// RouteProber is synchronous: an in-progress or malformed result is
 			// not evidence that this candidate failed.  Do not let it fall
@@ -209,6 +223,9 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 			directAttempted = true
 			directLookedLikeTSPU = looksLikeTSPU(result)
 		}
+		if opts.RequestedRouteTag != "" && route.Tag == opts.RequestedRouteTag && selectionEvidence(result) {
+			break
+		}
 		// A regional denial is only a classification signal when it came from
 		// the direct baseline.  A failed alternate route must not by itself
 		// rewrite the service policy or make every other route ineligible.
@@ -223,7 +240,7 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 		// A normal observation stops at the first fully verified Direct path.
 		// Explicit verification requests set FullCheck and continue through the
 		// complete eligible inventory so the UI can show the comparison matrix.
-		if route.Type == "direct" && !opts.FullCheck && selectionEvidence(result) &&
+		if route.Type == "direct" && opts.RequestedRouteTag == "" && !opts.FullCheck && selectionEvidence(result) &&
 			!result.RegionalBlock && !result.SuspectedTSPU && !looksLikeTSPU(result) {
 			break
 		}
@@ -231,7 +248,7 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 		// VLESS pool after the first healthy non-RU service path. FullCheck is
 		// the explicit escape hatch for a complete comparison matrix; ordinary
 		// traffic uses the first verified candidate and avoids probe storms.
-		if route.Type == "vless" && opts.QuickCandidates && !opts.FullCheck && selectionEvidence(result) &&
+		if route.Type == "vless" && opts.RequestedRouteTag == "" && opts.QuickCandidates && !opts.FullCheck && selectionEvidence(result) &&
 			!result.RegionalBlock && !result.AuthenticationRequired && !result.WAFOrRateLimit {
 			break
 		}
@@ -278,7 +295,22 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 	if currentRoute == "" {
 		currentRoute = currentHealthyRoute(opts.HealthTracker)
 	}
-	if selected := SelectBestWithPolicy(allowedResults, cfg.Policy, currentRoute, opts.HealthTracker); selected != nil {
+	var selected *probe.RouteResult
+	if requested := strings.TrimSpace(opts.RequestedRouteTag); requested != "" {
+		for i := range allowedResults {
+			if allowedResults[i].Route == requested {
+				candidate := allowedResults[i]
+				selected = &candidate
+				break
+			}
+		}
+		if selected == nil {
+			out.Reason = "requested_route_not_verified"
+		}
+	} else {
+		selected = SelectBestWithPolicy(allowedResults, cfg.Policy, currentRoute, opts.HealthTracker)
+	}
+	if selected != nil {
 		out.Selected = selected
 		out.Status = "SELECTED"
 		out.Reason = "best_verified_policy_allowed_route"
@@ -751,7 +783,7 @@ func probeResultTerminal(result probe.RouteResult) bool {
 	case "", "VERIFYING", "PROBING", "WAITING", "WAITING_FOR_VERIFICATION", "IN_PROGRESS":
 		return false
 	case "PASS", "FAIL", "OK", "DEGRADED", "NOT_CONFIGURED", "NOT_APPLICABLE", "UNVERIFIED",
-		"RU_EXIT", "REGION_BLOCK", "SUSPECTED_TSPU", "AUTH_REQUIRED", "WAF_OR_RATE_LIMIT", "DROP", "TIMEOUT", "ERROR":
+		"RU_EXIT", "REGION_BLOCK", "SUSPECTED_TSPU", "AUTH_REQUIRED", "WAF_OR_RATE_LIMIT", "DROP", "TIMEOUT", "ERROR", "INFRA_ERROR":
 		return true
 	default:
 		// Unknown evidence is malformed, not proof that the candidate reached

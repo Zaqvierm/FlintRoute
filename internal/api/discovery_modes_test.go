@@ -98,6 +98,15 @@ func TestDiscoveryCandidateDetailsExcludeProxySecrets(t *testing.T) {
 	}
 }
 
+func TestDiscoveryCandidateDetailsMarksSystemDefaultAsBaseline(t *testing.T) {
+	items := discoveryCandidateDetails([]probe.RouteResult{{
+		Route: "system-default", RouteType: "direct", Status: "OK", PathVerified: true, ServiceOK: true,
+	}})
+	if len(items) != 1 || items[0]["baseline"] != true || items[0]["selection_eligible"] != false {
+		t.Fatalf("system default was exposed as a selectable candidate: %+v", items)
+	}
+}
+
 func TestCachedVerificationDurationUsesStoredEvidence(t *testing.T) {
 	check := planner.DomainCheck{
 		Cached: true, VerificationDurationMS: 812,

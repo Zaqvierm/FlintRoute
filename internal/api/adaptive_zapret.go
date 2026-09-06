@@ -139,6 +139,16 @@ func validateAdaptiveAssignments(cfg *config.Config, profiles *zapret.Catalog, b
 		if !ok {
 			return fmt.Errorf("adaptive bundle %s is unavailable", assignment.BundleID)
 		}
+		// A service deletion can leave a previously committed adaptive
+		// assignment without any remaining domain that belongs to the bundle.
+		// That assignment is dormant: it cannot affect dataplane traffic and
+		// must not make an otherwise unrelated service deletion fail merely
+		// because its fallback route is not present in the candidate.  Keep the
+		// assignment in the typed config so a later service can reuse it, but
+		// validate route policy only while the bundle is actually referenced.
+		if len(adaptiveBundleServiceNames(cfg, runtime, bundle.ID)) == 0 {
+			continue
+		}
 		if !adaptiveRouteAllowed(cfg, runtime, bundle.ID, bundle.FailureRoute) {
 			return fmt.Errorf("adaptive bundle %s has unavailable failure route %s", bundle.ID, bundle.FailureRoute)
 		}

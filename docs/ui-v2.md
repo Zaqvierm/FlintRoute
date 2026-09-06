@@ -120,4 +120,13 @@ offers `Apply verified route`; that action starts the same bounded transaction
 used by the rule editor and waits for its terminal state. Rule deletion follows
 the same contract: the confirmation action polls the ChangeSet until
 `committed`, `failed`, `rolled_back`, `requires_device`, or `recovery_required`
-and never leaves the user with an indefinite "deleting" state.
+and never leaves the user with an indefinite "deleting" state. Durable
+intermediate states (`prepared`, `applying`, `verifying`, `rolling_back`) remain
+pending; they are not terminal errors. The selected-route action sends the
+concrete route tag and the backend performs a fresh proof for that exact tag,
+so a faster unrelated candidate cannot silently replace the user's choice.
+
+The synthetic `system-default` path is an unmarked OpenWrt baseline for an
+unknown domain, not an owned FlintRoute route. It is shown as a baseline in the
+trace, excluded from selectable candidate lists, and cannot be committed as a
+managed route.

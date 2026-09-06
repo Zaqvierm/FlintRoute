@@ -131,8 +131,10 @@ func (s *Server) releasePendingDiscovery(domain string) {
 func discoveryCandidateDetails(results []probe.RouteResult) []map[string]any {
 	items := make([]map[string]any, 0, len(results))
 	for _, result := range results {
+		baseline := result.Route == "system-default" && result.RouteType == "direct"
 		item := map[string]any{
 			"route": result.Route, "route_type": result.RouteType, "status": result.Status,
+			"baseline": baseline, "selection_eligible": !baseline,
 			"path_verified": result.PathVerified, "service_ok": result.ServiceOK,
 			"reason":                       result.ReasonCode,
 			"selection_score":              result.SelectionScore,

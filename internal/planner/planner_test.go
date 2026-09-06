@@ -914,6 +914,30 @@ func TestQuickCheckStopsAfterFirstVerifiedVLESS(t *testing.T) {
 	}
 }
 
+func TestRequestedRouteForcesFreshProofInsteadOfReplacingSelection(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cfg.Routes = []config.Route{
+		{Type: "direct", Tag: "direct", Priority: 10},
+		{Type: "vless", Tag: "vless-requested", Priority: 40, SOCKS5: "127.0.0.1:12080", DNSMode: "socks_remote"},
+		{Type: "drop", Tag: "drop", Priority: 1000},
+	}
+	cfg.Services["requested"] = config.Service{Category: "DIRECT_PREFERRED", AllowedPaths: []string{"direct", "vless", "drop"}, Domains: []string{"requested.example"}}
+	prober := &scriptedProber{results: map[string]probe.RouteResult{
+		"direct":          successfulResult("direct", "direct", "rev-active"),
+		"vless-requested": successfulResult("vless-requested", "vless", "rev-active"),
+	}}
+	check, err := CheckDomain(context.Background(), cfg, "requested.example", "requested", Options{RouteProber: prober, ActiveRevision: "rev-active", RequestedRouteTag: "vless-requested"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.Selected == nil || check.Selected.Route != "vless-requested" {
+		t.Fatalf("explicit route was replaced by another candidate: %+v", check.Selected)
+	}
+	if len(prober.calls) != 2 || prober.calls[0] != "direct" || prober.calls[1] != "vless-requested" {
+		t.Fatalf("explicit route did not receive a fresh proof: %v", prober.calls)
+	}
+}
+
 type scriptedProber struct {
 	results  map[string]probe.RouteResult
 	calls    []string

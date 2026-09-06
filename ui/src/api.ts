@@ -437,9 +437,10 @@ export async function classifyService(
   category: string,
   baseVersion: number,
   allowedPaths?: string[],
-  allowDisableFlowOffloading = false,
-  autoApply = true,
-  serviceID?: string
+	allowDisableFlowOffloading = false,
+	autoApply = true,
+	serviceID?: string,
+	selectedRouteTag?: string
 ): Promise<{ change: ChangeSet; auto_apply_requested?: boolean; auto_apply_started?: boolean }> {
   return request('/services/classify', {
     method: 'POST',
@@ -450,7 +451,8 @@ export async function classifyService(
       allowed_paths: allowedPaths,
       base_version: baseVersion,
       allow_disable_flow_offloading: allowDisableFlowOffloading,
-      auto_apply: autoApply
+      auto_apply: autoApply,
+      selected_route_tag: selectedRouteTag
     })
   });
 }
@@ -575,7 +577,21 @@ export async function getBackups(signal?: AbortSignal): Promise<any> { return re
 export async function getSystem(signal?: AbortSignal): Promise<any> { return request('/system', { signal }); }
 export async function getChanges(signal?: AbortSignal): Promise<ChangeSet[]> { return request('/changes', { signal }); }
 export async function getChange(id: string, signal?: AbortSignal): Promise<ChangeSet> { return request(`/changes/${encodeURIComponent(id)}`, { signal }); }
-const pendingChangeStates = new Set(['draft', 'validated', 'applying', 'awaiting_confirmation', 'committing']);
+// These are all non-terminal journal states.  `prepared` and `verifying`
+// are durable transaction boundaries, not successful completion.  Treating
+// either as terminal made one-click operations report a failure while the
+// backend was still proving the dataplane.
+const pendingChangeStates = new Set([
+  'draft',
+  'validated',
+  'prepared',
+  'applying',
+  'verifying',
+  'data_plane_unverified',
+  'awaiting_confirmation',
+  'committing',
+  'rolling_back'
+]);
 export function isChangePending(state: string): boolean { return pendingChangeStates.has(state); }
 export async function waitForChangeTerminal(id: string, timeoutMs = 120000): Promise<ChangeSet> {
   const deadline = Date.now() + timeoutMs;
