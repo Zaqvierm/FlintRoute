@@ -30,12 +30,19 @@ UCI_BIN="${UCI_BIN:-uci}"
 TIMEOUT_BIN="${TIMEOUT_BIN:-timeout}"
 DF_BIN="${DF_BIN:-df}"
 DU_BIN="${DU_BIN:-du}"
-SERVICES="router-policy-helper router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
+SERVICES="router-policy-helper router-policy router-policy-xray router-policy-zapret"
+LEGACY_SERVICES="router-policy-watchdog"
 ENABLE_SERVICES="router-policy-dns-observer router-policy-boot-guard $SERVICES"
 INSTALL_TARGETS="$PREFIX $ROUTER_POLICY_BIN $ROUTER_POLICY_HELPER_BIN $INIT_DIR/router-policy-helper $INIT_DIR/router-policy $INIT_DIR/router-policy-dns-observer $INIT_DIR/router-policy-boot-guard $INIT_DIR/router-policy-watchdog $INIT_DIR/router-policy-xray $INIT_DIR/router-policy-zapret $HOTPLUG_IFACE_DIR/95-router-policy $HOTPLUG_FIREWALL_DIR/95-router-policy $UBUS_ACL_DIR/router-policy-provider.json $ETC_DIR/config/default.json $ETC_DIR/config/factory-default.json $ETC_DIR/config/schema.json $ETC_DIR/config/listener.conf $ETC_DIR/helper.env $ETC_DIR/secrets/vpn-subscription-url $ETC_DIR/secrets/vpn-subscription-url.hwid.json $ETC_DIR/secrets/happ-crypt4-private-key.pem $ETC_DIR/secrets/telegram.json $ETC_DIR/secrets/webhook.env $ETC_DIR/secrets $DNSMASQ_DIR/router-policy.conf $STATE_DIR/last-backup-path $STATE_DIR/auth/setup-token.json"
 
 PREFIX_SWITCH_MARKER="$STATE_DIR/prefix-switch.env"
 MANAGED_FILE_MANIFEST="$PREFIX/.managed-files.manifest"
+# This is the exact legacy FlintRoute watchdog shipped before procd became the
+# sole lifecycle owner.  The hash is used only to prove ownership before the
+# one-time migration removes the old service; a modified/foreign file fences
+# installation instead of being overwritten or deleted.
+LEGACY_WATCHDOG_SHA256="ac6b0e991bb22cbc1ae050709c62ab0a5273de4163bf4b51d786d62bfb28cc21"
+LEGACY_WATCHDOG_TARGET="$INIT_DIR/router-policy-watchdog"
 
 # These directories belong to OpenWrt, not to FlintRoute.  They must never be
 # represented by a rollback archive entry: restoring synthetic staging
@@ -175,7 +182,7 @@ preflight_install() {
     command -v sha256sum >/dev/null 2>&1 || { echo "sha256sum is required to verify this install bundle" >&2; return 1; }
     (cd "$ROOT" && sha256sum -c SHA256SUMS >/dev/null) || { echo "install bundle checksum verification failed" >&2; return 1; }
   fi
-  validate_critical_system_dirs && validate_backup_paths && preflight_disk_space
+  validate_critical_system_dirs && validate_backup_paths && validate_legacy_watchdog_ownership && preflight_disk_space
 }
 
 regular_file_mode_matches() {
@@ -201,6 +208,49 @@ hash_file() {
   fi
 }
 
+validate_legacy_watchdog_ownership() {
+  [ -e "$LEGACY_WATCHDOG_TARGET" ] || return 0
+  [ -f "$LEGACY_WATCHDOG_TARGET" ] && [ ! -L "$LEGACY_WATCHDOG_TARGET" ] || {
+    echo "install blocked: legacy watchdog target is not a regular file: $LEGACY_WATCHDOG_TARGET" >&2
+    return 1
+  }
+  legacy_actual_hash="$(hash_file "$LEGACY_WATCHDOG_TARGET")" || return 1
+  [ "$legacy_actual_hash" = "$LEGACY_WATCHDOG_SHA256" ] || {
+    echo "install blocked: legacy watchdog content is modified or foreign: $LEGACY_WATCHDOG_TARGET" >&2
+    return 1
+  }
+  # If an older managed-file manifest exists, it must agree with the exact
+  # migration hash.  This prevents a same-named foreign service from being
+  # mistaken for FlintRoute ownership.
+  if [ -f "$MANAGED_FILE_MANIFEST" ]; then
+    legacy_manifest_hash="$(sed -n "s#^$LEGACY_WATCHDOG_TARGET|##p" "$MANAGED_FILE_MANIFEST")"
+    [ "$legacy_manifest_hash" = "$LEGACY_WATCHDOG_SHA256" ] || {
+      echo "install blocked: legacy watchdog ownership manifest does not match" >&2
+      return 1
+    }
+  fi
+}
+
+remove_legacy_watchdog() {
+  [ -z "$SYSTEM_ROOT" ] || return 0
+  [ -e "$LEGACY_WATCHDOG_TARGET" ] || return 0
+  validate_legacy_watchdog_ownership || return 1
+  if run_bounded "$LEGACY_WATCHDOG_TARGET" running >/dev/null 2>&1; then
+    run_bounded "$LEGACY_WATCHDOG_TARGET" stop >/dev/null
+    wait_service_stopped "$LEGACY_WATCHDOG_TARGET" || {
+      echo "install blocked: legacy watchdog did not stop cleanly" >&2
+      return 1
+    }
+  fi
+  run_bounded "$LEGACY_WATCHDOG_TARGET" disable >/dev/null 2>&1 || {
+    echo "install blocked: legacy watchdog could not be disabled" >&2
+    return 1
+  }
+  rm -f "$LEGACY_WATCHDOG_TARGET"
+  sync_file_and_parent "$LEGACY_WATCHDOG_TARGET"
+  echo "legacy_watchdog=removed"
+}
+
 managed_static_paths() {
   printf '%s\n' \
     "$ROUTER_POLICY_BIN" \
@@ -209,7 +259,6 @@ managed_static_paths() {
     "$INIT_DIR/router-policy" \
     "$INIT_DIR/router-policy-dns-observer" \
     "$INIT_DIR/router-policy-boot-guard" \
-    "$INIT_DIR/router-policy-watchdog" \
     "$INIT_DIR/router-policy-xray" \
     "$INIT_DIR/router-policy-zapret" \
     "$HOTPLUG_IFACE_DIR/95-router-policy" \
@@ -375,6 +424,9 @@ is_managed_service() {
   # runtime dependency so rollback can restore the state of a dnsmasq restart
   # triggered by observer activation.
   [ "$candidate_service" = "dnsmasq" ] && return 0
+  for legacy_service in $LEGACY_SERVICES; do
+    [ "$candidate_service" = "$legacy_service" ] && return 0
+  done
   for allowed_service in $ENABLE_SERVICES; do
     [ "$candidate_service" != "$allowed_service" ] || return 0
   done
@@ -731,6 +783,19 @@ snapshot_installation() {
     fi
     echo "$service|$enabled|$running" >> "$services"
   done
+  # Keep the legacy watchdog state only for failure rollback.  It is not part
+  # of the new enabled-service set and is never restored after a successful
+  # migration.
+  for service in $LEGACY_SERVICES; do
+    init="$INIT_DIR/$service"
+    enabled=0
+    running=0
+    if [ -z "$SYSTEM_ROOT" ]; then
+      [ -x "$init" ] && run_bounded "$init" enabled >/dev/null 2>&1 && enabled=1
+      [ -x "$init" ] && run_bounded "$init" running >/dev/null 2>&1 && running=1
+    fi
+    echo "$service|$enabled|$running" >> "$services"
+  done
   # Observer activation may restart dnsmasq after the file snapshot is taken.
   # Keep its pre-install enabled/running state in the same integrity-checked
   # service manifest, but do not include it in ENABLE_SERVICES: successful
@@ -814,7 +879,7 @@ restore_installation() {
   if [ -z "$SYSTEM_ROOT" ]; then
     # Stop the non-root controller before the privileged helper so rollback
     # cannot restore a mixed binary/config generation underneath a live peer.
-    for service in router-policy-watchdog router-policy router-policy-helper; do
+    for service in $LEGACY_SERVICES router-policy router-policy-helper; do
       init="$INIT_DIR/$service"
       if [ -x "$init" ] && run_bounded "$init" running >/dev/null 2>&1; then
         run_bounded "$init" stop >/dev/null 2>&1 || service_restore_ok=0
@@ -1003,10 +1068,6 @@ restore_installation() {
         if run_bounded "$init" running >/dev/null 2>&1; then service_restore_ok=0; fi
       fi
     done
-    if [ "$service_restore_ok" = "1" ] && service_was_running router-policy-watchdog; then
-      run_bounded "$INIT_DIR/router-policy-watchdog" start >/dev/null 2>&1 || service_restore_ok=0
-      [ "$service_restore_ok" != "1" ] || run_bounded "$INIT_DIR/router-policy-watchdog" running >/dev/null 2>&1 || service_restore_ok=0
-    fi
   fi
   if [ "$service_restore_ok" != "1" ]; then
     echo "install_rollback=files-restored-services-unverified" >&2
@@ -1225,7 +1286,7 @@ stop_control_services_for_upgrade() {
   # Stop the controller before its privileged helper.  Replacing helper
   # artifacts while the old process is serving requests would leave a mixed
   # generation; a fresh controller must never race an old helper.
-  for service in router-policy-watchdog router-policy router-policy-helper; do
+  for service in $LEGACY_SERVICES router-policy router-policy-helper; do
     service_was_running "$service" || continue
     init="$INIT_DIR/$service"
     run_bounded "$init" stop >/dev/null
@@ -1274,10 +1335,6 @@ restart_running_services() {
       fi
     fi
   done
-  if service_was_running router-policy-watchdog; then
-    run_bounded "$INIT_DIR/router-policy-watchdog" start
-    run_bounded "$INIT_DIR/router-policy-watchdog" running
-  fi
 }
 
 start_control_services() {
@@ -1285,7 +1342,7 @@ start_control_services() {
   # The helper is the dependency boundary: it must be running before the
   # non-root controller is started.  Starting the controller first creates a
   # deterministic health failure on a clean install.
-  for service in router-policy-helper router-policy router-policy-watchdog; do
+  for service in router-policy-helper router-policy; do
     if ! "$INIT_DIR/$service" running >/dev/null 2>&1; then
       run_bounded "$INIT_DIR/$service" start
     fi
@@ -1679,9 +1736,9 @@ install_files() {
   atomic_copy "$ROOT/openwrt/init.d/router-policy" "$INIT_DIR/router-policy" 755
   atomic_copy "$ROOT/openwrt/init.d/router-policy-dns-observer" "$INIT_DIR/router-policy-dns-observer" 755
   atomic_copy "$ROOT/openwrt/init.d/router-policy-boot-guard" "$INIT_DIR/router-policy-boot-guard" 755
-  atomic_copy "$ROOT/openwrt/init.d/router-policy-watchdog" "$INIT_DIR/router-policy-watchdog" 755
   atomic_copy "$ROOT/openwrt/init.d/router-policy-xray" "$INIT_DIR/router-policy-xray" 755
   atomic_copy "$ROOT/openwrt/init.d/router-policy-zapret" "$INIT_DIR/router-policy-zapret" 755
+  remove_legacy_watchdog
   atomic_copy "$ROOT/openwrt/hotplug/iface/95-router-policy" "$HOTPLUG_IFACE_DIR/95-router-policy" 755
   atomic_copy "$ROOT/openwrt/hotplug/firewall/95-router-policy" "$HOTPLUG_FIREWALL_DIR/95-router-policy" 755
   atomic_copy "$ROOT/openwrt/acl.d/router-policy-provider.json" "$UBUS_ACL_DIR/router-policy-provider.json" 644
@@ -1903,7 +1960,8 @@ dry_run() {
   echo "would_backup=$BACKUP_DIR"
   echo "would_install_prefix=$PREFIX"
   echo "would_install_config=$ETC_DIR/config/default.json"
-  echo "would_install_services=router-policy-dns-observer router-policy-boot-guard router-policy-helper router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
+  echo "would_install_services=router-policy-dns-observer router-policy-boot-guard router-policy-helper router-policy router-policy-xray router-policy-zapret"
+  echo "would_remove_legacy_service=router-policy-watchdog (only after exact ownership proof)"
   echo "would_not_enable_services_without=--enable-services"
   echo "would_not_activate_without=--activate --yes"
   echo "would_install_zapret_calibration_runner=$PREFIX/scripts/calibrate-zapret.sh"
@@ -1954,10 +2012,9 @@ case "$mode" in
       run_bounded "$INIT_DIR/router-policy-boot-guard" enable
       run_bounded "$INIT_DIR/router-policy-helper" enable
       run_bounded "$INIT_DIR/router-policy" enable
-      run_bounded "$INIT_DIR/router-policy-watchdog" enable
       start_control_services
-      echo "services_enabled=router-policy-dns-observer router-policy-boot-guard router-policy-helper router-policy router-policy-watchdog"
-      echo "control_services_running=router-policy-helper router-policy router-policy-watchdog"
+      echo "services_enabled=router-policy-dns-observer router-policy-boot-guard router-policy-helper router-policy"
+      echo "control_services_running=router-policy-helper router-policy"
       echo "dataplane_services_boot_enabled=false"
     else
       echo "services_enabled=false"

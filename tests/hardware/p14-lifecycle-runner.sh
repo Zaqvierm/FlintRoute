@@ -57,7 +57,7 @@ rp_production() {
 }
 
 managed_pids() {
-  for service in router-policy router-policy-xray router-policy-zapret router-policy-watchdog; do
+  for service in router-policy router-policy-xray router-policy-zapret; do
     json="$(ubus call service list "{\"name\":\"$service\"}" 2>/dev/null || true)"
     pid="$(printf '%s' "$json" | jsonfilter -e '@.*.instances.*.pid' 2>/dev/null | head -n 1)"
     if [ -n "$pid" ] && [ -r "/proc/$pid/stat" ]; then
@@ -118,7 +118,7 @@ owned_file="$RUNTIME_DIR/$stale_id-owned.txt"
 cp "$TEST_CONFIG" "$stale_config"
 printf 'owned by %s\n' "$stale_id" > "$owned_file"
 rp_test lifecycle begin --id "$stale_id" --lease 1s >/dev/null
-"$BIN" watchdog --health-url http://127.0.0.1:8787/api/v1/health --interval 1h --startup-grace 24h --failure-threshold 20 --inhibit-file "$stale_config" --service-script /etc/init.d/router-policy >/dev/null 2>&1 &
+sleep 600 >/dev/null 2>&1 &
 stale_pid=$!
 STALE_PID="$stale_pid"
 rp_test lifecycle add-process --id "$stale_id" --resource worker --pid "$stale_pid" --executable "$BIN" --config "$stale_config" >/dev/null
@@ -147,7 +147,7 @@ crash_id="p14-crash-$suffix"
 crash_config="$RUNTIME_DIR/$crash_id-config.json"
 cp "$TEST_CONFIG" "$crash_config"
 rp_test lifecycle begin --id "$crash_id" --lease 1s >/dev/null
-"$BIN" watchdog --health-url http://127.0.0.1:8787/api/v1/health --interval 1h --startup-grace 24h --failure-threshold 20 --inhibit-file "$crash_config" --service-script /etc/init.d/router-policy >/dev/null 2>&1 &
+sleep 600 >/dev/null 2>&1 &
 crash_pid=$!
 CRASH_PID="$crash_pid"
 rp_test lifecycle add-process --id "$crash_id" --resource worker --pid "$crash_pid" --executable "$BIN" --config "$crash_config" >/dev/null

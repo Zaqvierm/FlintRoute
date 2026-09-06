@@ -42,7 +42,7 @@ state-changing операция идёт через API и ChangeSet.
 
 | Конечная точка | Цель |
 |---|---|
-| `/api/v1/health` | неаутентифицированный health локального watchdog |
+| `/api/v1/health` | неаутентифицированный health control plane, recovery и adapter consistency; procd владеет lifecycle |
 | `/api/v1/auth/login` `setup` `logout` `me` | жизненный цикл сессии |
 | `/api/v1/overview` | обзор провайдера |
 | `/api/v1/topology` | топология, собранная из ubus, аренды, соседей, мостовой FDB и беспроводных станций; `privacy=hidden` редактирует адреса клиентов |

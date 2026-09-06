@@ -89,9 +89,10 @@ sh install.sh --install
 подтверждённого плана миграции и backup текущего dataplane.
 
 Команда устанавливает ARM64-бинарник, OpenWrt adapter, init-скрипты и hotplug
-hooks. DNS observer, `router-policy-helper`, `router-policy`, boot guard и
-watchdog включаются для следующей загрузки; helper запускается перед
-непривилегированным controller, а control plane и watchdog запускаются сразу.
+hooks. DNS observer, `router-policy-helper`, `router-policy` и boot guard
+включаются для следующей загрузки; helper запускается перед
+непривилегированным controller. Отдельный procd watchdog больше не является
+lifecycle authority и не устанавливается.
 Если helper не поднялся, controller не получает fallback на прямое выполнение:
 health остаётся fail-closed. Одноразовый observer bootstrap выполняется до
 штатного dnsmasq и не перезапускает DHCP/DNS в конце загрузки. Xray и nfqws не включаются вслепую: ими управляет
@@ -114,8 +115,8 @@ Factory OpenWrt не требует отдельного `coreutils-stat`: ре�
 regular file проверяется переносимо штатными `ls` и `awk`.
 In-place upgrade работающего controller также требует поддержку maintenance
 lease установленной версией. Старый controller без этого контракта нужно заранее
-явно остановить вместе с watchdog; installer не будет автоматически оживлять
-неизвестную legacy-версию.
+явно остановить. Legacy `router-policy-watchdog` удаляется только при exact
+ownership/hash proof; изменённый или foreign файл блокирует установку.
 
 Installer сохраняет backup и печатает его путь. Если проверка конфига, запуск
 сервиса, ожидание `/api/v1/health` или другой шаг завершается ошибкой,
@@ -133,7 +134,7 @@ FlintRoute. Неизвестная или повреждённая запись 
 Degraded-ответ или смена revision оставляют rollback включённым.
 
 До копирования bbolt installer фиксирует состояния сервисов, включает
-maintenance lease, останавливает watchdog и controller. Rollback проверяет, что
+maintenance lease и останавливает controller/helper. Rollback проверяет, что
 оба процесса действительно остановлены, и только потом заменяет файлы. Если
 procd не подтверждает остановку, файлы не трогаются, а результат содержит
 `blocked-managed-services-still-running`. Это лучше, чем собирать на живом
@@ -165,7 +166,7 @@ sh install.sh --install --enable-services
 Пользовательский `config/default.json`, secrets и persistent state не
 перезаписываются. Новый штатный конфиг сохраняется как
 `config/factory-default.json`. Обновление перезапускает control plane, ждёт его
-health и только после этого возвращает watchdog. Production Xray и Zapret не
+health. Production Xray и Zapret не
 перезапускаются; installer проверяет, что их исходное running/stopped состояние
 не изменилось.
 

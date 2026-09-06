@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck disable=SC2016
 set -eu
 
 ROOT=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd)
@@ -31,12 +32,17 @@ grep -F 'ROUTER_POLICY_HELPER_SOCKET=/var/run/router-policy/helper.sock' "$INIT"
 # because its fixed Unix socket does not exist yet.
 grep -F "run_bounded \"\$INIT_DIR/router-policy-helper\" enable" "$INSTALL" >/dev/null
 start_block=$(awk '/^start_control_services\(\)/,/^}/' "$INSTALL")
-helper_line=$(printf '%s\n' "$start_block" | grep -n 'for service in router-policy-helper router-policy router-policy-watchdog' | cut -d: -f1)
+helper_line=$(printf '%s\n' "$start_block" | grep -n 'for service in router-policy-helper router-policy' | cut -d: -f1)
 [ -n "$helper_line" ] || {
   echo "controller start order does not declare helper dependency" >&2
   exit 1
 }
-grep -F 'for service in router-policy-watchdog router-policy router-policy-helper' "$INSTALL" >/dev/null
+# shellcheck disable=SC2016
+grep -F 'for service in $LEGACY_SERVICES router-policy router-policy-helper' "$INSTALL" >/dev/null
+if printf '%s\n' "$start_block" | grep -F 'router-policy-watchdog' >/dev/null; then
+  echo "controller start path still owns a second watchdog service" >&2
+  exit 1
+fi
 grep -F 'controller was running without its helper service' "$INSTALL" >/dev/null
 
 echo "controller_bind_safety=loopback_default_private_lan_opt_in"
