@@ -166,6 +166,8 @@ func (e AdapterExecutor) executeProbe(ctx context.Context, request Request) Resp
 		if len(output) == 0 && err == nil {
 			err = errors.New("conntrack_mark_not_found")
 		}
+	case "guard_begin", "guard_end":
+		return e.executeProbeGuard(ctx, request, probeRequest)
 	default:
 		err = errors.New("probe operation is not allowlisted")
 	}
@@ -180,6 +182,43 @@ func (e AdapterExecutor) executeProbe(ctx context.Context, request Request) Resp
 		return response
 	}
 	response.Evidence = map[string]string{"payload": string(output)}
+	response.Accepted = true
+	response.State = "accepted"
+	return response
+}
+
+func (e AdapterExecutor) executeProbeGuard(ctx context.Context, request Request, probe *ProbeRequest) Response {
+	response := ResponseFrom(request, false, "", "")
+	verb := "probe-guard-end"
+	if probe.Operation == "guard_begin" {
+		verb = "probe-guard-begin"
+	}
+	command := exec.CommandContext(ctx, e.AdapterPath, verb, e.ConfigPath, probe.GuardID, probe.RouteTag, probe.Mark)
+	raw, err := command.CombinedOutput()
+	if len(raw) > 64<<10 {
+		raw = raw[:64<<10]
+	}
+	evidence := parseEvidence(raw)
+	response.Operation = "guard_" + strings.TrimPrefix(verb, "probe-guard-")
+	response.SemanticState = evidence["transaction_state"]
+	response.Reason = evidence["reason"]
+	response.Evidence = evidence
+	if err != nil {
+		response.ErrorCode = "probe_guard_failed"
+		response.Error = "probe guard operation failed"
+		return response
+	}
+	if probe.Operation == "guard_begin" && evidence["guard"] != "active" {
+		response.ErrorCode = "probe_guard_not_active"
+		response.Error = "probe guard was not semantically activated"
+		return response
+	}
+	if probe.Operation == "guard_end" && evidence["guard"] != "cleared" {
+		response.ErrorCode = "probe_guard_not_cleared"
+		response.Error = "probe guard was not semantically cleared"
+		return response
+	}
+	response.Evidence["payload"] = evidence["guard"]
 	response.Accepted = true
 	response.State = "accepted"
 	return response

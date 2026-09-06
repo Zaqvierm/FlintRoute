@@ -94,6 +94,49 @@ func TestServiceVerifyIsReadOnlyAndPersistsFreshEvidence(t *testing.T) {
 	}
 }
 
+func TestServiceVerifyAcceptsDomainOnlyPreviewWithoutCreatingPolicy(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	called := false
+	srv.domainChecker = func(_ context.Context, candidate *config.Config, domain, serviceID string, _ planner.Options) (planner.DomainCheck, error) {
+		called = true
+		if !strings.HasPrefix(serviceID, "preview_") || candidate.Services[serviceID].Category != "DIRECT_PREFERRED" {
+			t.Fatalf("preview service was not ephemeral: id=%q service=%+v", serviceID, candidate.Services[serviceID])
+		}
+		result := probe.RouteResult{Domain: domain, Service: serviceID, Route: "direct", RouteType: "direct", Status: "OK", PathVerified: true, ServiceOK: true}
+		return planner.DomainCheck{Domain: domain, Service: serviceID, Status: "SELECTED", VerificationState: "verified", Selected: &result, Results: []probe.RouteResult{result}}, nil
+	}
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client, csrf := login(t, ts.URL)
+	request, err := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/verify", strings.NewReader(`{"domain":"openai.com"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", csrf)
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || !called {
+		t.Fatalf("preview status=%d called=%v body=%s", response.StatusCode, called, body)
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(envelope.Data)
+	if !strings.Contains(string(raw), `"preview":true`) || !strings.Contains(string(raw), `"path_verified":true`) {
+		t.Fatalf("preview response missing proof: %s", raw)
+	}
+	if len(srv.changes) != 0 {
+		t.Fatalf("domain-only preview created a ChangeSet: %d", len(srv.changes))
+	}
+}
+
 func TestConfiguredServiceWithoutEvidenceRemainsNotChecked(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
@@ -101,6 +144,28 @@ func TestConfiguredServiceWithoutEvidenceRemainsNotChecked(t *testing.T) {
 	srv.handleServices(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/services", nil))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"verification_state":"not_checked"`) {
 		t.Fatalf("configured service was presented as verified without evidence: %s", recorder.Body.String())
+	}
+}
+
+func TestInteractiveVerifySelectsVerifiedVLESSDespiteLegacyTSPUAllowedPaths(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	srv.mu.Lock()
+	clone := *srv.activeConfig
+	clone.Routes = append(append([]config.Route(nil), clone.Routes...), config.Route{Type: "vless", Tag: "proxy-5", Status: "SELECTED", SOCKS5: "127.0.0.1:12004"})
+	srv.activeConfig = &clone
+	srv.mu.Unlock()
+	srv.domainChecker = func(_ context.Context, _ *config.Config, domain, serviceID string, _ planner.Options) (planner.DomainCheck, error) {
+		result := probe.RouteResult{Domain: domain, Service: serviceID, Route: "proxy-5", RouteType: "vless", Status: "OK", PathVerified: true, ServiceOK: true, EndToEndLatencyMS: 120, EndToEndLatencyAvailable: true}
+		return planner.DomainCheck{Domain: domain, Service: serviceID, Status: "SELECTED", VerificationState: "verified", Results: []probe.RouteResult{result}}, nil
+	}
+	service := config.Service{Category: "TSPU_RESTRICTED", Domains: []string{"youtube.com"}, AllowedPaths: []string{"zapret", "direct", "drop"}}
+	check, err := srv.selectVerifiedServiceRoute(context.Background(), "youtube", service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.Selected == nil || check.Selected.Route != "proxy-5" {
+		t.Fatalf("legacy TSPU allowed_paths hid verified VLESS candidate: %+v", check)
 	}
 }
 

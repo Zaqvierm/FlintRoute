@@ -10,7 +10,8 @@ import {
   waitForChangeTerminal,
   type ChangeOp,
   type ChangeSet,
-  type SessionInfo
+  type SessionInfo,
+  type ServiceVerification
 } from '../api';
 import {
   asArray,
@@ -104,6 +105,8 @@ export function Services({
   const [deleteConfirm, setDeleteConfirm] = useState('');
   const [serviceView, setServiceView] = useState<'table' | 'board'>('table');
   const [serviceQuery, setServiceQuery] = useState('');
+  const [editorVerification, setEditorVerification] = useState<ServiceVerification | null>(null);
+  const [editorVerificationBusy, setEditorVerificationBusy] = useState(false);
   const grouped = useMemo(() => groupServices(services), [services]);
   const configuredServices = useMemo(() => grouped.filter((item) => Boolean(item.applied) || asArray(item.sources).includes('configured')), [grouped]);
   const observedServices = useMemo(() => grouped.filter((item) => !Boolean(item.applied) && !asArray(item.sources).includes('configured')), [grouped]);
@@ -138,6 +141,40 @@ export function Services({
       setMessage(error instanceof Error ? error.message : 'Не удалось изменить маршрут');
     } finally {
       setMoving('');
+    }
+  }
+
+  async function verifyEditorDomain() {
+    if (!editor || editorVerificationBusy) return;
+    const domain = editor.domain.trim();
+    if (!domain) {
+      setMessage('Сначала введи домен.');
+      return;
+    }
+    setEditorVerificationBusy(true);
+    setMessage(`Проверяю ${domain}: Direct → доступные альтернативы…`);
+    try {
+      const result = await verifyService('', domain);
+      setEditorVerification((previous) => {
+        if (!previous || previous.domain !== result.domain) return result;
+        const byRoute = new Map<string, any>();
+        [...previous.candidates, ...result.candidates].forEach((candidate: any, index) => {
+          const key = String(candidate?.route ?? candidate?.route_type ?? index);
+          byRoute.set(key, candidate);
+        });
+        return { ...result, candidates: [...byRoute.values()] };
+      });
+      setMessage(result.path_verified
+        ? `Выбран ${result.selected_route_tag || result.selected_route_type || 'маршрут'}. Можно создать правило.`
+        : result.verification_state === 'in_progress'
+          ? 'Проверка ещё идёт. Нажми «Продолжить проверку», чтобы получить следующий bounded результат.'
+          : 'Безопасный маршрут не найден. Правило не создаю.');
+    } catch (error) {
+      const info = errorInfo(error);
+      setEditorVerification(null);
+      setMessage(`${info.code}: ${info.message}`);
+    } finally {
+      setEditorVerificationBusy(false);
     }
   }
 
@@ -185,6 +222,24 @@ export function Services({
     }
   }
 
+  async function applyVerifiedService(service: any) {
+    if (role !== 'administrator' || mutationLocked || moving || !service) return;
+    const domain = textValue(asArray(service.domains)[0], '');
+    const category = serviceColumnFor(textValue(service.category, 'DIRECT_PREFERRED'));
+    if (!domain || !service.selected_route_tag || textValue(service.selected_route_type, '').toLowerCase() === 'drop') {
+      setVerificationMessage('Сначала получи подтверждённый не-DROP маршрут.');
+      return;
+    }
+    const candidateTypes = asArray(service.verification_candidates ?? service.candidate_matrix)
+      .map((candidate) => candidate && typeof candidate === 'object' ? textValue((candidate as Record<string, unknown>).route_type, '') : '')
+      .filter(Boolean);
+    const configuredTypes = asArray(service.allowed_paths).map((path) => textValue(path, '')).filter(Boolean);
+    const paths = category === 'TSPU_RESTRICTED'
+      ? Array.from(new Set([...configuredTypes.filter((path) => path !== 'direct'), ...candidateTypes, 'zapret', 'smart_dns', 'vless', 'drop']))
+      : Array.from(new Set([...configuredTypes, ...candidateTypes]));
+    await commitRule(domain, category, paths.length ? paths : defaultServicePaths(category), textValue(service.id, ''));
+  }
+
   async function deleteConfiguredService(service: any) {
     if (role !== 'administrator' || mutationLocked || deleteBusy) return;
     const serviceID = textValue(service?.id, '');
@@ -221,11 +276,21 @@ export function Services({
   }
 
   function editRule(service?: any) {
-    const category = serviceColumnFor(service?.category ?? 'DIRECT_ONLY');
+    const category = serviceColumnFor(service?.category ?? 'DIRECT_PREFERRED');
+    setEditorVerification(null);
+    setMessage('');
+    const configuredPaths = Array.isArray(service?.allowed_paths) ? service.allowed_paths.map((path: unknown) => textValue(path, '')) : [];
+    // Older committed TSPU rules were saved with zapret/direct/drop before
+    // Smart DNS and VLESS became eligible candidates. Do not let that stale
+    // list hide working routes from the editor; policy constraints still
+    // reject forbidden types on the backend.
+    const paths = category === 'TSPU_RESTRICTED'
+      ? Array.from(new Set([...configuredPaths.filter((path: string) => path !== 'direct'), 'zapret', 'smart_dns', 'vless', 'drop']))
+      : (configuredPaths.length ? configuredPaths : defaultServicePaths(category));
     setEditor({
       domain: service?.domain ?? service?.domains?.[0] ?? '',
       category,
-      paths: [...(service?.allowed_paths?.length ? service.allowed_paths : defaultServicePaths(category))],
+      paths,
       serviceID: service?.id
     });
   }
@@ -254,14 +319,25 @@ export function Services({
         </div>
       </div>
       {editor && (
+        <div class="modal-backdrop" role="presentation" onClick={() => { setEditor(null); setEditorVerification(null); }}>
         <form
-          class="service-editor"
+          class="service-editor confirm-dialog service-rule-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="service-rule-title"
+          onClick={(event) => event.stopPropagation()}
           onSubmit={(event) => {
             event.preventDefault();
             if (editor.paths.length) void commitRule(editor.domain, editor.category, editor.paths, editor.serviceID);
           }}
         >
-          <label>Домен<input value={editor.domain} placeholder="example.com" onInput={(event) => setEditor({ ...editor, domain: event.currentTarget.value })} /></label>
+          <header class="modal-header"><h2 id="service-rule-title">Новое правило</h2><button type="button" class="icon-button" aria-label="Закрыть" onClick={() => { setEditor(null); setEditorVerification(null); }}>×</button></header>
+          <label>Домен<input value={editor.domain} placeholder="example.com" onInput={(event) => { setEditor({ ...editor, domain: event.currentTarget.value }); setEditorVerification(null); }} /></label>
+          <div class="actions">
+            <button type="button" class="primary" disabled={editorVerificationBusy || !editor.domain.trim()} onClick={() => void verifyEditorDomain()}>
+              {editorVerificationBusy ? 'Проверяю…' : editorVerification?.verification_state === 'in_progress' ? 'Продолжить проверку' : 'Проверить домен'}
+            </button>
+          </div>
           <label>
             Класс
             <select
@@ -269,6 +345,7 @@ export function Services({
               onChange={(event) => {
                 const category = event.currentTarget.value;
                 setEditor({ ...editor, category, paths: defaultServicePaths(category) });
+                setEditorVerification(null);
               }}
             >
               {editableServiceColumns.map((column) => <option value={column.category}>{column.title}</option>)}
@@ -288,11 +365,25 @@ export function Services({
               })}
             </div>
           </div>
+          {editorVerification && <div class="candidate-matrix service-preview" aria-live="polite">
+            <h3>Проверка маршрутов</h3>
+            {editorVerification.candidates.map((candidate: any, index: number) => <div class="row" key={`${candidate.route ?? index}:${index}`}>
+              <b>{candidate.route ?? candidate.route_type ?? 'route'}</b>
+              <span>{candidate.status ?? 'UNVERIFIED'}{candidate.selected ? ' · выбрано' : ''}</span>
+              <small>{candidate.path_verified ? 'PathVerified' : 'не подтверждено'}{candidate.reason ? ` · ${candidate.reason}` : ''}</small>
+            </div>)}
+            <p class={editorVerification.path_verified ? 'action-status ok' : 'action-status'}>
+              {editorVerification.path_verified
+                ? `Выбрано: ${editorVerification.selected_route_tag || editorVerification.selected_route_type}. Продолжить и создать правило?`
+                : 'Ни один допустимый маршрут не прошёл DNS, service и data-path проверку.'}
+            </p>
+          </div>}
           <div class="actions">
-            <button class="primary" disabled={mutationLocked || !editor.domain.trim() || editor.paths.length === 0 || Boolean(moving)}>Применить правило</button>
-            <button type="button" onClick={() => setEditor(null)}>Отмена</button>
+            <button class="primary" disabled={mutationLocked || !editor.domain.trim() || editor.paths.length === 0 || !editorVerification?.path_verified || Boolean(moving)}>Создать и применить правило</button>
+            <button type="button" onClick={() => { setEditor(null); setEditorVerification(null); }}>Отмена</button>
           </div>
         </form>
+        </div>
       )}
       {serviceView === 'table' && <section class="service-table-card card">
         <div class="table-scroll"><table class="service-table"><thead><tr><th>Сервис</th><th>Домены</th><th>Классификация</th><th>Основной путь</th><th>Состояние</th><th aria-label="Действия" /></tr></thead><tbody>
@@ -360,6 +451,7 @@ export function Services({
          <ServiceDetails
            service={selectedService}
            onVerify={selectedService?.applied ? () => void verifyConfiguredService(selectedService) : undefined}
+           onApplyVerified={selectedService?.applied && role === 'administrator' && !mutationLocked ? () => void applyVerifiedService(selectedService) : undefined}
            verifyBusy={verificationBusy}
            verifyMessage={verificationMessage}
             onEdit={mutationLocked ? undefined : () => selectedService && editRule(selectedService)}
@@ -419,7 +511,7 @@ export function ServiceGroup({
   );
 }
 
-function ServiceDetails({ service, onVerify, verifyBusy = false, verifyMessage = '', onEdit, onDelete, deleteArmed = false, deleteBusy = false }: { service: any; onVerify?: () => void; verifyBusy?: boolean; verifyMessage?: string; onEdit?: () => void; onDelete?: () => void; deleteArmed?: boolean; deleteBusy?: boolean }) {
+function ServiceDetails({ service, onVerify, onApplyVerified, verifyBusy = false, verifyMessage = '', onEdit, onDelete, deleteArmed = false, deleteBusy = false }: { service: any; onVerify?: () => void; onApplyVerified?: () => void; verifyBusy?: boolean; verifyMessage?: string; onEdit?: () => void; onDelete?: () => void; deleteArmed?: boolean; deleteBusy?: boolean }) {
   if (!service) return null;
   const classificationConfidence = service.classification_confidence ?? service.classificationConfidence ?? service.confidence;
   // The legacy details row reads `confidence`; normalize that compatibility
@@ -450,6 +542,7 @@ function ServiceDetails({ service, onVerify, verifyBusy = false, verifyMessage =
     <h3>Связанные домены</h3><div class="domain-list">{asArray(service.domains).map((domain) => <span class="chip mono">{textValue(domain)}</span>)}</div>
     <h3>Наследование и исключения</h3><p>{asArray(service.forbidden_paths).length ? `Запрещены: ${asArray(service.forbidden_paths).join(', ')}` : 'Явных конфликтов и исключений нет.'}</p>
     {onVerify && <div class="actions"><button class="primary" disabled={verifyBusy} onClick={onVerify}>{verifyBusy ? 'Проверяю…' : 'Проверить путь сейчас'}</button></div>}
+    {onApplyVerified && serviceVerification === 'verified' && !isDrop && <div class="actions"><button class="primary" onClick={onApplyVerified}>Применить подтверждённый маршрут</button></div>}
     {verifyMessage && <p class="action-status">{verifyMessage}</p>}
     {onEdit && <button class="primary" onClick={onEdit}>Настроить правило</button>}{onDelete && <button class="danger" disabled={deleteBusy} onClick={onDelete}>{deleteBusy ? 'Удаляю…' : deleteArmed ? 'Подтвердить удаление' : 'Удалить правило'}</button>}<RawDisclosure value={service} /></>;
 }

@@ -91,13 +91,23 @@ type PathProofStarter interface {
 
 type Engine struct {
 	proofVerifier PathProofVerifier
+	guard         RouteProbeGuard
+	// reload retries the privileged OpenWrt binding after an early-start
+	// failure. The controller can start before the durable active binding is
+	// materialized; keeping the initial error verifier forever turns a transient
+	// boot race into a permanent route-not-verified state.
+	reload func() *Engine
 }
 
 func NewEngine(verifier PathProofVerifier) *Engine {
+	return NewEngineWithGuard(verifier, nil)
+}
+
+func NewEngineWithGuard(verifier PathProofVerifier, guard RouteProbeGuard) *Engine {
 	if verifier == nil {
 		verifier = unavailableProofVerifier{}
 	}
-	return &Engine{proofVerifier: verifier}
+	return &Engine{proofVerifier: verifier, guard: guard}
 }
 
 type unavailableProofVerifier struct{}

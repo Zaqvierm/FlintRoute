@@ -808,10 +808,20 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 	defer cancel()
 	check, err := s.domainChecker(checkCtx, active, observation.Domain, "", planner.Options{
 		TSPUResult: match, RouteProber: s.probeEngineFactory(active), HealthTracker: s.healthTracker,
-		DecisionCache: s.domainDecisions, ActiveRevision: revision,
+		DecisionCache: s.domainDecisions, ActiveRevision: revision, QuickCandidates: true,
 	})
 	if err != nil {
 		s.publishEvent(Event{Type: "route.decision", Severity: "warning", ReasonCode: "automatic_domain_check_failed", Details: map[string]any{"domain": observation.Domain, "error": err.Error()}})
+		// Do not leave the last transient suggestion looking as if a probe is
+		// still running forever. An infrastructure failure is a terminal
+		// diagnostic state for this observation, not NO_SAFE_ROUTE and never a
+		// route assignment. Keep it visible in RAM so the operator gets the
+		// actual cause; a restart intentionally discards it.
+		s.saveDiscoverySuggestionTransient(observation, planner.DomainCheck{
+			Domain: observation.Domain, Category: classification, Status: "ERROR",
+			Reason: "automatic_domain_check_failed: " + err.Error(), VerificationState: "error",
+			ClassificationState: "classified", TSPUStatus: match.Status,
+		})
 		return
 	}
 	details := map[string]any{
@@ -2024,6 +2034,9 @@ func (s *Server) handleServiceVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_service", err.Error())
 		return
 	}
+	// Read-only interactive verification stays bounded. A partial VERIFYING
+	// response is rendered with "Continue verification" instead of blocking
+	// the UI for a long opaque probe job.
 	check, verifyErr := s.selectVerifiedServiceRoute(r.Context(), serviceID, serviceWithVerificationDomain(service, domain))
 	persisted := 0
 	if s.store != nil {
@@ -2046,6 +2059,7 @@ func (s *Server) handleServiceVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	response := map[string]any{
 		"service_id": serviceID, "domain": domain, "status": check.Status,
+		"preview":            strings.HasPrefix(serviceID, "preview_"),
 		"verification_state": state, "reason": check.Reason,
 		"classification_confidence": check.ClassificationConfidence,
 		"classification_state":      check.ClassificationState, "classification_reason": check.ClassificationReason,
@@ -2079,6 +2093,27 @@ func serviceWithVerificationDomain(service config.Service, domain string) config
 	return service
 }
 
+func previewServiceForDomain(domain string) (string, config.Service, error) {
+	normalized, err := tspu.NormalizeDomain(domain)
+	if err != nil {
+		return "", config.Service{}, errors.New("a valid service domain is required")
+	}
+	// Preview is deliberately ephemeral: it is not a configured policy and
+	// never writes a ChangeSet. The planner still receives the full inventory
+	// so it can prove Direct first, then eligible alternatives, without the UI
+	// inventing a route order.
+	id := "preview_" + strings.NewReplacer(".", "_", "-", "_").Replace(normalized)
+	return id, config.Service{
+		Category:     "DIRECT_PREFERRED",
+		Domains:      []string{normalized},
+		AllowedPaths: []string{"direct", "zapret", "smart_dns", "vless", "drop"},
+		ProbeURLs: []config.ProbeCheck{{
+			Name: "https", URL: "https://" + normalized + "/", Required: true,
+			ExpectedCodes: []int{200, 204, 301, 302, 303, 307, 308}, BodyMode: "optional",
+		}},
+	}, nil
+}
+
 func (s *Server) configuredServiceForVerification(request serviceVerifyRequest) (string, config.Service, string, error) {
 	cfg := s.currentConfig()
 	if cfg == nil {
@@ -2090,6 +2125,13 @@ func (s *Server) configuredServiceForVerification(request serviceVerifyRequest) 
 		return "", config.Service{}, "", errors.New("configured service was not found")
 	}
 	domain := strings.TrimSpace(request.Domain)
+	if serviceID == "" && domain != "" {
+		previewID, preview, previewErr := previewServiceForDomain(domain)
+		if previewErr != nil {
+			return "", config.Service{}, "", previewErr
+		}
+		return previewID, preview, preview.Domains[0], nil
+	}
 	if domain == "" && len(service.Domains) > 0 {
 		domain = service.Domains[0]
 	}
@@ -2228,6 +2270,10 @@ func (s *Server) handleServiceClassify(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) selectVerifiedServiceRoute(ctx context.Context, serviceID string, service config.Service) (planner.DomainCheck, error) {
+	return s.selectVerifiedServiceRouteWithBudget(ctx, serviceID, service, 0)
+}
+
+func (s *Server) selectVerifiedServiceRouteWithBudget(ctx context.Context, serviceID string, service config.Service, budget time.Duration) (planner.DomainCheck, error) {
 	active := s.currentConfig()
 	if active == nil {
 		return planner.DomainCheck{}, errors.New("active configuration is unavailable")
@@ -2255,20 +2301,58 @@ func (s *Server) selectVerifiedServiceRoute(ctx context.Context, serviceID strin
 			match = found
 		}
 	}
+	// A manual preview always establishes the Direct baseline first. A cached
+	// TSPU match is still shown as evidence after that baseline, but must not
+	// hide Direct from the interactive candidate trace before the user chooses
+	// whether to continue with alternatives.
+	if strings.HasPrefix(serviceID, "preview_") {
+		match = tspu.Match{Domain: domain, Status: "NO_MATCH"}
+	}
 
 	revision, _ := s.activeIdentity()
-	probeCtx, cancel := context.WithTimeout(ctx, time.Duration(maxInt(active.Policy.MaxProbeSeconds, 15))*time.Second)
+	probeSeconds := time.Duration(maxInt(active.Policy.MaxProbeSeconds, 15)) * time.Second
+	if budget > probeSeconds {
+		probeSeconds = budget
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, probeSeconds)
 	defer cancel()
 	var routeProber planner.RouteProber
 	if s.probeEngineFactory != nil {
 		routeProber = s.probeEngineFactory(&candidate)
 	}
 	check, err := s.domainChecker(probeCtx, &candidate, domain, serviceID, planner.Options{
-		TSPUResult: match, FullCheck: true, RouteProber: routeProber, HealthTracker: s.healthTracker,
+		TSPUResult: match,
+		// The ordinary UI action is a bounded quick check: stop at the first
+		// fully verified usable route (Direct, then eligible alternatives),
+		// rather than forcing a user to wait for every VLESS server. An
+		// explicit exhaustive comparison can opt into FullCheck through the
+		// dedicated discovery/full-check path.
+		FullCheck: false, QuickCandidates: true, RouteProber: routeProber, HealthTracker: s.healthTracker,
 		ActiveRevision: revision,
 	})
 	if err != nil {
 		return check, fmt.Errorf("route preflight failed: %w", err)
+	}
+	if check.Selected == nil {
+		// A legacy persisted service may carry an old allowed_paths list
+		// (for example zapret/direct/drop) even though TSPU policy now admits
+		// every verified non-Direct route. Rebuild the eligible set from the
+		// live route inventory and evidence instead of letting that stale list
+		// erase a working VLESS result.
+		verified := make([]probe.RouteResult, 0, len(check.Results))
+		for _, result := range check.Results {
+			route, ok := candidate.RouteByTag(result.Route)
+			if !ok || !config.PathAllowed(service, route, candidate.Policy) || !planner.SelectionEvidence(result) {
+				continue
+			}
+			verified = append(verified, result)
+		}
+		if selected := planner.SelectBestWithPolicy(verified, candidate.Policy, service.SelectedRouteTag, s.healthTracker); selected != nil {
+			check.Selected = selected
+			check.Status = "SELECTED"
+			check.VerificationState = "verified"
+			check.Reason = "best_verified_policy_allowed_route"
+		}
 	}
 	if check.Selected == nil {
 		check.Selected = candidateRequiringGuardedApply(check.Results, service.AllowedPaths, candidate.Policy, s.healthTracker)

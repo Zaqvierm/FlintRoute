@@ -11,6 +11,13 @@ import (
 	"router-policy/internal/config"
 )
 
+// RouteProbeGuard is a short-lived privileged mark guard for the daemon's
+// probe socket. Production controllers remain unprivileged; the root helper
+// owns the exact nft hook chain and removes it after the attempt.
+type RouteProbeGuard interface {
+	BeginProbeGuard(context.Context, config.Route) (func() error, error)
+}
+
 func exerciseDropProbe(ctx context.Context, cfg *config.Config, route config.Route) error {
 	if cfg == nil || cfg.Platform.Target == "test" {
 		return nil

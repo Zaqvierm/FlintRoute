@@ -310,12 +310,19 @@ export function Discovery({ data, configVersion, role, mutationLocked, refresh }
         const domain = String(item.domain ?? '');
         const verified = item.path_verified === true && Boolean(item.route);
         const busySuggestion = actionDomain === domain;
-        const candidates = Array.isArray(item.candidates) ? item.candidates.filter((candidate): candidate is Record<string, unknown> => Boolean(candidate && typeof candidate === 'object')) : [];
+        // system-default is the initial-unknown policy baseline, not a
+        // selectable managed route. Keep it out of the candidate matrix so
+        // users do not mistake the kernel fallback for a verified FlintRoute
+        // path.
+        const candidates = Array.isArray(item.candidates) ? item.candidates.filter((candidate): candidate is Record<string, unknown> => Boolean(candidate && typeof candidate === 'object') && String((candidate as Record<string, unknown>).route ?? '') !== 'system-default') : [];
         const verifiedCandidates = candidates.filter((candidate) => candidate.path_verified === true && typeof candidate.route === 'string' && candidate.route);
         const classificationState = textValue(item.classification_state, 'UNKNOWN');
+        const observedAt = Date.parse(textValue(item.observed_at, ''));
+        const staleVerification = Number.isFinite(observedAt) && Date.now() - observedAt > 5 * 60 * 1000 && !verified;
+        const presentationState = verified ? 'Путь подтверждён' : staleVerification ? 'Незавершённая проверка устарела' : textValue(item.probe_state, 'Проверка не завершена');
         const selectedRoute = routeChoices[domain] ?? String(item.route ?? '');
         const applyItem = selectedRoute && selectedRoute !== String(item.route ?? '') ? { ...item, route: selectedRoute } : item;
-        return <div class="row discovery-suggestion" key={domain || 'unknown'}><div><b>{textValue(domain, 'Домен не указан')}</b><small>{textValue(item.category, 'Категория не определена')} · classification: {classificationState} · {textValue(item.route_type, 'Маршрут не определён')} · {textValue(item.route, 'не выбран')}</small>{item.classification_reason && <small>Evidence: {textValue(item.classification_reason, '')}</small>}{candidates.length > 0 && <div class="suggestion-candidates">{candidates.map((candidate, index) => <small key={`${String(candidate.route ?? index)}:${index}`}>{textValue(candidate.route, 'Маршрут')} — {candidate.path_verified === true ? 'PASS' : textValue(candidate.status, 'FAIL')}{candidate.selection_score !== undefined ? ` · score ${textValue(candidate.selection_score, '')}` : ''}{candidate.end_to_end_latency_available === true ? ` · e2e ${textValue(candidate.end_to_end_latency_ms, '')} мс` : ''}{candidate.reason ? ` · ${textValue(candidate.reason, '')}` : ''}</small>)}</div>}</div><span>{verified ? 'Путь подтверждён' : textValue(item.probe_state, 'Проверка не завершена')}</span><small>{textValue(item.reason, 'Причина не указана')} · наблюдений: {textValue(item.count, '1')}</small>{role === 'administrator' && <div class="actions">{verifiedCandidates.length > 1 && <label class="inline-select"><span>Изменить маршрут</span><select value={selectedRoute} disabled={mutationLocked || busySuggestion} onChange={(event) => setRouteChoices((old) => ({ ...old, [domain]: (event.target as HTMLSelectElement).value }))}>{verifiedCandidates.map((candidate, index) => <option value={String(candidate.route)} key={`${String(candidate.route)}:${index}`}>{String(candidate.route)}</option>)}</select></label>}<button class="primary" disabled={!verified || mutationLocked || busySuggestion} onClick={() => void actOnSuggestion(applyItem, 'apply')}>{busySuggestion ? 'Проверяю…' : 'Применить'}</button><button disabled={mutationLocked || busySuggestion} onClick={() => void actOnSuggestion(item, 'ignore')}>Игнорировать</button></div>}</div>;
+        return <div class="row discovery-suggestion" key={domain || 'unknown'}><div><b>{textValue(domain, 'Домен не указан')}</b><small>{textValue(item.category, 'Категория не определена')} · classification: {classificationState} · {textValue(item.route_type, 'Маршрут не определён')} · {textValue(item.route, 'не выбран')}</small>{item.classification_reason && <small>Evidence: {textValue(item.classification_reason, '')}</small>}{candidates.length > 0 && <div class="suggestion-candidates">{candidates.map((candidate, index) => <small key={`${String(candidate.route ?? index)}:${index}`}>{textValue(candidate.route, 'Маршрут')} — {candidate.path_verified === true ? 'PASS' : textValue(candidate.status, 'FAIL')}{candidate.selection_score !== undefined ? ` · score ${textValue(candidate.selection_score, '')}` : ''}{candidate.end_to_end_latency_available === true ? ` · e2e ${textValue(candidate.end_to_end_latency_ms, '')} мс` : ''}{candidate.reason ? ` · ${textValue(candidate.reason, '')}` : ''}</small>)}</div>}</div><span>{presentationState}</span><small>{textValue(item.reason, 'Причина не указана')} · наблюдений: {textValue(item.count, '1')}</small>{role === 'administrator' && <div class="actions">{verifiedCandidates.length > 1 && <label class="inline-select"><span>Изменить маршрут</span><select value={selectedRoute} disabled={mutationLocked || busySuggestion} onChange={(event) => setRouteChoices((old) => ({ ...old, [domain]: (event.target as HTMLSelectElement).value }))}>{verifiedCandidates.map((candidate, index) => <option value={String(candidate.route)} key={`${String(candidate.route)}:${index}`}>{String(candidate.route)}</option>)}</select></label>}<button class="primary" disabled={!verified || mutationLocked || busySuggestion} onClick={() => void actOnSuggestion(applyItem, 'apply')}>{busySuggestion ? 'Проверяю…' : 'Применить'}</button><button disabled={mutationLocked || busySuggestion} onClick={() => void actOnSuggestion(item, 'ignore')}>Игнорировать</button></div>}</div>;
       })}
       {!data.suggestions?.length && <p class="empty-state">Предложений пока нет</p>}
     </Card>
@@ -635,6 +642,14 @@ export function DecisionFlow({ events, discovery }: { events: EventItem[]; disco
 
 function DecisionDetails({ decision }: { decision: ReturnType<typeof toDecisionCard> }) {
   const d = decision.details;
+  const initialBaseline = decision.candidates.filter((candidate) => {
+    const record = asRecord(candidate);
+    return String(record.route ?? '').toLowerCase() === 'system-default';
+  });
+  const managedCandidates = decision.candidates.filter((candidate) => {
+    const record = asRecord(candidate);
+    return String(record.route ?? '').toLowerCase() !== 'system-default';
+  });
   return <><InfoGrid items={[
     ['Classification confidence', decision.classificationConfidence !== undefined ? `${Math.round(decision.classificationConfidence * 100)}%` : null],
     ['Decision confidence', decision.decisionConfidence !== undefined ? `${Math.round(decision.decisionConfidence * 100)}%` : null]
@@ -651,7 +666,8 @@ function DecisionDetails({ decision }: { decision: ReturnType<typeof toDecisionC
     ['Selection score', decision.selectionScore !== undefined ? String(decision.selectionScore) : 'unavailable'],
     ['Path verification duration', decision.verificationDurationMS !== undefined ? `${decision.verificationDurationMS} ms` : 'unavailable']
   ]} />
-  <h3>Кандидаты</h3><EvidenceList values={decision.candidates} empty="Backend не передал список кандидатов." />
+  <h3>Managed кандидаты</h3><EvidenceList values={managedCandidates} empty="Backend не передал managed-кандидатов." />
+  {initialBaseline.length > 0 && <><h3>Начальный системный baseline</h3><p class="source-note">Обычный маршрут роутера проверяется отдельно только для первого неизвестного домена. Это не managed route и не может быть назначен через FlintRoute.</p><EvidenceList values={initialBaseline} empty="Системный baseline не передал evidence." /></>}
   <h3>Временная шкала</h3><EvidenceList values={decision.timeline} empty="Подробная временная шкала отсутствует." />
   <RawDisclosure value={decision.raw} /></>;
 }

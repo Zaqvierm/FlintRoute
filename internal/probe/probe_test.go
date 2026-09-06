@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -103,6 +104,67 @@ func TestProbeHTTP200WithMarker(t *testing.T) {
 	}
 	if len(result.Checks) != 1 || !result.Checks[0].EndToEndLatencyAvailable || result.Checks[0].EndToEndLatencyMS <= 0 {
 		t.Fatalf("successful HTTP check did not record end-to-end network evidence: %+v", result)
+	}
+}
+
+func TestProbeAcceptsExpectedCrossHostRedirectWithoutFollowingIt(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatalf("cross-host redirect was followed")
+	}))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusMovedPermanently)
+	}))
+	defer source.Close()
+
+	result := ProbeRoute(context.Background(), testConfig(), "example.test", "svc", serviceWithProbe(source.URL, []int{http.StatusMovedPermanently}, "optional", nil), config.Route{Type: "direct", Tag: "direct"})
+	if result.ApplicationStatus != "OK" || !result.ServiceOK || len(result.Checks) != 1 || result.Checks[0].Status != "OK" {
+		t.Fatalf("expected the allowed redirect response to prove the service without following it: %+v", result)
+	}
+}
+
+type recordingProbeGuard struct {
+	begin int
+	end   int
+}
+
+func (g *recordingProbeGuard) BeginProbeGuard(context.Context, config.Route) (func() error, error) {
+	g.begin++
+	return func() error {
+		g.end++
+		return nil
+	}, nil
+}
+
+func TestProbeGuardCoversManagedDirectAttemptAndCleansUp(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	guard := &recordingProbeGuard{}
+	result := NewEngineWithGuard(nil, guard).ProbeRoute(context.Background(), testConfig(), "example.test", "svc", serviceWithProbe(srv.URL, []int{http.StatusOK}, "optional", nil), config.Route{Type: "direct", Tag: "direct"})
+	if result.ApplicationStatus != "OK" || guard.begin != 1 || guard.end != 1 {
+		t.Fatalf("managed probe guard was not balanced around the direct attempt: result=%+v begin=%d end=%d", result, guard.begin, guard.end)
+	}
+}
+
+func TestEngineRetriesEarlyBindingFailureAfterActiveFileAppears(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("bound proof"))
+	}))
+	defer srv.Close()
+	fresh := NewEngine(writeBoundDirectEvidence(t, "example.test", "::ffff:127.0.0.1", "127.0.0.1", 100))
+	retries := 0
+	initial := NewEngine(errorProofVerifier{err: errors.New("active_binding_unavailable: open active-transaction.env")})
+	initial.reload = func() *Engine {
+		retries++
+		return fresh
+	}
+	result := initial.ProbeRoute(context.Background(), testConfig(), "example.test", "svc", serviceWithProbe(srv.URL, []int{200}, "required", []string{"bound proof"}), config.Route{Type: "direct", Tag: "direct", Mark: "0x41"})
+	if retries != 1 || result.Status != "OK" || !result.PathVerified {
+		t.Fatalf("early binding failure was not retried after the binding became available: retries=%d result=%+v", retries, result)
 	}
 }
 

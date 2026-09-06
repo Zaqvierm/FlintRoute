@@ -29,6 +29,12 @@ func TestCheckDomainRejectsNilConfigAndAcceptsNilContextSafely(t *testing.T) {
 	}
 }
 
+func TestProbeResultTerminalAcceptsPassAlias(t *testing.T) {
+	if !probeResultTerminal(probe.RouteResult{Status: "PASS"}) {
+		t.Fatal("PASS result was incorrectly treated as an in-progress verification")
+	}
+}
+
 func TestCheckDomainTreatsCaseInsensitiveRegionalBlockAsGEO(t *testing.T) {
 	cfg := discoveryConfig(t)
 	prober := &scriptedProber{results: map[string]probe.RouteResult{
@@ -877,6 +883,34 @@ func TestSelectedVLESSRemainsAfterZapretForTSPU(t *testing.T) {
 	want := []string{"zapret", "smart-one", "vless-one", "drop"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("selected VLESS changed TSPU fallback: got=%v want=%v", got, want)
+	}
+}
+
+func TestQuickCheckStopsAfterFirstVerifiedVLESS(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cfg.Routes = []config.Route{
+		{Type: "zapret", Tag: "zapret", Priority: 20},
+		{Type: "vless", Tag: "vless-first", Priority: 40, SOCKS5: "127.0.0.1:12080", DNSMode: "socks_remote"},
+		{Type: "vless", Tag: "vless-second", Priority: 50, SOCKS5: "127.0.0.1:12081", DNSMode: "socks_remote"},
+		{Type: "drop", Tag: "drop", Priority: 1000},
+	}
+	cfg.Services["tspu"] = config.Service{Category: "TSPU_RESTRICTED", AllowedPaths: []string{"zapret", "vless", "drop"}, Domains: []string{"video.example"}}
+	prober := &scriptedProber{results: map[string]probe.RouteResult{
+		"zapret":       failedResult("zapret", "zapret", "tspu_failed"),
+		"vless-first":  successfulResult("vless-first", "vless", "rev-active"),
+		"vless-second": successfulResult("vless-second", "vless", "rev-active"),
+	}}
+	check, err := CheckDomain(context.Background(), cfg, "video.example", "tspu", Options{RouteProber: prober, TSPUResult: tspu.Match{Status: "MATCH"}, ActiveRevision: "rev-active", QuickCandidates: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.Selected == nil || check.Selected.Route != "vless-first" {
+		t.Fatalf("quick check selected %+v", check.Selected)
+	}
+	for _, call := range prober.calls {
+		if call == "vless-second" {
+			t.Fatalf("quick check continued into the VLESS pool after a verified candidate: %#v", prober.calls)
+		}
 	}
 }
 

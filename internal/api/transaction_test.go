@@ -1511,3 +1511,15 @@ func TestSaveCleanupStatusUsesCanonicalRecord(t *testing.T) {
 		t.Fatalf("unexpected cleanup status value: %#v", store.value)
 	}
 }
+
+func TestRollbackStepSucceededRecognizesIdempotentAdapterResult(t *testing.T) {
+	if !rollbackStepSucceeded(transactionRecord{Steps: []adapter.StepResult{{Operation: "rollback", SemanticState: "rolled_back"}}}) {
+		t.Fatal("semantic rolled_back step was not recognized")
+	}
+	if !rollbackStepSucceeded(transactionRecord{Steps: []adapter.StepResult{{Operation: "rollback", Evidence: map[string]any{"already_rolled_back": "true"}}}}) {
+		t.Fatal("already_rolled_back evidence was not recognized")
+	}
+	if rollbackStepSucceeded(transactionRecord{Steps: []adapter.StepResult{{Operation: "rollback", Status: "ERROR"}}}) {
+		t.Fatal("failed rollback step was treated as successful")
+	}
+}

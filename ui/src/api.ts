@@ -457,6 +457,7 @@ export async function classifyService(
 export type ServiceVerification = {
   service_id: string;
   domain: string;
+  preview?: boolean;
   status: string;
   verification_state: string;
   classification_state?: string;
@@ -576,7 +577,7 @@ export async function getChanges(signal?: AbortSignal): Promise<ChangeSet[]> { r
 export async function getChange(id: string, signal?: AbortSignal): Promise<ChangeSet> { return request(`/changes/${encodeURIComponent(id)}`, { signal }); }
 const pendingChangeStates = new Set(['draft', 'validated', 'applying', 'awaiting_confirmation', 'committing']);
 export function isChangePending(state: string): boolean { return pendingChangeStates.has(state); }
-export async function waitForChangeTerminal(id: string, timeoutMs = 30000): Promise<ChangeSet> {
+export async function waitForChangeTerminal(id: string, timeoutMs = 120000): Promise<ChangeSet> {
   const deadline = Date.now() + timeoutMs;
   let current = await getChange(id);
   while (pendingChangeStates.has(current.state) && Date.now() < deadline) {

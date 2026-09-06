@@ -275,6 +275,8 @@ func plannerProbeState(check planner.DomainCheck) string {
 			return "verifying"
 		case "terminal_no_safe_route":
 			return "no_safe_route"
+		case "error":
+			return "error"
 		}
 	}
 	switch check.Status {
@@ -298,6 +300,8 @@ func plannerProbeState(check planner.DomainCheck) string {
 		return "verifying"
 	case "VERIFYING":
 		return "verifying"
+	case "ERROR", "TIMEOUT":
+		return "error"
 	default:
 		if check.Selected != nil {
 			return "verifying"
@@ -764,6 +768,9 @@ func (s *Server) saveDiscoverySuggestionState(observation discovery.Observation,
 		ClassificationState: check.ClassificationState, ProbeState: probeState, PolicyState: "suggested",
 		Candidates: discoveryCandidateDetails(check.Results), VerificationDurationMS: check.VerificationDurationMS,
 		CandidateInventoryHash: check.CandidateInventoryHash,
+	}
+	if strings.TrimSpace(check.Reason) != "" && probeState == "error" {
+		suggestion.Reason = check.Reason
 	}
 	if probeState == "no_safe_route" || probeState == "drop_enforced" {
 		suggestion.Reason = "no verified route selected"

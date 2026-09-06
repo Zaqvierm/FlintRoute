@@ -229,6 +229,20 @@ func (s *Server) validateChangeSet(cs ChangeSet) (ChangeSet, *actionFailure) {
 				artifactOptions.ReuseRouteProofTags = []string{"zapret"}
 			}
 		}
+	} else if cs.Title == "Configure Smart DNS resolvers" || cs.Title == "Remove Smart DNS resolver" || cs.Title == "Reorder Smart DNS resolvers" || cs.Title == "Delete service rule" || strings.HasPrefix(cs.Title, "Change route class for ") {
+		// Resolver CRUD changes membership/order, not the implementation of
+		// unrelated routes. Reuse exact committed proof bindings for route
+		// objects that are byte-for-byte unchanged; the changed resolver card
+		// is never reused.
+		activeRoutes := map[string]config.Route{}
+		for _, route := range active.Routes {
+			activeRoutes[route.Tag] = route
+		}
+		for _, route := range candidate.Routes {
+			if previous, ok := activeRoutes[route.Tag]; ok && reflect.DeepEqual(previous, route) {
+				artifactOptions.ReuseRouteProofTags = append(artifactOptions.ReuseRouteProofTags, route.Tag)
+			}
+		}
 	}
 	manifest, manifestHash, err := artifact.GenerateWithOptions(candidate, tx.ArtifactRoot, artifact.Binding{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash}, generatedAt, artifactOptions)
 	if err != nil {
@@ -1116,6 +1130,19 @@ func (s *Server) recoverTransactions(ctx context.Context) error {
 			release()
 			return err
 		}
+		if cs.State == "rollback_failed" && rollbackStepSucceeded(txRecord) {
+			// A restart can observe the ChangeSet's old rollback_failed label
+			// after the adapter already completed an idempotent rollback. Do not
+			// call the adapter again and turn a safe terminal state into a
+			// startup loop; persist the semantic terminal result instead.
+			if err := s.saveProgress(&cs, tx, "rolled_back"); err != nil {
+				release()
+				return err
+			}
+			s.publishChangeEvent(cs, "recovery_rollback_finalized")
+			release()
+			continue
+		}
 		status := s.adapter.Status(ctx)
 		activeMatches := stepOK(status) && evidenceString(status, "active_revision") == tx.RevisionID && evidenceString(status, "active_transaction") == tx.ID && evidenceString(status, "active_candidate_hash") == tx.CandidateHash && evidenceString(status, "active_artifact_manifest_hash") == tx.ArtifactManifestHash
 		adapterState := evidenceString(status, "transaction_state")
@@ -1235,6 +1262,20 @@ func (s *Server) recoverTransactions(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func rollbackStepSucceeded(record transactionRecord) bool {
+	for index := len(record.Steps) - 1; index >= 0; index-- {
+		step := record.Steps[index]
+		if step.Operation != "rollback" && step.Step != "rollback" {
+			continue
+		}
+		if step.SemanticState == "rolled_back" || evidenceString(step, "rollback") == "true" || evidenceString(step, "already_rolled_back") == "true" {
+			return true
+		}
+		return false
+	}
+	return false
 }
 
 func (s *Server) finalizeRecoveredCommit(cs *ChangeSet, tx adapter.Transaction) error {

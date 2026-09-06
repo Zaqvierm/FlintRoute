@@ -40,6 +40,13 @@ The durable discovery control-state write is also returned to its callers;
 loss of applied/rollback counters is therefore observable rather than a
 silent success.
 
+An early controller start is not allowed to poison later probes. If the
+generation-bound `/tmp/router-policy/active-transaction.env` is briefly absent
+while the adapter publishes a committed binding, the first probe engine keeps
+the route fail-closed but retries binding construction on its next use. A
+permanent binding or artifact error remains an explicit diagnostic and never
+turns into synthetic PathVerified evidence.
+
 ## Discovery modes
 
 * `observe_only` records observations and Decision Flow evidence only. It does
@@ -145,6 +152,11 @@ independent fields. `NO_SAFE_ROUTE` is terminal only when every allowed
 candidate has a terminal result (or an honest bounded timeout) and policy
 constraints reject all of them. Before that, the API exposes `VERIFYING` or
 `WAITING_FOR_VERIFICATION`.
+
+An infrastructure failure after a transient check is terminal for that
+observation as `probe_state=error` with its reason. It is not persisted as a
+verified suggestion and is never mislabeled as `NO_SAFE_ROUTE` or as a probe
+that is still running forever.
 
 Route latency is measured only inside the network-path measurement boundary.
 Queue wait, setup, retries and cleanup are represented by

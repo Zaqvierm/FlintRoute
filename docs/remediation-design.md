@@ -245,3 +245,10 @@ control-plane record is finalized. Route-assignment reconciliation reads the
 daemon-readable runtime binding (`/tmp/router-policy/active-transaction.env`)
 before the root-owned last-good directory; this keeps restart recovery usable
 without weakening ownership or generation checks.
+
+Helper transaction evidence normalizes shell boolean fields before semantic
+validation. In particular, `rollback=true` from the typed Unix helper is a
+boolean fact, not a string; otherwise a successful resolver/rule removal can
+be mislabeled `rollback_failed`. Resolver CRUD, service-rule deletion, and
+route-class changes reuse only byte-for-byte unchanged committed route proof;
+they do not require an unrelated fresh probe of a route they did not modify.

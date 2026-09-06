@@ -138,6 +138,11 @@ func ProbeRoute(ctx context.Context, cfg *config.Config, domain, serviceName str
 }
 
 func (e *Engine) ProbeRoute(ctx context.Context, cfg *config.Config, domain, serviceName string, svc config.Service, route config.Route) RouteResult {
+	if e != nil && e.reload != nil {
+		if fresh := e.reload(); fresh != nil {
+			return fresh.ProbeRoute(ctx, cfg, domain, serviceName, svc, route)
+		}
+	}
 	return e.probeRoute(ctx, cfg, domain, serviceName, svc, route, "")
 }
 
@@ -145,6 +150,11 @@ func (e *Engine) ProbeRoute(ctx context.Context, cfg *config.Config, domain, ser
 // application connection to use one address family. It is used by adaptive
 // calibration so IPv4 evidence cannot be counted as IPv6 evidence or vice versa.
 func (e *Engine) ProbeRouteFamily(ctx context.Context, cfg *config.Config, domain, serviceName string, svc config.Service, route config.Route, family string) RouteResult {
+	if e != nil && e.reload != nil {
+		if fresh := e.reload(); fresh != nil {
+			return fresh.ProbeRouteFamily(ctx, cfg, domain, serviceName, svc, route, family)
+		}
+	}
 	return e.probeRoute(ctx, cfg, domain, serviceName, svc, route, family)
 }
 
@@ -201,7 +211,7 @@ func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, ser
 		return finalizeUnverifiedResult(result, startAll)
 	}
 	for _, check := range svc.ProbeURLs {
-		checkResult := probeOne(ctx, cfg, route, check, family)
+		checkResult := probeOne(ctx, cfg, route, check, family, e.guard)
 		result.Checks = append(result.Checks, checkResult)
 		result.DNSOK = result.DNSOK || checkResult.DNSOK
 		result.TransportOK = result.TransportOK || checkResult.TransportOK
@@ -352,7 +362,7 @@ func finalizeUnverifiedResult(result RouteResult, startedAt time.Time) RouteResu
 	return result
 }
 
-func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check config.ProbeCheck, family string) CheckResult {
+func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check config.ProbeCheck, family string, guard RouteProbeGuard) CheckResult {
 	start := time.Now()
 	res := CheckResult{
 		Name:     check.Name,
@@ -419,7 +429,7 @@ func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check
 			continue
 		}
 		attemptStarted := time.Now()
-		attempt := runHTTPAttempt(ctx, cfg, route, check, parsed, host, port, ip)
+		attempt := runHTTPAttempt(ctx, cfg, route, check, parsed, host, port, ip, guard)
 		if attempt.ConnectedIP != "" {
 			res.ConnectedIP = attempt.ConnectedIP
 			res.ConnectedPort = attempt.ConnectedPort
@@ -878,13 +888,30 @@ type attemptResult struct {
 	RouteLatencyAvailable  bool
 }
 
-func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route, check config.ProbeCheck, parsed *url.URL, host, port string, ip netip.Addr) attemptResult {
+func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route, check config.ProbeCheck, parsed *url.URL, host, port string, ip netip.Addr, guard RouteProbeGuard) (result attemptResult) {
 	timeout := time.Duration(cfg.Policy.MaxProbeSeconds) * time.Second
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	var releaseGuard func() error
+	if guard != nil && route.SOCKS5 == "" && (route.Type == "direct" || route.Type == "zapret" || route.Type == "smart_dns") {
+		var guardErr error
+		releaseGuard, guardErr = guard.BeginProbeGuard(ctx, route)
+		if guardErr != nil {
+			return attemptResult{Status: "FAIL", Reason: "probe_guard_begin_failed: " + guardErr.Error()}
+		}
+		defer func() {
+			if releaseGuard != nil {
+				if err := releaseGuard(); err != nil {
+					result.Status = "FAIL"
+					result.TransportOK = false
+					result.Reason = "probe_guard_cleanup_failed: " + err.Error()
+				}
+			}
+		}()
+	}
 
 	var connectedIP, localIP, addressFamily, dialTransport string
 	var observedSocketMark uint32
@@ -939,13 +966,18 @@ func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route,
 			return http.ErrUseLastResponse
 		}
 		if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
-			return errors.New("redirect_scheme_blocked")
+			// Keep the original response available for typed probe evaluation;
+			// never follow an unsafe scheme.
+			return http.ErrUseLastResponse
 		}
 		if !strings.EqualFold(req.URL.Hostname(), host) {
-			return errors.New("redirect_cross_host_blocked")
+			// A cross-host redirect is not followed, but a valid 3xx response
+			// (for example YouTube's youtube.com -> www.youtube.com) is still
+			// meaningful evidence when the service contract allows that code.
+			return http.ErrUseLastResponse
 		}
 		if addr, err := netip.ParseAddr(req.URL.Hostname()); err == nil && !allowPrivateProbe(cfg) && isUnsafeAddr(addr) {
-			return errors.New("redirect_private_address_blocked")
+			return http.ErrUseLastResponse
 		}
 		return nil
 	}

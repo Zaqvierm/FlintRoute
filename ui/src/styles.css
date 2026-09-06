@@ -216,6 +216,7 @@ main { min-width: 0; padding: 0 1.3rem 2.2rem; }
 .hwid-dialog { width: min(900px, 100%); max-height: min(760px, calc(100vh - 2rem)); overflow: auto; }
 .modal-header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
 .modal-header h2 { margin: 0; }
+.service-rule-dialog { width: min(860px, 100%); max-height: min(820px, calc(100vh - 2rem)); overflow: auto; margin: 0; }
 .hwid-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
 .hwid-table { width: 100%; border-collapse: collapse; min-width: 680px; }
 .hwid-table th, .hwid-table td { padding: .55rem .65rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }

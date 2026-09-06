@@ -51,23 +51,66 @@ type activePathBinding struct {
 }
 
 func NewActiveOpenWrtEngine(cfg *config.Config, allowSimulation bool) *Engine {
+	return newActiveOpenWrtEngine(cfg, allowSimulation, true)
+}
+
+// newActiveOpenWrtEngine builds one generation-bound engine. When startup
+// races the adapter's durable binding, the outer engine retries construction
+// on the next probe; the retry itself is single-shot so a permanently broken
+// binding still fails closed instead of recursing forever.
+func newActiveOpenWrtEngine(cfg *config.Config, allowSimulation, retryOnUse bool) *Engine {
 	managed, managedErr := NewActiveOpenWrtPathVerifier(cfg, allowSimulation)
 	var managedVerifier PathProofVerifier = managed
 	var commands OpenWrtCommands
 	if managedErr != nil {
 		managedVerifier = errorProofVerifier{err: managedErr}
+		// Keep privileged observation on the same typed helper boundary even
+		// when the committed proof artifact is unavailable. Falling back to
+		// direct ip/nft execution here makes the non-root controller silently
+		// lose CAP_NET_ADMIN-dependent probe setup and turns every managed route
+		// into a misleading counter/proof failure.
 		var commandsErr error
-		commands, commandsErr = NewExecOpenWrtCommands()
+		commands, commandsErr = newActiveProbeCommands(cfg)
 		if commandsErr != nil {
-			return NewEngine(managedVerifier)
+			commands, commandsErr = NewExecOpenWrtCommands()
+		}
+		if commandsErr != nil {
+			engine := NewEngine(managedVerifier)
+			if retryOnUse {
+				engine.reload = func() *Engine { return newActiveOpenWrtEngine(cfg, allowSimulation, false) }
+			}
+			return engine
 		}
 	} else {
 		commands = managed.commands
 	}
-	return NewEngine(multiplexPathProofVerifier{
+	var guard RouteProbeGuard
+	if candidate, ok := commands.(RouteProbeGuard); ok {
+		guard = candidate
+	}
+	engine := NewEngineWithGuard(multiplexPathProofVerifier{
 		managed: managedVerifier,
 		system:  systemDefaultPathVerifier{commands: commands},
-	})
+	}, guard)
+	if managedErr != nil && retryOnUse {
+		engine.reload = func() *Engine { return newActiveOpenWrtEngine(cfg, allowSimulation, false) }
+	}
+	return engine
+}
+
+func newActiveProbeCommands(cfg *config.Config) (OpenWrtCommands, error) {
+	if cfg == nil {
+		return nil, errors.New("config is required")
+	}
+	runtimeDir := cfg.Storage.RuntimeDir
+	if runtimeDir == "" {
+		runtimeDir = filepath.Join(cfg.Storage.StateDir, "runtime")
+	}
+	active, err := loadActivePathBinding(filepath.Join(runtimeDir, "active-transaction.env"))
+	if err != nil {
+		return nil, err
+	}
+	return newBoundOpenWrtCommands(active.Binding, active.ManifestHash)
 }
 
 type systemDefaultPathVerifier struct {

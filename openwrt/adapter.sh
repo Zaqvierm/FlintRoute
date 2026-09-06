@@ -1513,6 +1513,67 @@ route_assignment_reconcile_command() {
       --candidate-hash "$recovery_candidate_hash" --manifest-hash "$recovery_artifact_manifest_hash"
 }
 
+# Probe guards are short-lived, exact-owned nft route-hook chains. They give
+# the non-root controller's daemon sockets a mark without granting the
+# controller CAP_NET_ADMIN. The helper is the only caller; the guard is scoped
+# to UID 1 and HTTP ports and is removed in a deferred cleanup call.
+probe_guard_command() {
+  [ "$config" = "$known_config" ] || exit 2
+  guard_id="${3:-}"
+  guard_route="${4:-}"
+  guard_mark="${5:-}"
+  guard_hex="${guard_id#probe_}"
+  if [ "$guard_id" = "$guard_hex" ] || [ "${#guard_hex}" -ne 24 ] || ! printf '%s\n' "$guard_hex" | grep -Eq '^[0-9a-f]+$'; then
+    echo "reason=probe_guard_id_invalid" >&2
+    exit 2
+  fi
+  printf '%s\n' "$guard_route" | grep -Eq '^[A-Za-z0-9_-]{1,64}$' || { echo "reason=probe_guard_route_invalid" >&2; exit 2; }
+  case "$guard_mark" in 0x41|0x42) ;; *) echo "reason=probe_guard_mark_invalid" >&2; exit 2 ;; esac
+  probe_chain="rp_probe_$guard_id"
+  "$nft_bin" list table inet router_policy 2>/dev/null | grep -F 'comment "router-policy owner=flintroute"' >/dev/null || {
+    echo "reason=probe_guard_table_ownership_unproven" >&2
+    exit 3
+  }
+  case "$cmd" in
+    probe-guard-begin)
+      if "$nft_bin" list chain inet router_policy "$probe_chain" >/dev/null 2>&1; then
+        "$nft_bin" delete chain inet router_policy "$probe_chain" || { echo "reason=probe_guard_stale_cleanup_failed" >&2; exit 3; }
+      fi
+      probe_batch="$runtime/probe-guard-$guard_id.nft"
+      {
+        echo "add chain inet router_policy $probe_chain { type route hook output priority -200; policy accept; }"
+        echo "add rule inet router_policy $probe_chain meta skuid 1 tcp dport { 80, 443 } meta mark set $guard_mark counter comment \"router-policy owner=flintroute probe_guard=$guard_id route=$guard_route\""
+        echo "add rule inet router_policy $probe_chain meta skuid 1 udp dport 443 meta mark set $guard_mark counter comment \"router-policy owner=flintroute probe_guard=$guard_id route=$guard_route\""
+      } > "$probe_batch"
+      if ! "$nft_bin" -c -f "$probe_batch"; then
+        rm -f "$probe_batch"
+        echo "reason=probe_guard_install_failed" >&2
+        exit 3
+      fi
+      if ! "$nft_bin" -f "$probe_batch"; then
+        rm -f "$probe_batch"
+        echo "reason=probe_guard_install_failed" >&2
+        exit 3
+      fi
+      rm -f "$probe_batch"
+      echo "guard=active"
+      echo "guard_id=$guard_id"
+      echo "route_tag=$guard_route"
+      echo "mark=$guard_mark"
+      ;;
+    probe-guard-end)
+      if "$nft_bin" list chain inet router_policy "$probe_chain" >/dev/null 2>&1; then
+        "$nft_bin" delete chain inet router_policy "$probe_chain" || { echo "reason=probe_guard_cleanup_failed" >&2; exit 3; }
+      fi
+      echo "guard=cleared"
+      echo "guard_id=$guard_id"
+      echo "route_tag=$guard_route"
+      echo "mark=$guard_mark"
+      ;;
+    *) echo "reason=probe_guard_operation_invalid" >&2; exit 2 ;;
+  esac
+}
+
 wait_dnsmasq_ready() {
   attempts=0
   while ! "$nslookup_bin" localhost 127.0.0.1 >/dev/null 2>&1; do
@@ -1904,10 +1965,12 @@ write_active_transaction_state() {
   # The controller is intentionally unprivileged and must be able to read the
   # generation binding for ProbeRoute/recovery. The file contains hashes and
   # state only, never rollback secrets; publish it as root:daemon 0640.
-  if command -v id >/dev/null 2>&1 && id -u daemon >/dev/null 2>&1; then
-    chown 0:daemon "$active_file" || return 1
-  fi
-  chmod 640 "$active_file"
+  # This binding is intentionally readable by the daemon controller. Do not
+  # make ownership conditional on probing `id`: a minimal OpenWrt userland
+  # can lack the lookup helper even though the daemon account exists, which
+  # silently leaves a root-only file and makes every PathProbe fail closed.
+  chown root:daemon "$active_file" || chown 0:daemon "$active_file" || return 1
+  chmod 640 "$active_file" || return 1
 }
 
 commit_prepared_tx() {
@@ -2416,6 +2479,9 @@ case "$cmd" in
     ;;
   route-assignment-reconcile)
     route_assignment_reconcile_command "$@"
+    ;;
+  probe-guard-begin|probe-guard-end)
+    probe_guard_command "$@"
     ;;
   prepare|validate-candidate|snapshot-current|apply-candidate|verify-management|verify-data-plane|commit|commit-prepared|finalize-commit|rollback|clear-boot-guard-bound|replace-owned-nft|apply-ip-plan|rollback-ip-plan|artifact-install|artifact-remove)
     require_transaction_args

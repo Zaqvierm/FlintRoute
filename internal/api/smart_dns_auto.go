@@ -29,7 +29,11 @@ func (s *Server) startAutoApplyChange(id string) bool {
 	if s.autoApplyInFlight[id] {
 		s.mu.Unlock()
 		s.autoApplyMu.Unlock()
-		return false
+		// Idempotent callers (two UI tabs or a retry after a lost response)
+		// should observe the already-running operation as started. Returning
+		// false makes the UI tell the user that no worker exists and leaves a
+		// perfectly live transaction looking abandoned.
+		return true
 	}
 	s.autoApplyInFlight[id] = true
 	s.mu.Unlock()
@@ -100,7 +104,12 @@ func (s *Server) runAutoApplyChange(id string) {
 	}
 	if change.State != "awaiting_confirmation" {
 		// requires_device, rolled_back and recovery_required are persisted by the
-		// transaction engine. Do not invent a success state for them.
+		// transaction engine. Do not invent a success state for them. A partially
+		// progressed auto-apply must not remain in `prepared` or `verifying`
+		// forever when the worker exits after a failed step.
+		if isAutoApplyPendingState(change.State) {
+			s.recordAutoApplyFailure(id, "auto_apply_interrupted", "automatic transaction stopped before confirmation", "failed")
+		}
 		return
 	}
 
@@ -141,7 +150,7 @@ func (s *Server) recordAutoApplyFailure(id, code, message, fallbackState string)
 
 func isAutoApplyPendingState(state string) bool {
 	switch state {
-	case "draft", "validated", "applying", "awaiting_confirmation", "committing":
+	case "draft", "validated", "prepared", "applying", "verifying", "awaiting_confirmation", "committing":
 		return true
 	default:
 		return false

@@ -28,14 +28,18 @@ type Options struct {
 	// FullCheck disables the normal short-circuit after a verified Direct
 	// result.  It is used by explicit "check every path" actions; background
 	// discovery should keep the cheap event-driven path.
-	FullCheck      bool
-	ProbeEngine    *probe.Engine
-	RouteProber    RouteProber
-	HealthTracker  *probe.HealthTracker
-	DecisionCache  *domaincache.Manager
-	ActiveRevision string
-	DeviceMAC      string
-	Now            func() time.Time
+	FullCheck bool
+	// QuickCandidates stops after the first verified VLESS service path in
+	// discovery/interactive quick checks. FullCheck remains the explicit full
+	// comparison mode.
+	QuickCandidates bool
+	ProbeEngine     *probe.Engine
+	RouteProber     RouteProber
+	HealthTracker   *probe.HealthTracker
+	DecisionCache   *domaincache.Manager
+	ActiveRevision  string
+	DeviceMAC       string
+	Now             func() time.Time
 }
 
 type CandidatePlan struct {
@@ -175,6 +179,7 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 		// this guard applies only to unclassified/ordinary domains where Zapret
 		// should not be probed speculatively.
 		if profile.override == nil && route.Type == "zapret" &&
+			!strings.HasPrefix(profile.name, "preview_") &&
 			!strings.EqualFold(profile.service.Category, "TSPU_RESTRICTED") &&
 			!tspuStartsWithZapret(plan.TSPUStatus, cfg.Policy.TSPUStalePolicy) {
 			if !directAttempted || !directLookedLikeTSPU {
@@ -220,6 +225,14 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 		// complete eligible inventory so the UI can show the comparison matrix.
 		if route.Type == "direct" && !opts.FullCheck && selectionEvidence(result) &&
 			!result.RegionalBlock && !result.SuspectedTSPU && !looksLikeTSPU(result) {
+			break
+		}
+		// Discovery/quick verification does not need to benchmark the entire
+		// VLESS pool after the first healthy non-RU service path. FullCheck is
+		// the explicit escape hatch for a complete comparison matrix; ordinary
+		// traffic uses the first verified candidate and avoids probe storms.
+		if route.Type == "vless" && opts.QuickCandidates && !opts.FullCheck && selectionEvidence(result) &&
+			!result.RegionalBlock && !result.AuthenticationRequired && !result.WAFOrRateLimit {
 			break
 		}
 		// An exact user override is an explicit policy decision. Keep the
@@ -737,7 +750,7 @@ func probeResultTerminal(result probe.RouteResult) bool {
 	switch strings.ToUpper(strings.TrimSpace(result.Status)) {
 	case "", "VERIFYING", "PROBING", "WAITING", "WAITING_FOR_VERIFICATION", "IN_PROGRESS":
 		return false
-	case "FAIL", "OK", "DEGRADED", "NOT_CONFIGURED", "NOT_APPLICABLE", "UNVERIFIED",
+	case "PASS", "FAIL", "OK", "DEGRADED", "NOT_CONFIGURED", "NOT_APPLICABLE", "UNVERIFIED",
 		"RU_EXIT", "REGION_BLOCK", "SUSPECTED_TSPU", "AUTH_REQUIRED", "WAF_OR_RATE_LIMIT", "DROP", "TIMEOUT", "ERROR":
 		return true
 	default:

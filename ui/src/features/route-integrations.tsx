@@ -75,7 +75,10 @@ function smartDNSOperationActive(operation: any): boolean {
 
 async function waitForSmartDNSCommit(changeID: string): Promise<{ status: any; state: string }> {
   let latest = await getSmartDNS();
-  for (let attempt = 0; attempt < 60; attempt += 1) {
+  // A production helper request is deliberately bounded at 70s. Poll long
+  // enough to show the terminal commit/rollback instead of leaving the user
+  // on "deleting…" while the backend is still proving the dataplane.
+  for (let attempt = 0; attempt < 240; attempt += 1) {
     const operation = latest?.automatic_operation;
     if (operation?.id === changeID && ['committed', 'failed', 'rolled_back', 'recovery_required', 'requires_device'].includes(textValue(operation.state, ''))) {
       return { status: latest, state: textValue(operation.state, '') };

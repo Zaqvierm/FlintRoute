@@ -7,8 +7,10 @@ import (
 	"net"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"router-policy/internal/artifact"
+	"router-policy/internal/config"
 	"router-policy/internal/helper"
 	"router-policy/internal/secureid"
 )
@@ -20,6 +22,7 @@ type HelperOpenWrtCommands struct {
 	socket       string
 	binding      artifact.Binding
 	manifestHash string
+	guardMu      sync.Mutex
 }
 
 func NewHelperOpenWrtCommands(socket string, binding artifact.Binding, manifestHash string) (*HelperOpenWrtCommands, error) {
@@ -134,6 +137,41 @@ func (c *HelperOpenWrtCommands) ConntrackMark(localIP, connectedIP string) (stri
 		return "", errors.New("malformed conntrack mark")
 	}
 	return formatSocketMark(value), nil
+}
+
+func (c *HelperOpenWrtCommands) BeginProbeGuard(ctx context.Context, route config.Route) (func() error, error) {
+	if c == nil {
+		return nil, errors.New("helper probe guard is unavailable")
+	}
+	mark := route.Mark
+	if mark == "" {
+		switch route.Type {
+		case "direct", "smart_dns":
+			mark = "0x41"
+		case "zapret":
+			mark = "0x42"
+		default:
+			return func() error { return nil }, nil
+		}
+	}
+	if route.Type != "direct" && route.Type != "smart_dns" && route.Type != "zapret" {
+		return func() error { return nil }, nil
+	}
+	c.guardMu.Lock()
+	guardID, err := secureid.Hex(12)
+	if err != nil {
+		c.guardMu.Unlock()
+		return nil, err
+	}
+	if _, err := c.call(ctx, helper.ProbeRequest{Operation: "guard_begin", RouteTag: route.Tag, Mark: mark, GuardID: "probe_" + guardID}); err != nil {
+		c.guardMu.Unlock()
+		return nil, err
+	}
+	return func() error {
+		defer c.guardMu.Unlock()
+		_, err := c.call(context.Background(), helper.ProbeRequest{Operation: "guard_end", RouteTag: route.Tag, Mark: mark, GuardID: "probe_" + guardID})
+		return err
+	}, nil
 }
 
 var _ OpenWrtCommands = (*HelperOpenWrtCommands)(nil)

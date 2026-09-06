@@ -45,6 +45,18 @@ func TestValidateRecoveryTarget(t *testing.T) {
 	}
 }
 
+func TestNormalizeHelperEvidencePreservesSemanticBooleans(t *testing.T) {
+	if value, ok := normalizeHelperEvidence("true").(bool); !ok || !value {
+		t.Fatalf("true evidence was not normalized: %#v", normalizeHelperEvidence("true"))
+	}
+	if value, ok := normalizeHelperEvidence("false").(bool); !ok || value {
+		t.Fatalf("false evidence was not normalized: %#v", normalizeHelperEvidence("false"))
+	}
+	if value := normalizeHelperEvidence("route_path_verified"); value != "route_path_verified" {
+		t.Fatalf("string evidence was changed: %#v", value)
+	}
+}
+
 func TestNewOpenWrtRequiresFixedHelperSocket(t *testing.T) {
 	adapterPath, err := filepath.Abs(filepath.Join(t.TempDir(), "adapter.sh"))
 	if err != nil {

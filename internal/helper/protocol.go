@@ -101,6 +101,7 @@ type ProbeRequest struct {
 	LocalIP     string `json:"local_ip,omitempty"`
 	ConnectedIP string `json:"connected_ip,omitempty"`
 	RouteTag    string `json:"route_tag,omitempty"`
+	GuardID     string `json:"guard_id,omitempty"`
 }
 
 // DiagnosticsRequest is intentionally unbound and read-only. It exposes only
@@ -233,7 +234,7 @@ func ValidateRequest(request Request) error {
 		if request.Global == nil || request.Global.Operation != globalOperation(request.Command) || !globalRequestBound(request) {
 			return ErrInvalidRequest
 		}
-	case "probe.route_get", "probe.rules", "probe.default_route", "probe.nft_policy", "probe.process", "probe.conntrack":
+	case "probe.route_get", "probe.rules", "probe.default_route", "probe.nft_policy", "probe.process", "probe.conntrack", "probe.guard_begin", "probe.guard_end":
 		if request.Probe == nil || request.Probe.Operation != strings.TrimPrefix(request.Command, "probe.") ||
 			request.Generation != request.RevisionID || request.TransactionID != "probe" || request.RollbackTokenHash != "" ||
 			!safeHash(request.CandidateHash) || !safeHash(request.ArtifactManifestHash) || hasAnyNonProbeResourcePayload(request) {
@@ -401,6 +402,11 @@ func safeToken(value string) bool {
 
 func validateProbeRequest(request ProbeRequest) error {
 	switch request.Operation {
+	case "guard_begin", "guard_end":
+		if !safeObjectName(request.RouteTag) || !safeObjectName(request.GuardID) || !validProbeMark(request.Mark) ||
+			(request.Mark != "0x41" && request.Mark != "0x42") || request.Destination != "" || request.Family != "" || request.Table != 0 || request.Process != "" || request.LocalIP != "" || request.ConnectedIP != "" {
+			return ErrInvalidRequest
+		}
 	case "route_get":
 		if net.ParseIP(request.Destination) == nil || (request.Mark != "" && !validProbeMark(request.Mark)) {
 			return ErrInvalidRequest
