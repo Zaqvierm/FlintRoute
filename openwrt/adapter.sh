@@ -54,6 +54,22 @@ flow_offload_hw_uci_key='firewall.@defaults[0].flow_offloading_hw'
 
 mkdir -p "$runtime" "$state/last-good" "$state/backups" "$txroot" "$timer_dir"
 
+# Production adapter calls run as root (directly or through router-policy-helper)
+# and must prove the requested owner change. Library-only fixtures deliberately
+# run as an ordinary user on Linux CI/Windows; for those exact temporary paths,
+# retaining the fixture user's ownership is the only portable equivalent. Never
+# enable this escape hatch in a production adapter invocation.
+chown_owned_or_fixture() {
+  chown_target="$1"
+  chown_owner="$2"
+  if chown "$chown_owner" "$chown_target" 2>/dev/null; then
+    return 0
+  fi
+  [ "${ROUTER_POLICY_ADAPTER_LIB_ONLY:-0}" = "1" ] || return 1
+  [ "$(id -u 2>/dev/null || printf '%s' -1)" != "0" ] || return 1
+  [ -e "$chown_target" ] || return 1
+}
+
 now_utc() {
   date -u +%Y-%m-%dT%H:%M:%SZ
 }
@@ -1302,7 +1318,7 @@ atomic_install() {
     return 1
   fi
   if [ "$install_target" = "$config" ] && command -v id >/dev/null 2>&1 && id -u daemon >/dev/null 2>&1; then
-    chown 0:daemon "$install_target" || return 1
+    chown_owned_or_fixture "$install_target" 0:daemon || return 1
   fi
   install_bytes="$(wc -c < "$install_source" | tr -d ' ')"
   directory_sync_scope="exact"
@@ -1629,9 +1645,9 @@ ensure_dns_observation_log() {
     # The controller consumes this log as daemon. Keep the writer's inherited
     # descriptor valid while making the exact file readable after every
     # dnsmasq restart/reconcile; never leave it at dnsmasq-only 0620.
-    chown "0:$controller_group" "$dns_observation_log"
+    chown_owned_or_fixture "$dns_observation_log" "0:$controller_group" || return 1
     if [ "$log_parent" = "$runtime" ]; then
-      chown "0:$controller_group" "$runtime"
+      chown_owned_or_fixture "$runtime" "0:$controller_group" || return 1
       chmod 750 "$runtime"
     fi
     chmod 640 "$dns_observation_log"
@@ -1969,7 +1985,7 @@ write_active_transaction_state() {
   # make ownership conditional on probing `id`: a minimal OpenWrt userland
   # can lack the lookup helper even though the daemon account exists, which
   # silently leaves a root-only file and makes every PathProbe fail closed.
-  chown root:daemon "$active_file" || chown 0:daemon "$active_file" || return 1
+  chown_owned_or_fixture "$active_file" root:daemon || return 1
   chmod 640 "$active_file" || return 1
 }
 
