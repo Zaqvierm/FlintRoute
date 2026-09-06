@@ -1438,6 +1438,18 @@ func dialSOCKS5(ctx context.Context, proxyAddr, targetAddr string) (net.Conn, er
 	if err != nil {
 		return nil, err
 	}
+	// DialContext does not interrupt protocol reads after the TCP connection
+	// is established.  Bound the complete SOCKS handshake by both the route
+	// probe deadline and the normal per-attempt timeout; otherwise a proxy that
+	// accepts and then stops replying can hold a full-check worker forever.
+	deadline := time.Now().Add(8 * time.Second)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 	br := bufio.NewReader(conn)
 	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
 		conn.Close()
@@ -1505,5 +1517,6 @@ func dialSOCKS5(ctx context.Context, proxyAddr, targetAddr string) (net.Conn, er
 		conn.Close()
 		return nil, err
 	}
+	_ = conn.SetDeadline(time.Time{})
 	return conn, nil
 }

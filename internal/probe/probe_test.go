@@ -546,6 +546,37 @@ func TestZapretRouteNameWithoutFlowEvidenceIsUnverified(t *testing.T) {
 	}
 }
 
+func TestDialSOCKS5HonorsContextDeadlineDuringHandshake(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		<-stop
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	connection, err := dialSOCKS5(ctx, listener.Addr().String(), "example.com:443")
+	if connection != nil {
+		_ = connection.Close()
+	}
+	if err == nil {
+		t.Fatal("stalled SOCKS handshake unexpectedly succeeded")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("SOCKS handshake ignored context deadline: %s", elapsed)
+	}
+}
+
 func testConfig() *config.Config {
 	return &config.Config{
 		Version:  2,
