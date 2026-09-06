@@ -11,7 +11,7 @@
 powershell -ExecutionPolicy Bypass -File .\tests\run-all.ps1
 ```
 
-Текущий локальный baseline для `119e2ff77dbc7310cd3590cdc6c3b819a25d77e8`:
+Текущий локальный baseline для `5fdaa637953bf4069356e0e28094c49e2778fa17`:
 `all_tests_ok=true`. Этот результат не включает SSH,
 применение на роутере или повторную аппаратную проверку.
 

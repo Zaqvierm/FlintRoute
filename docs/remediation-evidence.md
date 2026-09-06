@@ -2,10 +2,11 @@
 
 ## Current evidence binding (2026-09-06)
 
-Current code checkpoint: `119e2ff77dbc7310cd3590cdc6c3b819a25d77e8` on
+Current code checkpoint: `5fdaa637953bf4069356e0e28094c49e2778fa17` on
 `fix/smartdns-auto-route`. This checkpoint includes the user-operation
 transaction-state, selected-route binding, system-default baseline, adaptive
-CRUD, infrastructure-error and VLESS readiness fixes. The exact SHA and CI
+CRUD, infrastructure-error, VLESS readiness and secondary-watchdog removal
+fixes. The exact SHA and CI
 runs are recorded in the external ledger and below.
 The worktree/branch HEAD is the source of truth for the documentation commit;
 the external status ledger records that exact docs SHA. Local
@@ -13,9 +14,9 @@ the external status ledger records that exact docs SHA. Local
 typecheck/unit/build and Playwright 30/30 also passed. Linux
 namespace/process-group/filesystem checks remain `NOT RUN LOCALLY` on Windows.
 The ARM64 controller artifact SHA-256 is
-`f2d004faa882a60a8403268a21eac327fa5e5c7c8c17875308bd582142ef1f13` and the
+`8ed8ea48484aafc41cf4f6c0b8364fc4d27cc6bdd0c87ea89d0027d326c4190c` and the
 OpenWrt bundle SHA-256 is
-`444ffef11a8e9cc794c96e099a4cb872c6e2ff6cbc28c1a2eaa6ed0fd0d99577`.
+`eab4f3668079a2ec4a3d6272f8508ff0b93d3facc94297efa9185f23519dbc2e`.
 CI/push and installation on Flint 2 remain pending because the current
 key-only SSH credential is rejected and GitHub HTTPS was unavailable.
 
