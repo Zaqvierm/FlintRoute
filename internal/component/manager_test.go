@@ -335,6 +335,16 @@ func TestStatusIncludesImmutablePinnedAssetURL(t *testing.T) {
 	}
 }
 
+func TestXrayInstalledButStoppedIsNotReady(t *testing.T) {
+	status := statusFromRecord(Record{Kind: KindXray, Installed: true, Version: "v1"}, Release{Kind: KindXray, Version: "v1"}, Health{State: "installed", ServiceState: "stopped", Ready: false, Reason: "service stopped"})
+	if status.HealthReady || status.ServiceState != "stopped" {
+		t.Fatalf("stopped Xray was reported ready: %+v", status)
+	}
+	if len(status.NextActions) != 1 || status.NextActions[0] != "activate_vless_route" {
+		t.Fatalf("stopped Xray next action is misleading: %+v", status.NextActions)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }

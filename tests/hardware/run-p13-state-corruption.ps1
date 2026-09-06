@@ -70,7 +70,7 @@ try {
   $completed = $true
 } finally {
   try {
-    Invoke-SSH "if test -s '$remoteRecovery/router-policy.bbolt.verified' && ! curl -fsS http://127.0.0.1:8787/api/v1/health >/dev/null 2>&1; then /etc/init.d/router-policy-watchdog stop >/dev/null 2>&1 || true; /etc/init.d/router-policy stop >/dev/null 2>&1 || true; cp '$remoteRecovery/router-policy.bbolt.verified' /etc/router-policy/state/router-policy.bbolt.emergency; chmod 600 /etc/router-policy/state/router-policy.bbolt.emergency; /usr/bin/router-policy internal-verify-state-backup --path /etc/router-policy/state/router-policy.bbolt.emergency >/dev/null; mv /etc/router-policy/state/router-policy.bbolt.emergency /etc/router-policy/state/router-policy.bbolt; /etc/init.d/router-policy start; /etc/init.d/router-policy-watchdog start; fi" | Out-Null
+    Invoke-SSH "if test -s '$remoteRecovery/router-policy.bbolt.verified' && ! curl -fsS http://127.0.0.1:8787/api/v1/health >/dev/null 2>&1; then /etc/init.d/router-policy stop >/dev/null 2>&1 || true; cp '$remoteRecovery/router-policy.bbolt.verified' /etc/router-policy/state/router-policy.bbolt.emergency; chmod 600 /etc/router-policy/state/router-policy.bbolt.emergency; /usr/bin/router-policy internal-verify-state-backup --path /etc/router-policy/state/router-policy.bbolt.emergency >/dev/null; mv /etc/router-policy/state/router-policy.bbolt.emergency /etc/router-policy/state/router-policy.bbolt; /etc/init.d/router-policy start; fi" | Out-Null
   } catch { }
   if ($completed) {
     try { Invoke-SSH "case '$remoteRun' in /tmp/flintroute-p13/p13-state-*) rm -rf '$remoteRun' ;; *) exit 64 ;; esac; case '$remoteRecovery' in /etc/router-policy/state/recovery-tests/p13-state-*) rm -rf '$remoteRecovery' ;; *) exit 64 ;; esac" | Out-Null } catch { }

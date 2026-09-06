@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"router-policy/internal/config"
+	"router-policy/internal/helper"
+	"router-policy/internal/secureid"
 )
 
 const maxProviderOutputBytes = 2 << 20
@@ -60,9 +62,16 @@ type OpenWrtRunner interface {
 	Run(context.Context, OpenWrtCommand, string) ([]byte, error)
 }
 
-type ExecOpenWrtRunner struct{}
+type ExecOpenWrtRunner struct {
+	// HelperSocket is used only for root-only, read-only capability probes.
+	// All paths and commands remain fixed on the helper side.
+	HelperSocket string
+}
 
-func (ExecOpenWrtRunner) Run(ctx context.Context, command OpenWrtCommand, parameter string) ([]byte, error) {
+func (r ExecOpenWrtRunner) Run(ctx context.Context, command OpenWrtCommand, parameter string) ([]byte, error) {
+	if strings.TrimSpace(r.HelperSocket) != "" && isPrivilegedDiagnosticCommand(command) {
+		return r.runPrivilegedDiagnostics(ctx, command)
+	}
 	path, args, err := fixedOpenWrtCommand(command, parameter)
 	if err != nil {
 		return nil, err
@@ -84,6 +93,58 @@ func (ExecOpenWrtRunner) Run(ctx context.Context, command OpenWrtCommand, parame
 		return nil, err
 	}
 	return bytes.TrimSpace(output.Bytes()), nil
+}
+
+func isPrivilegedDiagnosticCommand(command OpenWrtCommand) bool {
+	switch command {
+	case commandProcModules, commandFirewallCheck, commandNFTTables:
+		return true
+	default:
+		return false
+	}
+}
+
+func (r ExecOpenWrtRunner) runPrivilegedDiagnostics(ctx context.Context, command OpenWrtCommand) ([]byte, error) {
+	requestID, err := secureid.Hex(12)
+	if err != nil {
+		return nil, fmt.Errorf("generate diagnostics request id: %w", err)
+	}
+	response, err := helper.Call(ctx, r.HelperSocket, helper.Request{
+		ProtocolVersion: helper.ProtocolVersion,
+		RequestID:       requestID,
+		Command:         "diagnostics.capabilities",
+		Generation:      "diagnostics",
+		RevisionID:      "diagnostics",
+		TransactionID:   "diagnostics",
+		Diagnostics:     &helper.DiagnosticsRequest{Operation: "capabilities"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !response.Accepted {
+		return nil, fmt.Errorf("privileged diagnostics rejected: %s", response.ErrorCode)
+	}
+	switch command {
+	case commandProcModules:
+		value := response.Evidence["kernel_modules"]
+		if value == "" {
+			return nil, errors.New("kernel module diagnostics unavailable")
+		}
+		return []byte(value), nil
+	case commandFirewallCheck:
+		if response.Evidence["firewall_check"] != "ok" {
+			return nil, errors.New("firewall check failed")
+		}
+		return []byte("ok"), nil
+	case commandNFTTables:
+		value := response.Evidence["nft_tables"]
+		if value == "" {
+			return nil, errors.New("nft table diagnostics unavailable")
+		}
+		return []byte(value), nil
+	default:
+		return nil, errors.New("diagnostic command is not allowlisted")
+	}
 }
 
 type cappedBuffer struct {
@@ -260,7 +321,7 @@ type openWrtRuntime struct {
 
 func defaultOpenWrtRuntime() *openWrtRuntime {
 	return &openWrtRuntime{
-		runner:   ExecOpenWrtRunner{},
+		runner:   ExecOpenWrtRunner{HelperSocket: strings.TrimSpace(os.Getenv("ROUTER_POLICY_HELPER_SOCKET"))},
 		now:      func() time.Time { return time.Now().UTC() },
 		timeout:  3 * time.Second,
 		cacheTTL: 3 * time.Second,

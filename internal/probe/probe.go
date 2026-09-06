@@ -138,6 +138,11 @@ func ProbeRoute(ctx context.Context, cfg *config.Config, domain, serviceName str
 }
 
 func (e *Engine) ProbeRoute(ctx context.Context, cfg *config.Config, domain, serviceName string, svc config.Service, route config.Route) RouteResult {
+	if e != nil && e.reload != nil {
+		if fresh := e.reload(); fresh != nil {
+			return fresh.ProbeRoute(ctx, cfg, domain, serviceName, svc, route)
+		}
+	}
 	return e.probeRoute(ctx, cfg, domain, serviceName, svc, route, "")
 }
 
@@ -145,6 +150,11 @@ func (e *Engine) ProbeRoute(ctx context.Context, cfg *config.Config, domain, ser
 // application connection to use one address family. It is used by adaptive
 // calibration so IPv4 evidence cannot be counted as IPv6 evidence or vice versa.
 func (e *Engine) ProbeRouteFamily(ctx context.Context, cfg *config.Config, domain, serviceName string, svc config.Service, route config.Route, family string) RouteResult {
+	if e != nil && e.reload != nil {
+		if fresh := e.reload(); fresh != nil {
+			return fresh.ProbeRouteFamily(ctx, cfg, domain, serviceName, svc, route, family)
+		}
+	}
 	return e.probeRoute(ctx, cfg, domain, serviceName, svc, route, family)
 }
 
@@ -201,7 +211,7 @@ func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, ser
 		return finalizeUnverifiedResult(result, startAll)
 	}
 	for _, check := range svc.ProbeURLs {
-		checkResult := probeOne(ctx, cfg, route, check, family)
+		checkResult := probeOne(ctx, cfg, route, check, family, e.guard)
 		result.Checks = append(result.Checks, checkResult)
 		result.DNSOK = result.DNSOK || checkResult.DNSOK
 		result.TransportOK = result.TransportOK || checkResult.TransportOK
@@ -352,7 +362,7 @@ func finalizeUnverifiedResult(result RouteResult, startedAt time.Time) RouteResu
 	return result
 }
 
-func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check config.ProbeCheck, family string) CheckResult {
+func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check config.ProbeCheck, family string, guard RouteProbeGuard) CheckResult {
 	start := time.Now()
 	res := CheckResult{
 		Name:     check.Name,
@@ -419,7 +429,7 @@ func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check
 			continue
 		}
 		attemptStarted := time.Now()
-		attempt := runHTTPAttempt(ctx, cfg, route, check, parsed, host, port, ip)
+		attempt := runHTTPAttempt(ctx, cfg, route, check, parsed, host, port, ip, guard)
 		if attempt.ConnectedIP != "" {
 			res.ConnectedIP = attempt.ConnectedIP
 			res.ConnectedPort = attempt.ConnectedPort
@@ -519,14 +529,38 @@ func resolveForRoute(ctx context.Context, cfg *config.Config, route config.Route
 		if !route.ConnectToResolvedIP {
 			return nil, "", "", errors.New("smart_dns_connect_to_answer_required")
 		}
-		addrs, protocol, err := queryDNS(ctx, route.DNSServer, host)
-		return preferIPv4(addrs), normalizeDNSServer(route.DNSServer), protocol, err
+		var lastErr error
+		for _, resolver := range smartDNSResolvers(route) {
+			addrs, protocol, err := queryDNS(ctx, resolver, host)
+			if err == nil && len(addrs) > 0 {
+				return preferIPv4(addrs), normalizeDNSServer(resolver), protocol, nil
+			}
+			lastErr = err
+		}
+		return nil, normalizeDNSServer(route.DNSServer), "udp", lastErr
 	}
 	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 	if err != nil {
 		return nil, "system", "system", err
 	}
 	return preferIPv4(addrs), "system", "system", nil
+}
+
+func smartDNSResolvers(route config.Route) []string {
+	resolvers := make([]string, 0, 2)
+	seen := make(map[string]struct{}, 2)
+	for _, resolver := range []string{route.DNSServer, route.DNSFallbackServer} {
+		resolver = strings.TrimSpace(resolver)
+		if resolver == "" || strings.Contains(resolver, "PLACEHOLDER") {
+			continue
+		}
+		if _, ok := seen[resolver]; ok {
+			continue
+		}
+		seen[resolver] = struct{}{}
+		resolvers = append(resolvers, resolver)
+	}
+	return resolvers
 }
 
 func preferIPv4(addrs []netip.Addr) []netip.Addr {
@@ -854,19 +888,69 @@ type attemptResult struct {
 	RouteLatencyAvailable  bool
 }
 
-func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route, check config.ProbeCheck, parsed *url.URL, host, port string, ip netip.Addr) attemptResult {
+func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route, check config.ProbeCheck, parsed *url.URL, host, port string, ip netip.Addr, guard RouteProbeGuard) (result attemptResult) {
 	timeout := time.Duration(cfg.Policy.MaxProbeSeconds) * time.Second
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	var releaseGuard func() error
+	var guardMark uint32
+	// The synthetic system-default candidate is intentionally unmarked.  It
+	// must use the kernel's ordinary route and the system-default verifier;
+	// applying the managed mark guard here turns valid baseline evidence into
+	// a false `system_default_probe_was_marked` failure.
+	if guard != nil && route.SOCKS5 == "" && !isSystemDefaultRoute(route) &&
+		(route.Type == "direct" || route.Type == "zapret" || route.Type == "smart_dns") {
+		var guardErr error
+		releaseGuard, guardErr = guard.BeginProbeGuard(ctx, route)
+		if guardErr != nil {
+			return attemptResult{Status: "FAIL", Reason: "probe_guard_begin_failed: " + guardErr.Error()}
+		}
+		// The helper's semantic guard response proves that the exact owned
+		// output hook was installed.  The controller cannot read SO_MARK after
+		// nft applies it, so carry the bound mark into the observation; the
+		// verifier still requires the later conntrack proof before accepting it.
+		markText := strings.TrimSpace(route.Mark)
+		if markText == "" && cfg != nil {
+			switch route.Type {
+			case "direct", "smart_dns":
+				markText = cfg.OpenWrt.DirectMark
+			case "zapret":
+				markText = cfg.OpenWrt.ZapretMark
+			}
+		}
+		if mark, err := parseSocketMark(markText); err == nil {
+			guardMark = mark
+		}
+		defer func() {
+			if releaseGuard != nil {
+				if err := releaseGuard(); err != nil {
+					result.Status = "FAIL"
+					result.TransportOK = false
+					result.Reason = "probe_guard_cleanup_failed: " + err.Error()
+				}
+			}
+		}()
+	}
 
 	var connectedIP, localIP, addressFamily, dialTransport string
 	var observedSocketMark uint32
+	if guardMark != 0 {
+		observedSocketMark = guardMark
+	}
 	connectedPort, _ := strconv.Atoi(port)
 	dialer := &net.Dialer{Timeout: 8 * time.Second}
-	installRouteSocketMark(dialer, cfg, route, &observedSocketMark)
+	// With the helper-backed guard the non-root controller must not attempt
+	// SO_MARK itself: Setsockopt(SO_MARK) requires CAP_NET_ADMIN and would
+	// fail the connect before a socket observation exists. The exact-owned nft
+	// guard marks the packet after socket creation; conntrack proof below
+	// confirms that it actually took effect. Direct socket marking remains the
+	// fallback for test/legacy command implementations without a guard.
+	if guard == nil || isSystemDefaultRoute(route) {
+		installRouteSocketMark(dialer, cfg, route, &observedSocketMark)
+	}
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12},
 	}
@@ -915,13 +999,18 @@ func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route,
 			return http.ErrUseLastResponse
 		}
 		if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
-			return errors.New("redirect_scheme_blocked")
+			// Keep the original response available for typed probe evaluation;
+			// never follow an unsafe scheme.
+			return http.ErrUseLastResponse
 		}
 		if !strings.EqualFold(req.URL.Hostname(), host) {
-			return errors.New("redirect_cross_host_blocked")
+			// A cross-host redirect is not followed, but a valid 3xx response
+			// (for example YouTube's youtube.com -> www.youtube.com) is still
+			// meaningful evidence when the service contract allows that code.
+			return http.ErrUseLastResponse
 		}
 		if addr, err := netip.ParseAddr(req.URL.Hostname()); err == nil && !allowPrivateProbe(cfg) && isUnsafeAddr(addr) {
-			return errors.New("redirect_private_address_blocked")
+			return http.ErrUseLastResponse
 		}
 		return nil
 	}
@@ -1349,6 +1438,18 @@ func dialSOCKS5(ctx context.Context, proxyAddr, targetAddr string) (net.Conn, er
 	if err != nil {
 		return nil, err
 	}
+	// DialContext does not interrupt protocol reads after the TCP connection
+	// is established.  Bound the complete SOCKS handshake by both the route
+	// probe deadline and the normal per-attempt timeout; otherwise a proxy that
+	// accepts and then stops replying can hold a full-check worker forever.
+	deadline := time.Now().Add(8 * time.Second)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 	br := bufio.NewReader(conn)
 	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
 		conn.Close()
@@ -1416,5 +1517,6 @@ func dialSOCKS5(ctx context.Context, proxyAddr, targetAddr string) (net.Conn, er
 		conn.Close()
 		return nil, err
 	}
+	_ = conn.SetDeadline(time.Time{})
 	return conn, nil
 }

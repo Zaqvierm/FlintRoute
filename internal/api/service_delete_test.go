@@ -1,0 +1,191 @@
+package api
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"router-policy/internal/config"
+)
+
+func TestServiceDeleteCreatesBoundedAutoApplyChange(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	srv.mu.Lock()
+	clone := *srv.activeConfig
+	clone.Routes = append(clone.Routes, config.Route{Type: "vless", Tag: "vless-test", SOCKS5: "127.0.0.1:12080", DNSMode: "socks_remote"})
+	clone.Services = map[string]config.Service{
+		"youtube": {Category: "TSPU_RESTRICTED", Domains: []string{"youtube.com"}, AllowedPaths: []string{"zapret", "smart_dns", "vless", "drop"}},
+		"keep":    {Category: "DIRECT_PREFERRED", Domains: []string{"keep.example"}, AllowedPaths: []string{"direct"}},
+	}
+	srv.activeConfig = &clone
+	srv.mu.Unlock()
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client, csrf := login(t, ts.URL)
+	request, err := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/delete", strings.NewReader(`{"service_id":"youtube","base_version":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", csrf)
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", response.StatusCode, body)
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(envelope.Data)
+	if !strings.Contains(string(raw), `"service_id":"youtube"`) || !strings.Contains(string(raw), `"auto_apply_requested":true`) {
+		t.Fatalf("delete response did not expose transactional operation: %s", raw)
+	}
+	if strings.Contains(string(raw), `"operation":"shell"`) {
+		t.Fatalf("delete response exposed an arbitrary operation: %s", raw)
+	}
+}
+
+func TestServiceDeleteAutoApplyCommitsAndRemovesRule(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	srv.mu.Lock()
+	clone := *srv.activeConfig
+	clone.Services = map[string]config.Service{
+		"youtube": {Category: "TSPU_RESTRICTED", Domains: []string{"youtube.com"}, AllowedPaths: []string{"zapret", "smart_dns", "vless", "drop"}},
+	}
+	srv.activeConfig = &clone
+	srv.mu.Unlock()
+	change, err := srv.createDraftChangeWithOptions("Delete service rule", "test", srv.configVersion, []ChangeOp{{Type: "set", Path: "/services", Value: map[string]config.Service{}}}, "admin", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !srv.startAutoApplyChange(change.ID) {
+		t.Fatal("auto-apply worker did not start")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		srv.mu.Lock()
+		current := srv.changes[change.ID]
+		active := srv.activeConfig
+		srv.mu.Unlock()
+		if current.State == "committed" {
+			if _, exists := active.Services["youtube"]; exists {
+				t.Fatal("committed delete left youtube in active config")
+			}
+			return
+		}
+		if current.State == "failed" || current.State == "rolled_back" || current.State == "requires_device" || current.State == "recovery_required" {
+			t.Fatalf("delete auto-apply terminated as %s: %+v", current.State, current.Validation)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	srv.mu.Lock()
+	current := srv.changes[change.ID]
+	srv.mu.Unlock()
+	t.Fatalf("delete auto-apply stayed pending: state=%s adapter=%s steps=%+v validation=%+v", current.State, current.AdapterStatus, current.Steps, current.Validation)
+}
+
+func TestServiceDeleteWithDormantAdaptiveAssignmentCommits(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	srv.mu.Lock()
+	clone := *srv.activeConfig
+	clone.Services = map[string]config.Service{
+		"discord": {Category: "TSPU_RESTRICTED", Domains: []string{"discord.com"}, AllowedPaths: []string{"zapret", "smart_dns", "vless", "drop"}},
+	}
+	// Reproduce the production shape: the adaptive assignment is valid while
+	// the service exists, but becomes dormant when its last service is deleted.
+	clone.Zapret.Binary = "/usr/bin/nfqws"
+	clone.Zapret.InitScript = "/etc/init.d/router-policy-zapret"
+	clone.Zapret.ActiveConfig = "/etc/router-policy/zapret/nfqws.conf"
+	clone.Zapret.ActivationMode = "managed"
+	clone.Zapret.Strategy = "tls-fake-ttl3-v1"
+	clone.Zapret.QueueNum = 200
+	clone.Zapret.AdaptiveEnabled = true
+	clone.Zapret.AdaptiveCatalogFile = filepath.Join(srv.cfg.Storage.StateDir, "catalog.json")
+	clone.Zapret.AdaptiveAssignments = []config.ZapretProfileAssignment{{BundleID: "discord", ProfileID: "profile-a"}}
+	clone.Routes = append(clone.Routes, config.Route{Type: "zapret", Tag: "zapret"})
+	writeAdaptiveCatalog(t, clone.Zapret.AdaptiveCatalogFile)
+	srv.activeConfig = &clone
+	srv.mu.Unlock()
+	change, err := srv.createDraftChangeWithOptions("Delete service rule", "test", srv.configVersion, []ChangeOp{{Type: "set", Path: "/services", Value: map[string]config.Service{}}}, "admin", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !srv.startAutoApplyChange(change.ID) {
+		t.Fatal("auto-apply worker did not start")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		srv.mu.Lock()
+		current := srv.changes[change.ID]
+		active := srv.activeConfig
+		srv.mu.Unlock()
+		if current.State == "committed" {
+			if _, exists := active.Services["discord"]; exists {
+				t.Fatal("committed delete left discord in active config")
+			}
+			return
+		}
+		if current.State == "failed" || current.State == "rolled_back" || current.State == "requires_device" || current.State == "recovery_required" {
+			t.Fatalf("adaptive dormant-assignment delete terminated as %s: %+v", current.State, current.Validation)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	srv.mu.Lock()
+	current := srv.changes[change.ID]
+	srv.mu.Unlock()
+	t.Fatalf("adaptive dormant-assignment delete stayed pending: state=%s adapter=%s steps=%+v validation=%+v", current.State, current.AdapterStatus, current.Steps, current.Validation)
+}
+
+func TestServicesExposeDynamicCandidateMatrixForLegacyTSPUPolicy(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	srv.mu.Lock()
+	clone := *srv.activeConfig
+	clone.Routes = append(clone.Routes, config.Route{Type: "vless", Tag: "vless-test", SOCKS5: "127.0.0.1:12080", DNSMode: "socks_remote"})
+	clone.Services = map[string]config.Service{
+		"youtube": {Category: "TSPU_RESTRICTED", Domains: []string{"youtube.com"}, AllowedPaths: []string{"zapret", "direct", "drop"}},
+	}
+	srv.activeConfig = &clone
+	srv.mu.Unlock()
+	recorder := httptest.NewRecorder()
+	srv.handleServices(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/services", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("services status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"eligible_route_types"`) || !strings.Contains(recorder.Body.String(), `"route_type":"smart_dns"`) || !strings.Contains(recorder.Body.String(), `"route_type":"vless"`) {
+		t.Fatalf("dynamic candidate matrix omitted eligible routes: %s", recorder.Body.String())
+	}
+}
+
+func TestAutoApplyFailureDoesNotLeaveDraftForever(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	change, err := srv.createDraftChangeWithOptions("test product action", "test", srv.configVersion, []ChangeOp{{Type: "set", Path: "/policy/route_hold_seconds", Value: 600}}, "admin", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.recordAutoApplyFailure(change.ID, "candidate_invalid", "candidate rejected", "failed")
+	srv.mu.Lock()
+	got := srv.changes[change.ID]
+	srv.mu.Unlock()
+	if got.State != "failed" {
+		t.Fatalf("auto-apply failure left change in %q", got.State)
+	}
+	if len(got.Validation) == 0 || got.Validation[len(got.Validation)-1].Code != "candidate_invalid" {
+		t.Fatalf("auto-apply failure did not persist actionable validation: %+v", got.Validation)
+	}
+}

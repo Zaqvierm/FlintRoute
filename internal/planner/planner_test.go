@@ -29,6 +29,12 @@ func TestCheckDomainRejectsNilConfigAndAcceptsNilContextSafely(t *testing.T) {
 	}
 }
 
+func TestProbeResultTerminalAcceptsPassAlias(t *testing.T) {
+	if !probeResultTerminal(probe.RouteResult{Status: "PASS"}) {
+		t.Fatal("PASS result was incorrectly treated as an in-progress verification")
+	}
+}
+
 func TestCheckDomainTreatsCaseInsensitiveRegionalBlockAsGEO(t *testing.T) {
 	cfg := discoveryConfig(t)
 	prober := &scriptedProber{results: map[string]probe.RouteResult{
@@ -115,6 +121,35 @@ func TestSelectBestUsesMeasuredEndToEndLatencyOverRoutePriority(t *testing.T) {
 	}
 }
 
+func TestVerifiedDirectStopsNormalCheckButFullCheckProbesInventory(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cfg.Services["web"] = config.Service{
+		Category: "DIRECT_PREFERRED", Domains: []string{"web.example"},
+		AllowedPaths: []string{"direct", "smart_dns", "vless", "drop"},
+	}
+	prober := &scriptedProber{results: map[string]probe.RouteResult{
+		"direct":    successfulResult("direct", "direct", "rev-active"),
+		"smart-one": successfulResult("smart-one", "smart_dns", "rev-active"),
+		"vless-one": successfulResult("vless-one", "vless", "rev-active"),
+		"drop":      successfulResult("drop", "drop", "rev-active"),
+	}}
+	quick, err := CheckDomain(context.Background(), cfg, "web.example", "web", Options{RouteProber: prober, ActiveRevision: "rev-active"})
+	if err != nil || quick.Selected == nil || quick.Selected.RouteType != "direct" {
+		t.Fatalf("quick check did not stop on verified Direct: %+v err=%v", quick, err)
+	}
+	if !reflect.DeepEqual(prober.calls, []string{"direct"}) {
+		t.Fatalf("quick check probed beyond Direct: %v", prober.calls)
+	}
+	prober.calls = nil
+	full, err := CheckDomain(context.Background(), cfg, "web.example", "web", Options{RouteProber: prober, FullCheck: true, ActiveRevision: "rev-active"})
+	if err != nil || full.Selected == nil {
+		t.Fatalf("full check failed: %+v err=%v", full, err)
+	}
+	if len(prober.calls) != 4 {
+		t.Fatalf("full check did not inspect all eligible candidates: %v", prober.calls)
+	}
+}
+
 func TestSelectBestDoesNotTreatUnknownLatencyAsZero(t *testing.T) {
 	results := []probe.RouteResult{
 		{Route: "request-only", RouteType: "vless", RoutePriority: 50, Status: "OK", PathVerified: true, ServiceOK: true, RouteLatencyMS: 1, RouteLatencyAvailable: true},
@@ -191,6 +226,50 @@ func TestBuildCandidatesUsesSmartDNSHealthOrder(t *testing.T) {
 	}
 }
 
+func TestFullCheckCapsVLESSInventoryButRetainsSelectedRoute(t *testing.T) {
+	routes := make([]config.Route, 0, 8)
+	for i := 1; i <= 8; i++ {
+		routes = append(routes, config.Route{
+			Type:     "vless",
+			Tag:      fmt.Sprintf("proxy-%d", i),
+			Priority: i,
+		})
+	}
+	cfg := &config.Config{
+		Version: 2,
+		Policy:  config.Policy{ProbeBudget: 2},
+		Routes:  routes,
+		Services: map[string]config.Service{
+			"web": {
+				Category:         "DIRECT_PREFERRED",
+				AllowedPaths:     []string{"vless", "drop"},
+				SelectedRouteTag: "proxy-8",
+			},
+		},
+	}
+	plan, err := BuildCandidates(cfg, "example.com", "web", Options{FullCheck: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vlessCount := 0
+	selectedPresent := false
+	for _, candidate := range plan.Candidates {
+		if candidate.Type != "vless" {
+			continue
+		}
+		vlessCount++
+		if candidate.Tag == "proxy-8" {
+			selectedPresent = true
+		}
+	}
+	if vlessCount > 3 {
+		t.Fatalf("full check exceeded probe budget while retaining the selected route: %d candidates (%+v)", vlessCount, plan.Candidates)
+	}
+	if !selectedPresent {
+		t.Fatalf("explicitly selected VLESS route was dropped by the full-check cap: %+v", plan.Candidates)
+	}
+}
+
 func TestUnknownDomainDirectSuccessIsCachedAndReused(t *testing.T) {
 	cfg := discoveryConfig(t)
 	cache := openDecisionCache(t, cfg)
@@ -211,15 +290,15 @@ func TestUnknownDomainDirectSuccessIsCachedAndReused(t *testing.T) {
 	if first.Service != "UNKNOWN:example.com" || first.Selected == nil || first.Selected.Route != "direct" || first.Cached {
 		t.Fatalf("unexpected discovery result: %+v", first)
 	}
-	if got := prober.calls; !reflect.DeepEqual(got, []string{"direct", "smart-one", "vless-one", "drop"}) {
-		t.Fatalf("all eligible candidates should reach terminal evidence: %v", got)
+	if got := prober.calls; !reflect.DeepEqual(got, []string{"direct"}) {
+		t.Fatalf("normal unknown-domain check should stop after verified Direct: %v", got)
 	}
 
 	second, err := CheckDomain(context.Background(), cfg, "api.example.com", "", opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !second.Cached || second.Selected == nil || second.Selected.Route != "direct" || len(prober.calls) != 4 {
+	if !second.Cached || second.Selected == nil || second.Selected.Route != "direct" || len(prober.calls) != 1 {
 		t.Fatalf("cached decision was not reused: %+v calls=%v", second, prober.calls)
 	}
 	if first.VerificationDurationMS <= 0 || second.VerificationDurationMS != first.VerificationDurationMS {
@@ -566,7 +645,7 @@ func TestCachedNoMatchDecisionIsInvalidatedByFreshTSPUMatch(t *testing.T) {
 	if result.Cached || result.Selected == nil || result.Selected.Route != "zapret" {
 		t.Fatalf("fresh TSPU signal reused unsafe cached direct route: %+v", result)
 	}
-	if !reflect.DeepEqual(prober.calls, []string{"direct", "smart-one", "vless-one", "drop", "zapret", "smart-one", "vless-one", "drop"}) {
+	if !reflect.DeepEqual(prober.calls, []string{"direct", "zapret", "smart-one", "vless-one", "drop"}) {
 		t.Fatalf("expected a fresh TSPU candidate set, calls=%v", prober.calls)
 	}
 }
@@ -845,9 +924,61 @@ func TestSelectedVLESSRemainsAfterZapretForTSPU(t *testing.T) {
 	for _, candidate := range plan.Candidates {
 		got = append(got, candidate.Tag)
 	}
-	want := []string{"zapret", "vless-one", "drop"}
+	want := []string{"zapret", "smart-one", "vless-one", "drop"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("selected VLESS changed TSPU fallback: got=%v want=%v", got, want)
+	}
+}
+
+func TestQuickCheckStopsAfterFirstVerifiedVLESS(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cfg.Routes = []config.Route{
+		{Type: "zapret", Tag: "zapret", Priority: 20},
+		{Type: "vless", Tag: "vless-first", Priority: 40, SOCKS5: "127.0.0.1:12080", DNSMode: "socks_remote"},
+		{Type: "vless", Tag: "vless-second", Priority: 50, SOCKS5: "127.0.0.1:12081", DNSMode: "socks_remote"},
+		{Type: "drop", Tag: "drop", Priority: 1000},
+	}
+	cfg.Services["tspu"] = config.Service{Category: "TSPU_RESTRICTED", AllowedPaths: []string{"zapret", "vless", "drop"}, Domains: []string{"video.example"}}
+	prober := &scriptedProber{results: map[string]probe.RouteResult{
+		"zapret":       failedResult("zapret", "zapret", "tspu_failed"),
+		"vless-first":  successfulResult("vless-first", "vless", "rev-active"),
+		"vless-second": successfulResult("vless-second", "vless", "rev-active"),
+	}}
+	check, err := CheckDomain(context.Background(), cfg, "video.example", "tspu", Options{RouteProber: prober, TSPUResult: tspu.Match{Status: "MATCH"}, ActiveRevision: "rev-active", QuickCandidates: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.Selected == nil || check.Selected.Route != "vless-first" {
+		t.Fatalf("quick check selected %+v", check.Selected)
+	}
+	for _, call := range prober.calls {
+		if call == "vless-second" {
+			t.Fatalf("quick check continued into the VLESS pool after a verified candidate: %#v", prober.calls)
+		}
+	}
+}
+
+func TestRequestedRouteForcesFreshProofInsteadOfReplacingSelection(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cfg.Routes = []config.Route{
+		{Type: "direct", Tag: "direct", Priority: 10},
+		{Type: "vless", Tag: "vless-requested", Priority: 40, SOCKS5: "127.0.0.1:12080", DNSMode: "socks_remote"},
+		{Type: "drop", Tag: "drop", Priority: 1000},
+	}
+	cfg.Services["requested"] = config.Service{Category: "DIRECT_PREFERRED", AllowedPaths: []string{"direct", "vless", "drop"}, Domains: []string{"requested.example"}}
+	prober := &scriptedProber{results: map[string]probe.RouteResult{
+		"direct":          successfulResult("direct", "direct", "rev-active"),
+		"vless-requested": successfulResult("vless-requested", "vless", "rev-active"),
+	}}
+	check, err := CheckDomain(context.Background(), cfg, "requested.example", "requested", Options{RouteProber: prober, ActiveRevision: "rev-active", RequestedRouteTag: "vless-requested"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.Selected == nil || check.Selected.Route != "vless-requested" {
+		t.Fatalf("explicit route was replaced by another candidate: %+v", check.Selected)
+	}
+	if len(prober.calls) != 2 || prober.calls[0] != "direct" || prober.calls[1] != "vless-requested" {
+		t.Fatalf("explicit route did not receive a fresh proof: %v", prober.calls)
 	}
 }
 

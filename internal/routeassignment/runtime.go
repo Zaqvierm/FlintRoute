@@ -445,6 +445,13 @@ func render(cfg *config.Config, plan artifact.IPPlan, value manifest) (string, e
 				return "", err
 			}
 			fmt.Fprintf(&b, "server=/%s/%s\n", assignment.Domain, server)
+			if route.DNSFallbackServer != "" {
+				fallback, err := dnsmasqServer(route.DNSFallbackServer)
+				if err != nil {
+					return "", err
+				}
+				fmt.Fprintf(&b, "server=/%s/%s\n", assignment.Domain, fallback)
+			}
 		case "vless":
 			for _, proxy := range plan.DNSProxies {
 				if proxy.RouteTag == assignment.RouteTag {

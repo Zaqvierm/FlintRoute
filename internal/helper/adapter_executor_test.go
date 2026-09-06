@@ -23,6 +23,31 @@ func TestAdapterExecutorUsesOnlyOwnedOperationExecutor(t *testing.T) {
 	}
 }
 
+func TestAdapterExecutorServesBoundReadOnlyProbe(t *testing.T) {
+	if runtime.GOOS != "linux" || !fileExistsForTest("/bin/pidof") {
+		t.Skip("read-only probe fixture requires Linux pidof")
+	}
+	dir := t.TempDir()
+	adapterPath := filepath.Join(dir, "adapter.sh")
+	if err := os.WriteFile(adapterPath, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	request := validRequest("probe.process")
+	request.Generation = request.RevisionID
+	request.TransactionID = "probe"
+	request.RollbackTokenHash = ""
+	request.Probe = &ProbeRequest{Operation: "process", Process: "nfqws"}
+	response := (AdapterExecutor{AdapterPath: adapterPath, ConfigPath: filepath.Join(dir, "default.json"), InitDir: dir}).Execute(context.Background(), request)
+	if !response.Accepted || response.ErrorCode != "" || response.Evidence["payload"] == "" {
+		t.Fatalf("bound probe was not served semantically: %+v", response)
+	}
+}
+
+func fileExistsForTest(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
 func TestAdapterExecutorRouteAssignmentRequiresSemanticProof(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("exec adapter fixture requires a POSIX shell")

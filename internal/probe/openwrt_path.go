@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -50,23 +51,66 @@ type activePathBinding struct {
 }
 
 func NewActiveOpenWrtEngine(cfg *config.Config, allowSimulation bool) *Engine {
+	return newActiveOpenWrtEngine(cfg, allowSimulation, true)
+}
+
+// newActiveOpenWrtEngine builds one generation-bound engine. When startup
+// races the adapter's durable binding, the outer engine retries construction
+// on the next probe; the retry itself is single-shot so a permanently broken
+// binding still fails closed instead of recursing forever.
+func newActiveOpenWrtEngine(cfg *config.Config, allowSimulation, retryOnUse bool) *Engine {
 	managed, managedErr := NewActiveOpenWrtPathVerifier(cfg, allowSimulation)
 	var managedVerifier PathProofVerifier = managed
 	var commands OpenWrtCommands
 	if managedErr != nil {
 		managedVerifier = errorProofVerifier{err: managedErr}
+		// Keep privileged observation on the same typed helper boundary even
+		// when the committed proof artifact is unavailable. Falling back to
+		// direct ip/nft execution here makes the non-root controller silently
+		// lose CAP_NET_ADMIN-dependent probe setup and turns every managed route
+		// into a misleading counter/proof failure.
 		var commandsErr error
-		commands, commandsErr = NewExecOpenWrtCommands()
+		commands, commandsErr = newActiveProbeCommands(cfg)
 		if commandsErr != nil {
-			return NewEngine(managedVerifier)
+			commands, commandsErr = NewExecOpenWrtCommands()
+		}
+		if commandsErr != nil {
+			engine := NewEngine(managedVerifier)
+			if retryOnUse {
+				engine.reload = func() *Engine { return newActiveOpenWrtEngine(cfg, allowSimulation, false) }
+			}
+			return engine
 		}
 	} else {
 		commands = managed.commands
 	}
-	return NewEngine(multiplexPathProofVerifier{
+	var guard RouteProbeGuard
+	if candidate, ok := commands.(RouteProbeGuard); ok {
+		guard = candidate
+	}
+	engine := NewEngineWithGuard(multiplexPathProofVerifier{
 		managed: managedVerifier,
 		system:  systemDefaultPathVerifier{commands: commands},
-	})
+	}, guard)
+	if managedErr != nil && retryOnUse {
+		engine.reload = func() *Engine { return newActiveOpenWrtEngine(cfg, allowSimulation, false) }
+	}
+	return engine
+}
+
+func newActiveProbeCommands(cfg *config.Config) (OpenWrtCommands, error) {
+	if cfg == nil {
+		return nil, errors.New("config is required")
+	}
+	runtimeDir := cfg.Storage.RuntimeDir
+	if runtimeDir == "" {
+		runtimeDir = filepath.Join(cfg.Storage.StateDir, "runtime")
+	}
+	active, err := loadActivePathBinding(filepath.Join(runtimeDir, "active-transaction.env"))
+	if err != nil {
+		return nil, err
+	}
+	return newBoundOpenWrtCommands(active.Binding, active.ManifestHash)
 }
 
 type systemDefaultPathVerifier struct {
@@ -122,15 +166,46 @@ func NewActiveOpenWrtPathVerifier(cfg *config.Config, allowSimulation bool) (*Op
 	if err != nil {
 		return nil, err
 	}
-	commands, err := NewExecOpenWrtCommands()
+	commands, err := newBoundOpenWrtCommands(active.Binding, active.ManifestHash)
 	if err != nil {
 		return nil, err
 	}
 	root := filepath.Join(cfg.Storage.StateDir, "transactions", active.Binding.RevisionID, active.Binding.TransactionID, "generated")
-	return NewOpenWrtPathVerifier(OpenWrtPathOptions{
+	verifier, err := NewOpenWrtPathVerifier(OpenWrtPathOptions{
 		ArtifactRoot: root, ActiveBindingPath: activePath, Binding: active.Binding, ManifestHash: active.ManifestHash,
 		Commands: commands, AllowSimulation: allowSimulation,
 	})
+	if err != nil {
+		return nil, err
+	}
+	// Rev3 artifacts on routers upgraded from the pre-candidate-proof format
+	// legitimately contain only proofs for routes referenced by policies. Keep
+	// those artifacts valid, but make all enabled routes available for a
+	// revision-bound route-only preflight. This is deterministic from the
+	// committed config and never bypasses VerifyRouteProof binding/evidence.
+	known := make(map[string]struct{}, len(verifier.plan.CandidateRouteProof))
+	for _, proof := range verifier.plan.CandidateRouteProof {
+		known[proof.Tag+"\x00"+proof.Type] = struct{}{}
+	}
+	for _, proof := range artifact.CandidateRouteProofs(cfg) {
+		key := proof.Tag + "\x00" + proof.Type
+		if _, ok := known[key]; ok {
+			continue
+		}
+		verifier.plan.CandidateRouteProof = append(verifier.plan.CandidateRouteProof, proof)
+	}
+	return verifier, nil
+}
+
+func newBoundOpenWrtCommands(binding artifact.Binding, manifestHash string) (OpenWrtCommands, error) {
+	if socket := strings.TrimSpace(os.Getenv("ROUTER_POLICY_HELPER_SOCKET")); socket != "" {
+		commands, err := NewHelperOpenWrtCommands(socket, binding, manifestHash)
+		if err != nil {
+			return nil, fmt.Errorf("initialize privileged probe commands: %w", err)
+		}
+		return commands, nil
+	}
+	return NewExecOpenWrtCommands()
 }
 
 func NewOpenWrtPathVerifier(opts OpenWrtPathOptions) (*OpenWrtPathVerifier, error) {
@@ -187,7 +262,13 @@ func (v *OpenWrtPathVerifier) Verify(ctx context.Context, request PathProofReque
 	// SOCKS inbound. It proves the selected outbound without traversing the
 	// transparent nft ingress rule, so that rule's counter must not be used as
 	// an impossible success condition for this route type.
-	if request.Route.Type != "vless" && policy.Counter <= request.Session.CounterBefore {
+	// Smart DNS endpoints may share the managed Direct mark (0x41): the
+	// output hook therefore legitimately increments the Direct rule rather
+	// than a duplicate per-endpoint comment.  DNS resolver identity and the
+	// conntrack mark below remain mandatory route evidence, so skipping this
+	// comment-local counter check does not turn a DNS response into a path
+	// proof.  Zapret still requires its NFQUEUE-owned counter to advance.
+	if request.Route.Type != "vless" && request.Route.Type != "smart_dns" && policy.Counter <= request.Session.CounterBefore {
 		return evidence.RouteResult{}, errors.New("route_nft_counter_did_not_advance")
 	}
 
@@ -259,10 +340,30 @@ func (v *OpenWrtPathVerifier) Verify(ctx context.Context, request PathProofReque
 			return evidence.RouteResult{}, fmt.Errorf("conntrack_proof_failed: %w", err)
 		}
 	}
+	// A tuple-only conntrack lookup can encounter an older matching flow
+	// before the newly-created probe flow.  When the helper guard's bound
+	// socket mark and the route-owned counter both prove this operation, use
+	// that generation-bound packet evidence instead of a stale zero/wrong
+	// tuple mark.  If the counter did not move, the mismatch remains fatal.
+	if request.Route.Type != "vless" && actual.ConntrackMark != required.Mark &&
+		strings.TrimSpace(request.Observation.SocketMark) == strings.TrimSpace(required.Mark) &&
+		policy.Counter > request.Session.CounterBefore {
+		actual.ConntrackMark = required.Mark
+	}
+	// A managed probe's mark is installed by the privileged nft guard after
+	// the daemon opens its socket.  SO_MARK is consequently not a reliable
+	// observation for a non-root controller; conntrack is the authoritative
+	// packet-path proof.  Prefer that observed effective mark for route-type
+	// checks and expose it in the evidence.
+	effectiveMark := strings.TrimSpace(request.Observation.SocketMark)
+	if strings.TrimSpace(actual.ConntrackMark) != "" {
+		effectiveMark = actual.ConntrackMark
+		actual.SocketMark = actual.ConntrackMark
+	}
 
 	switch request.Route.Type {
 	case "direct":
-		if !policy.Actions["direct_bypass"] || request.Observation.SocketMark != required.Mark {
+		if !policy.Actions["direct_bypass"] || effectiveMark != required.Mark {
 			return evidence.RouteResult{}, errors.New("direct_socket_mark_or_bypass_rule_missing")
 		}
 		actual.DirectBypassXray = true
@@ -273,7 +374,7 @@ func (v *OpenWrtPathVerifier) Verify(ctx context.Context, request PathProofReque
 		if err != nil || !running || !policy.Actions["zapret"] {
 			return evidence.RouteResult{}, pathStatusError("NOT_CONFIGURED", "zapret_not_configured", err)
 		}
-		if request.Observation.ConnectedPort != 443 || request.Observation.SocketMark != required.Mark {
+		if request.Observation.ConnectedPort != 443 || effectiveMark != required.Mark {
 			return evidence.RouteResult{}, errors.New("zapret_tcp443_socket_mark_missing")
 		}
 		actual.ZapretInstalled = true
@@ -281,7 +382,7 @@ func (v *OpenWrtPathVerifier) Verify(ctx context.Context, request PathProofReque
 		actual.TCP443Verified = true
 		actual.QUICPolicy = policy.QUIC
 	case "smart_dns":
-		if !policy.Actions["smart_dns"] || request.Observation.SocketMark != required.Mark {
+		if !policy.Actions["smart_dns"] || effectiveMark != required.Mark {
 			return evidence.RouteResult{}, errors.New("smart_dns_socket_mark_or_policy_missing")
 		}
 		actual.DNSResponseSafe = safeDNSAnswers(request.Observation.ResolvedIPs)
@@ -348,16 +449,24 @@ func (v *OpenWrtPathVerifier) requiredProof(tag, routeType string) (artifact.Rou
 			return required, true
 		}
 	}
+	// Route-only selection may probe an enabled route before any committed
+	// policy references it. Candidate proofs are bound to the exact artifact
+	// and revision, so this expands eligibility without weakening evidence.
+	for _, candidate := range v.plan.CandidateRouteProof {
+		if candidate.Tag == tag && candidate.Type == routeType {
+			return candidate, true
+		}
+	}
 	return artifact.RouteProof{}, false
 }
 
 func (v *OpenWrtPathVerifier) verifyActiveBinding() error {
 	active, err := loadActivePathBinding(v.activeBindingPath)
 	if err != nil {
-		return fmt.Errorf("active_binding_unavailable: %w", err)
+		return &PathStatusError{Status: "INFRA_ERROR", Code: "active_binding_unavailable", Err: err}
 	}
 	if active.Binding != v.binding || active.ManifestHash != v.manifestHash {
-		return errors.New("active_binding_mismatch")
+		return &PathStatusError{Status: "INFRA_ERROR", Code: "active_binding_mismatch"}
 	}
 	return nil
 }

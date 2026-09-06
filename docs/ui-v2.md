@@ -3,6 +3,8 @@
 Документ описывает UI на remediation-ветке. При коммите он привязывается к
 точному SHA; локальные изменения не являются hardware evidence.
 
+Последний локально проверенный software checkpoint: `5fdaa63`.
+
 ## Правила правдивости
 
 - Завершение первичной настройки хранится в backend bucket `onboarding` bbolt.
@@ -101,3 +103,32 @@ in `ui/src/features/setup.tsx`; route definitions and location parsing live in
 `ui/src/app/messages.ts`. `ui/src/app/App.tsx` keeps shell, data refresh, screen
 dispatch, and the recovery banner; `main.tsx` only mounts `App`. This is a software-only
 refactor; it does not change dataplane behavior or provide hardware evidence.
+
+### Manual rule preview
+
+"New rule" is a two-step interaction: the user enters a domain, runs a
+read-only domain-only preview, sees the candidate matrix (Direct baseline,
+Zapret, Smart DNS, VLESS, and DROP where eligible), and only then can create
+the policy ChangeSet. A preview is ephemeral and never writes a ChangeSet or
+active policy. A bounded `VERIFYING` response keeps the button as
+"Continue verification"; it must not be rendered as `NO_SAFE_ROUTE`.
+
+The production runtime binding is published as root:daemon `0640`, because the
+non-root controller must read the revision/hash binding for path verification.
+
+For an existing configured rule, `Verify path now` is read-only and renders the
+fresh candidate evidence. Once a non-DROP candidate is PathVerified, the drawer
+offers `Apply verified route`; that action starts the same bounded transaction
+used by the rule editor and waits for its terminal state. Rule deletion follows
+the same contract: the confirmation action polls the ChangeSet until
+`committed`, `failed`, `rolled_back`, `requires_device`, or `recovery_required`
+and never leaves the user with an indefinite "deleting" state. Durable
+intermediate states (`prepared`, `applying`, `verifying`, `rolling_back`) remain
+pending; they are not terminal errors. The selected-route action sends the
+concrete route tag and the backend performs a fresh proof for that exact tag,
+so a faster unrelated candidate cannot silently replace the user's choice.
+
+The synthetic `system-default` path is an unmarked OpenWrt baseline for an
+unknown domain, not an owned FlintRoute route. It is shown as a baseline in the
+trace, excluded from selectable candidate lists, and cannot be committed as a
+managed route.

@@ -15,9 +15,11 @@ import {
   getTGWS,
   getVLESSPool,
   ignoreDiscoverySuggestion,
+  isChangePending,
   runVLESSSpeedTest,
   setVLESSTariff,
   testTelegram,
+  waitForChangeTerminal,
   type ChangeSet,
   type ComponentAction,
   type ComponentKind,
@@ -107,10 +109,12 @@ function componentNextStep(status: ComponentStatus): string {
   }
   if (!status.installed) return 'Компонент не установлен. FlintRoute сам выберет закреплённый build для архитектуры роутера и проверит SHA-256.';
   if (['stopped', 'disabled', 'not_used'].includes(String(status.service_state).toLowerCase()) && !status.health_ready) {
-    return 'Компонент установлен, но сейчас не используется. Настрой сервисы, чтобы подключить его к маршрутам.';
+    return status.kind === 'xray'
+      ? 'Xray установлен, но runtime остановлен. Наличие серверов в inventory ещё не означает активный VLESS-маршрут.'
+      : 'Компонент установлен, но сейчас не используется. Настрой сервисы, чтобы подключить его к маршрутам.';
   }
   if (!status.health_ready) return status.health_reason || 'Компонент установлен, но health check не пройден.';
-  if (status.kind === 'xray') return 'Готово. Следующий шаг — добавить VLESS-подписку или свой сервер.';
+  if (status.kind === 'xray') return 'Runtime готов. Активные VLESS-маршруты должны подтверждаться отдельным path evidence.';
   if (status.kind === 'zapret') return 'Готово. Следующий шаг — запустить безопасную калибровку стратегии для текущей сети.';
   return 'Сервис установлен. Для PASS нужна фактическая проверка Telegram transport, а не один открытый TCP-порт.';
 }
@@ -306,12 +310,19 @@ export function Discovery({ data, configVersion, role, mutationLocked, refresh }
         const domain = String(item.domain ?? '');
         const verified = item.path_verified === true && Boolean(item.route);
         const busySuggestion = actionDomain === domain;
-        const candidates = Array.isArray(item.candidates) ? item.candidates.filter((candidate): candidate is Record<string, unknown> => Boolean(candidate && typeof candidate === 'object')) : [];
+        // system-default is the initial-unknown policy baseline, not a
+        // selectable managed route. Keep it out of the candidate matrix so
+        // users do not mistake the kernel fallback for a verified FlintRoute
+        // path.
+        const candidates = Array.isArray(item.candidates) ? item.candidates.filter((candidate): candidate is Record<string, unknown> => Boolean(candidate && typeof candidate === 'object') && String((candidate as Record<string, unknown>).route ?? '') !== 'system-default') : [];
         const verifiedCandidates = candidates.filter((candidate) => candidate.path_verified === true && typeof candidate.route === 'string' && candidate.route);
         const classificationState = textValue(item.classification_state, 'UNKNOWN');
+        const observedAt = Date.parse(textValue(item.observed_at, ''));
+        const staleVerification = Number.isFinite(observedAt) && Date.now() - observedAt > 5 * 60 * 1000 && !verified;
+        const presentationState = verified ? 'Путь подтверждён' : staleVerification ? 'Незавершённая проверка устарела' : textValue(item.probe_state, 'Проверка не завершена');
         const selectedRoute = routeChoices[domain] ?? String(item.route ?? '');
         const applyItem = selectedRoute && selectedRoute !== String(item.route ?? '') ? { ...item, route: selectedRoute } : item;
-        return <div class="row discovery-suggestion" key={domain || 'unknown'}><div><b>{textValue(domain, 'Домен не указан')}</b><small>{textValue(item.category, 'Категория не определена')} · classification: {classificationState} · {textValue(item.route_type, 'Маршрут не определён')} · {textValue(item.route, 'не выбран')}</small>{item.classification_reason && <small>Evidence: {textValue(item.classification_reason, '')}</small>}{candidates.length > 0 && <div class="suggestion-candidates">{candidates.map((candidate, index) => <small key={`${String(candidate.route ?? index)}:${index}`}>{textValue(candidate.route, 'Маршрут')} — {candidate.path_verified === true ? 'PASS' : textValue(candidate.status, 'FAIL')}{candidate.selection_score !== undefined ? ` · score ${textValue(candidate.selection_score, '')}` : ''}{candidate.end_to_end_latency_available === true ? ` · e2e ${textValue(candidate.end_to_end_latency_ms, '')} мс` : ''}{candidate.reason ? ` · ${textValue(candidate.reason, '')}` : ''}</small>)}</div>}</div><span>{verified ? 'Путь подтверждён' : textValue(item.probe_state, 'Проверка не завершена')}</span><small>{textValue(item.reason, 'Причина не указана')} · наблюдений: {textValue(item.count, '1')}</small>{role === 'administrator' && <div class="actions">{verifiedCandidates.length > 1 && <label class="inline-select"><span>Изменить маршрут</span><select value={selectedRoute} disabled={mutationLocked || busySuggestion} onChange={(event) => setRouteChoices((old) => ({ ...old, [domain]: (event.target as HTMLSelectElement).value }))}>{verifiedCandidates.map((candidate, index) => <option value={String(candidate.route)} key={`${String(candidate.route)}:${index}`}>{String(candidate.route)}</option>)}</select></label>}<button class="primary" disabled={!verified || mutationLocked || busySuggestion} onClick={() => void actOnSuggestion(applyItem, 'apply')}>{busySuggestion ? 'Проверяю…' : 'Применить'}</button><button disabled={mutationLocked || busySuggestion} onClick={() => void actOnSuggestion(item, 'ignore')}>Игнорировать</button></div>}</div>;
+        return <div class="row discovery-suggestion" key={domain || 'unknown'}><div><b>{textValue(domain, 'Домен не указан')}</b><small>{textValue(item.category, 'Категория не определена')} · classification: {classificationState} · {textValue(item.route_type, 'Маршрут не определён')} · {textValue(item.route, 'не выбран')}</small>{item.classification_reason && <small>Evidence: {textValue(item.classification_reason, '')}</small>}{candidates.length > 0 && <div class="suggestion-candidates">{candidates.map((candidate, index) => <small key={`${String(candidate.route ?? index)}:${index}`}>{textValue(candidate.route, 'Маршрут')} — {candidate.path_verified === true ? 'PASS' : textValue(candidate.status, 'FAIL')}{candidate.selection_score !== undefined ? ` · score ${textValue(candidate.selection_score, '')}` : ''}{candidate.end_to_end_latency_available === true ? ` · e2e ${textValue(candidate.end_to_end_latency_ms, '')} мс` : ''}{candidate.reason ? ` · ${textValue(candidate.reason, '')}` : ''}</small>)}</div>}</div><span>{presentationState}</span><small>{textValue(item.reason, 'Причина не указана')} · наблюдений: {textValue(item.count, '1')}</small>{role === 'administrator' && <div class="actions">{verifiedCandidates.length > 1 && <label class="inline-select"><span>Изменить маршрут</span><select value={selectedRoute} disabled={mutationLocked || busySuggestion} onChange={(event) => setRouteChoices((old) => ({ ...old, [domain]: (event.target as HTMLSelectElement).value }))}>{verifiedCandidates.map((candidate, index) => <option value={String(candidate.route)} key={`${String(candidate.route)}:${index}`}>{String(candidate.route)}</option>)}</select></label>}<button class="primary" disabled={!verified || mutationLocked || busySuggestion} onClick={() => void actOnSuggestion(applyItem, 'apply')}>{busySuggestion ? 'Проверяю…' : 'Применить'}</button><button disabled={mutationLocked || busySuggestion} onClick={() => void actOnSuggestion(item, 'ignore')}>Игнорировать</button></div>}</div>;
       })}
       {!data.suggestions?.length && <p class="empty-state">Предложений пока нет</p>}
     </Card>
@@ -407,11 +418,21 @@ export function ExternalSOCKS({ configVersion, role, mutationLocked, refresh, na
   }
   async function activate() {
     if (mutationLocked) { setMessage('Внешний SOCKS-маршрут заблокирован до подтверждения recovery state.'); return; }
-    setBusy(true); setMessage('Создаю черновик внешнего SOCKS-маршрута…');
+    setBusy(true); setMessage('Проверяю и включаю внешний SOCKS-маршрут…');
     try {
-      const result = await activateExternalSOCKS(endpoint.trim(), domain.trim(), configVersion);
-      if (!result.change) throw new Error('Backend не создал черновик внешнего SOCKS-маршрута.');
-      setMessage('Черновик внешнего SOCKS-маршрута создан. Проверь diff и запусти применение отдельно в очереди изменений.');
+      const result = await activateExternalSOCKS(endpoint.trim(), domain.trim(), configVersion, true);
+      if (!result.change) throw new Error('Backend не создал транзакцию внешнего SOCKS-маршрута.');
+      if (result.auto_apply_started) {
+        const change = await waitForChangeTerminal(result.change.id);
+        setMessage(change.state === 'committed'
+          ? 'Внешний SOCKS-маршрут включён, commit подтверждён.'
+          : isChangePending(change.state)
+            ? 'Внешний SOCKS всё ещё применяется. Открой «Операции» для текущего этапа.'
+            : `Внешний SOCKS не включён: операция завершилась состоянием ${change.state}. Предыдущая конфигурация сохранена.`);
+      } else {
+        setMessage('Операция внешнего SOCKS создана, но worker не запустился. Открой «Операции» для ручного продолжения.');
+        navigate('Операции');
+      }
       setChecked(false); await refresh();
     } catch (error) { setMessage(error instanceof Error ? error.message : 'External SOCKS не включён; транзакция откатилась или ждёт устройство.'); }
     finally { setBusy(false); }
@@ -423,8 +444,8 @@ export function ExternalSOCKS({ configVersion, role, mutationLocked, refresh, na
         <label><span>Адрес внешнего SOCKS5</span><input class="mono" placeholder="host:port" value={endpoint} onInput={(event) => { setEndpoint((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
         <label><span>Домен для remote DNS + TLS/HTTP</span><input class="mono" placeholder="example.com" value={domain} onInput={(event) => { setDomain((event.target as HTMLInputElement).value); setChecked(false); }} /></label>
         <button class="primary" disabled={busy || !configVersion} onClick={check}>{busy ? 'Проверяю…' : 'Проверить endpoint'}</button>
-        <button class="primary" disabled={busy || mutationLocked || !checked || !configVersion} onClick={activate}>Создать черновик маршрута</button>
-        {message && <div class="action-status"><p>{message}</p>{message.includes('черновик') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
+        <button class="primary" disabled={busy || mutationLocked || !checked || !configVersion} onClick={activate}>Применить маршрут</button>
+        {message && <div class="action-status"><p>{message}</p>{message.includes('Операции') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
       </div>}
     </Card>
     {report && <Card title="Результат проверки"><div class="row"><b>{report.ready ? 'READY' : 'FAILED'}</b><span>SOCKS5: {report.socks5_handshake ? 'OK' : 'FAIL'}</span><small>TLS: {report.tls_verified ? 'OK' : 'FAIL'} · HTTP {report.http_status || '—'}</small></div></Card>}
@@ -621,6 +642,14 @@ export function DecisionFlow({ events, discovery }: { events: EventItem[]; disco
 
 function DecisionDetails({ decision }: { decision: ReturnType<typeof toDecisionCard> }) {
   const d = decision.details;
+  const initialBaseline = decision.candidates.filter((candidate) => {
+    const record = asRecord(candidate);
+    return String(record.route ?? '').toLowerCase() === 'system-default';
+  });
+  const managedCandidates = decision.candidates.filter((candidate) => {
+    const record = asRecord(candidate);
+    return String(record.route ?? '').toLowerCase() !== 'system-default';
+  });
   return <><InfoGrid items={[
     ['Classification confidence', decision.classificationConfidence !== undefined ? `${Math.round(decision.classificationConfidence * 100)}%` : null],
     ['Decision confidence', decision.decisionConfidence !== undefined ? `${Math.round(decision.decisionConfidence * 100)}%` : null]
@@ -637,17 +666,18 @@ function DecisionDetails({ decision }: { decision: ReturnType<typeof toDecisionC
     ['Selection score', decision.selectionScore !== undefined ? String(decision.selectionScore) : 'unavailable'],
     ['Path verification duration', decision.verificationDurationMS !== undefined ? `${decision.verificationDurationMS} ms` : 'unavailable']
   ]} />
-  <h3>Кандидаты</h3><EvidenceList values={decision.candidates} empty="Backend не передал список кандидатов." />
+  <h3>Managed кандидаты</h3><EvidenceList values={managedCandidates} empty="Backend не передал managed-кандидатов." />
+  {initialBaseline.length > 0 && <><h3>Начальный системный baseline</h3><p class="source-note">Обычный маршрут роутера проверяется отдельно только для первого неизвестного домена. Это не managed route и не может быть назначен через FlintRoute.</p><EvidenceList values={initialBaseline} empty="Системный baseline не передал evidence." /></>}
   <h3>Временная шкала</h3><EvidenceList values={decision.timeline} empty="Подробная временная шкала отсутствует." />
   <RawDisclosure value={decision.raw} /></>;
 }
 
 export function Diagnostics({ system, diagnostics, lifecycle, storage }: { system: any; diagnostics: any; lifecycle: any; storage: any }) {
   const sections = [
-    { title: 'Платформа', value: system, summary: `${textValue(system?.hostname, 'Router')} · ${textValue(system?.model)}` },
-    { title: 'Сеть и возможности', value: diagnostics, summary: humanStatus(diagnostics?.status) },
-    { title: 'Lifecycle', value: lifecycle, summary: humanStatus(lifecycle?.status) },
-    { title: 'Хранилище', value: storage, summary: humanStatus(storage?.status) }
+    { title: 'Платформа', value: system, summary: `${textValue(system?.hostname, 'Router')} · ${textValue(system?.model)}${system?.reason ? ` · ${system.reason}` : ''}` },
+    { title: 'Сеть и возможности', value: diagnostics, summary: `${humanStatus(diagnostics?.status)}${diagnostics?.reason ? ` · ${diagnostics.reason}` : ''}` },
+    { title: 'Lifecycle', value: lifecycle, summary: `${humanStatus(lifecycle?.status)}${lifecycle?.reason ? ` · ${lifecycle.reason}` : ''}` },
+    { title: 'Хранилище', value: storage, summary: `${humanStatus(storage?.status)}${storage?.reason ? ` · ${storage.reason}` : ''}` }
   ];
   const [selected, setSelected] = useState<any>(null);
   return <section><PageHeader title="Диагностика" text="Сначала — понятное состояние. Полный технический ответ API открывается отдельно." /><Grid>{sections.map((item) => <EntityCard title={item.title} status={item.value?.status} onOpen={() => setSelected(item)}><p>{item.summary}</p><small>{formatDateTime(item.value?.collected_at)}</small></EntityCard>)}</Grid>

@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { decisionVerificationPresentation, formatDateTime, groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, onboardingProgress, onboardingRouterReady, parseResolverInput, recoveryMutationAllowed, serviceColumnFor, statusTone, stringArray, textValue, toDecisionCard, verificationPresentationLabel } from './view-models';
+import { isChangePending } from './api';
 import type { EventItem } from './api';
+
+describe('ChangeSet operation state contract', () => {
+  it.each(['prepared', 'applying', 'verifying', 'data_plane_unverified', 'rolling_back'])('%s remains pending until terminal evidence', (state) => {
+    expect(isChangePending(state)).toBe(true);
+  });
+
+  it.each(['committed', 'failed', 'rolled_back', 'requires_device', 'recovery_required'])('%s is terminal', (state) => {
+    expect(isChangePending(state)).toBe(false);
+  });
+});
 
 describe('safe display values', () => {
   it('never renders object coercion text', () => {

@@ -40,6 +40,13 @@ The durable discovery control-state write is also returned to its callers;
 loss of applied/rollback counters is therefore observable rather than a
 silent success.
 
+An early controller start is not allowed to poison later probes. If the
+generation-bound `/tmp/router-policy/active-transaction.env` is briefly absent
+while the adapter publishes a committed binding, the first probe engine keeps
+the route fail-closed but retries binding construction on its next use. A
+permanent binding or artifact error remains an explicit diagnostic and never
+turns into synthetic PathVerified evidence.
+
 ## Discovery modes
 
 * `observe_only` records observations and Decision Flow evidence only. It does
@@ -92,12 +99,19 @@ rollback errors stop the operation and never fan out into an apply storm.
 
 ## Smart DNS is a route candidate
 
-Each configured Smart DNS endpoint is an independent route candidate. It is
-not a global resolver health flag. For a domain, verification must query the
-selected endpoint, validate the response, connect to a returned safe address
-while preserving the original Host and TLS SNI, and complete the configured
-HTTP/TLS/content/region checks. Only that candidate then receives
-`PathVerified=true` and may be selected.
+Each configured Smart DNS card is an independent route candidate. A card may
+contain one resolver or an ordered primary/fallback pair; it is not a global
+resolver health flag. Verification checks every address in the card, and the
+runtime queries the primary first, then the fallback when the primary fails.
+For a domain, verification must query the selected resolver, validate the
+response, connect to a returned safe address while preserving the original
+Host and TLS SNI, and complete the configured HTTP/TLS/content/region checks.
+Only that card then receives `PathVerified=true` and may be selected.
+
+Cards are bounded to 16 and carry a user display name plus an explicit
+failover order. Reordering or removal is a normal AutoApply ChangeSet over
+the owned route list; removing a card clears and disables its route slot, so
+foreign routes and service bindings are never deleted implicitly.
 
 The planner enumerates eligible candidates by category; this list is not a
 winner order. Every terminal candidate is scored from comparable evidence and
@@ -122,9 +136,14 @@ typed failure/ambiguous result and cannot authorize a production route.
 
 The Smart DNS screen keeps the safety transaction behind one product action:
 “Add and verify endpoint”. A new endpoint is validated and represented as a
-candidate/draft; existing production endpoints show their blast radius before
-replacement. The UI does not ask a home user to operate internal transaction
-states.
+candidate/draft. It is explicitly marked `AutoApply`, so the backend continues
+the bounded validate -> apply -> management/data-plane verification -> confirm
+flow in the background. Progress remains visible in the operation center; the
+browser never asks a home user to operate internal transaction states. A
+restart resumes only this explicitly marked product operation, while ordinary
+drafts remain user-controlled. Existing production endpoints show their blast
+radius before replacement, and a device/recovery gate is reported as blocked
+instead of being presented as an active route.
 
 ## Decision evidence and terminal states
 
@@ -133,6 +152,11 @@ independent fields. `NO_SAFE_ROUTE` is terminal only when every allowed
 candidate has a terminal result (or an honest bounded timeout) and policy
 constraints reject all of them. Before that, the API exposes `VERIFYING` or
 `WAITING_FOR_VERIFICATION`.
+
+An infrastructure failure after a transient check is terminal for that
+observation as `probe_state=error` with its reason. It is not persisted as a
+verified suggestion and is never mislabeled as `NO_SAFE_ROUTE` or as a probe
+that is still running forever.
 
 Route latency is measured only inside the network-path measurement boundary.
 Queue wait, setup, retries and cleanup are represented by

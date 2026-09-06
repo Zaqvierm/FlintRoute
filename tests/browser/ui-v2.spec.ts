@@ -388,6 +388,99 @@ test.describe('FlintRoute UI v2', () => {
     await expect(page.getByText('Безопасный маршрут не найден')).toBeVisible();
   });
 
+  test('offers applying a verified configured route through the transaction API', async ({ page }) => {
+    let verifyCalls = 0;
+    let classifyCalls = 0;
+    await mockAPI(page);
+    await page.route('**/api/v1/health', async (route) => {
+      await route.fulfill(envelope({ status: 'ok', recovery_status: 'ok', checked_at: new Date().toISOString() }));
+    });
+    await page.route('**/api/v1/services/verify', async (route) => {
+      verifyCalls += 1;
+      await route.fulfill(envelope({
+        service_id: 'Discord', domain: 'discord.com', status: 'SELECTED', verification_state: 'verified',
+        path_verified: true, selected_route_tag: 'proxy-5', selected_route_type: 'vless',
+        checked_at: new Date().toISOString(), evidence_persisted: 1,
+        candidates: [{ route: 'proxy-5', route_type: 'vless', status: 'OK', path_verified: true, service_ok: true, reason: 'route_path_verified' }]
+      }));
+    });
+    await page.route('**/api/v1/services/classify', async (route) => {
+      classifyCalls += 1;
+      await route.fulfill(envelope({
+        change: { id: 'fixture-change', state: 'committed', version: 2 },
+        auto_apply_requested: true, auto_apply_started: true, selected_route_tag: 'proxy-5', selected_route_type: 'vless', path_verified: true
+      }));
+    });
+    await page.goto('/?screen=Сервисы');
+    await page.getByRole('button', { name: 'Открыть', exact: true }).first().click();
+    const drawer = page.getByRole('dialog');
+    await drawer.getByRole('button', { name: /Проверить путь/ }).click();
+    await expect.poll(() => verifyCalls).toBe(1);
+    await drawer.getByRole('button', { name: /Применить подтверждённый маршрут/ }).click();
+    await expect.poll(() => classifyCalls).toBe(1);
+  });
+
+  test('offers an explicit full route matrix after the quick direct check', async ({ page }) => {
+    const requests: Array<{ full_check?: boolean }> = [];
+    await mockAPI(page);
+    await page.route('**/api/v1/health', async (route) => {
+      await route.fulfill(envelope({ status: 'ok', recovery_status: 'ok', checked_at: new Date().toISOString() }));
+    });
+    await page.route('**/api/v1/services/verify', async (route) => {
+      const body = route.request().postDataJSON() as { full_check?: boolean };
+      requests.push(body);
+      const candidates = body.full_check
+        ? [
+            { route: 'direct', route_type: 'direct', status: 'OK', path_verified: true, service_ok: true, reason: 'route_path_verified' },
+            { route: 'zapret', route_type: 'zapret', status: 'OK', path_verified: true, service_ok: true, reason: 'route_path_verified' },
+            { route: 'smart-dns-primary', route_type: 'smart_dns', status: 'OK', path_verified: true, service_ok: true, reason: 'route_path_verified' }
+          ]
+        : [{ route: 'direct', route_type: 'direct', status: 'OK', path_verified: true, service_ok: true, reason: 'route_path_verified' }];
+      await route.fulfill(envelope({
+        service_id: 'preview_example_com', domain: 'example.com', status: 'SELECTED', verification_state: 'verified',
+        path_verified: true, selected_route_tag: 'direct', selected_route_type: 'direct',
+        checked_at: new Date().toISOString(), evidence_persisted: 0, candidates
+      }));
+    });
+    await page.goto('/?screen=Сервисы');
+    await page.getByRole('button', { name: '+ Новое правило' }).click();
+    const editor = page.getByRole('dialog');
+    await editor.getByPlaceholder('example.com').fill('example.com');
+    await editor.getByRole('button', { name: 'Проверить домен' }).click();
+    await expect.poll(() => requests.length).toBe(1);
+    await editor.getByRole('button', { name: 'Полная проверка маршрутов' }).click();
+    await expect.poll(() => requests.length).toBe(2);
+    expect(requests[0].full_check).not.toBe(true);
+    expect(requests[1].full_check).toBe(true);
+    await expect(editor.getByRole('button', { name: 'zapret', exact: true })).toBeVisible();
+    await expect(editor.getByText('smart-dns-primary', { exact: true }).last()).toBeVisible();
+  });
+
+  test('confirms configured rule deletion and waits for a committed terminal state', async ({ page }) => {
+    let deleteCalls = 0;
+    let changePolls = 0;
+    await mockAPI(page);
+    await page.route('**/api/v1/health', async (route) => {
+      await route.fulfill(envelope({ status: 'ok', recovery_status: 'ok', checked_at: new Date().toISOString() }));
+    });
+    await page.route('**/api/v1/services/delete', async (route) => {
+      deleteCalls += 1;
+      await route.fulfill(envelope({ change: { id: 'delete-change', state: 'draft', version: 1 }, service_id: 'Discord', auto_apply_requested: true, auto_apply_started: true }));
+    });
+    await page.route('**/api/v1/changes/delete-change', async (route) => {
+      changePolls += 1;
+      await route.fulfill(envelope({ id: 'delete-change', state: 'committed', version: 4, title: 'Delete service rule', validation: [] }));
+    });
+    await page.goto('/?screen=Сервисы');
+    await page.getByRole('button', { name: 'Открыть', exact: true }).first().click();
+    const drawer = page.getByRole('dialog');
+    await drawer.getByRole('button', { name: /Удалить правило/ }).click();
+    await drawer.getByRole('button', { name: /Подтвердить удаление/ }).click();
+    await expect.poll(() => deleteCalls).toBe(1);
+    await expect.poll(() => changePolls).toBeGreaterThan(0);
+    await expect(page.getByText(/Правило Discord удалено/)).toBeVisible();
+  });
+
   test('opens the compact HWID source table on the VLESS screen', async ({ page }) => {
     await mockAPI(page);
     await page.goto(`/?screen=${encodeURIComponent('VLESS-серверы')}`);

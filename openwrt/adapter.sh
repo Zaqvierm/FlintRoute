@@ -54,6 +54,22 @@ flow_offload_hw_uci_key='firewall.@defaults[0].flow_offloading_hw'
 
 mkdir -p "$runtime" "$state/last-good" "$state/backups" "$txroot" "$timer_dir"
 
+# Production adapter calls run as root (directly or through router-policy-helper)
+# and must prove the requested owner change. Library-only fixtures deliberately
+# run as an ordinary user on Linux CI/Windows; for those exact temporary paths,
+# retaining the fixture user's ownership is the only portable equivalent. Never
+# enable this escape hatch in a production adapter invocation.
+chown_owned_or_fixture() {
+  chown_target="$1"
+  chown_owner="$2"
+  if chown "$chown_owner" "$chown_target" 2>/dev/null; then
+    return 0
+  fi
+  [ "${ROUTER_POLICY_ADAPTER_LIB_ONLY:-0}" = "1" ] || return 1
+  [ "$(id -u 2>/dev/null || printf '%s' -1)" != "0" ] || return 1
+  [ -e "$chown_target" ] || return 1
+}
+
 now_utc() {
   date -u +%Y-%m-%dT%H:%M:%SZ
 }
@@ -287,6 +303,7 @@ guard_accept_marks() {
   guard_name=""
   guard_value=""
   guard_marks=""
+  guard_drop_mark=""
   while IFS= read -r guard_line; do
     case "$guard_line" in
       managed_mark=*)
@@ -295,7 +312,11 @@ guard_accept_marks() {
       managed_mark_name=*)
         guard_name="${guard_line#managed_mark_name=}"
         case "$guard_name" in
-          drop) guard_value="" ;;
+          drop)
+            printf '%s\n' "${guard_value:-}" | grep -Eq '^(0x[0-9a-fA-F]+|[0-9]+)$' || return 1
+            guard_drop_mark="$guard_value"
+            guard_value=""
+            ;;
           direct|zapret|xray|xray_tproxy|xray_bypass)
             printf '%s\n' "${guard_value:-}" | grep -Eq '^(0x[0-9a-fA-F]+|[0-9]+)$' || return 1
             case " $guard_marks " in
@@ -317,6 +338,19 @@ EOF
   printf '%s\n' "$guard_marks"
 }
 
+guard_drop_mark_value() {
+  guard_config="$1"
+  [ -f "$guard_config" ] || return 1
+  guard_output="$(ROUTER_POLICY_CONFIG="$guard_config" "$router_policy_bin" internal-print-managed-marks 2>/dev/null)" || return 1
+  guard_value="$(printf '%s\n' "$guard_output" | awk -F= '
+    $1 == "managed_mark" { value=$2; next }
+    $1 == "managed_mark_name" && $2 == "drop" { print value; found=1; exit }
+    END { if (!found) exit 1 }
+  ')" || return 1
+  printf '%s\n' "$guard_value" | grep -Eq '^(0x[0-9a-fA-F]+|[0-9]+)$' || return 1
+  printf '%s\n' "$guard_value"
+}
+
 classifier_table_owned_or_absent() {
   classifier_table="$("$nft_bin" list table inet router_policy 2>/dev/null)" || return 0
   printf '%s\n' "$classifier_table" | grep -F 'comment "router-policy owner=flintroute"' >/dev/null
@@ -328,8 +362,15 @@ install_boot_guard() {
   # On a cold boot the kernel has no conntrack marks and the normal owned
   # classifier table is not present yet.  If (and only if) the durable
   # last-good binding and its artifacts verify, stage that exact classifier so
-  # the guard can admit already-protected marks.  Any missing/ambiguous proof
-  # deliberately falls back to the all-forwarding DROP below.
+  # protected destinations are classified before forwarding starts.  A guard
+  # must never use a global DROP policy: ordinary/unclassified traffic keeps
+  # the normal WAN path while explicit protected/drop marks stay fail-closed.
+  guard_drop_mark=""
+  if guard_drop_mark="$(guard_drop_mark_value "$state/last-good/router-policy-config.json")"; then
+    :
+  else
+    guard_drop_mark=""
+  fi
   if early_classifier_source="$(early_committed_classifier_source 2>/dev/null)" &&
     early_classifier_marks="$(guard_accept_marks "$state/last-good/router-policy-config.json" 2>/dev/null)" &&
     classifier_table_owned_or_absent &&
@@ -344,20 +385,20 @@ install_boot_guard() {
     echo 'table inet router_policy_boot_guard {'
     echo '  comment "router-policy owner=flintroute"'
     echo '  chain forward {'
-    echo '    type filter hook forward priority -300; policy drop;'
+    echo '    type filter hook forward priority -300; policy accept;'
     if [ -n "${early_classifier_marks:-}" ]; then
       # The classifier is loaded in the same nft transaction and runs before
-      # this chain.  Admit only marks emitted by the verified candidate; all
-      # unmarked/foreign marks remain fenced.  DROP is never admitted here.
+      # this chain.  Keep known marks explicit for auditability; ordinary
+      # unclassified forwarding is accepted by the chain policy.
       for guard_mark in $early_classifier_marks; do
         printf '    meta mark %s counter accept comment "rp boot_guard allow=meta"\n' "$guard_mark"
         printf '    ct mark %s counter accept comment "rp boot_guard allow=conntrack"\n' "$guard_mark"
       done
     fi
-    # A mark-only guard would be fail-open after reboot: new flows have mark=0.
-    # The default policy remains DROP until the exact committed generation is
-    # proven, even when the optional early classifier is admitted above.
-    echo '    counter comment "rp boot_guard action=drop_unclassified"'
+    if [ -n "${guard_drop_mark:-}" ]; then
+      printf '    meta mark %s counter drop comment "rp boot_guard action=drop_mark"\n' "$guard_drop_mark"
+      printf '    ct mark %s counter drop comment "rp boot_guard action=drop_conntrack"\n' "$guard_drop_mark"
+    fi
     echo '  }'
     echo '}'
   } > "$boot_guard_file.tmp"
@@ -485,6 +526,9 @@ file_mode_bits() {
   permissions="$(LC_ALL=C ls -ld "$target" 2>/dev/null | awk '{print substr($1, 1, 10)}')"
   case "$permissions" in
     -rw-------) echo 600 ;;
+    # Controller-readable project files are intentionally root:daemon 0640.
+    # Rollback must accept that exact mode just like install/preflight does.
+    -rw-r-----) echo 640 ;;
     -rw-r--r--) echo 644 ;;
     -rwx------) echo 700 ;;
     -rwxr-xr-x) echo 755 ;;
@@ -1250,6 +1294,12 @@ atomic_install() {
   [ ! -L "$install_target" ] || { echo "reason=refusing_symlink_install_target" >&2; return 1; }
   verify_install_target_ownership || return 1
   install_mode="$(file_mode_bits "$install_source")"
+  # The production controller runs as daemon and reads the active config to
+  # construct path proofs. Keep the exact config bytes root-owned but
+  # group-readable; rollback must accept the same mode as a normal apply.
+  if [ "$install_target" = "$config" ] && command -v id >/dev/null 2>&1 && id -u daemon >/dev/null 2>&1; then
+    install_mode=640
+  fi
   install_event="file_created"
   [ ! -f "$install_target" ] || install_event="file_replaced"
   if [ -f "$install_target" ] && cmp -s "$install_source" "$install_target"; then
@@ -1266,6 +1316,9 @@ atomic_install() {
   if ! { sync -f "$install_tmp" 2>/dev/null || sync "$install_tmp" 2>/dev/null || sync; } || ! mv "$install_tmp" "$install_target"; then
     rm -f "$install_tmp"
     return 1
+  fi
+  if [ "$install_target" = "$config" ] && command -v id >/dev/null 2>&1 && id -u daemon >/dev/null 2>&1; then
+    chown_owned_or_fixture "$install_target" 0:daemon || return 1
   fi
   install_bytes="$(wc -c < "$install_source" | tr -d ' ')"
   directory_sync_scope="exact"
@@ -1476,6 +1529,67 @@ route_assignment_reconcile_command() {
       --candidate-hash "$recovery_candidate_hash" --manifest-hash "$recovery_artifact_manifest_hash"
 }
 
+# Probe guards are short-lived, exact-owned nft route-hook chains. They give
+# the non-root controller's daemon sockets a mark without granting the
+# controller CAP_NET_ADMIN. The helper is the only caller; the guard is scoped
+# to UID 1 and HTTP ports and is removed in a deferred cleanup call.
+probe_guard_command() {
+  [ "$config" = "$known_config" ] || exit 2
+  guard_id="${3:-}"
+  guard_route="${4:-}"
+  guard_mark="${5:-}"
+  guard_hex="${guard_id#probe_}"
+  if [ "$guard_id" = "$guard_hex" ] || [ "${#guard_hex}" -ne 24 ] || ! printf '%s\n' "$guard_hex" | grep -Eq '^[0-9a-f]+$'; then
+    echo "reason=probe_guard_id_invalid" >&2
+    exit 2
+  fi
+  printf '%s\n' "$guard_route" | grep -Eq '^[A-Za-z0-9_-]{1,64}$' || { echo "reason=probe_guard_route_invalid" >&2; exit 2; }
+  case "$guard_mark" in 0x41|0x42) ;; *) echo "reason=probe_guard_mark_invalid" >&2; exit 2 ;; esac
+  probe_chain="rp_probe_$guard_id"
+  "$nft_bin" list table inet router_policy 2>/dev/null | grep -F 'comment "router-policy owner=flintroute"' >/dev/null || {
+    echo "reason=probe_guard_table_ownership_unproven" >&2
+    exit 3
+  }
+  case "$cmd" in
+    probe-guard-begin)
+      if "$nft_bin" list chain inet router_policy "$probe_chain" >/dev/null 2>&1; then
+        "$nft_bin" delete chain inet router_policy "$probe_chain" || { echo "reason=probe_guard_stale_cleanup_failed" >&2; exit 3; }
+      fi
+      probe_batch="$runtime/probe-guard-$guard_id.nft"
+      {
+        echo "add chain inet router_policy $probe_chain { type route hook output priority -200; policy accept; }"
+        echo "add rule inet router_policy $probe_chain meta skuid 1 tcp dport { 80, 443 } meta mark set $guard_mark counter comment \"router-policy owner=flintroute probe_guard=$guard_id route=$guard_route\""
+        echo "add rule inet router_policy $probe_chain meta skuid 1 udp dport 443 meta mark set $guard_mark counter comment \"router-policy owner=flintroute probe_guard=$guard_id route=$guard_route\""
+      } > "$probe_batch"
+      if ! "$nft_bin" -c -f "$probe_batch"; then
+        rm -f "$probe_batch"
+        echo "reason=probe_guard_install_failed" >&2
+        exit 3
+      fi
+      if ! "$nft_bin" -f "$probe_batch"; then
+        rm -f "$probe_batch"
+        echo "reason=probe_guard_install_failed" >&2
+        exit 3
+      fi
+      rm -f "$probe_batch"
+      echo "guard=active"
+      echo "guard_id=$guard_id"
+      echo "route_tag=$guard_route"
+      echo "mark=$guard_mark"
+      ;;
+    probe-guard-end)
+      if "$nft_bin" list chain inet router_policy "$probe_chain" >/dev/null 2>&1; then
+        "$nft_bin" delete chain inet router_policy "$probe_chain" || { echo "reason=probe_guard_cleanup_failed" >&2; exit 3; }
+      fi
+      echo "guard=cleared"
+      echo "guard_id=$guard_id"
+      echo "route_tag=$guard_route"
+      echo "mark=$guard_mark"
+      ;;
+    *) echo "reason=probe_guard_operation_invalid" >&2; exit 2 ;;
+  esac
+}
+
 wait_dnsmasq_ready() {
   attempts=0
   while ! "$nslookup_bin" localhost 127.0.0.1 >/dev/null 2>&1; do
@@ -1531,9 +1645,9 @@ ensure_dns_observation_log() {
     # The controller consumes this log as daemon. Keep the writer's inherited
     # descriptor valid while making the exact file readable after every
     # dnsmasq restart/reconcile; never leave it at dnsmasq-only 0620.
-    chown "0:$controller_group" "$dns_observation_log"
+    chown_owned_or_fixture "$dns_observation_log" "0:$controller_group" || return 1
     if [ "$log_parent" = "$runtime" ]; then
-      chown "0:$controller_group" "$runtime"
+      chown_owned_or_fixture "$runtime" "0:$controller_group" || return 1
       chmod 750 "$runtime"
     fi
     chmod 640 "$dns_observation_log"
@@ -1634,15 +1748,7 @@ apply_candidate() {
   ROUTER_POLICY_IP_BIN="$ip_bin" ROUTER_POLICY_UCI_BIN="$uci_bin" "$router_policy_bin" internal-apply-ip-plan --plan "$generated/ip-plan.json" --transaction "$txid" --revision "$revision" --candidate-hash "$candidate_hash"
   reload_project_firewall
   restart_dnsmasq
-  {
-    echo "transaction_id=$txid"
-    echo "revision_id=$revision"
-    echo "candidate_hash=$candidate_hash"
-    echo "artifact_manifest_hash=$artifact_manifest_hash"
-    echo "transaction_state=applied"
-    echo "updated_at=$(now_utc)"
-  } > "$active_file.tmp"
-  mv "$active_file.tmp" "$active_file"
+  write_active_transaction_state "applied"
   write_status "applied"
   emit_operation_binding apply-candidate
   echo "applied=true"
@@ -1872,6 +1978,15 @@ write_active_transaction_state() {
     echo "updated_at=$(now_utc)"
   } > "$active_file.tmp"
   mv "$active_file.tmp" "$active_file"
+  # The controller is intentionally unprivileged and must be able to read the
+  # generation binding for ProbeRoute/recovery. The file contains hashes and
+  # state only, never rollback secrets; publish it as root:daemon 0640.
+  # This binding is intentionally readable by the daemon controller. Do not
+  # make ownership conditional on probing `id`: a minimal OpenWrt userland
+  # can lack the lookup helper even though the daemon account exists, which
+  # silently leaves a root-only file and makes every PathProbe fail closed.
+  chown_owned_or_fixture "$active_file" root:daemon || return 1
+  chmod 640 "$active_file" || return 1
 }
 
 commit_prepared_tx() {
@@ -2380,6 +2495,9 @@ case "$cmd" in
     ;;
   route-assignment-reconcile)
     route_assignment_reconcile_command "$@"
+    ;;
+  probe-guard-begin|probe-guard-end)
+    probe_guard_command "$@"
     ;;
   prepare|validate-candidate|snapshot-current|apply-candidate|verify-management|verify-data-plane|commit|commit-prepared|finalize-commit|rollback|clear-boot-guard-bound|replace-owned-nft|apply-ip-plan|rollback-ip-plan|artifact-install|artifact-remove)
     require_transaction_args

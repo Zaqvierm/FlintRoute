@@ -170,7 +170,7 @@ flowchart TD
     DISCOVERY{"Discovery: regional/TSPU/fallback?"}
     DISCOVERY -- "regional, не GEO_LOCKED" --> MARK_GEO["Пометить GEO_LOCKED, убрать direct/zapret"]
     DISCOVERY -- "TSPU на direct, нет zapret" --> ADD_ZAPRET["Добавить zapret в очередь"]
-    DISCOVERY -- "GEO evidence" --> ADD_FALLBACK["Добавить smart_dns -> VLESS -> DROP"]
+    DISCOVERY -- "GEO evidence" --> ADD_FALLBACK["Добавить допустимые Smart DNS/VLESS candidates; DROP остаётся terminal safety outcome"]
     DISCOVERY -- "ok / fallback есть" --> NEXT_ROUTE
     MARK_GEO --> NEXT_ROUTE
     ADD_ZAPRET --> NEXT_ROUTE

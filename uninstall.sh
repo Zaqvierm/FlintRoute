@@ -12,6 +12,7 @@ RUNTIME_DIR="${RUNTIME_DIR:-$SYSTEM_ROOT/tmp/router-policy}"
 INIT_DIR="${INIT_DIR:-$SYSTEM_ROOT/etc/init.d}"
 HOTPLUG_IFACE_DIR="${HOTPLUG_IFACE_DIR:-$SYSTEM_ROOT/etc/hotplug.d/iface}"
 HOTPLUG_FIREWALL_DIR="${HOTPLUG_FIREWALL_DIR:-$SYSTEM_ROOT/etc/hotplug.d/firewall}"
+UBUS_ACL_DIR="${UBUS_ACL_DIR:-$SYSTEM_ROOT/usr/share/acl.d}"
 DNSMASQ_DIR="${DNSMASQ_DIR:-$SYSTEM_ROOT/tmp/dnsmasq.d}"
 NFTABLES_DIR="${NFTABLES_DIR:-$SYSTEM_ROOT/etc/nftables.d}"
 ZAPRET_PROFILE_DIR="${ZAPRET_PROFILE_DIR:-$ETC_DIR/zapret/profiles}"
@@ -319,7 +320,8 @@ managed_static_paths() {
     "$INIT_DIR/router-policy-xray" \
     "$INIT_DIR/router-policy-zapret" \
     "$HOTPLUG_IFACE_DIR/95-router-policy" \
-    "$HOTPLUG_FIREWALL_DIR/95-router-policy"
+    "$HOTPLUG_FIREWALL_DIR/95-router-policy" \
+    "$UBUS_ACL_DIR/router-policy-provider.json"
 }
 
 prefix_top_entry_allowed() {

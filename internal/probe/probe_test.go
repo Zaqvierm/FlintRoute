@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -106,6 +107,81 @@ func TestProbeHTTP200WithMarker(t *testing.T) {
 	}
 }
 
+func TestProbeAcceptsExpectedCrossHostRedirectWithoutFollowingIt(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatalf("cross-host redirect was followed")
+	}))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusMovedPermanently)
+	}))
+	defer source.Close()
+
+	result := ProbeRoute(context.Background(), testConfig(), "example.test", "svc", serviceWithProbe(source.URL, []int{http.StatusMovedPermanently}, "optional", nil), config.Route{Type: "direct", Tag: "direct"})
+	if result.ApplicationStatus != "OK" || !result.ServiceOK || len(result.Checks) != 1 || result.Checks[0].Status != "OK" {
+		t.Fatalf("expected the allowed redirect response to prove the service without following it: %+v", result)
+	}
+}
+
+type recordingProbeGuard struct {
+	begin int
+	end   int
+}
+
+func (g *recordingProbeGuard) BeginProbeGuard(context.Context, config.Route) (func() error, error) {
+	g.begin++
+	return func() error {
+		g.end++
+		return nil
+	}, nil
+}
+
+func TestProbeGuardCoversManagedDirectAttemptAndCleansUp(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	guard := &recordingProbeGuard{}
+	result := NewEngineWithGuard(nil, guard).ProbeRoute(context.Background(), testConfig(), "example.test", "svc", serviceWithProbe(srv.URL, []int{http.StatusOK}, "optional", nil), config.Route{Type: "direct", Tag: "direct"})
+	if result.ApplicationStatus != "OK" || guard.begin != 1 || guard.end != 1 {
+		t.Fatalf("managed probe guard was not balanced around the direct attempt: result=%+v begin=%d end=%d", result, guard.begin, guard.end)
+	}
+}
+
+func TestProbeGuardDoesNotMarkSystemDefaultAttempt(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	guard := &recordingProbeGuard{}
+	result := NewEngineWithGuard(nil, guard).ProbeRoute(context.Background(), testConfig(), "example.test", "svc", serviceWithProbe(srv.URL, []int{http.StatusOK}, "optional", nil), config.Route{
+		Type: "direct", Tag: "system-default", AdapterMode: "system_default",
+	})
+	if result.ApplicationStatus != "OK" || guard.begin != 0 || guard.end != 0 {
+		t.Fatalf("system-default probe was incorrectly marked/guarded: result=%+v begin=%d end=%d", result, guard.begin, guard.end)
+	}
+}
+
+func TestEngineRetriesEarlyBindingFailureAfterActiveFileAppears(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("bound proof"))
+	}))
+	defer srv.Close()
+	fresh := NewEngine(writeBoundDirectEvidence(t, "example.test", "::ffff:127.0.0.1", "127.0.0.1", 100))
+	retries := 0
+	initial := NewEngine(errorProofVerifier{err: errors.New("active_binding_unavailable: open active-transaction.env")})
+	initial.reload = func() *Engine {
+		retries++
+		return fresh
+	}
+	result := initial.ProbeRoute(context.Background(), testConfig(), "example.test", "svc", serviceWithProbe(srv.URL, []int{200}, "required", []string{"bound proof"}), config.Route{Type: "direct", Tag: "direct", Mark: "0x41"})
+	if retries != 1 || result.Status != "OK" || !result.PathVerified {
+		t.Fatalf("early binding failure was not retried after the binding became available: retries=%d result=%+v", retries, result)
+	}
+}
+
 func TestProbe403IsTypedAsWAFOrRateLimitNotRegionalBlock(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
@@ -158,6 +234,16 @@ func TestPathProofFailureNormalizesCaseVariantSuccessStatus(t *testing.T) {
 	}, time.Now(), PathProofSession{BeginError: "missing path evidence"})
 	if result.Status == "ok" || result.PathVerified || result.FailureStage != "path_evidence_begin" {
 		t.Fatalf("case-variant success status survived path-proof failure: %+v", result)
+	}
+}
+
+func TestPathProofInfrastructureFailureIsNotAPathFailure(t *testing.T) {
+	engine := NewEngine(fixedProofVerifier{})
+	result := engine.finishWithPathProof(context.Background(), testConfig(), config.Route{Type: "direct", Tag: "direct"}, RouteResult{
+		Domain: "example.test", Route: "direct", RouteType: "direct", Status: "OK", ApplicationStatus: "OK", ServiceOK: true,
+	}, time.Now(), PathProofSession{BeginStatus: "INFRA_ERROR", BeginError: "active_binding_unavailable: open active-transaction.env"})
+	if result.Status != "INFRA_ERROR" || result.PathVerified || result.ReasonCode != "active_binding_unavailable" {
+		t.Fatalf("infrastructure proof failure was misreported as route failure: %+v", result)
 	}
 }
 
@@ -375,6 +461,35 @@ func TestSmartDNSFallsBackToTCPWhenUDPIsTruncated(t *testing.T) {
 	}
 }
 
+func TestSmartDNSRouteUsesFallbackResolverWhenPrimaryFails(t *testing.T) {
+	primaryConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := primaryConn.LocalAddr().String()
+	primaryServer := &dns.Server{PacketConn: primaryConn, Handler: dns.HandlerFunc(func(writer dns.ResponseWriter, request *dns.Msg) {
+		response := new(dns.Msg)
+		response.SetReply(request)
+		_ = writer.WriteMsg(response)
+	})}
+	go func() { _ = primaryServer.ActivateAndServe() }()
+	defer primaryServer.Shutdown()
+	fallback, closeDNS := startTestDNSServer(t, net.ParseIP("203.0.113.10"))
+	defer closeDNS()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	addrs, resolver, _, err := resolveForRoute(ctx, testConfig(), config.Route{
+		Type: "smart_dns", Tag: "pair", DNSServer: primary, DNSFallbackServer: fallback, ConnectToResolvedIP: true,
+	}, "smart.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolver != fallback || len(addrs) != 1 || addrs[0].String() != "203.0.113.10" {
+		t.Fatalf("fallback resolver was not selected: resolver=%q addrs=%v", resolver, addrs)
+	}
+}
+
 func TestDNSRejectsUnrelatedAddressRecord(t *testing.T) {
 	request := new(dns.Msg)
 	request.SetQuestion("smart.test.", dns.TypeA)
@@ -428,6 +543,37 @@ func TestZapretRouteNameWithoutFlowEvidenceIsUnverified(t *testing.T) {
 	result := ProbeRoute(context.Background(), testConfig(), "example.test", "svc", serviceWithProbe(srv.URL, []int{200}, "required", nil), config.Route{Type: "zapret", Tag: "zapret"})
 	if result.Status != "UNVERIFIED" || result.ApplicationStatus != "OK" {
 		t.Fatalf("a route named Zapret must not pass as proof: %+v", result)
+	}
+}
+
+func TestDialSOCKS5HonorsContextDeadlineDuringHandshake(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		<-stop
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	connection, err := dialSOCKS5(ctx, listener.Addr().String(), "example.com:443")
+	if connection != nil {
+		_ = connection.Close()
+	}
+	if err == nil {
+		t.Fatal("stalled SOCKS handshake unexpectedly succeeded")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("SOCKS handshake ignored context deadline: %s", elapsed)
 	}
 }
 

@@ -3,11 +3,15 @@ import {
   changeAction,
   classifyService,
   createChange,
+  deleteServiceRule,
   getVLESSPool,
+  isChangePending,
   verifyService,
+  waitForChangeTerminal,
   type ChangeOp,
   type ChangeSet,
-  type SessionInfo
+  type SessionInfo,
+  type ServiceVerification
 } from '../api';
 import {
   asArray,
@@ -46,17 +50,20 @@ function humanChangeBlock(reason?: string): string {
 }
 
 function humanChangeFailure(change: ChangeSet): string {
+  const detail = change.validation?.find((item) => item.level === 'error' || item.level === 'warning');
+  const suffix = detail?.message ? ` Причина: ${detail.message}` : '';
   if (change.state === 'requires_device') return humanChangeBlock(change.artifact_block_reason);
-  if (change.state === 'rolled_back') return 'Проверка нового правила не прошла. FlintRoute восстановил предыдущую рабочую конфигурацию.';
-  if (change.state === 'failed') return 'Не удалось применить правило. FlintRoute остановил изменение и сохранил прежнюю конфигурацию.';
-  return `Правило не применено. Техническое состояние: ${change.state}.`;
+  if (change.state === 'rolled_back') return `Проверка нового правила не прошла. FlintRoute восстановил предыдущую рабочую конфигурацию.${suffix}`;
+  if (change.state === 'failed') return `Не удалось применить правило. FlintRoute сохранил прежнюю конфигурацию.${suffix}`;
+  if (change.state === 'recovery_required') return `Изменение остановлено: требуется recovery.${suffix}`;
+  return `Правило не применено. Техническое состояние: ${change.state}.${suffix}`;
 }
 
 const serviceColumns = [
-  { category: 'GEO_LOCKED', title: 'GEO · VPN', hint: 'Smart DNS → VLESS → блокировка' },
-  { category: 'TSPU_RESTRICTED', title: 'TSPU', hint: 'Zapret → Smart DNS → VLESS → блокировка' },
+  { category: 'GEO_LOCKED', title: 'GEO · VPN', hint: 'Допустимые маршруты выбираются по живому evidence' },
+  { category: 'TSPU_RESTRICTED', title: 'TSPU', hint: 'Проверяются доступные Zapret, Smart DNS и VLESS' },
   { category: 'TELEGRAM', title: 'Telegram', hint: 'Telegram policy — отдельный маршрут' },
-  { category: 'DIRECT_PREFERRED', title: 'Direct предпочтительно', hint: 'Direct → управляемый fallback' },
+  { category: 'DIRECT_PREFERRED', title: 'Direct предпочтительно', hint: 'Direct и доступные альтернативы сравниваются по evidence' },
   { category: 'DIRECT_ONLY', title: 'Direct', hint: 'Только прямое подключение под управлением FlintRoute' },
   { category: 'BLOCKED', title: 'Drop', hint: 'DNS NXDOMAIN и блокировка forwarding' },
   { category: 'UNRESOLVED', title: 'Не определено', hint: 'Категория не распознана; маршрут не угадывается' }
@@ -68,7 +75,7 @@ const serviceRoutePaths = ['direct', 'zapret', 'smart_dns', 'vless', 'drop'];
 
 function defaultServicePaths(category: string): string[] {
   if (category === 'GEO_LOCKED') return ['smart_dns', 'vless', 'drop'];
-  if (category === 'TSPU_RESTRICTED') return ['zapret', 'vless', 'drop'];
+  if (category === 'TSPU_RESTRICTED') return ['zapret', 'smart_dns', 'vless', 'drop'];
   if (category === 'BLOCKED') return ['drop'];
   return ['direct'];
 }
@@ -90,12 +97,16 @@ export function Services({
 }) {
   const [moving, setMoving] = useState('');
   const [message, setMessage] = useState('');
-  const [editor, setEditor] = useState<{ domain: string; category: string; paths: string[] } | null>(null);
+  const [editor, setEditor] = useState<{ domain: string; category: string; paths: string[]; serviceID?: string } | null>(null);
   const [selectedService, setSelectedService] = useState<any>(null);
   const [verificationBusy, setVerificationBusy] = useState(false);
   const [verificationMessage, setVerificationMessage] = useState('');
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState('');
   const [serviceView, setServiceView] = useState<'table' | 'board'>('table');
   const [serviceQuery, setServiceQuery] = useState('');
+  const [editorVerification, setEditorVerification] = useState<ServiceVerification | null>(null);
+  const [editorVerificationBusy, setEditorVerificationBusy] = useState(false);
   const grouped = useMemo(() => groupServices(services), [services]);
   const configuredServices = useMemo(() => grouped.filter((item) => Boolean(item.applied) || asArray(item.sources).includes('configured')), [grouped]);
   const observedServices = useMemo(() => grouped.filter((item) => !Boolean(item.applied) && !asArray(item.sources).includes('configured')), [grouped]);
@@ -105,20 +116,65 @@ export function Services({
     return configuredServices.filter((item) => `${textValue(item.id, '')} ${asArray(item.domains).map((domain) => textValue(domain, '')).join(' ')}`.toLowerCase().includes(query));
   }, [configuredServices, serviceQuery]);
 
-  async function commitRule(domain: string, category: string, paths?: string[]) {
+  async function commitRule(domain: string, category: string, paths?: string[], serviceID?: string, selectedRouteTag?: string) {
     if (role !== 'administrator' || mutationLocked || !configVersion || moving) return;
     setMoving(domain);
-    setMessage(`Создаю черновик правила для ${domain}…`);
+    setMessage(`Проверяю и применяю правило для ${domain}…`);
     try {
-      await classifyService(domain, category, configVersion, paths);
-      setMessage(`${domain}: черновик создан. Проверь изменения перед применением.`);
+      const result = await classifyService(domain, category, configVersion, paths, false, true, serviceID, selectedRouteTag);
       setEditor(null);
       await refresh();
-      navigate('Операции');
+      if (!result.auto_apply_started) {
+        setMessage(`${domain}: операция создана, но worker не запущен. Открой «Операции» для ручного продолжения.`);
+        navigate('Операции');
+        return;
+      }
+      const change = await waitForChangeTerminal(result.change.id);
+      if (change.state === 'committed') {
+        setMessage(`${domain}: правило применено, commit подтверждён.`);
+      } else {
+        setMessage(`${domain}: правило не применено (${change.state}). Активная конфигурация сохранена; открой «Операции» для причины.`);
+        navigate('Операции');
+      }
+      await refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Не удалось изменить маршрут');
     } finally {
       setMoving('');
+    }
+  }
+
+  async function verifyEditorDomain(fullCheck = false) {
+    if (!editor || editorVerificationBusy) return;
+    const domain = editor.domain.trim();
+    if (!domain) {
+      setMessage('Сначала введи домен.');
+      return;
+    }
+    setEditorVerificationBusy(true);
+    setMessage(fullCheck ? `Проверяю ${domain}: все доступные маршруты…` : `Проверяю ${domain}: Direct → доступные альтернативы…`);
+    try {
+      const result = await verifyService('', domain, fullCheck);
+      setEditorVerification((previous) => {
+        if (!previous || previous.domain !== result.domain) return result;
+        const byRoute = new Map<string, any>();
+        [...previous.candidates, ...result.candidates].forEach((candidate: any, index) => {
+          const key = String(candidate?.route ?? candidate?.route_type ?? index);
+          byRoute.set(key, candidate);
+        });
+        return { ...result, candidates: [...byRoute.values()] };
+      });
+      setMessage(result.path_verified
+        ? `Выбран ${result.selected_route_tag || result.selected_route_type || 'маршрут'}. Можно создать правило.`
+        : result.verification_state === 'in_progress'
+          ? 'Проверка ещё идёт. Нажми «Продолжить проверку», чтобы получить следующий bounded результат.'
+          : 'Безопасный маршрут не найден. Правило не создаю.');
+    } catch (error) {
+      const info = errorInfo(error);
+      setEditorVerification(null);
+      setMessage(`${info.code}: ${info.message}`);
+    } finally {
+      setEditorVerificationBusy(false);
     }
   }
 
@@ -166,12 +222,76 @@ export function Services({
     }
   }
 
+  async function applyVerifiedService(service: any) {
+    if (role !== 'administrator' || mutationLocked || moving || !service) return;
+    const domain = textValue(asArray(service.domains)[0], '');
+    const category = serviceColumnFor(textValue(service.category, 'DIRECT_PREFERRED'));
+    if (!domain || !service.selected_route_tag || textValue(service.selected_route_type, '').toLowerCase() === 'drop') {
+      setVerificationMessage('Сначала получи подтверждённый не-DROP маршрут.');
+      return;
+    }
+    const candidateTypes = asArray(service.verification_candidates ?? service.candidate_matrix)
+      .map((candidate) => candidate && typeof candidate === 'object' ? textValue((candidate as Record<string, unknown>).route_type, '') : '')
+      .filter(Boolean);
+    const configuredTypes = asArray(service.allowed_paths).map((path) => textValue(path, '')).filter(Boolean);
+    const paths = category === 'TSPU_RESTRICTED'
+      ? Array.from(new Set([...configuredTypes.filter((path) => path !== 'direct'), ...candidateTypes, 'zapret', 'smart_dns', 'vless', 'drop']))
+      : Array.from(new Set([...configuredTypes, ...candidateTypes]));
+    await commitRule(domain, category, paths.length ? paths : defaultServicePaths(category), textValue(service.id, ''), textValue(service.selected_route_tag, ''));
+  }
+
+  async function deleteConfiguredService(service: any) {
+    if (role !== 'administrator' || mutationLocked || deleteBusy) return;
+    const serviceID = textValue(service?.id, '');
+    if (!serviceID) return;
+    if (deleteConfirm !== serviceID) {
+      setDeleteConfirm(serviceID);
+      setVerificationMessage('Нажми удаление ещё раз для подтверждения. Правило будет удалено через безопасную транзакцию.');
+      return;
+    }
+    setDeleteBusy(true);
+    setVerificationMessage('Удаляю правило через безопасную транзакцию…');
+    try {
+      const result = await deleteServiceRule(serviceID, configVersion);
+      setDeleteConfirm('');
+      setSelectedService(null);
+      if (!result.auto_apply_started) {
+        setMessage('Удаление создано, но worker не начал применение. Активное правило пока сохранено.');
+      } else {
+        setMessage('Удаление выполняется; жду конечное состояние операции…');
+        const current = await waitForChangeTerminal(result.change.id);
+        setMessage(current.state === 'committed'
+          ? `Правило ${serviceID} удалено, commit подтверждён.`
+          : isChangePending(current.state)
+            ? 'Удаление всё ещё выполняется. Открой «Операции» для текущего этапа.'
+            : `Правило не удалено: операция завершилась состоянием ${current.state}. Активная конфигурация сохранена.`);
+      }
+      await refresh();
+    } catch (error) {
+      const info = errorInfo(error);
+      setVerificationMessage(`${info.code}: ${info.message}`);
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
+
   function editRule(service?: any) {
-    const category = serviceColumnFor(service?.category ?? 'DIRECT_ONLY');
+    const category = serviceColumnFor(service?.category ?? 'DIRECT_PREFERRED');
+    setEditorVerification(null);
+    setMessage('');
+    const configuredPaths = Array.isArray(service?.allowed_paths) ? service.allowed_paths.map((path: unknown) => textValue(path, '')) : [];
+    // Older committed TSPU rules were saved with zapret/direct/drop before
+    // Smart DNS and VLESS became eligible candidates. Do not let that stale
+    // list hide working routes from the editor; policy constraints still
+    // reject forbidden types on the backend.
+    const paths = category === 'TSPU_RESTRICTED'
+      ? Array.from(new Set([...configuredPaths.filter((path: string) => path !== 'direct'), 'zapret', 'smart_dns', 'vless', 'drop']))
+      : (configuredPaths.length ? configuredPaths : defaultServicePaths(category));
     setEditor({
       domain: service?.domain ?? service?.domains?.[0] ?? '',
       category,
-      paths: [...(service?.allowed_paths?.length ? service.allowed_paths : defaultServicePaths(category))]
+      paths,
+      serviceID: service?.id
     });
   }
 
@@ -189,7 +309,7 @@ export function Services({
       <div class="service-toolbar">
         <div>
           <b>Правила сервисов</b>
-          <span>Изменение сначала попадёт в очередь черновиков. Dataplane меняется только после отдельного review и apply.</span>
+          <span>«Применить» запускает bounded-проверку и транзакцию. Текущий этап и причина всегда видны в «Операциях».</span>
         </div>
         <div class="actions">
           <label class="service-search"><span class="sr-only">Поиск сервиса или домена</span><input value={serviceQuery} placeholder="Поиск сервиса или домена" onInput={(event) => setServiceQuery(event.currentTarget.value)} /></label>
@@ -199,14 +319,28 @@ export function Services({
         </div>
       </div>
       {editor && (
+        <div class="modal-backdrop" role="presentation" onClick={() => { setEditor(null); setEditorVerification(null); }}>
         <form
-          class="service-editor"
+          class="service-editor confirm-dialog service-rule-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="service-rule-title"
+          onClick={(event) => event.stopPropagation()}
           onSubmit={(event) => {
             event.preventDefault();
-            if (editor.paths.length) void commitRule(editor.domain, editor.category, editor.paths);
+            if (editor.paths.length) void commitRule(editor.domain, editor.category, editor.paths, editor.serviceID, editorVerification?.selected_route_tag);
           }}
         >
-          <label>Домен<input value={editor.domain} placeholder="example.com" onInput={(event) => setEditor({ ...editor, domain: event.currentTarget.value })} /></label>
+          <header class="modal-header"><h2 id="service-rule-title">Новое правило</h2><button type="button" class="icon-button" aria-label="Закрыть" onClick={() => { setEditor(null); setEditorVerification(null); }}>×</button></header>
+          <label>Домен<input value={editor.domain} placeholder="example.com" onInput={(event) => { setEditor({ ...editor, domain: event.currentTarget.value }); setEditorVerification(null); }} /></label>
+          <div class="actions">
+            <button type="button" class="primary" disabled={editorVerificationBusy || !editor.domain.trim()} onClick={() => void verifyEditorDomain()}>
+              {editorVerificationBusy ? 'Проверяю…' : editorVerification?.verification_state === 'in_progress' ? 'Продолжить проверку' : 'Проверить домен'}
+            </button>
+            <button type="button" disabled={editorVerificationBusy || !editor.domain.trim()} onClick={() => void verifyEditorDomain(true)}>
+              Полная проверка маршрутов
+            </button>
+          </div>
           <label>
             Класс
             <select
@@ -214,30 +348,45 @@ export function Services({
               onChange={(event) => {
                 const category = event.currentTarget.value;
                 setEditor({ ...editor, category, paths: defaultServicePaths(category) });
+                setEditorVerification(null);
               }}
             >
               {editableServiceColumns.map((column) => <option value={column.category}>{column.title}</option>)}
             </select>
           </label>
           <div>
-            <b>Порядок маршрутов</b>
-            <small>Нажимай в нужной очередности. Повторный клик удаляет маршрут.</small>
+            <b>Допустимые типы маршрутов</b>
+            <small>Это ограничения политики, а не порядок победы. Победитель выбирается по evidence.</small>
             <div class="route-path-editor">
               {serviceRoutePaths.map((path) => {
                 const position = editor.paths.indexOf(path);
                 return (
                   <button type="button" class={position >= 0 ? 'selected' : ''} onClick={() => togglePath(path)}>
-                    {position >= 0 ? `${position + 1}. ` : ''}{path}
+                    {path}
                   </button>
                 );
               })}
             </div>
           </div>
+          {editorVerification && <div class="candidate-matrix service-preview" aria-live="polite">
+            <h3>Проверка маршрутов</h3>
+            {editorVerification.candidates.map((candidate: any, index: number) => <div class="row" key={`${candidate.route ?? index}:${index}`}>
+              <b>{candidate.route ?? candidate.route_type ?? 'route'}</b>
+              <span>{candidate.status ?? 'UNVERIFIED'}{candidate.selected ? ' · выбрано' : ''}</span>
+              <small>{candidate.path_verified ? 'PathVerified' : 'не подтверждено'}{candidate.reason ? ` · ${candidate.reason}` : ''}</small>
+            </div>)}
+            <p class={editorVerification.path_verified ? 'action-status ok' : 'action-status'}>
+              {editorVerification.path_verified
+                ? `Выбрано: ${editorVerification.selected_route_tag || editorVerification.selected_route_type}. Продолжить и создать правило?`
+                : 'Ни один допустимый маршрут не прошёл DNS, service и data-path проверку.'}
+            </p>
+          </div>}
           <div class="actions">
-            <button class="primary" disabled={mutationLocked || !editor.domain.trim() || editor.paths.length === 0 || Boolean(moving)}>Создать черновик</button>
-            <button type="button" onClick={() => setEditor(null)}>Отмена</button>
+            <button class="primary" disabled={mutationLocked || !editor.domain.trim() || editor.paths.length === 0 || !editorVerification?.path_verified || Boolean(moving)}>Создать и применить правило</button>
+            <button type="button" onClick={() => { setEditor(null); setEditorVerification(null); }}>Отмена</button>
           </div>
         </form>
+        </div>
       )}
       {serviceView === 'table' && <section class="service-table-card card">
         <div class="table-scroll"><table class="service-table"><thead><tr><th>Сервис</th><th>Домены</th><th>Классификация</th><th>Основной путь</th><th>Состояние</th><th aria-label="Действия" /></tr></thead><tbody>
@@ -245,7 +394,7 @@ export function Services({
             const domains = asArray(item.domains).map((domain) => textValue(domain, '')).filter(Boolean);
             const paths = asArray(item.allowed_paths).map((path) => textValue(path, '')).filter(Boolean);
             const health = item.health ?? item.status ?? (item.applied ? 'configured' : 'observed');
-            return <tr key={String(item.id)}><td><b>{textValue(item.id, 'Неизвестный сервис')}</b><small>{textValue(item.source, 'configured')}</small></td><td>{domains.length || '—'}{domains.length > 0 && <small>{domains.slice(0, 2).join(', ')}{domains.length > 2 ? '…' : ''}</small>}</td><td><StatusBadge value={serviceColumnFor(item.category)} /></td><td>{textValue(item.selected_route_tag ?? paths[0], 'Не выбран')}</td><td><StatusBadge value={statusWithFreshness(health, item)} /></td><td><button onClick={() => setSelectedService(item)}>Открыть</button></td></tr>;
+            return <tr key={String(item.id)}><td><b>{textValue(item.id, 'Неизвестный сервис')}</b><small>{textValue(item.source, 'configured')}</small></td><td>{domains.length || '—'}{domains.length > 0 && <small>{domains.slice(0, 2).join(', ')}{domains.length > 2 ? '…' : ''}</small>}</td><td><StatusBadge value={serviceColumnFor(item.category)} /></td><td>{textValue(item.selected_route_tag, 'Выбирается по evidence')}</td><td><StatusBadge value={statusWithFreshness(health, item)} /></td><td><button onClick={() => setSelectedService(item)}>Открыть</button></td></tr>;
           })}
         </tbody></table></div>
         {!filteredConfigured.length && <EmptyState title="Правил пока нет" text="Настрой сервис или сначала дождись наблюдения Discovery." />}
@@ -258,8 +407,14 @@ export function Services({
             onDragOver={(event) => event.preventDefault()}
             onDrop={(event) => {
               event.preventDefault();
-              const domain = event.dataTransfer?.getData('text/plain');
-              if (domain) void commitRule(domain, column.category);
+              const payload = event.dataTransfer?.getData('application/json') || event.dataTransfer?.getData('text/plain');
+              if (!payload) return;
+              try {
+                const value = JSON.parse(payload);
+                if (value?.domain) void commitRule(String(value.domain), column.category, undefined, value.service_id ? String(value.service_id) : undefined);
+              } catch {
+                void commitRule(payload, column.category);
+              }
             }}
           >
             <header><h2>{column.title}</h2><small>{column.hint}</small></header>
@@ -294,15 +449,19 @@ export function Services({
         </div>
       </section>}
        {mutationLocked && <p class="action-status">Изменения заблокированы: FlintRoute ещё не подтвердил безопасное состояние восстановления.</p>}
-       <p class={message.includes('создан') ? 'action-status ok' : 'action-status'}>{message || 'Домены появляются после наблюдения и проверки. Перетащи карточку, чтобы создать черновик правила.'}</p>
+       <p class={message.includes('применено') ? 'action-status ok' : 'action-status'}>{message || 'Домены появляются после наблюдения и проверки. Перемещение создаёт и применяет безопасную транзакцию.'}</p>
       <DetailDrawer title={textValue(selectedService?.id, 'Сервис')} open={Boolean(selectedService)} onClose={() => setSelectedService(null)}>
          <ServiceDetails
            service={selectedService}
            onVerify={selectedService?.applied ? () => void verifyConfiguredService(selectedService) : undefined}
+           onApplyVerified={selectedService?.applied && role === 'administrator' && !mutationLocked ? () => void applyVerifiedService(selectedService) : undefined}
            verifyBusy={verificationBusy}
            verifyMessage={verificationMessage}
-           onEdit={mutationLocked ? undefined : () => selectedService && editRule(selectedService)}
-         />
+            onEdit={mutationLocked ? undefined : () => selectedService && editRule(selectedService)}
+            onDelete={selectedService?.applied && role === 'administrator' ? () => void deleteConfiguredService(selectedService) : undefined}
+            deleteArmed={deleteConfirm === textValue(selectedService?.id, '')}
+            deleteBusy={deleteBusy}
+          />
       </DetailDrawer>
     </section>
   );
@@ -327,29 +486,36 @@ export function ServiceGroup({
   const observation = !Boolean(service.applied) && asArray(service.sources).includes('automatic') && !asArray(service.sources).includes('configured');
   const verificationState = textValue(service.probe_state, '').toLowerCase().replace(/[._-]+/g, ' ');
   const selectedRoute = textValue(service.selected_route_tag ?? service.selected_route_type, '');
+  const systemDefaultBaseline = selectedRoute === 'system-default';
+  const selectedType = textValue(service.selected_route_type, '').toLowerCase();
+  const isDrop = selectedType === 'drop' || textValue(service.status, '').toUpperCase() === 'DROP' || verificationState === 'drop enforced';
   const routeStatus = observation
-    ? (selectedRoute ? `Проверенный кандидат: ${selectedRoute}` : 'Ни один безопасный маршрут не прошёл проверку')
+    ? (isDrop ? 'Безопасная блокировка: DROP' : systemDefaultBaseline ? 'Direct доступен (системный baseline, не управляемое правило)' : selectedRoute ? `Путь подтверждён как кандидат: ${selectedRoute}` : 'Ни один безопасный маршрут не прошёл проверку')
     : verificationState === 'not checked'
       ? 'Настроено · путь ещё не проверен'
-      : humanStatus(service.status ?? service.selected_route_tag ?? 'Ожидает проверки');
+      : isDrop ? 'Безопасная блокировка: DROP' : humanStatus(service.status ?? service.selected_route_tag ?? 'Ожидает проверки');
   return (
     <article
       class={`service-card ${busy ? 'busy' : ''}`}
       draggable={draggable}
-      onDragStart={(event) => event.dataTransfer?.setData('text/plain', service.domains?.[0] ?? '')}
+      onDragStart={(event) => {
+        const payload = { domain: service.domains?.[0] ?? '', service_id: service.id };
+        event.dataTransfer?.setData('application/json', JSON.stringify(payload));
+        event.dataTransfer?.setData('text/plain', payload.domain);
+      }}
     >
       <div class="service-card-title"><b>{textValue(service.display_name ?? service.id, 'Неизвестный сервис')}</b><span class={`source ${observation ? 'automatic' : 'configured'}`}>{observation ? 'наблюдение' : 'применено'}</span></div>
       <small>{asArray(service.domains).length} доменов</small>
       <div class="service-card-route"><RouteBadge type={service.selected_route_type ?? service.category} /><span>{routeStatus}</span></div>
-      {service.allowed_paths?.length > 0 && <small>{service.allowed_paths.join(' → ')}</small>}
-      {selectedRoute && <small title={observation ? 'Проверка пути прошла, но политика не применена.' : 'Маршрут входит в применённую конфигурацию.'}>{observation ? 'кандидат прошёл проверку пути' : 'маршрут применён'}</small>}
+      {service.allowed_paths?.length > 0 && <small>Допустимые типы: {(service.eligible_route_types ?? service.allowed_paths).join(', ')}</small>}
+      {selectedRoute && !isDrop && !systemDefaultBaseline && <small title={observation ? 'Проверка пути прошла, но политика не применена.' : 'Маршрут входит в применённую конфигурацию.'}>{observation ? 'кандидат прошёл проверку пути' : 'маршрут применён'}</small>}
       {observation && <small>Не применено к трафику</small>}
       <div class="actions"><button type="button" onClick={onOpen}>Открыть</button>{onEdit && <button type="button" class="service-edit" onClick={onEdit}>{editLabel}</button>}</div>
     </article>
   );
 }
 
-function ServiceDetails({ service, onVerify, verifyBusy = false, verifyMessage = '', onEdit }: { service: any; onVerify?: () => void; verifyBusy?: boolean; verifyMessage?: string; onEdit?: () => void }) {
+function ServiceDetails({ service, onVerify, onApplyVerified, verifyBusy = false, verifyMessage = '', onEdit, onDelete, deleteArmed = false, deleteBusy = false }: { service: any; onVerify?: () => void; onApplyVerified?: () => void; verifyBusy?: boolean; verifyMessage?: string; onEdit?: () => void; onDelete?: () => void; deleteArmed?: boolean; deleteBusy?: boolean }) {
   if (!service) return null;
   const classificationConfidence = service.classification_confidence ?? service.classificationConfidence ?? service.confidence;
   // The legacy details row reads `confidence`; normalize that compatibility
@@ -357,6 +523,9 @@ function ServiceDetails({ service, onVerify, verifyBusy = false, verifyMessage =
   service = { ...service, confidence: classificationConfidence };
   const observation = !Boolean(service.applied) && asArray(service.sources).includes('automatic') && !asArray(service.sources).includes('configured');
   const serviceVerificationState = textValue(service.probe_state, '').toLowerCase().replace(/[._-]+/g, ' ');
+  const serviceSelectedType = textValue(service.selected_route_type, '').toLowerCase();
+  const systemDefaultBaseline = textValue(service.selected_route_tag, '') === 'system-default';
+  const isDrop = serviceSelectedType === 'drop' || textValue(service.status, '').toUpperCase() === 'DROP' || serviceVerificationState === 'drop enforced';
   const serviceVerification = serviceVerificationState === 'verified candidate'
     ? 'verified'
     : serviceVerificationState === 'verifying' || serviceVerificationState === 'in progress'
@@ -368,12 +537,19 @@ function ServiceDetails({ service, onVerify, verifyBusy = false, verifyMessage =
           : serviceVerificationState === 'not checked' || textValue(service.verification_state, '').toLowerCase().replace(/[._-]+/g, ' ') === 'not checked'
             ? 'not_checked'
           : 'unverified';
-  return <><InfoGrid items={[["Политика", observation ? (service.policy_state === 'suggested' ? 'Предложено — не применено' : 'Наблюдение — не применено') : 'Применена'], ["Классификация", service.category ?? 'Не определена'], ["Состояние классификации", service.classification_state ?? 'UNKNOWN'], ["Основание классификации", service.classification_reason ?? 'не указано'], ["Уверенность классификации", Number(service.confidence) > 0 ? service.confidence : 'Нет достаточных данных'], ["Проверка пути", verificationPresentationLabel(serviceVerification as Parameters<typeof verificationPresentationLabel>[0])], ["Источник", asArray(service.sources).join(', ')], [observation ? "Кандидат маршрута" : "Маршрут", service.selected_route_tag ?? service.selected_route_type], ["Health", service.health], ["Fallback", asArray(service.allowed_paths).join(' → ')], ["End-to-end", service.verification_end_to_end_latency_available ? `${service.verification_end_to_end_latency_ms} мс` : null], ["Latency", service.verification_route_latency_available ? `${service.verification_route_latency_ms} мс` : null], ["Последняя проверка", formatDateTime(service.latest_checked_at)]]} />
+  // A read-only verification response updates `verification_candidates` in
+  // the drawer, while the list endpoint calls the same data
+  // `candidate_matrix`. Prefer the fresh verification result so the user
+  // does not keep seeing a stale NOT_CHECKED matrix after pressing verify.
+  const matrix = asArray(service.verification_candidates ?? service.candidate_matrix).map((item) => item && typeof item === 'object' ? item as Record<string, unknown> : null).filter((item): item is Record<string, unknown> => Boolean(item) && String((item as Record<string, unknown>).route ?? '') !== 'system-default');
+  return <><InfoGrid items={[["Политика", observation ? (service.policy_state === 'suggested' ? 'Предложено — не применено' : 'Наблюдение — не применено') : 'Применена'], ["Классификация", service.category ?? 'Не определена'], ["Состояние классификации", service.classification_state ?? 'UNKNOWN'], ["Основание классификации", service.classification_reason ?? 'не указано'], ["Уверенность классификации", Number(service.confidence) > 0 ? service.confidence : 'Нет достаточных данных'], ["Проверка пути", verificationPresentationLabel(serviceVerification as Parameters<typeof verificationPresentationLabel>[0])], ["Источник", asArray(service.sources).join(', ')], [observation ? "Кандидат маршрута" : "Маршрут", isDrop ? 'DROP · безопасная блокировка' : systemDefaultBaseline ? 'Direct · системный baseline (не назначается)' : service.selected_route_tag ?? service.selected_route_type], ["Health", service.health], ["Допустимые типы маршрутов", asArray(service.eligible_route_types ?? service.allowed_paths).join(', ') || 'определяются политикой'], ["End-to-end", service.verification_end_to_end_latency_available ? `${service.verification_end_to_end_latency_ms} мс` : null], ["Latency", service.verification_route_latency_available ? `${service.verification_route_latency_ms} мс` : null], ["Последняя проверка", formatDateTime(service.latest_checked_at)]]} />
+  {matrix.length > 0 && <><h3>Кандидаты</h3><div class="candidate-matrix">{matrix.map((item, index) => <div class="row" key={`${textValue(item.route, String(index))}:${index}`}><b>{textValue(item.route, 'route')}</b><span>{textValue(item.status, 'NOT_CHECKED')}</span><small>{item.selected ? 'текущий' : ''}{item.path_verified ? ' · path verified' : ''}{item.service_ok ? ' · service OK' : ''}{item.reason ? ` · ${textValue(item.reason, '')}` : ''}</small></div>)}</div></>}
     <h3>Связанные домены</h3><div class="domain-list">{asArray(service.domains).map((domain) => <span class="chip mono">{textValue(domain)}</span>)}</div>
     <h3>Наследование и исключения</h3><p>{asArray(service.forbidden_paths).length ? `Запрещены: ${asArray(service.forbidden_paths).join(', ')}` : 'Явных конфликтов и исключений нет.'}</p>
     {onVerify && <div class="actions"><button class="primary" disabled={verifyBusy} onClick={onVerify}>{verifyBusy ? 'Проверяю…' : 'Проверить путь сейчас'}</button></div>}
+    {onApplyVerified && serviceVerification === 'verified' && !isDrop && !systemDefaultBaseline && <div class="actions"><button class="primary" onClick={onApplyVerified}>Применить подтверждённый маршрут</button></div>}
     {verifyMessage && <p class="action-status">{verifyMessage}</p>}
-    {onEdit && <button class="primary" onClick={onEdit}>Настроить правило</button>}<RawDisclosure value={service} /></>;
+    {onEdit && <button class="primary" onClick={onEdit}>Настроить правило</button>}{onDelete && <button class="danger" disabled={deleteBusy} onClick={onDelete}>{deleteBusy ? 'Удаляю…' : deleteArmed ? 'Подтвердить удаление' : 'Удалить правило'}</button>}<RawDisclosure value={service} /></>;
 }
 
 export function Policies({ mode }: { mode: string }) {
