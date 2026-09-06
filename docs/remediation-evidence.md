@@ -1,18 +1,23 @@
 # Evidence remediation
 
-## Current evidence binding (2026-08-30)
+## Current evidence binding (2026-09-06)
 
-Current code checkpoint: `7f8c480c511d028d876b63d11a0c03e8a383ff79` on
-`integration/discovery-smartdns-local-dod`. This checkpoint includes the
-route-eligibility/subscription evidence regressions; the exact SHA and CI runs
-are recorded in the external ledger and below.
+Current code checkpoint: `119e2ff77dbc7310cd3590cdc6c3b819a25d77e8` on
+`fix/smartdns-auto-route`. This checkpoint includes the user-operation
+transaction-state, selected-route binding, system-default baseline, adaptive
+CRUD, infrastructure-error and VLESS readiness fixes. The exact SHA and CI
+runs are recorded in the external ledger and below.
 The worktree/branch HEAD is the source of truth for the documentation commit;
 the external status ledger records that exact docs SHA. Local
-`tests/run-all.ps1` completed `all_tests_ok=true`; Linux
+`tests/run-all.ps1` completed `all_tests_ok=true`; Go race/vet, frontend
+typecheck/unit/build and Playwright 30/30 also passed. Linux
 namespace/process-group/filesystem checks remain `NOT RUN LOCALLY` on Windows.
-The exact-SHA CI evidence for this checkpoint is full safety `33294149562`,
-UI/browser `33294149541`, nft transition `33294149526`, and Zapret process-group
-`33294149529`.
+The ARM64 controller artifact SHA-256 is
+`f2d004faa882a60a8403268a21eac327fa5e5c7c8c17875308bd582142ef1f13` and the
+OpenWrt bundle SHA-256 is
+`444ffef11a8e9cc794c96e099a4cb872c6e2ff6cbc28c1a2eaa6ed0fd0d99577`.
+CI/push and installation on Flint 2 remain pending because the current
+key-only SSH credential is rejected and GitHub HTTPS was unavailable.
 
 These are software/CI results only. No Flint 2 connection, installation,
 dataplane mutation, reboot, or hardware validation was performed. Every older

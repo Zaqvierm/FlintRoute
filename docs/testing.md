@@ -11,7 +11,8 @@
 powershell -ExecutionPolicy Bypass -File .\tests\run-all.ps1
 ```
 
-Текущий локальный baseline: `all_tests_ok=true`. Этот результат не включает SSH,
+Текущий локальный baseline для `119e2ff77dbc7310cd3590cdc6c3b819a25d77e8`:
+`all_tests_ok=true`. Этот результат не включает SSH,
 применение на роутере или повторную аппаратную проверку.
 
 Набор включает Go tests/vet, frontend typecheck/build, Windows и Linux arm64
