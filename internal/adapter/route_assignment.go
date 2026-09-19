@@ -97,8 +97,11 @@ func readRouteAssignmentBinding(stateDir string) (map[string]string, error) {
 	paths := []string{
 		// The controller runs as the unprivileged daemon user. The durable
 		// last-good directory is intentionally root-owned, so the adapter's
-		// runtime binding is the readable, generation-bound source for the
-		// route-assignment reconciler after restart.
+		// dedicated controller binding is the readable, generation-bound source
+		// for the route-assignment reconciler after restart. Do not broaden the
+		// permissions of the whole runtime directory: it also contains locks,
+		// proofs and rollback metadata owned by root.
+		"/tmp/router-policy/controller/active-transaction.env",
 		"/tmp/router-policy/active-transaction.env",
 		filepath.Join(stateDir, "last-good", "active-transaction.env"),
 		filepath.Join(stateDir, "last-good", "transaction.env"),

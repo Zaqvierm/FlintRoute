@@ -325,6 +325,22 @@ cmp "$txdir/generated/xray.json" "$ACTIVE_XRAY"
 grep -Fx "candidate_hash=$candidate_hash" "$STATE_DIR/last-good/transaction.env" >/dev/null
 grep -Fx "artifact_manifest_hash=$artifact_manifest_hash" "$STATE_DIR/last-good/transaction.env" >/dev/null
 grep -Fx "transaction_state=committed" "$RUNTIME_DIR/active-transaction.env" >/dev/null
+[ -f "$RUNTIME_DIR/controller/active-transaction.env" ] || {
+  echo "controller-readable route-assignment binding is missing" >&2
+  exit 1
+}
+if command -v stat >/dev/null 2>&1; then
+  controller_binding_mode="$(stat -c '%a' "$RUNTIME_DIR/controller/active-transaction.env")"
+  controller_binding_owner="$(stat -c '%U:%G' "$RUNTIME_DIR/controller/active-transaction.env")"
+  [ "$controller_binding_mode" = "640" ] || {
+    echo "controller binding mode is not 0640: $controller_binding_mode" >&2
+    exit 1
+  }
+  [ "$controller_binding_owner" = "root:daemon" ] || {
+    echo "controller binding owner is not root:daemon: $controller_binding_owner" >&2
+    exit 1
+  }
+fi
 [ -s "$STATE_DIR/last-good/generated/ip-plan.json" ] || { echo "committed recovery IP plan is missing" >&2; exit 1; }
 grep -Fx 'firewall.@defaults[0].flow_offloading=0' "$TMP/uci-state.env" >/dev/null
 grep -Fx 'firewall.@defaults[0].flow_offloading_hw=0' "$TMP/uci-state.env" >/dev/null

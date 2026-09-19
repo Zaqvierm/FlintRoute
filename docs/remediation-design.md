@@ -242,9 +242,11 @@ Recovery also admits an adapter-committed transaction when its ChangeSet was
 left in a recovery-phase failure state. The exact bound is checked against the
 active revision, candidate hash, artifact hash, and adapter state before the
 control-plane record is finalized. Route-assignment reconciliation reads the
-daemon-readable runtime binding (`/tmp/router-policy/active-transaction.env`)
-before the root-owned last-good directory; this keeps restart recovery usable
-without weakening ownership or generation checks.
+dedicated daemon-readable runtime binding
+(`/tmp/router-policy/controller/active-transaction.env`) before the root-owned
+last-good directory; the main runtime directory and rollback metadata remain
+root-only. This keeps restart recovery usable without weakening ownership or
+generation checks.
 
 Helper transaction evidence normalizes shell boolean fields before semantic
 validation. In particular, `rollback=true` from the typed Unix helper is a

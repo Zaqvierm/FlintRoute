@@ -40,12 +40,14 @@ The durable discovery control-state write is also returned to its callers;
 loss of applied/rollback counters is therefore observable rather than a
 silent success.
 
-An early controller start is not allowed to poison later probes. If the
-generation-bound `/tmp/router-policy/active-transaction.env` is briefly absent
-while the adapter publishes a committed binding, the first probe engine keeps
-the route fail-closed but retries binding construction on its next use. A
-permanent binding or artifact error remains an explicit diagnostic and never
-turns into synthetic PathVerified evidence.
+An early controller start is not allowed to poison later probes. The
+generation-bound daemon-readable binding is published at
+`/tmp/router-policy/controller/active-transaction.env`; if it is briefly
+absent while the adapter publishes a committed binding, the first probe
+engine keeps the route fail-closed but retries binding construction on its
+next use. A permanent binding or artifact error remains an explicit
+diagnostic and never turns into synthetic PathVerified evidence. The main
+`/tmp/router-policy/active-transaction.env` remains root-only.
 
 ## Discovery modes
 

@@ -161,8 +161,7 @@ func NewActiveOpenWrtPathVerifier(cfg *config.Config, allowSimulation bool) (*Op
 	if runtimeDir == "" {
 		runtimeDir = filepath.Join(cfg.Storage.StateDir, "runtime")
 	}
-	activePath := filepath.Join(runtimeDir, "active-transaction.env")
-	active, err := loadActivePathBinding(activePath)
+	active, activePath, err := loadRuntimeActivePathBinding(runtimeDir)
 	if err != nil {
 		return nil, err
 	}
@@ -195,6 +194,29 @@ func NewActiveOpenWrtPathVerifier(cfg *config.Config, allowSimulation bool) (*Op
 		verifier.plan.CandidateRouteProof = append(verifier.plan.CandidateRouteProof, proof)
 	}
 	return verifier, nil
+}
+
+// loadRuntimeActivePathBinding chooses the dedicated daemon-readable binding
+// when it exists. The legacy runtime path is retained only for fixtures and
+// older installations that have not yet created the controller subdirectory.
+// If the dedicated file exists but is malformed, fail closed instead of
+// falling back to a different generation.
+func loadRuntimeActivePathBinding(runtimeDir string) (activePathBinding, string, error) {
+	paths := []string{
+		filepath.Join(runtimeDir, "controller", "active-transaction.env"),
+		filepath.Join(runtimeDir, "active-transaction.env"),
+	}
+	for _, path := range paths {
+		if _, err := os.Stat(path); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return activePathBinding{}, "", err
+		}
+		active, err := loadActivePathBinding(path)
+		return active, path, err
+	}
+	return activePathBinding{}, "", fmt.Errorf("active binding unavailable in runtime %s", runtimeDir)
 }
 
 func newBoundOpenWrtCommands(binding artifact.Binding, manifestHash string) (OpenWrtCommands, error) {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +24,33 @@ type fakeOpenWrtCommands struct {
 	rulePriority   int
 	policyActions  map[string]bool
 	processRunning bool
+}
+
+func TestLoadRuntimeActivePathBindingPrefersControllerBinding(t *testing.T) {
+	root := t.TempDir()
+	legacy := filepath.Join(root, "active-transaction.env")
+	dedicatedDir := filepath.Join(root, "controller")
+	dedicated := filepath.Join(dedicatedDir, "active-transaction.env")
+	if err := os.MkdirAll(dedicatedDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	writeBinding := func(path, revision string) {
+		t.Helper()
+		contents := fmt.Sprintf("transaction_id=tx_0011223344556677\nrevision_id=%s\ncandidate_hash=sha256:%s\nartifact_manifest_hash=sha256:%s\ntransaction_state=committed\n", revision, strings.Repeat("a", 64), strings.Repeat("b", 64))
+		if err := os.WriteFile(path, []byte(contents), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeBinding(legacy, "rev_2_001122334455")
+	writeBinding(dedicated, "rev_3_001122334455")
+
+	binding, path, err := loadRuntimeActivePathBinding(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != dedicated || binding.Binding.RevisionID != "rev_3_001122334455" {
+		t.Fatalf("dedicated controller binding was not selected: path=%q binding=%+v", path, binding)
+	}
 }
 
 func (f *fakeOpenWrtCommands) RouteGet(context.Context, string, string) (KernelRoute, error) {

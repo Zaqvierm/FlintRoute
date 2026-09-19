@@ -113,8 +113,11 @@ the policy ChangeSet. A preview is ephemeral and never writes a ChangeSet or
 active policy. A bounded `VERIFYING` response keeps the button as
 "Continue verification"; it must not be rendered as `NO_SAFE_ROUTE`.
 
-The production runtime binding is published as root:daemon `0640`, because the
-non-root controller must read the revision/hash binding for path verification.
+The production controller binding is published at
+`/tmp/router-policy/controller/active-transaction.env` as root:daemon `0640`
+inside a root:daemon `0750` directory. The main runtime directory remains
+root-only; the non-root controller receives only the revision/hash binding it
+needs for path verification.
 
 For an existing configured rule, `Verify path now` is read-only and renders the
 fresh candidate evidence. Once a non-DROP candidate is PathVerified, the drawer

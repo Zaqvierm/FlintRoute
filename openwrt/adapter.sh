@@ -18,6 +18,8 @@ flow_offload_baseline="$ownership_dir/flow-offloading.env"
 lock_dir="$runtime/transaction.lock"
 pending_file="$runtime/pending-transaction.env"
 active_file="$runtime/active-transaction.env"
+controller_binding_dir="$runtime/controller"
+controller_binding_file="$controller_binding_dir/active-transaction.env"
 boot_guard_file="$runtime/boot-guard.nft"
 boot_guard_classifier_file="$runtime/boot-guard-classifier.nft"
 timer_dir="$runtime/rollback-timers"
@@ -1987,6 +1989,17 @@ write_active_transaction_state() {
   # silently leaves a root-only file and makes every PathProbe fail closed.
   chown_owned_or_fixture "$active_file" root:daemon || return 1
   chmod 640 "$active_file" || return 1
+  # Only this narrow binding is readable by the unprivileged controller. Keep
+  # the parent runtime directory root-only; exposing the whole directory would
+  # also expose transaction locks, proofs and rollback metadata.
+  [ ! -L "$controller_binding_dir" ] || return 1
+  mkdir -p "$controller_binding_dir"
+  chown_owned_or_fixture "$controller_binding_dir" root:daemon || return 1
+  chmod 750 "$controller_binding_dir" || return 1
+  cp "$active_file" "$controller_binding_file.tmp"
+  chown_owned_or_fixture "$controller_binding_file.tmp" root:daemon || return 1
+  chmod 640 "$controller_binding_file.tmp" || return 1
+  mv "$controller_binding_file.tmp" "$controller_binding_file"
 }
 
 commit_prepared_tx() {
@@ -2355,7 +2368,9 @@ rollback_tx() {
     echo "reason=no_snapshot_no_data_plane_change"
   fi
   if pending_matches; then rm -f "$pending_file"; fi
-  if active_matches; then rm -f "$active_file"; fi
+  if active_matches; then
+    rm -f "$active_file" "$controller_binding_file"
+  fi
   # A successful owned restore is the only safe rollback point.  If any
   # restore step failed, set -e leaves the fence armed for recovery.
   clear_boot_guard
