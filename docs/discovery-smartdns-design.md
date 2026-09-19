@@ -42,7 +42,7 @@ silent success.
 
 An early controller start is not allowed to poison later probes. The
 generation-bound daemon-readable binding is published at
-`/tmp/router-policy/controller/active-transaction.env`; if it is briefly
+`/tmp/router-policy-controller/active-transaction.env`; if it is briefly
 absent while the adapter publishes a committed binding, the first probe
 engine keeps the route fail-closed but retries binding construction on its
 next use. A permanent binding or artifact error remains an explicit

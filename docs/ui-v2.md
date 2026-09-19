@@ -114,7 +114,7 @@ active policy. A bounded `VERIFYING` response keeps the button as
 "Continue verification"; it must not be rendered as `NO_SAFE_ROUTE`.
 
 The production controller binding is published at
-`/tmp/router-policy/controller/active-transaction.env` as root:daemon `0640`
+`/tmp/router-policy-controller/active-transaction.env` as root:daemon `0640`
 inside a root:daemon `0750` directory. The main runtime directory remains
 root-only; the non-root controller receives only the revision/hash binding it
 needs for path verification.

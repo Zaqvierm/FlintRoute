@@ -243,7 +243,7 @@ left in a recovery-phase failure state. The exact bound is checked against the
 active revision, candidate hash, artifact hash, and adapter state before the
 control-plane record is finalized. Route-assignment reconciliation reads the
 dedicated daemon-readable runtime binding
-(`/tmp/router-policy/controller/active-transaction.env`) before the root-owned
+(`/tmp/router-policy-controller/active-transaction.env`) before the root-owned
 last-good directory; the main runtime directory and rollback metadata remain
 root-only. This keeps restart recovery usable without weakening ownership or
 generation checks.

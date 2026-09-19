@@ -10,7 +10,7 @@ start_service() {
   # need only the generation/hash binding. Expose the dedicated binding, not
   # the root-only runtime directory that also contains locks and rollback data.
   runtime_dir=/tmp/router-policy
-  controller_binding_dir=/tmp/router-policy/controller
+  controller_binding_dir=/tmp/router-policy-controller
   controller_binding="$controller_binding_dir/active-transaction.env"
   [ -d "$runtime_dir" ] && [ ! -L "$runtime_dir" ] || return 1
   [ ! -L "$controller_binding_dir" ] || return 1

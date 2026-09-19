@@ -101,7 +101,7 @@ func readRouteAssignmentBinding(stateDir string) (map[string]string, error) {
 		// for the route-assignment reconciler after restart. Do not broaden the
 		// permissions of the whole runtime directory: it also contains locks,
 		// proofs and rollback metadata owned by root.
-		"/tmp/router-policy/controller/active-transaction.env",
+		"/tmp/router-policy-controller/active-transaction.env",
 		"/tmp/router-policy/active-transaction.env",
 		filepath.Join(stateDir, "last-good", "active-transaction.env"),
 		filepath.Join(stateDir, "last-good", "transaction.env"),

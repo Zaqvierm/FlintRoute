@@ -18,7 +18,7 @@ flow_offload_baseline="$ownership_dir/flow-offloading.env"
 lock_dir="$runtime/transaction.lock"
 pending_file="$runtime/pending-transaction.env"
 active_file="$runtime/active-transaction.env"
-controller_binding_dir="$runtime/controller"
+controller_binding_dir="${runtime}-controller"
 controller_binding_file="$controller_binding_dir/active-transaction.env"
 boot_guard_file="$runtime/boot-guard.nft"
 boot_guard_classifier_file="$runtime/boot-guard-classifier.nft"
@@ -1989,13 +1989,19 @@ write_active_transaction_state() {
   # silently leaves a root-only file and makes every PathProbe fail closed.
   chown_owned_or_fixture "$active_file" root:daemon || return 1
   chmod 640 "$active_file" || return 1
+  publish_controller_binding
+}
+
+publish_controller_binding() {
   # Only this narrow binding is readable by the unprivileged controller. Keep
   # the parent runtime directory root-only; exposing the whole directory would
   # also expose transaction locks, proofs and rollback metadata.
   [ ! -L "$controller_binding_dir" ] || return 1
+  [ -f "$active_file" ] && [ ! -L "$active_file" ] || return 1
   mkdir -p "$controller_binding_dir"
   chown_owned_or_fixture "$controller_binding_dir" root:daemon || return 1
   chmod 750 "$controller_binding_dir" || return 1
+  [ ! -L "$controller_binding_file" ] && [ ! -L "$controller_binding_file.tmp" ] || return 1
   cp "$active_file" "$controller_binding_file.tmp"
   chown_owned_or_fixture "$controller_binding_file.tmp" root:daemon || return 1
   chmod 640 "$controller_binding_file.tmp" || return 1
@@ -2371,6 +2377,7 @@ rollback_tx() {
   if active_matches; then
     rm -f "$active_file" "$controller_binding_file"
   fi
+  if [ -f "$active_file" ]; then publish_controller_binding; fi
   # A successful owned restore is the only safe rollback point.  If any
   # restore step failed, set -e leaves the fence armed for recovery.
   clear_boot_guard
@@ -2415,6 +2422,7 @@ reconcile_tx() {
   "$router_policy_bin" internal-verify-artifacts --root "$recovery_generated" --transaction "$txid" --revision "$revision" --candidate-hash "$recovery_candidate_hash" --manifest-hash "$recovery_artifact_manifest_hash" >/dev/null
   "$router_policy_bin" internal-validate-ip-plan --plan "$recovery_generated/ip-plan.json" --transaction "$txid" --revision "$revision" --candidate-hash "$recovery_candidate_hash" >/dev/null
   if committed_deployment_matches "$recovery_generated"; then
+    publish_controller_binding
     # The process may have died after the durable commit and before the normal
     # clear operation.  Only an exact committed-generation match may remove
     # the fail-closed fence.
@@ -2438,6 +2446,7 @@ reconcile_tx() {
   fi
   install_boot_guard
   restore_snapshot "$state/last-good" false
+  publish_controller_binding
   restore_service_state "$state/last-good" "xray-service.state" "$xray_init" "xray"
   restore_service_state "$state/last-good" "zapret-service.state" "$zapret_init" "zapret"
   restore_profile_service_states "$state/last-good"

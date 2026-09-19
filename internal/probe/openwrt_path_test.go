@@ -27,9 +27,12 @@ type fakeOpenWrtCommands struct {
 }
 
 func TestLoadRuntimeActivePathBindingPrefersControllerBinding(t *testing.T) {
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "runtime")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	legacy := filepath.Join(root, "active-transaction.env")
-	dedicatedDir := filepath.Join(root, "controller")
+	dedicatedDir := root + "-controller"
 	dedicated := filepath.Join(dedicatedDir, "active-transaction.env")
 	if err := os.MkdirAll(dedicatedDir, 0o750); err != nil {
 		t.Fatal(err)
@@ -50,6 +53,12 @@ func TestLoadRuntimeActivePathBindingPrefersControllerBinding(t *testing.T) {
 	}
 	if path != dedicated || binding.Binding.RevisionID != "rev_3_001122334455" {
 		t.Fatalf("dedicated controller binding was not selected: path=%q binding=%+v", path, binding)
+	}
+	if err := os.WriteFile(dedicated, []byte("corrupt\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadRuntimeActivePathBinding(root); err == nil {
+		t.Fatal("corrupt current binding fell back to an older revision")
 	}
 }
 

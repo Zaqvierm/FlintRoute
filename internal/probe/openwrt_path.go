@@ -203,7 +203,7 @@ func NewActiveOpenWrtPathVerifier(cfg *config.Config, allowSimulation bool) (*Op
 // falling back to a different generation.
 func loadRuntimeActivePathBinding(runtimeDir string) (activePathBinding, string, error) {
 	paths := []string{
-		filepath.Join(runtimeDir, "controller", "active-transaction.env"),
+		filepath.Join(runtimeDir+"-controller", "active-transaction.env"),
 		filepath.Join(runtimeDir, "active-transaction.env"),
 	}
 	for _, path := range paths {

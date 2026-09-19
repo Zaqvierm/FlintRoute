@@ -325,13 +325,13 @@ cmp "$txdir/generated/xray.json" "$ACTIVE_XRAY"
 grep -Fx "candidate_hash=$candidate_hash" "$STATE_DIR/last-good/transaction.env" >/dev/null
 grep -Fx "artifact_manifest_hash=$artifact_manifest_hash" "$STATE_DIR/last-good/transaction.env" >/dev/null
 grep -Fx "transaction_state=committed" "$RUNTIME_DIR/active-transaction.env" >/dev/null
-[ -f "$RUNTIME_DIR/controller/active-transaction.env" ] || {
+[ -f "${RUNTIME_DIR}-controller/active-transaction.env" ] || {
   echo "controller-readable route-assignment binding is missing" >&2
   exit 1
 }
 if command -v stat >/dev/null 2>&1; then
-  controller_binding_mode="$(stat -c '%a' "$RUNTIME_DIR/controller/active-transaction.env")"
-  controller_binding_owner="$(stat -c '%U:%G' "$RUNTIME_DIR/controller/active-transaction.env")"
+  controller_binding_mode="$(stat -c '%a' "${RUNTIME_DIR}-controller/active-transaction.env")"
+  controller_binding_owner="$(stat -c '%U:%G' "${RUNTIME_DIR}-controller/active-transaction.env")"
   [ "$controller_binding_mode" = "640" ] || {
     echo "controller binding mode is not 0640: $controller_binding_mode" >&2
     exit 1
@@ -341,6 +341,16 @@ if command -v stat >/dev/null 2>&1; then
     exit 1
   }
 fi
+command -v runuser >/dev/null || { echo 'runuser required for real daemon access test' >&2; exit 1; }
+chmod 755 "$TMP"
+chmod 700 "$RUNTIME_DIR"
+runuser -u daemon -- cat "${RUNTIME_DIR}-controller/active-transaction.env" > "$TMP/daemon-binding-read"
+cmp "$RUNTIME_DIR/active-transaction.env" "$TMP/daemon-binding-read"
+if runuser -u daemon -- cat "$RUNTIME_DIR/active-transaction.env" >/dev/null 2>&1; then
+  echo 'daemon unexpectedly read private runtime binding' >&2
+  exit 1
+fi
+chmod 750 "$RUNTIME_DIR"
 [ -s "$STATE_DIR/last-good/generated/ip-plan.json" ] || { echo "committed recovery IP plan is missing" >&2; exit 1; }
 grep -Fx 'firewall.@defaults[0].flow_offloading=0' "$TMP/uci-state.env" >/dev/null
 grep -Fx 'firewall.@defaults[0].flow_offloading_hw=0' "$TMP/uci-state.env" >/dev/null
@@ -553,6 +563,7 @@ assert_status rolled_back
 [ "$(cat "$ACTIVE_DNSMASQ")" = "rollback-dnsmasq" ]
 [ "$(cat "$ACTIVE_XRAY")" = "rollback-xray" ]
 grep -Fx 'revision_id=rev_1_aaaaaaaaaaaa' "$RUNTIME_DIR/active-transaction.env" >/dev/null
+cmp "$RUNTIME_DIR/active-transaction.env" "${RUNTIME_DIR}-controller/active-transaction.env"
 grep -Fx 'firewall.@defaults[0].flow_offloading=1' "$TMP/uci-state.env" >/dev/null
 grep -Fx 'firewall.@defaults[0].flow_offloading_hw=1' "$TMP/uci-state.env" >/dev/null
 reload_count=$(grep -c '^fw4 reload$' "$TMP/openwrt-calls.log" || true)
