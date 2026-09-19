@@ -1,4 +1,4 @@
-import type { ChangeSet, SessionInfo } from '../api';
+import { isChangePending, type ChangeSet, type SessionInfo } from '../api';
 import { Component, type ComponentChildren } from 'preact';
 import { useState } from 'preact/hooks';
 import { formatDateTime, humanStatus, statusTone, textValue } from '../view-models';
@@ -72,7 +72,11 @@ export function AlertCenter({ errors, onRetry, onRetryAll, retrying }: {
 }
 
 export function OperationCenterSummary({ changes, navigate }: { changes: ChangeSet[]; navigate: (screen: string) => void }) {
-  const active = changes.filter((change) => !['committed', 'rolled_back', 'failed'].includes(change.state));
+  const now = Date.now();
+  const active = changes.filter((change) => {
+    const expiresAt = Date.parse(change.expires_at ?? '');
+    return isChangePending(change.state) && (!Number.isFinite(expiresAt) || expiresAt > now);
+  });
   if (!active.length) return null;
   return <section class="operation-strip" aria-live="polite"><div><b>Активные изменения: {active.length}</b><span>{active.slice(0, 3).map((change) => `${humanStatus(change.state)} · ${textValue(change.title, 'правило')}`).join(' · ')}</span></div><button onClick={() => navigate('Операции')}>Открыть центр операций</button></section>;
 }
