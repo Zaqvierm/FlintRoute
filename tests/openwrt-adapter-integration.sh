@@ -329,9 +329,11 @@ grep -Fx "transaction_state=committed" "$RUNTIME_DIR/active-transaction.env" >/d
   echo "controller-readable route-assignment binding is missing" >&2
   exit 1
 }
-if command -v stat >/dev/null 2>&1; then
-  controller_binding_mode="$(stat -c '%a' "${RUNTIME_DIR}-controller/active-transaction.env")"
-  controller_binding_owner="$(stat -c '%U:%G' "${RUNTIME_DIR}-controller/active-transaction.env")"
+# The fixture deliberately shadows stat to catch production dependencies on
+# tools absent from OpenWrt. Use the host utility only for fixture assertions.
+if [ -x /usr/bin/stat ]; then
+  controller_binding_mode="$(/usr/bin/stat -c '%a' "${RUNTIME_DIR}-controller/active-transaction.env")"
+  controller_binding_owner="$(/usr/bin/stat -c '%U:%G' "${RUNTIME_DIR}-controller/active-transaction.env")"
   [ "$controller_binding_mode" = "640" ] || {
     echo "controller binding mode is not 0640: $controller_binding_mode" >&2
     exit 1
