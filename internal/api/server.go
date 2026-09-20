@@ -2520,7 +2520,7 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 		validation, primaryValidationOK := s.loadSmartDNSValidation(route.DNSServer)
 		fallbackValidation, fallbackValidationOK := s.loadSmartDNSValidation(route.DNSFallbackServer)
 		validationOK := primaryValidationOK && (route.DNSFallbackServer == "" || fallbackValidationOK)
-		resolverReady, nextStatus := smartDNSResolverState(route, health, healthFresh, validationOK)
+		resolverReady, nextStatus := smartDNSResolverStateForBinding(route, health, healthFresh, validationOK, smartDNSRouteBound(active, route.Tag))
 		status = nextStatus
 		if observed && health.State == "healthy" && !healthFresh && !validationOK && !route.Disabled && resolverConfigured {
 			status = "stale"
@@ -2586,7 +2586,7 @@ func (s *Server) smartDNSAutomaticOperation() map[string]any {
 			continue
 		}
 		switch change.State {
-		case "draft", "validated", "applying", "awaiting_confirmation", "committing", "recovery_required", "requires_device", "failed", "rolled_back":
+		case "draft", "validated", "applying", "awaiting_confirmation", "committing", "recovery_required", "requires_device", "failed", "rolled_back", "expired", "committed":
 		default:
 			continue
 		}
@@ -2639,22 +2639,45 @@ func smartDNSHealthFresh(health probe.RouteHealth, now time.Time, intervalSecond
 }
 
 func smartDNSResolverState(route config.Route, health probe.RouteHealth, observed, validationOK bool) (bool, string) {
+	return smartDNSResolverStateForBinding(route, health, observed, validationOK, health.LastReason != "route_not_bound_to_verification_plan")
+}
+
+func smartDNSResolverStateForBinding(route config.Route, health probe.RouteHealth, observed, validationOK, routeBound bool) (bool, string) {
 	if route.Disabled || route.DNSServer == "" || strings.Contains(route.DNSServer, "PLACEHOLDER") {
 		return false, route.Status
 	}
 	if observed && health.State == "healthy" {
 		return true, "healthy"
 	}
-	// A resolver cannot have a bound dataplane proof until a service policy
-	// actually uses it. Fresh transport/content validation makes it selectable
-	// for a guarded transaction; confirmation still requires PathVerified.
-	if validationOK && (!observed || health.LastReason == "route_not_bound_to_verification_plan") {
+	// A resolver cannot have a bound dataplane proof until a service policy or
+	// explicit override actually uses it. Fresh transport/content validation
+	// makes an unused card selectable for a guarded transaction; it must not be
+	// reported as unhealthy merely because the observer had no owned domain path
+	// on which to advance an nft counter.
+	if validationOK && (!routeBound || !observed || health.LastReason == "route_not_bound_to_verification_plan") {
 		return true, "validated_idle"
 	}
 	if observed {
 		return false, health.State
 	}
 	return false, route.Status
+}
+
+func smartDNSRouteBound(cfg *config.Config, routeTag string) bool {
+	if cfg == nil || strings.TrimSpace(routeTag) == "" {
+		return false
+	}
+	for _, service := range cfg.Services {
+		if service.SelectedRouteTag == routeTag {
+			return true
+		}
+	}
+	for _, override := range cfg.Overrides {
+		if override.RouteTag == routeTag {
+			return true
+		}
+	}
+	return false
 }
 
 type smartDNSConfigureRequest struct {

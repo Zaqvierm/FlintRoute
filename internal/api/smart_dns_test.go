@@ -443,6 +443,15 @@ func TestSmartDNSResolverStateTreatsFreshUnboundValidationAsIdleReady(t *testing
 	}
 }
 
+func TestSmartDNSResolverStateTreatsValidatedUnusedRouteAsIdleReady(t *testing.T) {
+	route := config.Route{Type: "smart_dns", Tag: "smart", DNSServer: "1.1.1.1:53"}
+	health := probe.RouteHealth{State: "unhealthy", LastReason: "nft_policy_finish_failed"}
+	ready, status := smartDNSResolverStateForBinding(route, health, true, true, false)
+	if !ready || status != "validated_idle" {
+		t.Fatalf("validated unused resolver state=(%v,%q), want ready validated_idle", ready, status)
+	}
+}
+
 func TestSmartDNSResolverStateKeepsRealHealthFailureUnavailable(t *testing.T) {
 	route := config.Route{Type: "smart_dns", Tag: "smart", DNSServer: "1.1.1.1:53"}
 	health := probe.RouteHealth{State: "unhealthy", LastReason: "dns_failed"}
@@ -467,5 +476,18 @@ func TestSmartDNSHealthFreshUsesBoundedCheckWindow(t *testing.T) {
 	}
 	if smartDNSHealthFresh(probe.RouteHealth{LastCheckedAt: now.Add(time.Second)}, now, 300) {
 		t.Fatal("future health timestamp was marked fresh")
+	}
+}
+
+func TestSmartDNSAutomaticOperationReportsLatestCommittedChange(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	srv.mu.Lock()
+	srv.changes["old"] = ChangeSet{ID: "old", Title: "Configure Smart DNS resolvers", AutoApply: true, State: "rolled_back", UpdatedAt: "2026-09-19T23:00:00Z"}
+	srv.changes["new"] = ChangeSet{ID: "new", Title: "Configure Smart DNS resolvers", AutoApply: true, State: "committed", UpdatedAt: "2026-09-20T00:56:48Z"}
+	srv.mu.Unlock()
+	operation := srv.smartDNSAutomaticOperation()
+	if operation == nil || operation["id"] != "new" || operation["state"] != "committed" {
+		t.Fatalf("latest committed Smart DNS operation was hidden: %+v", operation)
 	}
 }
