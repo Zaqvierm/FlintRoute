@@ -108,7 +108,9 @@ function resolverDraftsFromStatus(value: any): Array<{ name: string; primary: st
     primary: resolverEndpointText(route.resolver_ip, route.resolver_port),
     fallback: route.fallback_resolver_ip ? resolverEndpointText(route.fallback_resolver_ip, route.fallback_resolver_port) : ''
   }));
-  if (drafts.length < 16) drafts.push({ name: '', primary: '', fallback: '' });
+  // Do not render an unsolicited empty card after the configured rows. The
+  // explicit “Добавить DNS-карточку” action is the only way to create the
+  // next draft, so the form reflects the real number of resolvers.
   return drafts.length ? drafts : [{ name: '', primary: '', fallback: '' }];
 }
 
