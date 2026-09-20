@@ -360,6 +360,33 @@ func TestDiscoverySuggestionApplyCommitsRevisionBoundRouteAssignment(t *testing.
 	}
 }
 
+func TestDiscoverySuggestionApplyRejectsSyntheticSystemDefaultBaseline(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, _ := newDiscoveryModeServer(t, "suggest", true, fake)
+	defer srv.Close()
+	runtime := &fakeRouteAssignmentRuntime{}
+	srv.routeAssignmentRuntime = runtime
+	srv.saveDiscoverySuggestion(discovery.Observation{Domain: "baseline.example", QueryType: "A"}, planner.DomainCheck{
+		Domain: "baseline.example", ETLDPlusOne: "baseline.example", Category: "DIRECT_PREFERRED", Confidence: 0.99,
+		ClassificationConfidence: 0.95, ClassificationSource: "fixture", ClassificationEvidence: "no_match",
+		Status: "SELECTED", VerificationState: "verified",
+		Selected: &probe.RouteResult{Route: "system-default", RouteType: "direct", PathVerified: true, ServiceOK: true, Status: "OK"},
+	})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/discovery/suggestions/baseline.example/apply", strings.NewReader("{}"))
+	srv.handleDiscoverySuggestionAction(recorder, request)
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "automatic_route_not_allowed_or_unavailable") {
+		t.Fatalf("synthetic baseline was offered as an assignable route: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if runtime.applied != 0 || fakeAdapterCallCount(fake) != 0 {
+		t.Fatalf("synthetic baseline apply mutated runtime: assignments=%d adapter_calls=%d", runtime.applied, fakeAdapterCallCount(fake))
+	}
+	items := srv.discoverySuggestions(10)
+	if len(items) != 1 || items[0].PolicyState != "suggested" {
+		t.Fatalf("baseline suggestion was not retained after safe rejection: %+v", items)
+	}
+}
+
 func TestDiscoverySuggestionApplyIsFencedWithoutRuntimeConsumer(t *testing.T) {
 	fake := newFakeAdapter()
 	srv, _ := newDiscoveryModeServer(t, "suggest", true, fake)
