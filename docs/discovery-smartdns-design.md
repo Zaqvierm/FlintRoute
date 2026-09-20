@@ -47,7 +47,8 @@ absent while the adapter publishes a committed binding, the first probe
 engine keeps the route fail-closed but retries binding construction on its
 next use. A permanent binding or artifact error remains an explicit
 diagnostic and never turns into synthetic PathVerified evidence. The main
-`/tmp/router-policy/active-transaction.env` remains root-only.
+`/tmp/router-policy/active-transaction.env` is a controller-owned runtime
+copy; helper-bound authorization uses the dedicated sibling binding.
 
 ## Discovery modes
 

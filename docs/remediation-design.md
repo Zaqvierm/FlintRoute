@@ -244,9 +244,10 @@ active revision, candidate hash, artifact hash, and adapter state before the
 control-plane record is finalized. Route-assignment reconciliation reads the
 dedicated daemon-readable runtime binding
 (`/tmp/router-policy-controller/active-transaction.env`) before the root-owned
-last-good directory; the main runtime directory and rollback metadata remain
-root-only. This keeps restart recovery usable without weakening ownership or
-generation checks.
+last-good directory; the main runtime remains a bounded controller-owned
+tmpfs tree, while the binding used for helper authorization remains
+root:daemon-owned. This keeps restart recovery usable without weakening
+ownership or generation checks.
 
 Helper transaction evidence normalizes shell boolean fields before semantic
 validation. In particular, `rollback=true` from the typed Unix helper is a

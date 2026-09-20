@@ -116,8 +116,8 @@ active policy. A bounded `VERIFYING` response keeps the button as
 The production controller binding is published at
 `/tmp/router-policy-controller/active-transaction.env` as root:daemon `0640`
 inside a root:daemon `0750` directory. The main runtime directory remains
-root-only; the non-root controller receives only the revision/hash binding it
-needs for path verification.
+controller-owned tmpfs state; the non-root controller receives only the
+revision/hash binding it needs for path verification.
 
 For an existing configured rule, `Verify path now` is read-only and renders the
 fresh candidate evidence. Once a non-DROP candidate is PathVerified, the drawer
