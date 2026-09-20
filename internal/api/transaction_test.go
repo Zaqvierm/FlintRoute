@@ -792,7 +792,12 @@ func TestExpiredTransactionAutomaticallyRollsBack(t *testing.T) {
 	defer ts.Close()
 	cs := createValidatedChange(t, client, csrf, ts.URL, "GEO_LOCKED")
 	cs, _ = postAction(t, client, csrf, ts.URL, cs.ID, "apply", `{}`)
-	deadline := time.Now().Add(3 * time.Second)
+	// The expiry callback first persists rolling_back and then performs the
+	// external rollback plus cleanup. Under -race the state transition can
+	// legitimately spend more than one rollback window in that intermediate
+	// state; the invariant is the terminal expired state with exactly one
+	// rollback, not an arbitrary wall-clock slice through the callback.
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		srv.mu.Lock()
 		stateName := srv.changes[cs.ID].State
