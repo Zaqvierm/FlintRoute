@@ -593,6 +593,12 @@ const pendingChangeStates = new Set([
   'rolling_back'
 ]);
 export function isChangePending(state: string): boolean { return pendingChangeStates.has(state); }
+const staleDraftAgeMs = 24 * 60 * 60 * 1000;
+export function isChangeStale(change: Pick<ChangeSet, 'state' | 'updated_at' | 'created_at'>, now = Date.now()): boolean {
+  if (change.state !== 'draft' && change.state !== 'validated') return false;
+  const timestamp = Date.parse(change.updated_at || change.created_at || '');
+  return Number.isFinite(timestamp) && timestamp <= now - staleDraftAgeMs;
+}
 export async function waitForChangeTerminal(id: string, timeoutMs = 120000): Promise<ChangeSet> {
   const deadline = Date.now() + timeoutMs;
   let current = await getChange(id);

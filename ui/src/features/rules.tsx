@@ -6,6 +6,7 @@ import {
   deleteServiceRule,
   getVLESSPool,
   isChangePending,
+  isChangeStale,
   verifyService,
   waitForChangeTerminal,
   type ChangeOp,
@@ -613,13 +614,14 @@ export function Changes({ changes, refresh, role, configVersion, mutationLocked,
       </details>}
       {changes.map((c) => (
         <div class="change" key={c.id}>
-          <b>{c.title}</b><StatusBadge value={c.state} />
+          {(() => { const stale = isChangeStale(c); return <><b>{c.title}</b><StatusBadge value={stale ? 'stale' : c.state} />{stale && <small>Черновик старше 24 часов исключён из active queue; создай новую операцию для продолжения.</small>}
           {c.data_plane_verified && <small class="verified">Путь проверен backend</small>}
           <ChangeDiff change={c} />
           <div class="actions">
-             {actionsForChange(c.state).map((a) => <button disabled={mutationLocked} onClick={() => act(c.id, a)}>{changeActionLabel(a)}</button>)}
+             {!stale && actionsForChange(c.state).map((a) => <button disabled={mutationLocked} onClick={() => act(c.id, a)}>{changeActionLabel(a)}</button>)}
           </div>
           {['failed', 'rolled_back', 'requires_device', 'recovery_required'].includes(c.state) && <div class="reason"><p>{humanChangeFailure(c)}</p>{c.state === 'requires_device' && <button type="button" onClick={() => navigate('Диагностика')}>Открыть диагностику</button>}</div>}
+          </>; })()}
         </div>
       ))}
     </Card>
