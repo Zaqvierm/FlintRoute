@@ -511,7 +511,7 @@ export function ServiceGroup({
       {service.allowed_paths?.length > 0 && <small>Допустимые типы: {(service.eligible_route_types ?? service.allowed_paths).join(', ')}</small>}
       {selectedRoute && !isDrop && !systemDefaultBaseline && <small title={observation ? 'Проверка пути прошла, но политика не применена.' : 'Маршрут входит в применённую конфигурацию.'}>{observation ? 'кандидат прошёл проверку пути' : 'маршрут применён'}</small>}
       {observation && <small>Не применено к трафику</small>}
-      <div class="actions"><button type="button" onClick={onOpen}>Открыть</button>{onEdit && <button type="button" class="service-edit" onClick={onEdit}>{editLabel}</button>}</div>
+      <div class="actions"><button type="button" onClick={onOpen}>Открыть</button>{onEdit && <button type="button" class="service-edit" onClick={onEdit}>{systemDefaultBaseline ? 'Создать managed Direct rule' : editLabel}</button>}</div>
     </article>
   );
 }
