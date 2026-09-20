@@ -26,6 +26,7 @@ describe('safe display values', () => {
     expect(humanStatus('ROUTE_AVAILABLE')).toBe('Интернет доступен');
     expect(humanStatus('not_installed')).toBe('Не установлен');
     expect(humanStatus('NO_SAFE_ROUTE')).toBe('Ни один безопасный маршрут не прошёл проверку');
+    expect(humanStatus('validated_idle')).toBe('Проверен, ожидает назначения');
   });
 
   it('does not paint negative states green because they contain positive words', () => {

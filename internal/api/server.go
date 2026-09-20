@@ -2646,6 +2646,12 @@ func smartDNSResolverStateForBinding(route config.Route, health probe.RouteHealt
 	if route.Disabled || route.DNSServer == "" || strings.Contains(route.DNSServer, "PLACEHOLDER") {
 		return false, route.Status
 	}
+	if !routeBound && !validationOK {
+		// An unused card with an expired validation is stale, not unhealthy:
+		// there is no bound production path whose failure could justify a route
+		// quarantine. The next explicit endpoint check must refresh the proof.
+		return false, "stale"
+	}
 	if observed && health.State == "healthy" {
 		return true, "healthy"
 	}

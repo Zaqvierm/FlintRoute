@@ -472,7 +472,7 @@ export function SmartDNS({
       <Card title="Состояние Smart DNS">
         <div class="row"><b>{status.configured_count ?? 0}</b><span>DNS-серверов настроено</span><small>{status.ready ?? 0} готовы к выбору для GEO-сервисов</small></div>
         {status.automatic_operation && smartDNSOperationActive(status.automatic_operation) && <p class="action-status">Smart DNS проверяется и применяется автоматически: {smartDNSOperationLabel(status.automatic_operation)}. Подробности появятся в центре операций.</p>}
-        {status.configured && !status.ready && !smartDNSOperationActive(status.automatic_operation) && <p class="action-status">DNS-серверы сохранены, но маршрут пока не подтверждён. {humanSmartDNSReason(status.routes?.[0]?.health?.last_reason)}</p>}
+        {status.configured && !status.ready && !smartDNSOperationActive(status.automatic_operation) && <p class="action-status">DNS-серверы сохранены, но маршрут пока не подтверждён. {status.routes?.some((route: any) => route.status === 'stale' && route.validation_complete === false) ? 'Проверка резолвера истекла — запусти «Добавить и проверить endpoint» ещё раз.' : humanSmartDNSReason(status.routes?.[0]?.health?.last_reason)}</p>}
         {status.automatic_operation && !smartDNSOperationActive(status.automatic_operation) && status.automatic_operation.state !== 'committed' && <p class="action-status">Последнее автоматическое применение: {smartDNSOperationLabel(status.automatic_operation)}. Текущая активная конфигурация не заменялась без подтверждённой транзакции.</p>}
         <h4>Проверка успеха</h4>
         <div class="chips">{(status.success_contract ?? []).map((item: string) => <span class="chip">{item}</span>)}</div>

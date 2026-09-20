@@ -452,6 +452,15 @@ func TestSmartDNSResolverStateTreatsValidatedUnusedRouteAsIdleReady(t *testing.T
 	}
 }
 
+func TestSmartDNSResolverStateMarksExpiredUnusedValidationStale(t *testing.T) {
+	route := config.Route{Type: "smart_dns", Tag: "smart", DNSServer: "1.1.1.1:53"}
+	health := probe.RouteHealth{State: "healthy", LastReason: "route_get_failed"}
+	ready, status := smartDNSResolverStateForBinding(route, health, true, false, false)
+	if ready || status != "stale" {
+		t.Fatalf("expired unused resolver state=(%v,%q), want stale and unavailable", ready, status)
+	}
+}
+
 func TestSmartDNSResolverStateKeepsRealHealthFailureUnavailable(t *testing.T) {
 	route := config.Route{Type: "smart_dns", Tag: "smart", DNSServer: "1.1.1.1:53"}
 	health := probe.RouteHealth{State: "unhealthy", LastReason: "dns_failed"}
