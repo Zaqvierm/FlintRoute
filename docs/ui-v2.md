@@ -135,3 +135,14 @@ The synthetic `system-default` path is an unmarked OpenWrt baseline for an
 unknown domain, not an owned FlintRoute route. It is shown as a baseline in the
 trace, excluded from selectable candidate lists, and cannot be committed as a
 managed route.
+
+## Current operation and Smart DNS semantics
+
+The current software checkpoint is `b51c3e1`. Draft or validated operations
+older than 24 hours are shown as `stale` forensic records, excluded from the
+active operation count, and do not offer Validate or Apply actions.
+
+Smart DNS renders only saved cards. The next empty card is created only by
+`Add DNS card`. A freshly validated card that is not bound to a committed
+service or override is `validated_idle`, not unhealthy. Expired validation is
+shown as stale and requires explicit revalidation.

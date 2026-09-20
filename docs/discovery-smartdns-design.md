@@ -178,3 +178,12 @@ selected route and one known-good standby, then emits a reviewable fallback.
 It does not launch a full ChangeSet from a scheduler event. Configured-service
 route-only assignment is now available only through the bounded, typed runtime
 above and remains subject to the recovery mutation fence.
+
+## Runtime status semantics
+
+The API exposes the latest automatic operation, including a committed result;
+an older rollback must not remain the visible status after a newer commit. A
+validated card not referenced by a committed service or override is
+`validated_idle`, not unhealthy: it has resolver/content evidence but no owned
+production path on which an nft counter can advance. Once its validation TTL
+expires, the card becomes `stale` and requires explicit revalidation.
