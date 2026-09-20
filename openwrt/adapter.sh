@@ -1993,9 +1993,10 @@ write_active_transaction_state() {
 }
 
 publish_controller_binding() {
-  # Only this narrow binding is readable by the unprivileged controller. Keep
-  # the parent runtime directory root-only; exposing the whole directory would
-  # also expose transaction locks, proofs and rollback metadata.
+  # Only this narrow binding is authoritative for the unprivileged controller.
+  # Keep it outside the controller-owned runtime tree; exposing the whole
+  # runtime would also make transaction locks, proofs and rollback metadata
+  # part of the helper's binding surface.
   [ ! -L "$controller_binding_dir" ] || return 1
   [ -f "$active_file" ] && [ ! -L "$active_file" ] || return 1
   mkdir -p "$controller_binding_dir"

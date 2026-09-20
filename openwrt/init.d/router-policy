@@ -8,7 +8,8 @@ USE_PROCD=1
 start_service() {
   # ProbeRoute and route-assignment reconcile run in the daemon controller and
   # need only the generation/hash binding. Expose the dedicated binding, not
-  # the root-only runtime directory that also contains locks and rollback data.
+  # the controller-owned runtime directory that also contains locks and
+  # rollback data.
   runtime_dir=/tmp/router-policy
   controller_binding_dir=/tmp/router-policy-controller
   controller_binding="$controller_binding_dir/active-transaction.env"
