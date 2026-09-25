@@ -194,6 +194,7 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 
 		result := prober.ProbeRoute(ctx, cfg, profile.domain, profile.name, service, route)
 		result = bindResultToCandidate(result, route, opts.ActiveRevision)
+		result.CandidateInventoryHash = plan.InventoryHash
 		out.Results = append(out.Results, result)
 		if strings.EqualFold(strings.TrimSpace(result.Status), "INFRA_ERROR") {
 			out.Status = "ERROR"
@@ -330,6 +331,20 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 
 	out.CheckedAt = optionNow(opts)
 	out.VerificationDurationMS = time.Since(verificationStarted).Milliseconds()
+	// Candidate probes update the shared coarse health tracker. Bind the
+	// durable result to the post-probe inventory used for selection, otherwise
+	// the first successful check would immediately invalidate itself when the
+	// health tracker moves from unknown to healthy.
+	finalPlan := buildCandidates(cfg, profile, opts)
+	if finalPlan.InventoryHash != "" {
+		out.CandidateInventoryHash = finalPlan.InventoryHash
+		for i := range out.Results {
+			out.Results[i].CandidateInventoryHash = finalPlan.InventoryHash
+		}
+		if out.Selected != nil {
+			out.Selected.CandidateInventoryHash = finalPlan.InventoryHash
+		}
+	}
 	ttl := time.Duration(cfg.Policy.DomainDecisionTTLSeconds) * time.Second
 	if ttl <= 0 {
 		ttl = 24 * time.Hour
@@ -342,7 +357,7 @@ func CheckDomain(ctx context.Context, cfg *config.Config, domain, serviceName st
 		decision := domaincache.Decision{
 			Service: profile.name, Category: out.Category, TSPUStatus: out.TSPUStatus,
 			ClassificationState: out.ClassificationState, ClassificationReason: out.ClassificationReason,
-			CandidateInventoryHash: plan.InventoryHash,
+			CandidateInventoryHash: out.CandidateInventoryHash,
 			Status:                 out.Status, Reason: out.Reason, AdapterRevision: opts.ActiveRevision,
 			Confidence: out.Confidence, ClassificationConfidence: out.ClassificationConfidence,
 			ClassificationSource: out.ClassificationSource, ClassificationEvidence: out.ClassificationEvidence,
@@ -864,6 +879,11 @@ func cachedCheck(decision domaincache.Decision, plan CandidatePlan, profile serv
 		return DomainCheck{}, false
 	}
 	for i := range out.Results {
+		// Older persisted probe results predate the per-result inventory binding.
+		// They are only returned from cachedCheck after the cache-wide hash has
+		// been recomputed against the current plan, so bind that proof explicitly
+		// on the returned copy for any later user-directed apply.
+		out.Results[i].CandidateInventoryHash = decision.CandidateInventoryHash
 		result := out.Results[i]
 		if result.Route == decision.SelectedRoute && result.RouteType == decision.SelectedType && result.AdapterRevision == activeRevision && selectionEvidence(result) {
 			selected := result
@@ -1100,9 +1120,9 @@ func initialUnknownPolicy(policy config.Policy) string {
 }
 
 func unknownExpectedCodes() []int {
-	codes := make([]int, 0, 200)
-	for code := 200; code < 400; code++ {
-		codes = append(codes, code)
-	}
-	return codes
+	// A generic reachability probe accepts ordinary successful/redirect
+	// responses only. Client errors (including 401/403/404/405) are not proof
+	// that an unknown application service works and must not be transferable
+	// into a pinned manual rule as PathVerified service evidence.
+	return []int{200, 204, 301, 302, 303, 307, 308}
 }

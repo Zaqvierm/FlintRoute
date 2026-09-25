@@ -113,6 +113,16 @@ the policy ChangeSet. A preview is ephemeral and never writes a ChangeSet or
 active policy. A bounded `VERIFYING` response keeps the button as
 "Continue verification"; it must not be rendered as `NO_SAFE_ROUTE`.
 
+An observed domain card with fresh PathVerified evidence opens the editor with
+that exact route already selected, so pinning takes one review click and one
+apply click instead of re-running the candidate matrix. The controller reuses
+only backend-persisted evidence bound to the exact domain, route, active
+revision, candidate inventory, route policy and freshness window. A stale
+observation is explicitly shown as stale and requires one new bounded check;
+after that check, Apply reuses its backend-stored proof. The observation
+display ID (for example `UNKNOWN:amazon.com`) is never sent as a configured
+`service_id`.
+
 The production controller binding is published at
 `/tmp/router-policy-controller/active-transaction.env` as root:daemon `0640`
 inside a root:daemon `0750` directory. The main runtime directory remains
@@ -128,8 +138,11 @@ the same contract: the confirmation action polls the ChangeSet until
 and never leaves the user with an indefinite "deleting" state. Durable
 intermediate states (`prepared`, `applying`, `verifying`, `rolling_back`) remain
 pending; they are not terminal errors. The selected-route action sends the
-concrete route tag and the backend performs a fresh proof for that exact tag,
-so a faster unrelated candidate cannot silently replace the user's choice.
+concrete route tag. The backend reuses a fresh exact-route proof only while its
+revision and inventory bindings still match; otherwise it performs a fresh
+proof for that exact tag, so a faster unrelated candidate cannot silently
+replace the user's choice. A configured-rule verification never authorizes a
+different domain or route.
 
 The synthetic `system-default` path is an unmarked OpenWrt baseline for an
 unknown domain, not an owned FlintRoute route. It is shown as a baseline in the
@@ -138,9 +151,11 @@ managed route.
 
 ## Current operation and Smart DNS semantics
 
-The current software checkpoint is `b51c3e1`. Draft or validated operations
-older than 24 hours are shown as `stale` forensic records, excluded from the
-active operation count, and do not offer Validate or Apply actions.
+The checked software checkpoint is the exact `HEAD` used by the associated
+local/CI evidence; never infer current status from an older SHA in this guide.
+Draft or validated operations older than 24 hours are shown as `stale` forensic
+records, excluded from the active operation count, and do not offer Validate or
+Apply actions.
 
 Smart DNS renders only saved cards. The next empty card is created only by
 `Add DNS card`. A freshly validated card that is not bound to a committed

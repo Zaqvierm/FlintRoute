@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,10 +22,12 @@ import (
 	"router-policy/internal/artifact"
 	"router-policy/internal/auth"
 	"router-policy/internal/config"
+	"router-policy/internal/domaincache"
 	"router-policy/internal/managementproof"
 	"router-policy/internal/planner"
 	"router-policy/internal/platform"
 	"router-policy/internal/probe"
+	"router-policy/internal/tspu"
 )
 
 type artifactDiagnosticsTestProvider struct {
@@ -301,6 +304,190 @@ func TestServiceClassifyCanExplicitlyDisableFlowOffloading(t *testing.T) {
 	}
 	if !foundService || !foundFlowOffloading {
 		t.Fatalf("explicit auto-fix operations are incomplete: %+v", change.Operations)
+	}
+}
+
+func TestServiceClassifyReusesFreshExactDiscoveryEvidence(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer srv.Close()
+	defer ts.Close()
+	domain := "amazon.com"
+	plan, err := planner.BuildCandidates(srv.currentConfig(), domain, "", planner.Options{HealthTracker: srv.healthTracker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	result := probe.RouteResult{
+		Route: "smart", RouteType: "smart_dns", Status: "OK", ServiceOK: true, PathVerified: true,
+		AdapterRevision: srv.activeRevision, CandidateHash: "candidate-amazon-smart", ArtifactManifestHash: "artifact-amazon-smart",
+	}
+	_, err = srv.domainDecisions.Save(domain, domaincache.Decision{
+		Domain: domain, Service: plan.Service, Category: "DIRECT_PREFERRED", TSPUStatus: plan.TSPUStatus,
+		CandidateInventoryHash: plan.InventoryHash, SelectedRoute: result.Route, SelectedType: result.RouteType,
+		Status: "SELECTED", Reason: "verified_candidate", AdapterRevision: srv.activeRevision,
+		Confidence: 0.9, Results: []probe.RouteResult{result}, CheckedAt: now, ExpiresAt: now.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkerCalls := 0
+	srv.domainChecker = func(context.Context, *config.Config, string, string, planner.Options) (planner.DomainCheck, error) {
+		checkerCalls++
+		return planner.DomainCheck{}, errors.New("unexpected reprobe")
+	}
+	body := `{"domain":"amazon.com","category":"DIRECT_PREFERRED","allowed_paths":["direct","smart_dns","vless","drop"],"base_version":1,"auto_apply":false,"selected_route_tag":"smart"}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/classify", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("classify status=%d body=%s", resp.StatusCode, raw)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(raw), `"verification_reused":true`) || checkerCalls != 0 {
+		t.Fatalf("fresh exact evidence was not reused: checker_calls=%d body=%s", checkerCalls, raw)
+	}
+	if !strings.Contains(string(raw), `"selected_route_tag":"smart"`) {
+		t.Fatalf("user-selected route was not preserved: %s", raw)
+	}
+}
+
+func TestServiceClassifyReusesFreshInteractiveVerification(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer srv.Close()
+	defer ts.Close()
+	domain := "amazon.com"
+	previewID, preview, err := previewServiceForDomain(domain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := *srv.currentConfig()
+	candidate.Services = make(map[string]config.Service, len(srv.currentConfig().Services)+1)
+	for id, existing := range srv.currentConfig().Services {
+		candidate.Services[id] = existing
+	}
+	candidate.Services[previewID] = preview
+	plan, err := planner.BuildCandidates(&candidate, domain, previewID, planner.Options{
+		TSPUResult: tspu.Match{Domain: domain, Status: "NO_MATCH"}, HealthTracker: srv.healthTracker,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := probe.RouteResult{
+		Domain: domain, Service: previewID, Route: "smart", RouteType: "smart_dns", Status: "OK",
+		ServiceOK: true, PathVerified: true, AdapterRevision: srv.activeRevision,
+		CandidateInventoryHash: plan.InventoryHash, CheckedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := srv.store.StoreProbeResult(result); err != nil {
+		t.Fatal(err)
+	}
+	checkerCalls := 0
+	srv.domainChecker = func(context.Context, *config.Config, string, string, planner.Options) (planner.DomainCheck, error) {
+		checkerCalls++
+		return planner.DomainCheck{}, errors.New("fresh interactive evidence should be reused")
+	}
+	body := `{"domain":"amazon.com","category":"DIRECT_PREFERRED","allowed_paths":["direct","smart_dns","vless","drop"],"base_version":1,"auto_apply":false,"selected_route_tag":"smart"}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/classify", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("classify status=%d body=%s", resp.StatusCode, raw)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(raw), `"verification_reused":true`) || checkerCalls != 0 {
+		t.Fatalf("interactive PathVerified evidence was probed again: checker_calls=%d body=%s", checkerCalls, raw)
+	}
+}
+
+func TestServiceClassifyReprobesExpiredDiscoveryEvidence(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer srv.Close()
+	defer ts.Close()
+	domain := "amazon.com"
+	plan, err := planner.BuildCandidates(srv.currentConfig(), domain, "", planner.Options{HealthTracker: srv.healthTracker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := time.Now().UTC().Add(-2 * time.Hour)
+	result := probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", ServiceOK: true, PathVerified: true, AdapterRevision: srv.activeRevision}
+	_, err = srv.domainDecisions.Save(domain, domaincache.Decision{
+		Domain: domain, Service: plan.Service, Category: "DIRECT_PREFERRED", TSPUStatus: plan.TSPUStatus,
+		CandidateInventoryHash: plan.InventoryHash, SelectedRoute: result.Route, SelectedType: result.RouteType,
+		Status: "SELECTED", AdapterRevision: srv.activeRevision, Confidence: 0.9,
+		Results: []probe.RouteResult{result}, CheckedAt: checked, ExpiresAt: checked.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkerCalls := 0
+	srv.domainChecker = func(_ context.Context, _ *config.Config, domain, serviceID string, _ planner.Options) (planner.DomainCheck, error) {
+		checkerCalls++
+		return planner.DomainCheck{Domain: domain, Service: serviceID, Status: "SELECTED", VerificationState: "verified",
+			Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", ServiceOK: true, PathVerified: true}}, nil
+	}
+	body := `{"domain":"amazon.com","category":"DIRECT_PREFERRED","allowed_paths":["direct","smart_dns","vless","drop"],"base_version":1,"auto_apply":false,"selected_route_tag":"smart"}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/classify", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || checkerCalls != 1 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expired evidence did not trigger a fresh verification: status=%d checker_calls=%d body=%s", resp.StatusCode, checkerCalls, raw)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(raw), `"verification_reused":true`) {
+		t.Fatalf("expired evidence was reported as reused: %s", raw)
+	}
+}
+
+func TestServicesDoesNotExposeExpiredDomainEvidenceAsVerified(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, _ := newDiscoveryModeServer(t, "suggest", true, fake)
+	defer srv.Close()
+	domain := "amazon.com"
+	plan, err := planner.BuildCandidates(srv.currentConfig(), domain, "", planner.Options{HealthTracker: srv.healthTracker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := time.Now().UTC().Add(-2 * time.Hour)
+	result := probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", ServiceOK: true, PathVerified: true, AdapterRevision: srv.activeRevision}
+	_, err = srv.domainDecisions.Save(domain, domaincache.Decision{
+		Domain: domain, Service: plan.Service, Category: "DIRECT_PREFERRED", TSPUStatus: plan.TSPUStatus,
+		CandidateInventoryHash: plan.InventoryHash, SelectedRoute: result.Route, SelectedType: result.RouteType,
+		Status: "SELECTED", AdapterRevision: srv.activeRevision, Confidence: 0.9,
+		Results: []probe.RouteResult{result}, CheckedAt: checked, ExpiresAt: checked.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	srv.handleServices(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/services", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("services status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, `"probe_state":"stale_evidence"`) ||
+		!strings.Contains(body, `"status":"STALE_EVIDENCE"`) ||
+		!strings.Contains(body, `"evidence_fresh":false`) {
+		t.Fatalf("expired PathVerified evidence was still presented as current: %s", body)
 	}
 }
 

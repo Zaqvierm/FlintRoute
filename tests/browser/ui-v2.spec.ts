@@ -420,6 +420,72 @@ test.describe('FlintRoute UI v2', () => {
     await expect.poll(() => classifyCalls).toBe(1);
   });
 
+  test('pins a fresh observed route without rechecking and omits the observation display id', async ({ page }) => {
+    let classifyBody: Record<string, unknown> | undefined;
+    let verificationCalls = 0;
+    await mockAPI(page);
+    await page.route('**/api/v1/services', async (route) => route.fulfill(envelope([{
+      id: 'UNKNOWN:amazon.com', display_name: 'amazon.com', category: 'DIRECT_PREFERRED',
+      domains: ['amazon.com'], allowed_paths: ['direct', 'smart_dns', 'vless', 'drop'],
+      eligible_route_types: ['direct', 'smart_dns', 'vless', 'drop'], source: 'automatic', sources: ['automatic'],
+      applied: false, selected_route_tag: 'smart', selected_route_type: 'smart_dns', status: 'SELECTED',
+      probe_state: 'verified_candidate', evidence_fresh: true,
+      checked_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString(),
+      candidate_matrix: [{ route: 'smart', route_type: 'smart_dns', status: 'OK', selected: true, path_verified: true, service_ok: true }]
+    }])));
+    await page.route('**/api/v1/services/verify', async (route) => {
+      verificationCalls += 1;
+      await route.fulfill(envelope({ error: { code: 'unexpected_reprobe', message: 'fresh evidence should be reused' } }, 500));
+    });
+    await page.route('**/api/v1/services/classify', async (route) => {
+      classifyBody = route.request().postDataJSON() as Record<string, unknown>;
+      await route.fulfill(envelope({
+        change: { id: 'pin-observed-change', state: 'committed', version: 3 },
+        auto_apply_requested: true, auto_apply_started: true, verification_reused: true,
+        verification_checked_at: new Date().toISOString(), selected_route_tag: 'smart',
+        selected_route_type: 'smart_dns', path_verified: true
+      }));
+    });
+    await page.route('**/api/v1/health', async (route) => route.fulfill(envelope({ status: 'ok', recovery_status: 'ok', checked_at: new Date().toISOString() })));
+    await page.route('**/api/v1/changes/pin-observed-change', async (route) => route.fulfill(envelope({ id: 'pin-observed-change', state: 'committed', version: 3, title: 'Pin observed route', validation: [] })));
+    await page.goto('/?screen=%D0%A1%D0%B5%D1%80%D0%B2%D0%B8%D1%81%D1%8B');
+    const card = page.locator('.service-card').filter({ hasText: 'amazon.com' });
+    await card.locator('button.service-edit').click();
+    const editor = page.getByRole('dialog');
+    const apply = editor.locator('button.primary').last();
+    await expect(apply).toBeEnabled();
+    await expect(editor.locator('.service-preview')).toContainText('smart');
+    await apply.click();
+    await expect.poll(() => classifyBody).toBeDefined();
+    expect(classifyBody?.domain).toBe('amazon.com');
+    expect(classifyBody?.service_id).toBeUndefined();
+    expect(classifyBody?.selected_route_tag).toBe('smart');
+    expect(verificationCalls).toBe(0);
+    await expect(editor).toHaveCount(0);
+  });
+
+  test('does not offer an expired observed route as a verified candidate', async ({ page }) => {
+    await mockAPI(page);
+    await page.route('**/api/v1/services', async (route) => route.fulfill(envelope([{
+      id: 'UNKNOWN:amazon.com', display_name: 'amazon.com', category: 'DIRECT_PREFERRED',
+      domains: ['amazon.com'], allowed_paths: ['direct', 'smart_dns', 'vless', 'drop'],
+      eligible_route_types: ['direct', 'smart_dns', 'vless', 'drop'], source: 'automatic', sources: ['automatic'],
+      applied: false, selected_route_tag: 'smart', selected_route_type: 'smart_dns', status: 'STALE_EVIDENCE',
+      probe_state: 'stale_evidence', verification_state: 'stale_evidence', evidence_fresh: false,
+      checked_at: '2026-09-22T10:48:38Z', expires_at: '2026-09-23T10:48:38Z',
+      candidate_matrix: [{ route: 'smart', route_type: 'smart_dns', status: 'OK', selected: true, path_verified: true, service_ok: true }]
+    }])));
+    await page.route('**/api/v1/health', async (route) => route.fulfill(envelope({ status: 'ok', recovery_status: 'ok', checked_at: new Date().toISOString() })));
+    await page.goto('/?screen=%D0%A1%D0%B5%D1%80%D0%B2%D0%B8%D1%81%D1%8B');
+    const card = page.locator('.service-card').filter({ hasText: 'amazon.com' });
+    await expect(card.locator('button.service-edit')).toHaveText('Проверить и закрепить');
+    await card.locator('button.service-edit').click();
+    const editor = page.getByRole('dialog');
+    await expect(editor.locator('.service-preview')).toHaveCount(0);
+    await expect(editor.locator('button.primary').last()).toBeDisabled();
+    await expect(editor.getByRole('button', { name: /Проверить домен/ })).toBeEnabled();
+  });
+
   test('offers an explicit full route matrix after the quick direct check', async ({ page }) => {
     const requests: Array<{ full_check?: boolean }> = [];
     await mockAPI(page);

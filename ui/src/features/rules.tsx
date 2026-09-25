@@ -120,9 +120,12 @@ export function Services({
   async function commitRule(domain: string, category: string, paths?: string[], serviceID?: string, selectedRouteTag?: string) {
     if (role !== 'administrator' || mutationLocked || !configVersion || moving) return;
     setMoving(domain);
-    setMessage(`Проверяю и применяю правило для ${domain}…`);
+    setMessage(`Готовлю правило для ${domain}…`);
     try {
       const result = await classifyService(domain, category, configVersion, paths, false, true, serviceID, selectedRouteTag);
+      setMessage(result.verification_reused
+        ? `Использую свежую проверку маршрута от ${formatDateTime(result.verification_checked_at)}. Запускаю применение…`
+        : `Проверяю и применяю правило для ${domain}…`);
       setEditor(null);
       await refresh();
       if (!result.auto_apply_started) {
@@ -278,8 +281,6 @@ export function Services({
 
   function editRule(service?: any) {
     const category = serviceColumnFor(service?.category ?? 'DIRECT_PREFERRED');
-    setEditorVerification(null);
-    setMessage('');
     const configuredPaths = Array.isArray(service?.allowed_paths) ? service.allowed_paths.map((path: unknown) => textValue(path, '')) : [];
     // Older committed TSPU rules were saved with zapret/direct/drop before
     // Smart DNS and VLESS became eligible candidates. Do not let that stale
@@ -288,21 +289,43 @@ export function Services({
     const paths = category === 'TSPU_RESTRICTED'
       ? Array.from(new Set([...configuredPaths.filter((path: string) => path !== 'direct'), 'zapret', 'smart_dns', 'vless', 'drop']))
       : (configuredPaths.length ? configuredPaths : defaultServicePaths(category));
+    const domain = service?.domain ?? service?.domains?.[0] ?? '';
+    const routeTag = textValue(service?.selected_route_tag, '');
+    const selectedCandidate = asArray(service?.candidate_matrix).find((candidate) =>
+      candidate && typeof candidate === 'object' &&
+      textValue((candidate as Record<string, unknown>).route, '') === routeTag &&
+      textValue((candidate as Record<string, unknown>).route_type, '').toLowerCase() === textValue(service?.selected_route_type, '').toLowerCase());
+    const selectedEvidence = selectedCandidate && typeof selectedCandidate === 'object' ? selectedCandidate as Record<string, unknown> : null;
+    const reusable = Boolean(service && !service.applied && service.evidence_fresh === true && routeTag && routeTag !== 'system-default' &&
+      service.probe_state === 'verified_candidate' && selectedEvidence?.path_verified === true && selectedEvidence?.service_ok === true);
+    setEditorVerification(reusable ? {
+      service_id: '', domain, status: 'OK', verification_state: 'verified',
+      checked_at: textValue(service?.checked_at, ''), selected_route_tag: routeTag,
+      selected_route_type: textValue(service?.selected_route_type, ''), path_verified: true,
+      evidence_persisted: 0, candidates: asArray(service?.candidate_matrix)
+    } : null);
+    setMessage(service?.probe_state === 'stale_evidence' ? 'Последняя проверка истекла или изменилась конфигурация. Перед закреплением нужен новый короткий тест.' : '');
     setEditor({
-      domain: service?.domain ?? service?.domains?.[0] ?? '',
+      domain,
       category,
       paths,
-      serviceID: service?.id
+      // Discovery observation IDs are display keys (for example UNKNOWN:amazon.com),
+      // not configured service IDs. Sending one makes the API reject new rules.
+      serviceID: service?.applied || asArray(service?.sources).includes('configured') ? service?.id : undefined
     });
   }
 
   function togglePath(path: string) {
     if (!editor) return;
     const included = editor.paths.includes(path);
+    const nextPaths = included ? editor.paths.filter((item) => item !== path) : [...editor.paths, path];
     setEditor({
       ...editor,
-      paths: included ? editor.paths.filter((item) => item !== path) : [...editor.paths, path]
+      paths: nextPaths
     });
+    if (editorVerification?.selected_route_type && !nextPaths.includes(editorVerification.selected_route_type)) {
+      setEditorVerification(null);
+    }
   }
 
   return (
@@ -371,6 +394,7 @@ export function Services({
           </div>
           {editorVerification && <div class="candidate-matrix service-preview" aria-live="polite">
             <h3>Проверка маршрутов</h3>
+            {editorVerification.path_verified && <p>Маршрут {editorVerification.selected_route_tag || editorVerification.selected_route_type} прошёл проверку {editorVerification.checked_at ? `от ${formatDateTime(editorVerification.checked_at)}` : 'сейчас'}. При применении FlintRoute использует это доказательство, если оно ещё свежее и конфигурация не изменилась.</p>}
             {editorVerification.candidates.map((candidate: any, index: number) => <div class="row" key={`${candidate.route ?? index}:${index}`}>
               <b>{candidate.route ?? candidate.route_type ?? 'route'}</b>
               <span>{candidate.status ?? 'UNVERIFIED'}{candidate.selected ? ' · выбрано' : ''}</span>
@@ -437,14 +461,14 @@ export function Services({
       </div>}
       {observedServices.length > 0 && <section class="card">
         <h2>Наблюдения Discovery — не применены</h2>
-        <p>FlintRoute заметил эти домены и проверил доступные пути. Они не меняют маршрутизацию, пока ты явно не закрепишь правило.</p>
+        <p>FlintRoute заметил эти домены. Свежесть проверки показана в карточке; наблюдения сами по себе трафик не меняют.</p>
         <div class="grid">
           {observedServices.map((item) => <ServiceGroup
             service={item}
             key={String(item.id)}
             busy={moving === textValue(asArray(item.domains)[0], '')}
             onEdit={() => editRule(item)}
-            editLabel="Закрепить правило"
+            editLabel={item.evidence_fresh === true ? 'Закрепить проверенный маршрут' : 'Проверить и закрепить'}
             onOpen={() => setSelectedService(item)}
           />)}
         </div>
@@ -488,10 +512,11 @@ export function ServiceGroup({
   const verificationState = textValue(service.probe_state, '').toLowerCase().replace(/[._-]+/g, ' ');
   const selectedRoute = textValue(service.selected_route_tag ?? service.selected_route_type, '');
   const systemDefaultBaseline = selectedRoute === 'system-default';
+  const evidenceFresh = service.evidence_fresh === true;
   const selectedType = textValue(service.selected_route_type, '').toLowerCase();
   const isDrop = selectedType === 'drop' || textValue(service.status, '').toUpperCase() === 'DROP' || verificationState === 'drop enforced';
   const routeStatus = observation
-    ? (isDrop ? 'Безопасная блокировка: DROP' : systemDefaultBaseline ? 'Direct доступен (системный baseline, не управляемое правило)' : selectedRoute ? `Путь подтверждён как кандидат: ${selectedRoute}` : 'Ни один безопасный маршрут не прошёл проверку')
+    ? (isDrop ? 'Безопасная блокировка: DROP' : systemDefaultBaseline ? (evidenceFresh ? 'Direct доступен (системный baseline, не управляемое правило)' : 'Direct baseline; последняя проверка истекла') : selectedRoute ? (evidenceFresh ? `Путь подтверждён как кандидат: ${selectedRoute}` : `Последняя проверка ${selectedRoute} устарела`) : 'Ни один безопасный маршрут не прошёл проверку')
     : verificationState === 'not checked'
       ? 'Настроено · путь ещё не проверен'
       : isDrop ? 'Безопасная блокировка: DROP' : humanStatus(service.status ?? service.selected_route_tag ?? 'Ожидает проверки');
@@ -509,7 +534,7 @@ export function ServiceGroup({
       <small>{asArray(service.domains).length} доменов</small>
       <div class="service-card-route"><RouteBadge type={service.selected_route_type ?? service.category} /><span>{routeStatus}</span></div>
       {service.allowed_paths?.length > 0 && <small>Допустимые типы: {(service.eligible_route_types ?? service.allowed_paths).join(', ')}</small>}
-      {selectedRoute && !isDrop && !systemDefaultBaseline && <small title={observation ? 'Проверка пути прошла, но политика не применена.' : 'Маршрут входит в применённую конфигурацию.'}>{observation ? 'кандидат прошёл проверку пути' : 'маршрут применён'}</small>}
+      {selectedRoute && !isDrop && !systemDefaultBaseline && <small title={observation ? (evidenceFresh ? 'Кандидат прошёл свежую проверку пути; политика ещё не применена.' : 'Исторический результат проверки. Он не разрешает применение.') : 'Маршрут входит в применённую конфигурацию.'}>{observation ? (evidenceFresh ? 'кандидат прошёл свежую проверку пути' : 'доказательство устарело') : 'маршрут применён'}</small>}
       {observation && <small>Не применено к трафику</small>}
       <div class="actions"><button type="button" onClick={onOpen}>Открыть</button>{onEdit && <button type="button" class="service-edit" onClick={onEdit}>{systemDefaultBaseline ? 'Создать managed Direct rule' : editLabel}</button>}</div>
     </article>
@@ -526,8 +551,11 @@ function ServiceDetails({ service, onVerify, onApplyVerified, verifyBusy = false
   const serviceVerificationState = textValue(service.probe_state, '').toLowerCase().replace(/[._-]+/g, ' ');
   const serviceSelectedType = textValue(service.selected_route_type, '').toLowerCase();
   const systemDefaultBaseline = textValue(service.selected_route_tag, '') === 'system-default';
+  const evidenceFresh = service.evidence_fresh === true;
   const isDrop = serviceSelectedType === 'drop' || textValue(service.status, '').toUpperCase() === 'DROP' || serviceVerificationState === 'drop enforced';
-  const serviceVerification = serviceVerificationState === 'verified candidate'
+  const serviceVerification = serviceVerificationState === 'stale evidence'
+    ? 'stale'
+    : serviceVerificationState === 'verified candidate'
     ? 'verified'
     : serviceVerificationState === 'verifying' || serviceVerificationState === 'in progress'
       ? 'checking'
@@ -543,8 +571,8 @@ function ServiceDetails({ service, onVerify, onApplyVerified, verifyBusy = false
   // `candidate_matrix`. Prefer the fresh verification result so the user
   // does not keep seeing a stale NOT_CHECKED matrix after pressing verify.
   const matrix = asArray(service.verification_candidates ?? service.candidate_matrix).map((item) => item && typeof item === 'object' ? item as Record<string, unknown> : null).filter((item): item is Record<string, unknown> => Boolean(item) && String((item as Record<string, unknown>).route ?? '') !== 'system-default');
-  return <><InfoGrid items={[["Политика", observation ? (service.policy_state === 'suggested' ? 'Предложено — не применено' : 'Наблюдение — не применено') : 'Применена'], ["Классификация", service.category ?? 'Не определена'], ["Состояние классификации", service.classification_state ?? 'UNKNOWN'], ["Основание классификации", service.classification_reason ?? 'не указано'], ["Уверенность классификации", Number(service.confidence) > 0 ? service.confidence : 'Нет достаточных данных'], ["Проверка пути", verificationPresentationLabel(serviceVerification as Parameters<typeof verificationPresentationLabel>[0])], ["Источник", asArray(service.sources).join(', ')], [observation ? "Кандидат маршрута" : "Маршрут", isDrop ? 'DROP · безопасная блокировка' : systemDefaultBaseline ? 'Direct · системный baseline (не назначается)' : service.selected_route_tag ?? service.selected_route_type], ["Health", service.health], ["Допустимые типы маршрутов", asArray(service.eligible_route_types ?? service.allowed_paths).join(', ') || 'определяются политикой'], ["End-to-end", service.verification_end_to_end_latency_available ? `${service.verification_end_to_end_latency_ms} мс` : null], ["Latency", service.verification_route_latency_available ? `${service.verification_route_latency_ms} мс` : null], ["Последняя проверка", formatDateTime(service.latest_checked_at)]]} />
-  {matrix.length > 0 && <><h3>Кандидаты</h3><div class="candidate-matrix">{matrix.map((item, index) => <div class="row" key={`${textValue(item.route, String(index))}:${index}`}><b>{textValue(item.route, 'route')}</b><span>{textValue(item.status, 'NOT_CHECKED')}</span><small>{item.selected ? 'текущий' : ''}{item.path_verified ? ' · path verified' : ''}{item.service_ok ? ' · service OK' : ''}{item.reason ? ` · ${textValue(item.reason, '')}` : ''}</small></div>)}</div></>}
+  return <><InfoGrid items={[["Политика", observation ? (service.policy_state === 'suggested' ? 'Предложено — не применено' : 'Наблюдение — не применено') : 'Применена'], ["Классификация", service.category ?? 'Не определена'], ["Состояние классификации", service.classification_state ?? 'UNKNOWN'], ["Основание классификации", service.classification_reason ?? 'не указано'], ["Уверенность классификации", Number(service.confidence) > 0 ? service.confidence : 'Нет достаточных данных'], ["Проверка пути", serviceVerification === 'stale' ? 'Проверка истекла — перепроверь перед применением' : verificationPresentationLabel(serviceVerification as Parameters<typeof verificationPresentationLabel>[0])], ["Источник", asArray(service.sources).join(', ')], [observation ? "Кандидат маршрута" : "Маршрут", isDrop ? 'DROP · безопасная блокировка' : systemDefaultBaseline ? 'Direct · системный baseline (не назначается)' : service.selected_route_tag ?? service.selected_route_type], ["Health", service.health], ["Допустимые типы маршрутов", asArray(service.eligible_route_types ?? service.allowed_paths).join(', ') || 'определяются политикой'], ["End-to-end", service.verification_end_to_end_latency_available ? `${service.verification_end_to_end_latency_ms} мс` : null], ["Latency", service.verification_route_latency_available ? `${service.verification_route_latency_ms} мс` : null], ["Последняя проверка", formatDateTime(service.latest_checked_at)]]} />
+  {matrix.length > 0 && <><h3>Кандидаты</h3><div class="candidate-matrix">{matrix.map((item, index) => <div class="row" key={`${textValue(item.route, String(index))}:${index}`}><b>{textValue(item.route, 'route')}</b><span>{observation && !evidenceFresh ? 'STALE' : textValue(item.status, 'NOT_CHECKED')}</span><small>{item.selected ? 'текущий' : ''}{item.path_verified && (!observation || evidenceFresh) ? ' · path verified' : observation && item.path_verified ? ' · старое доказательство' : ''}{item.service_ok && (!observation || evidenceFresh) ? ' · service OK' : ''}{item.reason ? ` · ${textValue(item.reason, '')}` : ''}</small></div>)}</div></>}
     <h3>Связанные домены</h3><div class="domain-list">{asArray(service.domains).map((domain) => <span class="chip mono">{textValue(domain)}</span>)}</div>
     <h3>Наследование и исключения</h3><p>{asArray(service.forbidden_paths).length ? `Запрещены: ${asArray(service.forbidden_paths).join(', ')}` : 'Явных конфликтов и исключений нет.'}</p>
     {onVerify && <div class="actions"><button class="primary" disabled={verifyBusy} onClick={onVerify}>{verifyBusy ? 'Проверяю…' : 'Проверить путь сейчас'}</button></div>}

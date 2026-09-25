@@ -1804,6 +1804,8 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 		items = append(items, item)
 	}
 	discoveryMode, _, _, _ := s.effectiveDiscoverySettings(cfg)
+	activeRevision, _ := s.activeIdentity()
+	now := s.discoveryNow()
 	if s.domainDecisions != nil {
 		for _, decision := range s.domainDecisions.Snapshot() {
 			category := decision.Category
@@ -1839,6 +1841,28 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 			// into a green "verified" state unless the matching result proves
 			// service success and PathVerified.
 			probeState := automaticDecisionProbeState(decision, selectedRoute, selectedType, status)
+			evidenceFresh := s.discoveryDecisionEvidenceFresh(cfg, decision, activeRevision, now)
+			verificationReason := strings.TrimSpace(decision.Reason)
+			switch probeState {
+			case "verified_candidate":
+				if evidenceFresh {
+					verificationReason = "path_verified"
+				} else {
+					probeState = "stale_evidence"
+					status = "STALE_EVIDENCE"
+					verificationReason = "path_evidence_expired_or_inventory_changed"
+				}
+			case "verifying":
+				verificationReason = "verification_in_progress"
+			case "no_safe_route":
+				if verificationReason == "" {
+					verificationReason = "no_safe_route"
+				}
+			default:
+				if verificationReason == "" {
+					verificationReason = "path_not_verified"
+				}
+			}
 			policyState := "observed"
 			if discoveryMode == "suggest" {
 				policyState = "suggested"
@@ -1867,6 +1891,11 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 				"kind":                      "discovery_observation",
 				"classification_state":      classificationState,
 				"probe_state":               probeState,
+				"verification_state":        probeState,
+				"verification_reason":       verificationReason,
+				"evidence_fresh":            evidenceFresh,
+				"candidate_inventory_hash":  decision.CandidateInventoryHash,
+				"adapter_revision":          decision.AdapterRevision,
 				"policy_state":              policyState,
 				"candidate_matrix":          discoveryCandidateDetails(decision.Results),
 			})
@@ -1881,6 +1910,50 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 		return fmt.Sprint(items[i]["id"]) < fmt.Sprint(items[j]["id"])
 	})
 	writeData(w, r, items)
+}
+
+// discoveryDecisionEvidenceFresh checks the same revision, TTL and candidate
+// inventory bindings used by the planner cache without running any probes.
+// The services GET must never turn a cache miss into expensive network work.
+func (s *Server) discoveryDecisionEvidenceFresh(cfg *config.Config, decision domaincache.Decision, activeRevision string, now time.Time) bool {
+	if s == nil || cfg == nil || strings.TrimSpace(activeRevision) == "" ||
+		decision.AdapterRevision != activeRevision || decision.CandidateInventoryHash == "" ||
+		decision.ExpiresAt.IsZero() || !now.Before(decision.ExpiresAt) {
+		return false
+	}
+	match := currentDiscoveryTSPUMatch(cfg, decision.Domain, now)
+	if match.Status != decision.TSPUStatus {
+		return false
+	}
+	plan, err := planner.BuildCandidates(cfg, decision.Domain, decision.Service, planner.Options{
+		TSPUResult:    match,
+		HealthTracker: s.healthTracker,
+	})
+	if err != nil || plan.InventoryHash == "" || plan.InventoryHash != decision.CandidateInventoryHash {
+		return false
+	}
+	for _, result := range decision.Results {
+		if result.Route == decision.SelectedRoute && result.RouteType == decision.SelectedType &&
+			result.AdapterRevision == activeRevision && planner.SelectionEvidence(result) {
+			return true
+		}
+	}
+	return false
+}
+
+func currentDiscoveryTSPUMatch(cfg *config.Config, domain string, now time.Time) tspu.Match {
+	match := tspu.Match{Domain: domain, Status: "NO_MATCH"}
+	if cfg == nil || strings.EqualFold(strings.TrimSpace(cfg.Storage.StateDir), "") {
+		return match
+	}
+	cache, err := tspu.Load(filepath.Join(cfg.Storage.StateDir, "tspu-cache.json"))
+	if err != nil {
+		return match
+	}
+	if found, ok := tspu.Find(cache, domain, now); ok {
+		return found
+	}
+	return match
 }
 
 func automaticDecisionProbeState(decision domaincache.Decision, selectedRoute, selectedType, status string) string {
@@ -2235,10 +2308,16 @@ func (s *Server) handleServiceClassify(w http.ResponseWriter, r *http.Request) {
 		}
 		id = requestedID
 	}
-	check, err := s.selectVerifiedServiceRouteWithOptions(r.Context(), id, service, 0, request.SelectedRouteTag, false)
-	if err != nil {
-		writeError(w, r, http.StatusUnprocessableEntity, "route_verification_failed", err.Error())
-		return
+	check, reused := s.reusableDiscoveryRouteEvidence(domain, category, service, request.SelectedRouteTag)
+	if !reused {
+		check, reused = s.reusableStoredProbeEvidence(domain, category, service, request.SelectedRouteTag)
+	}
+	if !reused {
+		check, err = s.selectVerifiedServiceRouteWithOptions(r.Context(), id, service, 0, request.SelectedRouteTag, false)
+		if err != nil {
+			writeError(w, r, http.StatusUnprocessableEntity, "route_verification_failed", err.Error())
+			return
+		}
 	}
 	service.SelectedRouteTag = check.Selected.Route
 	operations := []ChangeOp{{Type: "set", Path: "/services/" + id, Value: service}}
@@ -2265,10 +2344,164 @@ func (s *Server) handleServiceClassify(w http.ResponseWriter, r *http.Request) {
 		"change": change, "domain": domain, "category": category,
 		"selected_route_tag": check.Selected.Route, "selected_route_type": check.Selected.RouteType,
 		"path_verified": check.Selected.PathVerified, "selection_state": serviceRouteSelectionState(check.Selected),
-		"candidates":           discoveryCandidateDetails(check.Results),
-		"auto_apply_requested": request.AutoApply,
-		"auto_apply_started":   request.AutoApply && s.startAutoApplyChange(change.ID),
+		"verification_reused": reused, "verification_checked_at": check.CheckedAt,
+		"candidate_inventory_hash": check.CandidateInventoryHash,
+		"candidates":               discoveryCandidateDetails(check.Results),
+		"auto_apply_requested":     request.AutoApply,
+		"auto_apply_started":       request.AutoApply && s.startAutoApplyChange(change.ID),
 	})
+}
+
+// reusableDiscoveryRouteEvidence allows a user to pin the exact route already
+// verified by Discovery without launching the same probe matrix again. Reuse is
+// deliberately narrow: exact domain/category/route, current active revision,
+// unexpired evidence, matching live candidate inventory, and policy eligibility
+// are all required. Any mismatch falls back to a fresh bounded verification.
+func (s *Server) reusableDiscoveryRouteEvidence(domain, category string, service config.Service, requestedRouteTag string) (planner.DomainCheck, bool) {
+	if s == nil || s.domainDecisions == nil || strings.TrimSpace(requestedRouteTag) == "" {
+		return planner.DomainCheck{}, false
+	}
+	active := s.currentConfig()
+	if active == nil {
+		return planner.DomainCheck{}, false
+	}
+	revision, _ := s.activeIdentity()
+	now := s.discoveryNow()
+	decision, ok, err := s.domainDecisions.Lookup(domain, revision, now)
+	if err != nil || !ok || !strings.EqualFold(strings.TrimSpace(decision.Category), strings.TrimSpace(category)) ||
+		decision.SelectedRoute != requestedRouteTag || !s.discoveryDecisionEvidenceFresh(active, decision, revision, now) {
+		return planner.DomainCheck{}, false
+	}
+	route, ok := active.RouteByTag(decision.SelectedRoute)
+	if !ok || route.Type != decision.SelectedType || !config.PathAllowed(service, route, active.Policy) {
+		return planner.DomainCheck{}, false
+	}
+	var selected *probe.RouteResult
+	for i := range decision.Results {
+		result := decision.Results[i]
+		if result.Route == requestedRouteTag && result.RouteType == route.Type && result.AdapterRevision == revision && planner.SelectionEvidence(result) {
+			copy := result
+			selected = &copy
+			break
+		}
+	}
+	if selected == nil {
+		return planner.DomainCheck{}, false
+	}
+	return planner.DomainCheck{
+		Domain: domain, ETLDPlusOne: decision.ETLDPlusOne, Service: decision.Service,
+		Category: decision.Category, TSPUStatus: decision.TSPUStatus, Status: decision.Status,
+		Reason: decision.Reason, Confidence: decision.Confidence,
+		ClassificationConfidence: decision.ClassificationConfidence,
+		ClassificationSource:     decision.ClassificationSource, ClassificationEvidence: decision.ClassificationEvidence,
+		ClassificationState: decision.ClassificationState, CandidateInventoryHash: decision.CandidateInventoryHash,
+		VerificationDurationMS: decision.VerificationDurationMS, VerificationState: "verified",
+		CheckedAt: decision.CheckedAt, ExpiresAt: decision.ExpiresAt, Cached: true,
+		Results: append([]probe.RouteResult(nil), decision.Results...), Selected: selected,
+	}, true
+}
+
+// reusableStoredProbeEvidence reuses a fresh interactive /services/verify
+// result after the user clicks "create and apply". The result must be stored
+// by the backend, exact-domain and exact-route bound, from the current active
+// revision, and carry the candidate inventory hash recomputed for the same
+// service contract. Browser-submitted claims are not consulted.
+func (s *Server) reusableStoredProbeEvidence(domain, category string, service config.Service, requestedRouteTag string) (planner.DomainCheck, bool) {
+	if s == nil || s.store == nil || strings.TrimSpace(requestedRouteTag) == "" {
+		return planner.DomainCheck{}, false
+	}
+	active := s.currentConfig()
+	if active == nil {
+		return planner.DomainCheck{}, false
+	}
+	revision, _ := s.activeIdentity()
+	now := s.discoveryNow()
+	items, err := s.store.ListProbeResults(500)
+	if err != nil {
+		return planner.DomainCheck{}, false
+	}
+	requestedDomain, err := tspu.NormalizeDomain(domain)
+	if err != nil {
+		return planner.DomainCheck{}, false
+	}
+	var selected *probe.RouteResult
+	var selectedAt time.Time
+	for i := range items {
+		result := items[i]
+		resultDomain, normalizeErr := tspu.NormalizeDomain(result.Domain)
+		if normalizeErr != nil || resultDomain != requestedDomain || result.Route != requestedRouteTag ||
+			result.AdapterRevision != revision || result.CandidateInventoryHash == "" || !planner.SelectionEvidence(result) {
+			continue
+		}
+		checkedAt, parseErr := time.Parse(time.RFC3339, result.CheckedAt)
+		if parseErr != nil || checkedAt.After(now.Add(time.Minute)) || now.Sub(checkedAt) > configuredServiceProofFreshness {
+			continue
+		}
+		route, ok := active.RouteByTag(result.Route)
+		if !ok || route.Type != result.RouteType || !config.PathAllowed(service, route, active.Policy) {
+			continue
+		}
+		if service.RequireNonRUEgress && route.Type != "drop" &&
+			(!result.EgressConsensus || strings.TrimSpace(result.ExternalCountry) == "" || strings.EqualFold(result.ExternalCountry, "RU")) {
+			continue
+		}
+
+		// Recreate the precise probe configuration whose hash was attached to
+		// the persisted result. Preview checks are forced to the ordinary
+		// Direct baseline; configured checks use the current exact service with
+		// only the checked domain retained, as in configuredServiceForVerification.
+		var candidate config.Config
+		raw, marshalErr := json.Marshal(active)
+		if marshalErr != nil || json.Unmarshal(raw, &candidate) != nil {
+			continue
+		}
+		if candidate.Services == nil {
+			candidate.Services = map[string]config.Service{}
+		}
+		probeServiceID := result.Service
+		var probeService config.Service
+		match := currentDiscoveryTSPUMatch(active, requestedDomain, now)
+		if strings.HasPrefix(probeServiceID, "preview_") {
+			previewID, preview, previewErr := previewServiceForDomain(requestedDomain)
+			if previewErr != nil || previewID != probeServiceID {
+				continue
+			}
+			probeService = preview
+			match = tspu.Match{Domain: requestedDomain, Status: "NO_MATCH"}
+		} else {
+			var exists bool
+			probeService, exists = candidate.Services[probeServiceID]
+			if !exists {
+				continue
+			}
+			probeService = serviceWithVerificationDomain(probeService, requestedDomain)
+			if probeService.Category == "TSPU_RESTRICTED" {
+				match = tspu.Match{Domain: requestedDomain, Status: "MATCH"}
+			}
+		}
+		candidate.Services[probeServiceID] = probeService
+		plan, planErr := planner.BuildCandidates(&candidate, requestedDomain, probeServiceID, planner.Options{
+			TSPUResult: match, HealthTracker: s.healthTracker,
+		})
+		if planErr != nil || plan.InventoryHash == "" || plan.InventoryHash != result.CandidateInventoryHash {
+			continue
+		}
+		if selected == nil || checkedAt.After(selectedAt) {
+			copy := result
+			selected = &copy
+			selectedAt = checkedAt
+		}
+	}
+	if selected == nil {
+		return planner.DomainCheck{}, false
+	}
+	return planner.DomainCheck{
+		Domain: requestedDomain, ETLDPlusOne: tspu.ETLDPlusOne(requestedDomain), Service: selected.Service,
+		Category: category, Status: "SELECTED", Reason: "fresh_exact_route_probe_reused", Confidence: 1,
+		VerificationState: "verified", CandidateInventoryHash: selected.CandidateInventoryHash,
+		CheckedAt: selectedAt, ExpiresAt: selectedAt.Add(configuredServiceProofFreshness), Cached: true,
+		Results: []probe.RouteResult{*selected}, Selected: selected,
+	}, true
 }
 
 func (s *Server) selectVerifiedServiceRoute(ctx context.Context, serviceID string, service config.Service) (planner.DomainCheck, error) {

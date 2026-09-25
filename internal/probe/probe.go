@@ -39,6 +39,7 @@ type RouteResult struct {
 	PathVerified           bool                  `json:"path_verified"`
 	AdapterRevision        string                `json:"adapter_revision,omitempty"`
 	CandidateHash          string                `json:"candidate_hash,omitempty"`
+	CandidateInventoryHash string                `json:"candidate_inventory_hash,omitempty"`
 	ArtifactManifestHash   string                `json:"artifact_manifest_hash,omitempty"`
 	NFTMark                string                `json:"nft_mark,omitempty"`
 	ConntrackMark          string                `json:"conntrack_mark,omitempty"`

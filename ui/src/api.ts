@@ -441,7 +441,7 @@ export async function classifyService(
 	autoApply = true,
 	serviceID?: string,
 	selectedRouteTag?: string
-): Promise<{ change: ChangeSet; auto_apply_requested?: boolean; auto_apply_started?: boolean }> {
+): Promise<{ change: ChangeSet; auto_apply_requested?: boolean; auto_apply_started?: boolean; verification_reused?: boolean; verification_checked_at?: string; candidate_inventory_hash?: string }> {
   return request('/services/classify', {
     method: 'POST',
     body: JSON.stringify({

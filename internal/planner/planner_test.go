@@ -290,6 +290,10 @@ func TestUnknownDomainDirectSuccessIsCachedAndReused(t *testing.T) {
 	if first.Service != "UNKNOWN:example.com" || first.Selected == nil || first.Selected.Route != "direct" || first.Cached {
 		t.Fatalf("unexpected discovery result: %+v", first)
 	}
+	if first.CandidateInventoryHash == "" || first.Selected.CandidateInventoryHash != first.CandidateInventoryHash ||
+		len(first.Results) == 0 || first.Results[0].CandidateInventoryHash != first.CandidateInventoryHash {
+		t.Fatalf("selected evidence is not bound to the candidate inventory: check=%+v", first)
+	}
 	if got := prober.calls; !reflect.DeepEqual(got, []string{"direct"}) {
 		t.Fatalf("normal unknown-domain check should stop after verified Direct: %v", got)
 	}
@@ -309,6 +313,28 @@ func TestUnknownDomainDirectSuccessIsCachedAndReused(t *testing.T) {
 	}
 	if second.Selected.VerificationDurationMS != 731 {
 		t.Fatalf("cached decision lost selected path verification duration: %d", second.Selected.VerificationDurationMS)
+	}
+}
+
+func TestUnknownDomainEvidenceRemainsFreshAfterOwnHealthObservation(t *testing.T) {
+	cfg := discoveryConfig(t)
+	cache := openDecisionCache(t, cfg)
+	now := time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC)
+	prober := &scriptedProber{results: map[string]probe.RouteResult{
+		"direct": successfulResult("direct", "direct", "rev-active"),
+	}}
+	health := probe.NewHealthTracker(nil)
+	opts := Options{
+		RouteProber: prober, DecisionCache: cache, ActiveRevision: "rev-active",
+		HealthTracker: health, Now: func() time.Time { return now },
+	}
+	first, err := CheckDomain(context.Background(), cfg, "amazon.com", "", opts)
+	if err != nil || first.Selected == nil || first.Selected.CandidateInventoryHash == "" {
+		t.Fatalf("first health-aware check=%+v err=%v", first, err)
+	}
+	second, err := CheckDomain(context.Background(), cfg, "amazon.com", "", opts)
+	if err != nil || !second.Cached || second.Selected == nil || len(prober.calls) != 1 {
+		t.Fatalf("the probe invalidated its own cache after health observation: second=%+v calls=%v err=%v", second, prober.calls, err)
 	}
 }
 
@@ -1058,4 +1084,16 @@ func openDecisionCache(t *testing.T, cfg *config.Config) *domaincache.Manager {
 		t.Fatal(err)
 	}
 	return manager
+}
+
+func TestUnknownServiceContractRejectsClientErrorAsUsable(t *testing.T) {
+	want := []int{200, 204, 301, 302, 303, 307, 308}
+	if got := unknownExpectedCodes(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("unknown service accepted a broader HTTP contract than a manual rule: got=%v want=%v", got, want)
+	}
+	for _, code := range unknownExpectedCodes() {
+		if code >= 400 {
+			t.Fatalf("HTTP %d must not establish service success for an unknown domain", code)
+		}
+	}
 }
