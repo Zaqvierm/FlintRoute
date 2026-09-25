@@ -78,6 +78,7 @@ type PathProofSession struct {
 	StartedAt     time.Time
 	CounterBefore uint64
 	Metadata      map[string]string
+	BeginStatus   string
 	BeginError    string
 }
 
@@ -91,13 +92,23 @@ type PathProofStarter interface {
 
 type Engine struct {
 	proofVerifier PathProofVerifier
+	guard         RouteProbeGuard
+	// reload retries the privileged OpenWrt binding after an early-start
+	// failure. The controller can start before the durable active binding is
+	// materialized; keeping the initial error verifier forever turns a transient
+	// boot race into a permanent route-not-verified state.
+	reload func() *Engine
 }
 
 func NewEngine(verifier PathProofVerifier) *Engine {
+	return NewEngineWithGuard(verifier, nil)
+}
+
+func NewEngineWithGuard(verifier PathProofVerifier, guard RouteProbeGuard) *Engine {
 	if verifier == nil {
 		verifier = unavailableProofVerifier{}
 	}
-	return &Engine{proofVerifier: verifier}
+	return &Engine{proofVerifier: verifier, guard: guard}
 }
 
 type unavailableProofVerifier struct{}
@@ -242,6 +253,10 @@ func (e *Engine) beginPathProof(ctx context.Context, domain string, route config
 	started, err := starter.Begin(ctx, PathProofStart{Domain: domain, Route: route, StartedAt: startedAt})
 	if err != nil {
 		session.BeginError = err.Error()
+		var statusErr *PathStatusError
+		if errors.As(err, &statusErr) {
+			session.BeginStatus = statusErr.Status
+		}
 		return session
 	}
 	if started.StartedAt.IsZero() {
@@ -273,7 +288,11 @@ func (e *Engine) finishWithPathProof(ctx context.Context, _ *config.Config, rout
 		result.FailureStage = "path_evidence_begin"
 		result.ReasonCode = proofErrorCode(errors.New(session.BeginError), route)
 		if strings.EqualFold(strings.TrimSpace(result.Status), "OK") || strings.EqualFold(strings.TrimSpace(result.Status), "DEGRADED") || strings.EqualFold(strings.TrimSpace(result.ApplicationStatus), "DROP") {
-			result.Status = proofFailureStatus(errors.New(session.BeginError))
+			if session.BeginStatus != "" {
+				result.Status = session.BeginStatus
+			} else {
+				result.Status = proofFailureStatus(errors.New(session.BeginError))
+			}
 			reason := result.ReasonCode
 			result.Reason = &reason
 		}

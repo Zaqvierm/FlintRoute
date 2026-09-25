@@ -1,18 +1,50 @@
 # Evidence remediation
 
-## Current evidence binding (2026-08-30)
+## Current route-proof correction (working tree)
 
-Current code checkpoint: `7f8c480c511d028d876b63d11a0c03e8a383ff79` on
-`integration/discovery-smartdns-local-dod`. This checkpoint includes the
-route-eligibility/subscription evidence regressions; the exact SHA and CI runs
-are recorded in the external ledger and below.
+The current route-proof correction fixes a real non-root failure observed on
+Flint 2: helper-backed nft marks were installed, but the daemon still tried
+`SO_MARK` and failed before opening the TCP socket. `system-default` is now
+kept unmarked, helper-owned marks are used without a controller capability,
+and conntrack matching ignores transient zero-mark tuples. Smart DNS keeps
+resolver identity as its route binding when Direct and Smart DNS share mark
+`0x41`.
+
+Hardware evidence captured after installation on OpenWrt 24.10.4 / kernel
+6.6.110 / GL-MT6000:
+
+- bundle `dist/flintroute-openwrt-arm64.tar.gz`: SHA-256 recorded in the
+  external hardware evidence directory;
+- controller health: `status=ok`, `recovery_status=ok`, active revision
+  `rev_8_576efd05a1db`;
+- UI quick check for `example.com`: `direct OK`, `PathVerified`,
+  `route_path_verified`, selected Direct;
+- Xray and nfqws remained running; legacy watchdog absent.
+
+This is runtime evidence for the installed exact artifacts, not a claim that
+all route types are universally healthy. Full candidate comparison is an
+explicit bounded operation; a quick Direct success intentionally stops before
+Zapret/Smart DNS/VLESS.
+
+## Current evidence binding (2026-09-06)
+
+Current code checkpoint: `5fdaa637953bf4069356e0e28094c49e2778fa17` on
+`fix/smartdns-auto-route`. This checkpoint includes the user-operation
+transaction-state, selected-route binding, system-default baseline, adaptive
+CRUD, infrastructure-error, VLESS readiness and secondary-watchdog removal
+fixes. The exact SHA and CI
+runs are recorded in the external ledger and below.
 The worktree/branch HEAD is the source of truth for the documentation commit;
 the external status ledger records that exact docs SHA. Local
-`tests/run-all.ps1` completed `all_tests_ok=true`; Linux
+`tests/run-all.ps1` completed `all_tests_ok=true`; Go race/vet, frontend
+typecheck/unit/build and Playwright 30/30 also passed. Linux
 namespace/process-group/filesystem checks remain `NOT RUN LOCALLY` on Windows.
-The exact-SHA CI evidence for this checkpoint is full safety `33294149562`,
-UI/browser `33294149541`, nft transition `33294149526`, and Zapret process-group
-`33294149529`.
+The ARM64 controller artifact SHA-256 is
+`8ed8ea48484aafc41cf4f6c0b8364fc4d27cc6bdd0c87ea89d0027d326c4190c` and the
+OpenWrt bundle SHA-256 is
+`eab4f3668079a2ec4a3d6272f8508ff0b93d3facc94297efa9185f23519dbc2e`.
+CI/push and installation on Flint 2 remain pending because the current
+key-only SSH credential is rejected and GitHub HTTPS was unavailable.
 
 These are software/CI results only. No Flint 2 connection, installation,
 dataplane mutation, reboot, or hardware validation was performed. Every older

@@ -144,6 +144,16 @@ capability_file="$txdir/rollback.cap"
 printf '%s\n' "$good_token" > "$capability_file"
 chmod 600 "$capability_file"
 verify_token
+# The daemon-readable controller config is intentionally root:daemon 0640.
+# Rollback must accept this allowlisted mode rather than fence a valid tx.
+chmod 640 "$config"
+if [ "$(file_mode_bits "$config")" = "640" ]; then
+  echo "controller_readable_mode=640"
+else
+  # Git Bash on Windows does not expose POSIX group bits faithfully.  The
+  # assertion runs on Linux CI/OpenWrt; local Windows execution is explicit.
+  echo "controller_readable_mode_test=not_run_non_posix"
+fi
 printf '%s\n' "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" > "$capability_file"
 chmod 600 "$capability_file"
 if verify_token >/dev/null 2>&1; then

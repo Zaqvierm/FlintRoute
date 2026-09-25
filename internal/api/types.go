@@ -37,34 +37,39 @@ type Event struct {
 }
 
 type ChangeSet struct {
-	ID                   string               `json:"id"`
-	State                string               `json:"state"`
-	Title                string               `json:"title"`
-	Description          string               `json:"description"`
-	BaseVersion          int64                `json:"base_version"`
-	Version              int64                `json:"version"`
-	CandidateVersion     int64                `json:"candidate_version,omitempty"`
-	CandidateHash        string               `json:"candidate_hash,omitempty"`
-	CandidatePath        string               `json:"candidate_path,omitempty"`
-	ArtifactManifestHash string               `json:"artifact_manifest_hash,omitempty"`
-	ArtifactsReady       bool                 `json:"artifacts_ready"`
-	ArtifactBlockReason  string               `json:"artifact_block_reason,omitempty"`
-	ArtifactsSimulation  bool                 `json:"artifacts_simulation"`
-	RevisionID           string               `json:"revision_id,omitempty"`
-	TransactionID        string               `json:"transaction_id,omitempty"`
-	AdapterStatus        string               `json:"adapter_status,omitempty"`
-	CommitPhase          string               `json:"commit_phase,omitempty"`
-	Noop                 bool                 `json:"noop,omitempty"`
-	Operations           []ChangeOp           `json:"operations"`
-	Validation           []Validation         `json:"validation"`
-	Diff                 []ChangeOp           `json:"diff"`
-	Steps                []adapter.StepResult `json:"steps,omitempty"`
-	ManagementVerified   bool                 `json:"management_verified"`
-	DataPlaneVerified    bool                 `json:"data_plane_verified"`
-	CreatedAt            string               `json:"created_at"`
-	UpdatedAt            string               `json:"updated_at"`
-	ExpiresAt            string               `json:"expires_at,omitempty"`
-	Author               string               `json:"author"`
+	ID                   string `json:"id"`
+	State                string `json:"state"`
+	Title                string `json:"title"`
+	Description          string `json:"description"`
+	BaseVersion          int64  `json:"base_version"`
+	Version              int64  `json:"version"`
+	CandidateVersion     int64  `json:"candidate_version,omitempty"`
+	CandidateHash        string `json:"candidate_hash,omitempty"`
+	CandidatePath        string `json:"candidate_path,omitempty"`
+	ArtifactManifestHash string `json:"artifact_manifest_hash,omitempty"`
+	ArtifactsReady       bool   `json:"artifacts_ready"`
+	ArtifactBlockReason  string `json:"artifact_block_reason,omitempty"`
+	ArtifactsSimulation  bool   `json:"artifacts_simulation"`
+	RevisionID           string `json:"revision_id,omitempty"`
+	TransactionID        string `json:"transaction_id,omitempty"`
+	AdapterStatus        string `json:"adapter_status,omitempty"`
+	CommitPhase          string `json:"commit_phase,omitempty"`
+	// AutoApply marks a product action whose backend should continue the
+	// validated transaction without making the user operate the internal
+	// validate/apply/confirm queue. The transaction journal remains the source
+	// of truth and recovery can resume only this explicitly bounded flow.
+	AutoApply          bool                 `json:"auto_apply,omitempty"`
+	Noop               bool                 `json:"noop,omitempty"`
+	Operations         []ChangeOp           `json:"operations"`
+	Validation         []Validation         `json:"validation"`
+	Diff               []ChangeOp           `json:"diff"`
+	Steps              []adapter.StepResult `json:"steps,omitempty"`
+	ManagementVerified bool                 `json:"management_verified"`
+	DataPlaneVerified  bool                 `json:"data_plane_verified"`
+	CreatedAt          string               `json:"created_at"`
+	UpdatedAt          string               `json:"updated_at"`
+	ExpiresAt          string               `json:"expires_at,omitempty"`
+	Author             string               `json:"author"`
 }
 
 type ChangeOp struct {

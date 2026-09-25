@@ -135,6 +135,11 @@ type Server struct {
 	mutationGate           sync.RWMutex
 	changes                map[string]ChangeSet
 	actionLocks            map[string]*actionLockEntry
+	autoApplyMu            sync.Mutex
+	autoApplyInFlight      map[string]bool
+	autoApplyCtx           context.Context
+	autoApplyCancel        context.CancelFunc
+	autoApplyWG            sync.WaitGroup
 	transactionMu          sync.Mutex
 	subscriptionMu         sync.Mutex
 	timers                 map[string]*time.Timer
@@ -317,6 +322,7 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 			return nil, fmt.Errorf("initialize Telegram notifications: %w", err)
 		}
 	}
+	autoApplyCtx, autoApplyCancel := context.WithCancel(context.Background())
 	s := &Server{
 		cfg:                     cfg,
 		auth:                    authStore,
@@ -343,6 +349,9 @@ func NewServerWithOptions(cfg *config.Config, opts Options) (*Server, error) {
 		mux:                     http.NewServeMux(),
 		changes:                 changes,
 		actionLocks:             map[string]*actionLockEntry{},
+		autoApplyInFlight:       map[string]bool{},
+		autoApplyCtx:            autoApplyCtx,
+		autoApplyCancel:         autoApplyCancel,
 		timers:                  map[string]*time.Timer{},
 		activeConfig:            activeConfig,
 		activeRevision:          activeRevision,
@@ -428,6 +437,12 @@ func (s *Server) Close() error {
 		}
 		s.schedulerWG.Wait()
 		s.timerWG.Wait()
+		s.autoApplyMu.Lock()
+		if s.autoApplyCancel != nil {
+			s.autoApplyCancel()
+		}
+		s.autoApplyMu.Unlock()
+		s.autoApplyWG.Wait()
 		if s.telegramNotifier != nil {
 			s.telegramNotifier.Close()
 		}
@@ -485,6 +500,9 @@ func (s *Server) reconcileRouteAssignments(ctx context.Context) error {
 }
 
 func (s *Server) startOperationalSchedulers(schedulerCtx context.Context) {
+	// Resume only explicitly marked product operations after recovery has
+	// admitted mutations. Unmarked historical drafts remain user-controlled.
+	s.resumeAutoApplyChanges()
 	interval := time.Duration(s.cfg.Policy.InventoryHealthIntervalSeconds) * time.Second
 	if interval <= 0 {
 		interval = 24 * time.Hour
@@ -790,10 +808,20 @@ func (s *Server) discoverDomain(ctx context.Context, observation discovery.Obser
 	defer cancel()
 	check, err := s.domainChecker(checkCtx, active, observation.Domain, "", planner.Options{
 		TSPUResult: match, RouteProber: s.probeEngineFactory(active), HealthTracker: s.healthTracker,
-		DecisionCache: s.domainDecisions, ActiveRevision: revision,
+		DecisionCache: s.domainDecisions, ActiveRevision: revision, QuickCandidates: true,
 	})
 	if err != nil {
 		s.publishEvent(Event{Type: "route.decision", Severity: "warning", ReasonCode: "automatic_domain_check_failed", Details: map[string]any{"domain": observation.Domain, "error": err.Error()}})
+		// Do not leave the last transient suggestion looking as if a probe is
+		// still running forever. An infrastructure failure is a terminal
+		// diagnostic state for this observation, not NO_SAFE_ROUTE and never a
+		// route assignment. Keep it visible in RAM so the operator gets the
+		// actual cause; a restart intentionally discards it.
+		s.saveDiscoverySuggestionTransient(observation, planner.DomainCheck{
+			Domain: observation.Domain, Category: classification, Status: "ERROR",
+			Reason: "automatic_domain_check_failed: " + err.Error(), VerificationState: "error",
+			ClassificationState: "classified", TSPUStatus: match.Status,
+		})
 		return
 	}
 	details := map[string]any{
@@ -1501,6 +1529,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/services", s.requireRole(auth.RoleViewer, s.handleServices))
 	s.mux.HandleFunc("/api/v1/services/classify", s.requireRole(auth.RoleAdministrator, s.handleServiceClassify))
 	s.mux.HandleFunc("/api/v1/services/verify", s.requireRole(auth.RoleAdministrator, s.handleServiceVerify))
+	s.mux.HandleFunc("/api/v1/services/delete", s.requireRole(auth.RoleAdministrator, s.handleServiceDelete))
 	s.mux.HandleFunc("/api/v1/discovery", s.requireRole(auth.RoleViewer, s.handleDiscovery))
 	s.mux.HandleFunc("/api/v1/discovery/suggestions/", s.requireRole(auth.RoleAdministrator, s.handleDiscoverySuggestionAction))
 	s.mux.HandleFunc("/api/v1/discovery/configure", s.requireRole(auth.RoleAdministrator, s.handleDiscoveryConfigure))
@@ -1523,6 +1552,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/xray/pool/speedtest", s.requireRole(auth.RoleAdministrator, s.handleXrayPoolSpeedTest))
 	s.mux.HandleFunc("/api/v1/smart-dns", s.requireRole(auth.RoleViewer, s.handleSmartDNS))
 	s.mux.HandleFunc("/api/v1/smart-dns/configure", s.requireRole(auth.RoleAdministrator, s.handleSmartDNSConfigure))
+	s.mux.HandleFunc("/api/v1/smart-dns/remove", s.requireRole(auth.RoleAdministrator, s.handleSmartDNSRemove))
+	s.mux.HandleFunc("/api/v1/smart-dns/reorder", s.requireRole(auth.RoleAdministrator, s.handleSmartDNSReorder))
 	s.mux.HandleFunc("/api/v1/zapret", s.requireRole(auth.RoleViewer, s.handleZapret))
 	s.mux.HandleFunc("/api/v1/zapret/setup/check", s.requireRole(auth.RoleAdministrator, s.handleZapretSetupCheck))
 	s.mux.HandleFunc("/api/v1/zapret/setup/activate", s.requireRole(auth.RoleAdministrator, s.handleZapretSetupActivate))
@@ -1750,6 +1781,9 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 			"probe_state": "not_checked", "verification_state": "not_checked",
 			"verification_reason": "policy_applied_path_not_verified", "policy_state": "applied",
 		}
+		matrix := s.serviceCandidateMatrix(id, svc)
+		item["candidate_matrix"] = matrix
+		item["eligible_route_types"] = uniqueRouteTypes(matrix)
 		if proof, ok := s.latestConfiguredServiceProof(id, svc, time.Now().UTC()); ok {
 			item["status"] = "VERIFIED"
 			item["probe_state"] = "verified_candidate"
@@ -1770,6 +1804,8 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 		items = append(items, item)
 	}
 	discoveryMode, _, _, _ := s.effectiveDiscoverySettings(cfg)
+	activeRevision, _ := s.activeIdentity()
+	now := s.discoveryNow()
 	if s.domainDecisions != nil {
 		for _, decision := range s.domainDecisions.Snapshot() {
 			category := decision.Category
@@ -1805,6 +1841,28 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 			// into a green "verified" state unless the matching result proves
 			// service success and PathVerified.
 			probeState := automaticDecisionProbeState(decision, selectedRoute, selectedType, status)
+			evidenceFresh := s.discoveryDecisionEvidenceFresh(cfg, decision, activeRevision, now)
+			verificationReason := strings.TrimSpace(decision.Reason)
+			switch probeState {
+			case "verified_candidate":
+				if evidenceFresh {
+					verificationReason = "path_verified"
+				} else {
+					probeState = "stale_evidence"
+					status = "STALE_EVIDENCE"
+					verificationReason = "path_evidence_expired_or_inventory_changed"
+				}
+			case "verifying":
+				verificationReason = "verification_in_progress"
+			case "no_safe_route":
+				if verificationReason == "" {
+					verificationReason = "no_safe_route"
+				}
+			default:
+				if verificationReason == "" {
+					verificationReason = "path_not_verified"
+				}
+			}
 			policyState := "observed"
 			if discoveryMode == "suggest" {
 				policyState = "suggested"
@@ -1833,7 +1891,13 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 				"kind":                      "discovery_observation",
 				"classification_state":      classificationState,
 				"probe_state":               probeState,
+				"verification_state":        probeState,
+				"verification_reason":       verificationReason,
+				"evidence_fresh":            evidenceFresh,
+				"candidate_inventory_hash":  decision.CandidateInventoryHash,
+				"adapter_revision":          decision.AdapterRevision,
 				"policy_state":              policyState,
+				"candidate_matrix":          discoveryCandidateDetails(decision.Results),
 			})
 		}
 	}
@@ -1846,6 +1910,50 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 		return fmt.Sprint(items[i]["id"]) < fmt.Sprint(items[j]["id"])
 	})
 	writeData(w, r, items)
+}
+
+// discoveryDecisionEvidenceFresh checks the same revision, TTL and candidate
+// inventory bindings used by the planner cache without running any probes.
+// The services GET must never turn a cache miss into expensive network work.
+func (s *Server) discoveryDecisionEvidenceFresh(cfg *config.Config, decision domaincache.Decision, activeRevision string, now time.Time) bool {
+	if s == nil || cfg == nil || strings.TrimSpace(activeRevision) == "" ||
+		decision.AdapterRevision != activeRevision || decision.CandidateInventoryHash == "" ||
+		decision.ExpiresAt.IsZero() || !now.Before(decision.ExpiresAt) {
+		return false
+	}
+	match := currentDiscoveryTSPUMatch(cfg, decision.Domain, now)
+	if match.Status != decision.TSPUStatus {
+		return false
+	}
+	plan, err := planner.BuildCandidates(cfg, decision.Domain, decision.Service, planner.Options{
+		TSPUResult:    match,
+		HealthTracker: s.healthTracker,
+	})
+	if err != nil || plan.InventoryHash == "" || plan.InventoryHash != decision.CandidateInventoryHash {
+		return false
+	}
+	for _, result := range decision.Results {
+		if result.Route == decision.SelectedRoute && result.RouteType == decision.SelectedType &&
+			result.AdapterRevision == activeRevision && planner.SelectionEvidence(result) {
+			return true
+		}
+	}
+	return false
+}
+
+func currentDiscoveryTSPUMatch(cfg *config.Config, domain string, now time.Time) tspu.Match {
+	match := tspu.Match{Domain: domain, Status: "NO_MATCH"}
+	if cfg == nil || strings.EqualFold(strings.TrimSpace(cfg.Storage.StateDir), "") {
+		return match
+	}
+	cache, err := tspu.Load(filepath.Join(cfg.Storage.StateDir, "tspu-cache.json"))
+	if err != nil {
+		return match
+	}
+	if found, ok := tspu.Find(cache, domain, now); ok {
+		return found
+	}
+	return match
 }
 
 func automaticDecisionProbeState(decision domaincache.Decision, selectedRoute, selectedType, status string) string {
@@ -1897,10 +2005,13 @@ func routeTypeInOrder(order []string, routeType string) bool {
 
 type serviceClassifyRequest struct {
 	Domain                     string   `json:"domain"`
+	ServiceID                  string   `json:"service_id,omitempty"`
 	Category                   string   `json:"category"`
 	AllowedPaths               []string `json:"allowed_paths,omitempty"`
 	BaseVersion                int64    `json:"base_version"`
 	AllowDisableFlowOffloading bool     `json:"allow_disable_flow_offloading,omitempty"`
+	AutoApply                  bool     `json:"auto_apply,omitempty"`
+	SelectedRouteTag           string   `json:"selected_route_tag,omitempty"`
 }
 
 func serviceForClassifyRequest(request serviceClassifyRequest) (string, config.Service, error) {
@@ -1974,6 +2085,7 @@ func serviceForClassifyRequest(request serviceClassifyRequest) (string, config.S
 type serviceVerifyRequest struct {
 	ServiceID string `json:"service_id,omitempty"`
 	Domain    string `json:"domain,omitempty"`
+	FullCheck bool   `json:"full_check,omitempty"`
 }
 
 // handleServiceVerify performs a read-only path check for an already persisted
@@ -1997,7 +2109,10 @@ func (s *Server) handleServiceVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_service", err.Error())
 		return
 	}
-	check, verifyErr := s.selectVerifiedServiceRoute(r.Context(), serviceID, serviceWithVerificationDomain(service, domain))
+	// Read-only interactive verification stays bounded. A partial VERIFYING
+	// response is rendered with "Continue verification" instead of blocking
+	// the UI for a long opaque probe job.
+	check, verifyErr := s.selectVerifiedServiceRouteWithOptions(r.Context(), serviceID, serviceWithVerificationDomain(service, domain), 0, "", request.FullCheck)
 	persisted := 0
 	if s.store != nil {
 		for _, result := range check.Results {
@@ -2019,6 +2134,7 @@ func (s *Server) handleServiceVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	response := map[string]any{
 		"service_id": serviceID, "domain": domain, "status": check.Status,
+		"preview":            strings.HasPrefix(serviceID, "preview_"),
 		"verification_state": state, "reason": check.Reason,
 		"classification_confidence": check.ClassificationConfidence,
 		"classification_state":      check.ClassificationState, "classification_reason": check.ClassificationReason,
@@ -2052,6 +2168,27 @@ func serviceWithVerificationDomain(service config.Service, domain string) config
 	return service
 }
 
+func previewServiceForDomain(domain string) (string, config.Service, error) {
+	normalized, err := tspu.NormalizeDomain(domain)
+	if err != nil {
+		return "", config.Service{}, errors.New("a valid service domain is required")
+	}
+	// Preview is deliberately ephemeral: it is not a configured policy and
+	// never writes a ChangeSet. The planner still receives the full inventory
+	// so it can prove Direct first, then eligible alternatives, without the UI
+	// inventing a route order.
+	id := "preview_" + strings.NewReplacer(".", "_", "-", "_").Replace(normalized)
+	return id, config.Service{
+		Category:     "DIRECT_PREFERRED",
+		Domains:      []string{normalized},
+		AllowedPaths: []string{"direct", "zapret", "smart_dns", "vless", "drop"},
+		ProbeURLs: []config.ProbeCheck{{
+			Name: "https", URL: "https://" + normalized + "/", Required: true,
+			ExpectedCodes: []int{200, 204, 301, 302, 303, 307, 308}, BodyMode: "optional",
+		}},
+	}, nil
+}
+
 func (s *Server) configuredServiceForVerification(request serviceVerifyRequest) (string, config.Service, string, error) {
 	cfg := s.currentConfig()
 	if cfg == nil {
@@ -2063,6 +2200,13 @@ func (s *Server) configuredServiceForVerification(request serviceVerifyRequest) 
 		return "", config.Service{}, "", errors.New("configured service was not found")
 	}
 	domain := strings.TrimSpace(request.Domain)
+	if serviceID == "" && domain != "" {
+		previewID, preview, previewErr := previewServiceForDomain(domain)
+		if previewErr != nil {
+			return "", config.Service{}, "", previewErr
+		}
+		return previewID, preview, preview.Domains[0], nil
+	}
 	if domain == "" && len(service.Domains) > 0 {
 		domain = service.Domains[0]
 	}
@@ -2153,22 +2297,76 @@ func (s *Server) handleServiceClassify(w http.ResponseWriter, r *http.Request) {
 	}
 	domain := service.Domains[0]
 	id := "user_" + strings.NewReplacer(".", "_", "-", "_").Replace(tspu.ETLDPlusOne(domain))
-	check, err := s.selectVerifiedServiceRoute(r.Context(), id, service)
-	if err != nil {
-		writeError(w, r, http.StatusUnprocessableEntity, "route_verification_failed", err.Error())
-		return
+	if requestedID := strings.TrimSpace(request.ServiceID); requestedID != "" {
+		if strings.ContainsAny(requestedID, "/\\\r\n\t") || len(requestedID) > 128 {
+			writeError(w, r, http.StatusBadRequest, "invalid_service_id", "service_id contains unsupported characters")
+			return
+		}
+		active := s.currentConfig()
+		if active == nil {
+			writeError(w, r, http.StatusServiceUnavailable, "active_config_unavailable", "active configuration is unavailable")
+			return
+		}
+		existing, exists := active.Services[requestedID]
+		if !exists {
+			writeError(w, r, http.StatusNotFound, "service_rule_missing", "service_id was not found")
+			return
+		}
+		if !serviceDomainContains(existing, domain) {
+			writeError(w, r, http.StatusConflict, "service_domain_mismatch", "domain does not belong to the selected service rule")
+			return
+		}
+		// A route edit changes the selected route of the existing policy; it is
+		// not a request to replace the policy with a one-domain shell. Preserve
+		// every sibling domain and the service probe contract, neither of which
+		// is editable in this flow. The selected domain is still checked exactly
+		// before the group-wide route change is built.
+		service.Domains = append([]string(nil), existing.Domains...)
+		if len(existing.ProbeURLs) > 0 {
+			service.ProbeURLs = append([]config.ProbeCheck(nil), existing.ProbeURLs...)
+		}
+		service.ClassificationSeed = existing.ClassificationSeed
+		if existing.Category == category {
+			for _, forbidden := range existing.ForbiddenPaths {
+				found := false
+				for _, current := range service.ForbiddenPaths {
+					if current == forbidden {
+						found = true
+						break
+					}
+				}
+				if !found {
+					service.ForbiddenPaths = append(service.ForbiddenPaths, forbidden)
+				}
+			}
+			service.RequireNonRUEgress = service.RequireNonRUEgress || existing.RequireNonRUEgress
+		}
+		id = requestedID
+	}
+	verificationService := serviceWithVerificationDomain(service, domain)
+	check, reused := s.reusableDiscoveryRouteEvidence(domain, category, verificationService, request.SelectedRouteTag)
+	if !reused {
+		check, reused = s.reusableStoredProbeEvidence(domain, category, verificationService, request.SelectedRouteTag)
+	}
+	if !reused {
+		check, err = s.selectVerifiedServiceRouteWithOptions(r.Context(), id, verificationService, 0, request.SelectedRouteTag, false)
+		if err != nil {
+			writeError(w, r, http.StatusUnprocessableEntity, "route_verification_failed", err.Error())
+			return
+		}
 	}
 	service.SelectedRouteTag = check.Selected.Route
 	operations := []ChangeOp{{Type: "set", Path: "/services/" + id, Value: service}}
 	if request.AllowDisableFlowOffloading {
 		operations = append(operations, ChangeOp{Type: "set", Path: "/openwrt/flow_offloading_policy", Value: "disable"})
 	}
-	change, err := s.createDraftChange(
+	change, err := s.createDraftChangeWithOptions(
 		"Change route class for "+domain,
 		"Persist the selected route class for an observed domain",
 		request.BaseVersion,
 		operations,
 		currentSession(r).User,
+		request.AutoApply,
 	)
 	if err != nil {
 		if errors.Is(err, errBaseVersionConflict) {
@@ -2182,11 +2380,175 @@ func (s *Server) handleServiceClassify(w http.ResponseWriter, r *http.Request) {
 		"change": change, "domain": domain, "category": category,
 		"selected_route_tag": check.Selected.Route, "selected_route_type": check.Selected.RouteType,
 		"path_verified": check.Selected.PathVerified, "selection_state": serviceRouteSelectionState(check.Selected),
-		"candidates": discoveryCandidateDetails(check.Results),
+		"verification_reused": reused, "verification_checked_at": check.CheckedAt,
+		"candidate_inventory_hash": check.CandidateInventoryHash,
+		"candidates":               discoveryCandidateDetails(check.Results),
+		"auto_apply_requested":     request.AutoApply,
+		"auto_apply_started":       request.AutoApply && s.startAutoApplyChange(change.ID),
 	})
 }
 
+// reusableDiscoveryRouteEvidence allows a user to pin the exact route already
+// verified by Discovery without launching the same probe matrix again. Reuse is
+// deliberately narrow: exact domain/category/route, current active revision,
+// unexpired evidence, matching live candidate inventory, and policy eligibility
+// are all required. Any mismatch falls back to a fresh bounded verification.
+func (s *Server) reusableDiscoveryRouteEvidence(domain, category string, service config.Service, requestedRouteTag string) (planner.DomainCheck, bool) {
+	if s == nil || s.domainDecisions == nil || strings.TrimSpace(requestedRouteTag) == "" {
+		return planner.DomainCheck{}, false
+	}
+	active := s.currentConfig()
+	if active == nil {
+		return planner.DomainCheck{}, false
+	}
+	revision, _ := s.activeIdentity()
+	now := s.discoveryNow()
+	decision, ok, err := s.domainDecisions.Lookup(domain, revision, now)
+	if err != nil || !ok || !strings.EqualFold(strings.TrimSpace(decision.Category), strings.TrimSpace(category)) ||
+		decision.SelectedRoute != requestedRouteTag || !s.discoveryDecisionEvidenceFresh(active, decision, revision, now) {
+		return planner.DomainCheck{}, false
+	}
+	route, ok := active.RouteByTag(decision.SelectedRoute)
+	if !ok || route.Type != decision.SelectedType || !config.PathAllowed(service, route, active.Policy) {
+		return planner.DomainCheck{}, false
+	}
+	var selected *probe.RouteResult
+	for i := range decision.Results {
+		result := decision.Results[i]
+		if result.Route == requestedRouteTag && result.RouteType == route.Type && result.AdapterRevision == revision && planner.SelectionEvidence(result) {
+			copy := result
+			selected = &copy
+			break
+		}
+	}
+	if selected == nil {
+		return planner.DomainCheck{}, false
+	}
+	return planner.DomainCheck{
+		Domain: domain, ETLDPlusOne: decision.ETLDPlusOne, Service: decision.Service,
+		Category: decision.Category, TSPUStatus: decision.TSPUStatus, Status: decision.Status,
+		Reason: decision.Reason, Confidence: decision.Confidence,
+		ClassificationConfidence: decision.ClassificationConfidence,
+		ClassificationSource:     decision.ClassificationSource, ClassificationEvidence: decision.ClassificationEvidence,
+		ClassificationState: decision.ClassificationState, CandidateInventoryHash: decision.CandidateInventoryHash,
+		VerificationDurationMS: decision.VerificationDurationMS, VerificationState: "verified",
+		CheckedAt: decision.CheckedAt, ExpiresAt: decision.ExpiresAt, Cached: true,
+		Results: append([]probe.RouteResult(nil), decision.Results...), Selected: selected,
+	}, true
+}
+
+// reusableStoredProbeEvidence reuses a fresh interactive /services/verify
+// result after the user clicks "create and apply". The result must be stored
+// by the backend, exact-domain and exact-route bound, from the current active
+// revision, and carry the candidate inventory hash recomputed for the same
+// service contract. Browser-submitted claims are not consulted.
+func (s *Server) reusableStoredProbeEvidence(domain, category string, service config.Service, requestedRouteTag string) (planner.DomainCheck, bool) {
+	if s == nil || s.store == nil || strings.TrimSpace(requestedRouteTag) == "" {
+		return planner.DomainCheck{}, false
+	}
+	active := s.currentConfig()
+	if active == nil {
+		return planner.DomainCheck{}, false
+	}
+	revision, _ := s.activeIdentity()
+	now := s.discoveryNow()
+	items, err := s.store.ListProbeResults(500)
+	if err != nil {
+		return planner.DomainCheck{}, false
+	}
+	requestedDomain, err := tspu.NormalizeDomain(domain)
+	if err != nil {
+		return planner.DomainCheck{}, false
+	}
+	var selected *probe.RouteResult
+	var selectedAt time.Time
+	for i := range items {
+		result := items[i]
+		resultDomain, normalizeErr := tspu.NormalizeDomain(result.Domain)
+		if normalizeErr != nil || resultDomain != requestedDomain || result.Route != requestedRouteTag ||
+			result.AdapterRevision != revision || result.CandidateInventoryHash == "" || !planner.SelectionEvidence(result) {
+			continue
+		}
+		checkedAt, parseErr := time.Parse(time.RFC3339, result.CheckedAt)
+		if parseErr != nil || checkedAt.After(now.Add(time.Minute)) || now.Sub(checkedAt) > configuredServiceProofFreshness {
+			continue
+		}
+		route, ok := active.RouteByTag(result.Route)
+		if !ok || route.Type != result.RouteType || !config.PathAllowed(service, route, active.Policy) {
+			continue
+		}
+		if service.RequireNonRUEgress && route.Type != "drop" &&
+			(!result.EgressConsensus || strings.TrimSpace(result.ExternalCountry) == "" || strings.EqualFold(result.ExternalCountry, "RU")) {
+			continue
+		}
+
+		// Recreate the precise probe configuration whose hash was attached to
+		// the persisted result. Preview checks are forced to the ordinary
+		// Direct baseline; configured checks use the current exact service with
+		// only the checked domain retained, as in configuredServiceForVerification.
+		var candidate config.Config
+		raw, marshalErr := json.Marshal(active)
+		if marshalErr != nil || json.Unmarshal(raw, &candidate) != nil {
+			continue
+		}
+		if candidate.Services == nil {
+			candidate.Services = map[string]config.Service{}
+		}
+		probeServiceID := result.Service
+		var probeService config.Service
+		match := currentDiscoveryTSPUMatch(active, requestedDomain, now)
+		if strings.HasPrefix(probeServiceID, "preview_") {
+			previewID, preview, previewErr := previewServiceForDomain(requestedDomain)
+			if previewErr != nil || previewID != probeServiceID {
+				continue
+			}
+			probeService = preview
+			match = tspu.Match{Domain: requestedDomain, Status: "NO_MATCH"}
+		} else {
+			var exists bool
+			probeService, exists = candidate.Services[probeServiceID]
+			if !exists {
+				continue
+			}
+			probeService = serviceWithVerificationDomain(probeService, requestedDomain)
+			if probeService.Category == "TSPU_RESTRICTED" {
+				match = tspu.Match{Domain: requestedDomain, Status: "MATCH"}
+			}
+		}
+		candidate.Services[probeServiceID] = probeService
+		plan, planErr := planner.BuildCandidates(&candidate, requestedDomain, probeServiceID, planner.Options{
+			TSPUResult: match, HealthTracker: s.healthTracker,
+		})
+		if planErr != nil || plan.InventoryHash == "" || plan.InventoryHash != result.CandidateInventoryHash {
+			continue
+		}
+		if selected == nil || checkedAt.After(selectedAt) {
+			copy := result
+			selected = &copy
+			selectedAt = checkedAt
+		}
+	}
+	if selected == nil {
+		return planner.DomainCheck{}, false
+	}
+	return planner.DomainCheck{
+		Domain: requestedDomain, ETLDPlusOne: tspu.ETLDPlusOne(requestedDomain), Service: selected.Service,
+		Category: category, Status: "SELECTED", Reason: "fresh_exact_route_probe_reused", Confidence: 1,
+		VerificationState: "verified", CandidateInventoryHash: selected.CandidateInventoryHash,
+		CheckedAt: selectedAt, ExpiresAt: selectedAt.Add(configuredServiceProofFreshness), Cached: true,
+		Results: []probe.RouteResult{*selected}, Selected: selected,
+	}, true
+}
+
 func (s *Server) selectVerifiedServiceRoute(ctx context.Context, serviceID string, service config.Service) (planner.DomainCheck, error) {
+	return s.selectVerifiedServiceRouteWithOptions(ctx, serviceID, service, 0, "", false)
+}
+
+func (s *Server) selectVerifiedServiceRouteWithBudget(ctx context.Context, serviceID string, service config.Service, budget time.Duration) (planner.DomainCheck, error) {
+	return s.selectVerifiedServiceRouteWithOptions(ctx, serviceID, service, budget, "", false)
+}
+
+func (s *Server) selectVerifiedServiceRouteWithOptions(ctx context.Context, serviceID string, service config.Service, budget time.Duration, requestedRouteTag string, fullCheck bool) (planner.DomainCheck, error) {
 	active := s.currentConfig()
 	if active == nil {
 		return planner.DomainCheck{}, errors.New("active configuration is unavailable")
@@ -2214,20 +2576,73 @@ func (s *Server) selectVerifiedServiceRoute(ctx context.Context, serviceID strin
 			match = found
 		}
 	}
+	// A manual preview always establishes the Direct baseline first. A cached
+	// TSPU match is still shown as evidence after that baseline, but must not
+	// hide Direct from the interactive candidate trace before the user chooses
+	// whether to continue with alternatives.
+	if strings.HasPrefix(serviceID, "preview_") {
+		match = tspu.Match{Domain: domain, Status: "NO_MATCH"}
+	}
 
 	revision, _ := s.activeIdentity()
-	probeCtx, cancel := context.WithTimeout(ctx, time.Duration(maxInt(active.Policy.MaxProbeSeconds, 15))*time.Second)
+	probeSeconds := time.Duration(maxInt(active.Policy.MaxProbeSeconds, 15)) * time.Second
+	if fullCheck {
+		// A full matrix is still bounded, but its deadline must cover the
+		// sequential candidate inventory.  The per-route probe timeout remains
+		// the policy value; this only prevents the last candidate from being
+		// cut off by the ordinary quick-check deadline.
+		fullSeconds := maxInt(active.Policy.MaxProbeSeconds, 15) * maxInt(len(active.Routes), 1)
+		fullSeconds = maxInt(fullSeconds, 60)
+		if fullSeconds > 120 {
+			fullSeconds = 120
+		}
+		probeSeconds = time.Duration(fullSeconds) * time.Second
+	}
+	if budget > probeSeconds {
+		probeSeconds = budget
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, probeSeconds)
 	defer cancel()
 	var routeProber planner.RouteProber
 	if s.probeEngineFactory != nil {
 		routeProber = s.probeEngineFactory(&candidate)
 	}
 	check, err := s.domainChecker(probeCtx, &candidate, domain, serviceID, planner.Options{
-		TSPUResult: match, RouteProber: routeProber, HealthTracker: s.healthTracker,
+		TSPUResult: match,
+		// The ordinary UI action is a bounded quick check: stop at the first
+		// fully verified usable route (Direct, then eligible alternatives),
+		// rather than forcing a user to wait for every VLESS server. An
+		// explicit exhaustive comparison can opt into FullCheck through the
+		// dedicated discovery/full-check path.
+		FullCheck: fullCheck || requestedRouteTag != "", QuickCandidates: !fullCheck && requestedRouteTag == "", RequestedRouteTag: requestedRouteTag, RouteProber: routeProber, HealthTracker: s.healthTracker,
 		ActiveRevision: revision,
 	})
 	if err != nil {
 		return check, fmt.Errorf("route preflight failed: %w", err)
+	}
+	if check.VerificationState == "error" {
+		return check, errors.New(check.Reason)
+	}
+	if check.Selected == nil {
+		// A legacy persisted service may carry an old allowed_paths list
+		// (for example zapret/direct/drop) even though TSPU policy now admits
+		// every verified non-Direct route. Rebuild the eligible set from the
+		// live route inventory and evidence instead of letting that stale list
+		// erase a working VLESS result.
+		verified := make([]probe.RouteResult, 0, len(check.Results))
+		for _, result := range check.Results {
+			route, ok := candidate.RouteByTag(result.Route)
+			if !ok || !config.PathAllowed(service, route, candidate.Policy) || !planner.SelectionEvidence(result) {
+				continue
+			}
+			verified = append(verified, result)
+		}
+		if selected := planner.SelectBestWithPolicy(verified, candidate.Policy, service.SelectedRouteTag, s.healthTracker); selected != nil {
+			check.Selected = selected
+			check.Status = "SELECTED"
+			check.VerificationState = "verified"
+			check.Reason = "best_verified_policy_allowed_route"
+		}
 	}
 	if check.Selected == nil {
 		check.Selected = candidateRequiringGuardedApply(check.Results, service.AllowedPaths, candidate.Policy, s.healthTracker)
@@ -2347,7 +2762,7 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusServiceUnavailable, "active_config_unavailable", "Smart DNS state is unavailable until a committed config is restored")
 		return
 	}
-	routes := filterRoutes(active, "smart_dns")
+	routes := smartDNSRoutesInOrder(filterRoutes(active, "smart_dns"))
 	healthIntervalSeconds := 300
 	if active != nil && active.Policy.HealthCheckIntervalSeconds > 0 {
 		healthIntervalSeconds = active.Policy.HealthCheckIntervalSeconds
@@ -2362,7 +2777,7 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 	ready := 0
 	configured := 0
 	now := time.Now().UTC()
-	for _, route := range routes {
+	for order, route := range routes {
 		health, observed := healthByTag[route.Tag]
 		healthFresh := observed && smartDNSHealthFresh(health, now, healthIntervalSeconds)
 		freshness := "stale"
@@ -2371,8 +2786,10 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 		}
 		status := route.Status
 		resolverConfigured := route.DNSServer != "" && !strings.Contains(route.DNSServer, "PLACEHOLDER")
-		validation, validationOK := s.loadSmartDNSValidation(route.DNSServer)
-		resolverReady, nextStatus := smartDNSResolverState(route, health, healthFresh, validationOK)
+		validation, primaryValidationOK := s.loadSmartDNSValidation(route.DNSServer)
+		fallbackValidation, fallbackValidationOK := s.loadSmartDNSValidation(route.DNSFallbackServer)
+		validationOK := primaryValidationOK && (route.DNSFallbackServer == "" || fallbackValidationOK)
+		resolverReady, nextStatus := smartDNSResolverStateForBinding(route, health, healthFresh, validationOK, smartDNSRouteBound(active, route.Tag))
 		status = nextStatus
 		if observed && health.State == "healthy" && !healthFresh && !validationOK && !route.Disabled && resolverConfigured {
 			status = "stale"
@@ -2385,8 +2802,11 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 		}
 		item := map[string]any{
 			"tag": route.Tag, "status": status, "enabled": !route.Disabled,
+			"name":                   smartDNSRouteName(route, order+1),
 			"resolver_configured":    resolverConfigured,
+			"order":                  order + 1,
 			"connect_to_resolved_ip": route.ConnectToResolvedIP,
+			"validation_complete":    validationOK,
 			"health":                 health,
 			"freshness":              freshness,
 			"health_fresh":           healthFresh,
@@ -2397,24 +2817,75 @@ func (s *Server) handleSmartDNS(w http.ResponseWriter, r *http.Request) {
 			host, port, _ := net.SplitHostPort(route.DNSServer)
 			item["resolver_ip"] = host
 			item["resolver_port"] = port
-			if validationOK {
+			if primaryValidationOK {
 				item["last_validation"] = validation
+			}
+			if route.DNSFallbackServer != "" {
+				fallbackHost, fallbackPort, _ := net.SplitHostPort(route.DNSFallbackServer)
+				item["fallback_resolver_ip"] = fallbackHost
+				item["fallback_resolver_port"] = fallbackPort
+				if fallbackValidationOK {
+					item["fallback_validation"] = fallbackValidation
+				}
 			}
 		}
 		items = append(items, item)
 	}
 	writeData(w, r, map[string]any{
-		"configured":       configured > 0,
-		"configured_count": configured,
-		"ready":            ready,
-		"routes":           items,
-		"fallback_order": map[string][]string{
-			"geo":  {"smart_dns", "vless", "drop"},
-			"tspu": {"zapret", "smart_dns", "vless", "drop"},
-		},
-		"success_contract": []string{"safe DNS answer", "connection to returned address", "content check", "egress check when required"},
-		"route_semantics":  "conditional DNS; not a VPN or tunnel",
+		"configured":          configured > 0,
+		"configured_count":    configured,
+		"ready":               ready,
+		"automatic_operation": s.smartDNSAutomaticOperation(),
+		"routes":              items,
+		"selection_semantics": "route types are eligibility constraints; every available candidate is probed and the winner is selected from hard-filtered evidence",
+		"success_contract":    []string{"safe DNS answer", "connection to returned address", "content check", "egress check when required"},
+		"route_semantics":     "conditional DNS; not a VPN or tunnel",
 	})
+}
+
+// smartDNSAutomaticOperation exposes the bounded product flow without
+// leaking its internal ChangeSet operations. The UI can therefore distinguish
+// "being applied" from a resolver that is merely configured but idle.
+func (s *Server) smartDNSAutomaticOperation() map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var selected *ChangeSet
+	for _, change := range s.changes {
+		if !change.AutoApply || !isSmartDNSAutoChangeTitle(change.Title) {
+			continue
+		}
+		switch change.State {
+		case "draft", "validated", "applying", "awaiting_confirmation", "committing", "recovery_required", "requires_device", "failed", "rolled_back", "expired", "committed":
+		default:
+			continue
+		}
+		candidate := change
+		if selected == nil || candidate.UpdatedAt > selected.UpdatedAt {
+			selected = &candidate
+		}
+	}
+	if selected == nil {
+		return nil
+	}
+	return map[string]any{
+		"id":                  selected.ID,
+		"state":               selected.State,
+		"updated_at":          selected.UpdatedAt,
+		"adapter_status":      selected.AdapterStatus,
+		"management_verified": selected.ManagementVerified,
+		"data_plane_verified": selected.DataPlaneVerified,
+		"recovery_required":   selected.State == "recovery_required",
+		"requires_device":     selected.State == "requires_device",
+	}
+}
+
+func isSmartDNSAutoChangeTitle(title string) bool {
+	switch title {
+	case "Configure Smart DNS resolvers", "Remove Smart DNS resolver", "Reorder Smart DNS resolvers":
+		return true
+	default:
+		return false
+	}
 }
 
 // smartDNSHealthFresh prevents a persisted healthy result from becoming an
@@ -2437,16 +2908,28 @@ func smartDNSHealthFresh(health probe.RouteHealth, now time.Time, intervalSecond
 }
 
 func smartDNSResolverState(route config.Route, health probe.RouteHealth, observed, validationOK bool) (bool, string) {
+	return smartDNSResolverStateForBinding(route, health, observed, validationOK, health.LastReason != "route_not_bound_to_verification_plan")
+}
+
+func smartDNSResolverStateForBinding(route config.Route, health probe.RouteHealth, observed, validationOK, routeBound bool) (bool, string) {
 	if route.Disabled || route.DNSServer == "" || strings.Contains(route.DNSServer, "PLACEHOLDER") {
 		return false, route.Status
+	}
+	if !routeBound && !validationOK {
+		// An unused card with an expired validation is stale, not unhealthy:
+		// there is no bound production path whose failure could justify a route
+		// quarantine. The next explicit endpoint check must refresh the proof.
+		return false, "stale"
 	}
 	if observed && health.State == "healthy" {
 		return true, "healthy"
 	}
-	// A resolver cannot have a bound dataplane proof until a service policy
-	// actually uses it. Fresh transport/content validation makes it selectable
-	// for a guarded transaction; confirmation still requires PathVerified.
-	if validationOK && (!observed || health.LastReason == "route_not_bound_to_verification_plan") {
+	// A resolver cannot have a bound dataplane proof until a service policy or
+	// explicit override actually uses it. Fresh transport/content validation
+	// makes an unused card selectable for a guarded transaction; it must not be
+	// reported as unhealthy merely because the observer had no owned domain path
+	// on which to advance an nft counter.
+	if validationOK && (!routeBound || !observed || health.LastReason == "route_not_bound_to_verification_plan") {
 		return true, "validated_idle"
 	}
 	if observed {
@@ -2455,16 +2938,37 @@ func smartDNSResolverState(route config.Route, health probe.RouteHealth, observe
 	return false, route.Status
 }
 
+func smartDNSRouteBound(cfg *config.Config, routeTag string) bool {
+	if cfg == nil || strings.TrimSpace(routeTag) == "" {
+		return false
+	}
+	for _, service := range cfg.Services {
+		if service.SelectedRouteTag == routeTag {
+			return true
+		}
+	}
+	for _, override := range cfg.Overrides {
+		if override.RouteTag == routeTag {
+			return true
+		}
+	}
+	return false
+}
+
 type smartDNSConfigureRequest struct {
 	BaseVersion int64                   `json:"base_version"`
 	Resolvers   []smartDNSResolverInput `json:"resolvers,omitempty"`
 	Endpoints   []string                `json:"endpoints,omitempty"`
 	TestDomain  string                  `json:"test_domain"`
+	AutoApply   bool                    `json:"auto_apply,omitempty"`
 }
 
 type smartDNSResolverInput struct {
-	IP   string `json:"ip"`
-	Port int    `json:"port"`
+	Name         string `json:"name,omitempty"`
+	IP           string `json:"ip"`
+	Port         int    `json:"port"`
+	FallbackIP   string `json:"fallback_ip,omitempty"`
+	FallbackPort int    `json:"fallback_port,omitempty"`
 }
 
 func (s *Server) handleSmartDNSConfigure(w http.ResponseWriter, r *http.Request) {
@@ -2486,16 +2990,6 @@ func (s *Server) handleSmartDNSConfigure(w http.ResponseWriter, r *http.Request)
 		writeError(w, r, http.StatusServiceUnavailable, "active_config_unavailable", "Smart DNS cannot be configured without a committed config")
 		return
 	}
-	routeIndexes := make([]int, 0, 2)
-	for index, route := range active.Routes {
-		if route.Type == "smart_dns" {
-			routeIndexes = append(routeIndexes, index)
-		}
-	}
-	if len(routeIndexes) == 0 {
-		writeError(w, r, http.StatusConflict, "smart_dns_routes_missing", "configuration has no Smart DNS route slots")
-		return
-	}
 	if request.BaseVersion <= 0 {
 		writeError(w, r, http.StatusBadRequest, "invalid_base_version", "base_version must be positive")
 		return
@@ -2506,67 +3000,46 @@ func (s *Server) handleSmartDNSConfigure(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	request.TestDomain = testDomain
-	rawEndpoints := append([]string{}, request.Endpoints...)
-	for _, resolver := range request.Resolvers {
-		if resolver.Port == 0 {
-			rawEndpoints = append(rawEndpoints, strings.TrimSpace(resolver.IP))
-			continue
-		}
-		rawEndpoints = append(rawEndpoints, net.JoinHostPort(strings.TrimSpace(resolver.IP), strconv.Itoa(resolver.Port)))
+	inputs := append([]smartDNSResolverInput{}, request.Resolvers...)
+	for _, endpoint := range request.Endpoints {
+		inputs = append(inputs, smartDNSResolverInput{IP: endpoint})
 	}
-	endpoints := make([]string, 0, len(rawEndpoints))
-	seen := map[string]bool{}
-	for _, raw := range rawEndpoints {
-		endpoint, err := normalizeSmartDNSEndpoint(raw)
-		if err != nil {
-			writeError(w, r, http.StatusBadRequest, "invalid_smart_dns_endpoint", err.Error())
-			return
-		}
-		if !seen[endpoint] {
-			seen[endpoint] = true
-			endpoints = append(endpoints, endpoint)
-		}
-	}
-	if len(endpoints) == 0 || len(endpoints) > len(routeIndexes) {
-		writeError(w, r, http.StatusBadRequest, "invalid_smart_dns_endpoint_count", fmt.Sprintf("provide 1..%d unique Smart DNS endpoints", len(routeIndexes)))
+	routes, cards, err := smartDNSRoutesForInputs(active, inputs)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_smart_dns_endpoint", err.Error())
 		return
 	}
-	validationResults := make([]probe.SmartDNSValidationResult, 0, len(endpoints))
-	for _, endpoint := range endpoints {
-		validationContext, cancel := context.WithTimeout(r.Context(), 25*time.Second)
-		result, validationErr := s.smartDNSValidator(validationContext, endpoint, request.TestDomain)
-		cancel()
-		if validationErr != nil {
-			writeError(w, r, http.StatusUnprocessableEntity, "smart_dns_validation_failed", fmt.Sprintf("%s: %v", endpoint, validationErr))
-			return
+	validationResults := make([]probe.SmartDNSValidationResult, 0, len(cards)*2)
+	validationFailures := make([]string, 0)
+	for _, card := range cards {
+		cardEndpoints := []string{card.Primary}
+		if card.Fallback != "" {
+			cardEndpoints = append(cardEndpoints, card.Fallback)
 		}
-		if err := s.saveSmartDNSValidation(endpoint, request.TestDomain, result); err != nil {
+		for _, endpoint := range cardEndpoints {
+			validationContext, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+			result, validationErr := s.smartDNSValidator(validationContext, endpoint, request.TestDomain)
+			cancel()
+			if validationErr != nil {
+				validationFailures = append(validationFailures, fmt.Sprintf("%s: %v", endpoint, validationErr))
+				continue
+			}
+			validationResults = append(validationResults, result)
+		}
+	}
+	if len(validationFailures) > 0 {
+		writeError(w, r, http.StatusUnprocessableEntity, "smart_dns_validation_failed", strings.Join(validationFailures, "; "))
+		return
+	}
+	for _, result := range validationResults {
+		if err := s.saveSmartDNSValidation(result.Endpoint, request.TestDomain, result); err != nil {
 			writeError(w, r, http.StatusInternalServerError, "smart_dns_validation_store_failed", err.Error())
 			return
 		}
-		validationResults = append(validationResults, result)
 	}
-	operations := make([]ChangeOp, 0, len(routeIndexes)*4)
-	for slot, routeIndex := range routeIndexes {
-		prefix := fmt.Sprintf("/routes/%d", routeIndex)
-		if slot < len(endpoints) {
-			operations = append(operations,
-				ChangeOp{Type: "set", Path: prefix + "/dns_server", Value: endpoints[slot]},
-				ChangeOp{Type: "set", Path: prefix + "/connect_to_resolved_ip", Value: true},
-				ChangeOp{Type: "set", Path: prefix + "/disabled", Value: false},
-				ChangeOp{Type: "set", Path: prefix + "/status", Value: "CONFIGURED"},
-			)
-			continue
-		}
-		operations = append(operations,
-			ChangeOp{Type: "set", Path: prefix + "/dns_server", Value: ""},
-			ChangeOp{Type: "set", Path: prefix + "/connect_to_resolved_ip", Value: false},
-			ChangeOp{Type: "set", Path: prefix + "/disabled", Value: true},
-			ChangeOp{Type: "set", Path: prefix + "/status", Value: "NOT_CONFIGURED"},
-		)
-	}
+	operations := []ChangeOp{{Type: "set", Path: "/routes", Value: routes}}
 	session := currentSession(r)
-	change, err := s.createDraftChange("Configure Smart DNS resolvers", "Validate resolvers before using VPN fallback", request.BaseVersion, operations, session.User)
+	change, err := s.createDraftChangeWithOptions("Configure Smart DNS resolvers", "Validate resolvers before using VPN fallback", request.BaseVersion, operations, session.User, request.AutoApply)
 	if err != nil {
 		if errors.Is(err, errBaseVersionConflict) {
 			writeError(w, r, http.StatusConflict, "base_version_conflict", "base_version does not match current revision")
@@ -2575,7 +3048,11 @@ func (s *Server) handleSmartDNSConfigure(w http.ResponseWriter, r *http.Request)
 		writeError(w, r, http.StatusInternalServerError, "smart_dns_change_failed", err.Error())
 		return
 	}
-	writeData(w, r, map[string]any{"change": change, "endpoint_count": len(endpoints), "validations": validationResults})
+	autoApplyStarted := request.AutoApply && s.startAutoApplyChange(change.ID)
+	writeData(w, r, map[string]any{
+		"change": change, "endpoint_count": len(cards), "validations": validationResults,
+		"auto_apply_requested": request.AutoApply, "auto_apply_started": autoApplyStarted,
+	})
 }
 
 func normalizeSmartDNSEndpoint(raw string) (string, error) {

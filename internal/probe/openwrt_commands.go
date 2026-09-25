@@ -162,7 +162,11 @@ func (c *ExecOpenWrtCommands) ConntrackMark(localIP, connectedIP string) (string
 			}
 			value := strings.TrimPrefix(field, "mark=")
 			mark, err := parseSocketMark(value)
-			if err == nil {
+			// Conntrack can expose an early unmarked tuple before the nft
+			// transition has copied the route mark. Do not treat that transient
+			// zero as authoritative when a later matching tuple carries the
+			// actual managed mark.
+			if err == nil && mark != 0 {
 				return formatSocketMark(mark), nil
 			}
 		}

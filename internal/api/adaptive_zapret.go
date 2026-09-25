@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"sort"
 	"sync"
 	"time"
@@ -88,8 +89,26 @@ func buildAdaptiveRuntime(cfg *config.Config, store *state.Store) (*adaptiveRunt
 	return newAdaptiveRuntime(cfg, store)
 }
 
-func bindAdaptiveCandidate(tx *adapter.Transaction, candidate *config.Config) error {
+func adaptiveBindingRequired(active, candidate *config.Config) bool {
 	if candidate == nil || !candidate.Zapret.AdaptiveEnabled {
+		return false
+	}
+	if active == nil || !active.Zapret.AdaptiveEnabled {
+		return true
+	}
+	return candidate.Zapret.AdaptiveCatalogFile != active.Zapret.AdaptiveCatalogFile ||
+		!reflect.DeepEqual(candidate.Zapret.AdaptiveAssignments, active.Zapret.AdaptiveAssignments) ||
+		!reflect.DeepEqual(candidate.Zapret.DeviceProfiles, active.Zapret.DeviceProfiles)
+}
+
+func bindAdaptiveCandidate(tx *adapter.Transaction, active, candidate *config.Config) error {
+	if candidate == nil || !candidate.Zapret.AdaptiveEnabled {
+		return nil
+	}
+	// Ordinary service/route edits inherit the already-bound adaptive artifact.
+	// Rebinding it here would incorrectly require a new deployment-ready
+	// transaction even though no Zapret profile changed.
+	if !adaptiveBindingRequired(active, candidate) {
 		return nil
 	}
 	profiles, bundles, err := zapret.LoadCatalogFile(candidate.Zapret.AdaptiveCatalogFile)
@@ -119,6 +138,16 @@ func validateAdaptiveAssignments(cfg *config.Config, profiles *zapret.Catalog, b
 		bundle, ok := bundles.Lookup(assignment.BundleID)
 		if !ok {
 			return fmt.Errorf("adaptive bundle %s is unavailable", assignment.BundleID)
+		}
+		// A service deletion can leave a previously committed adaptive
+		// assignment without any remaining domain that belongs to the bundle.
+		// That assignment is dormant: it cannot affect dataplane traffic and
+		// must not make an otherwise unrelated service deletion fail merely
+		// because its fallback route is not present in the candidate.  Keep the
+		// assignment in the typed config so a later service can reuse it, but
+		// validate route policy only while the bundle is actually referenced.
+		if len(adaptiveBundleServiceNames(cfg, runtime, bundle.ID)) == 0 {
+			continue
 		}
 		if !adaptiveRouteAllowed(cfg, runtime, bundle.ID, bundle.FailureRoute) {
 			return fmt.Errorf("adaptive bundle %s has unavailable failure route %s", bundle.ID, bundle.FailureRoute)

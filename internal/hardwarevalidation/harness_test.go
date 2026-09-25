@@ -59,22 +59,19 @@ func TestBaselineRequiresBoundRecoveryAndWritesRedactedSnapshots(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeTestFile(t, filepath.Join(paths.RuntimeDir, "active-transaction.env"), "transaction_state=committed\n")
-	writeTestFile(t, filepath.Join(paths.InitDir, paths.WatchdogService), "#!/bin/sh\n")
 	digest := sha256.Sum256([]byte("fixture"))
 	buildDigest := hex.EncodeToString(digest[:])
 	runner := fakeRunner{outputs: map[string][]byte{
-		paths.RouterPolicy + " status":                                   []byte(`{"platform":"openwrt"}`),
-		paths.RouterPolicy + " validate-config":                          []byte(`{"valid":true}`),
-		filepath.Join(paths.InitDir, paths.WatchdogService) + " running": []byte{},
-		filepath.Join(paths.InitDir, paths.WatchdogService) + " enabled": []byte{},
-		paths.DFBinary + " -Pk /":                                        []byte("Filesystem 1024-blocks Used Available Capacity Mounted on\nroot 1000000 1 999999 1% /\n"),
-		paths.UbusBinary + " call system board":                          []byte(`{"model":"GL-MT6000","board_name":"glinet,gl-mt6000","kernel":"6.6","release":{"distribution":"OpenWrt","version":"24.10.4","description":"fixture"}}`),
-		"uname -m":                                                       []byte("aarch64\n"),
-		paths.NftBinary + " list table inet router_policy":               []byte("ip 192.0.2.1 ipv6 2001:db8::1\n"),
-		paths.IPBinary + " rule show":                                    []byte("from 192.0.2.1\n"),
-		paths.IPBinary + " -6 rule show":                                 []byte("from 2001:db8::1\n"),
-		paths.IPBinary + " route show table all":                         []byte("default via 192.0.2.1\n"),
-		paths.IPBinary + " -6 route show table all":                      []byte("default via 2001:db8::1\n"),
+		paths.RouterPolicy + " status":                     []byte(`{"platform":"openwrt"}`),
+		paths.RouterPolicy + " validate-config":            []byte(`{"valid":true}`),
+		paths.DFBinary + " -Pk /":                          []byte("Filesystem 1024-blocks Used Available Capacity Mounted on\nroot 1000000 1 999999 1% /\n"),
+		paths.UbusBinary + " call system board":            []byte(`{"model":"GL-MT6000","board_name":"glinet,gl-mt6000","kernel":"6.6","release":{"distribution":"OpenWrt","version":"24.10.4","description":"fixture"}}`),
+		"uname -m":                                         []byte("aarch64\n"),
+		paths.NftBinary + " list table inet router_policy": []byte("ip 192.0.2.1 ipv6 2001:db8::1\n"),
+		paths.IPBinary + " rule show":                      []byte("from 192.0.2.1\n"),
+		paths.IPBinary + " -6 rule show":                   []byte("from 2001:db8::1\n"),
+		paths.IPBinary + " route show table all":           []byte("default via 192.0.2.1\n"),
+		paths.IPBinary + " -6 route show table all":        []byte("default via 2001:db8::1\n"),
 	}}
 	runDir := filepath.Join(root, "evidence")
 	harness := Harness{Runner: runner, Paths: paths, Now: func() time.Time { return time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC) }}

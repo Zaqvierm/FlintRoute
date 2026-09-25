@@ -465,7 +465,11 @@ func statusFromRecord(record Record, release Release, health Health) Status {
 	}
 	switch record.Kind {
 	case KindXray:
-		status.NextActions = []string{"add_subscription", "add_manual_server"}
+		if health.Ready {
+			status.NextActions = []string{"verify_vless_routes"}
+		} else {
+			status.NextActions = []string{"activate_vless_route"}
+		}
 	case KindZapret:
 		status.NextActions = []string{"run_calibration"}
 	case KindTGWS:

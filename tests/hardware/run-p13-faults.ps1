@@ -80,7 +80,7 @@ $serviceDeadline = (Get-Date).AddMinutes(2)
 while ((Get-Date) -lt $serviceDeadline) {
   $serviceExit = 1
   try {
-    & $ssh @sshArgs "/etc/init.d/router-policy running && /etc/init.d/router-policy-watchdog running && /etc/init.d/router-policy-zapret running && /etc/init.d/router-policy-xray running && ROUTER_POLICY_CONFIG=/etc/router-policy/config/default.json /usr/bin/router-policy status >/dev/null" 2>$null
+    & $ssh @sshArgs "/etc/init.d/router-policy running && /etc/init.d/router-policy-zapret running && /etc/init.d/router-policy-xray running && ROUTER_POLICY_CONFIG=/etc/router-policy/config/default.json /usr/bin/router-policy status >/dev/null" 2>$null
     $serviceExit = $LASTEXITCODE
   } catch {
     $serviceExit = 1

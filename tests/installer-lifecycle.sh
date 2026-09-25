@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck disable=SC2030,SC2031
 # These globals are intentionally assigned for functions loaded from
 # install.sh; static analysis cannot see their cross-file consumers.
 # shellcheck disable=SC2034
@@ -100,7 +101,7 @@ run_install() {
 }
 
 install_service_sentinels() {
-  for service in router-policy-dns-observer router-policy-boot-guard router-policy-helper router-policy router-policy-watchdog router-policy-xray router-policy-zapret; do
+  for service in router-policy-dns-observer router-policy-boot-guard router-policy-helper router-policy router-policy-xray router-policy-zapret; do
     cat > "$SYSTEM_ROOT/etc/init.d/$service" <<'SH'
 #!/bin/sh
 printf '%s\n' "$0:$*" >> "$SERVICE_CONTROL_LOG"
@@ -316,6 +317,61 @@ ROUTER_POLICY_HEALTH_ATTEMPTS=3
 export HEALTH_COUNTER PATH ROUTER_POLICY_INSTALL_LIB_ONLY RUNTIME_DIR ROUTER_POLICY_HEALTH_ATTEMPTS
 # shellcheck source=install.sh
 . "$ROOT/install.sh"
+
+# A one-time migration may remove the old watchdog only when the exact
+# allowlisted legacy bytes and the previous managed-file manifest agree.
+LEGACY_MIGRATION_INIT="$TMP/legacy-migration-init"
+LEGACY_MIGRATION_PREFIX="$TMP/legacy-migration-prefix"
+mkdir -p "$LEGACY_MIGRATION_INIT" "$LEGACY_MIGRATION_PREFIX"
+cat > "$LEGACY_MIGRATION_INIT/router-policy-watchdog" <<'SH'
+#!/bin/sh /etc/rc.common
+# shellcheck disable=SC2034
+
+START=96
+STOP=9
+USE_PROCD=1
+
+start_service() {
+  procd_open_instance router-policy-watchdog
+	procd_set_param command /usr/bin/router-policy watchdog --health-url http://127.0.0.1:8787/api/v1/health --interval 60s --startup-grace 90s --failure-threshold 3 --inhibit-file /tmp/router-policy/watchdog-inhibit.json --service-script /etc/init.d/router-policy
+  procd_set_param respawn 5 5 0
+  procd_set_param stdout 1
+  procd_set_param stderr 1
+  procd_close_instance
+}
+SH
+chmod 755 "$LEGACY_MIGRATION_INIT/router-policy-watchdog"
+printf '%s|%s\n' "$LEGACY_MIGRATION_INIT/router-policy-watchdog" "$LEGACY_WATCHDOG_SHA256" > "$LEGACY_MIGRATION_PREFIX/.managed-files.manifest"
+# shellcheck disable=SC2030,SC2031
+(
+saved_system_root="$SYSTEM_ROOT"
+saved_init_dir="$INIT_DIR"
+saved_prefix="$PREFIX"
+saved_manifest="$MANAGED_FILE_MANIFEST"
+saved_legacy_target="$LEGACY_WATCHDOG_TARGET"
+SYSTEM_ROOT=""
+INIT_DIR="$LEGACY_MIGRATION_INIT"
+PREFIX="$LEGACY_MIGRATION_PREFIX"
+MANAGED_FILE_MANIFEST="$LEGACY_MIGRATION_PREFIX/.managed-files.manifest"
+LEGACY_WATCHDOG_TARGET="$LEGACY_MIGRATION_INIT/router-policy-watchdog"
+run_bounded() {
+  case "${2:-}" in
+    running) return 1 ;;
+    stop|disable) return 0 ;;
+    *) return 0 ;;
+  esac
+}
+remove_legacy_watchdog
+[ ! -e "$LEGACY_MIGRATION_INIT/router-policy-watchdog" ] || {
+  echo "owned legacy watchdog was not removed" >&2
+  exit 1
+}
+SYSTEM_ROOT="$saved_system_root"
+INIT_DIR="$saved_init_dir"
+PREFIX="$saved_prefix"
+MANAGED_FILE_MANIFEST="$saved_manifest"
+LEGACY_WATCHDOG_TARGET="$saved_legacy_target"
+)
 
 # A runtime UCI confdir is input, not an ownership grant.  The installer must
 # reject a path such as /etc/shadow before it can add an observer target to the
@@ -582,7 +638,6 @@ SERVICE_STATE_FIXTURE="$TMP/service-state-fixture"
 mkdir -p "$SERVICE_STATE_FIXTURE/install-rollback"
 cat > "$SERVICE_STATE_FIXTURE/install-rollback/services.txt" <<'EOF'
 router-policy|1|1
-router-policy-watchdog|1|1
 router-policy-xray|1|0
 router-policy-zapret|0|0
 EOF
@@ -595,7 +650,7 @@ fi
 
 RESTART_INIT="$TMP/restart-init"
 mkdir -p "$RESTART_INIT"
-for service in router-policy router-policy-watchdog router-policy-xray router-policy-zapret; do
+for service in router-policy router-policy-xray router-policy-zapret; do
   cat > "$RESTART_INIT/$service" <<'SH'
 #!/bin/sh
 printf '%s:%s\n' "${0##*/}" "$1" >> "$SERVICE_SEQUENCE_LOG"
@@ -606,7 +661,6 @@ done
 cat > "$SERVICE_STATE_FIXTURE/install-rollback/services.txt" <<'EOF'
 router-policy-helper|1|1
 router-policy|1|1
-router-policy-watchdog|1|1
 router-policy-xray|1|1
 router-policy-zapret|1|1
 EOF
@@ -626,7 +680,6 @@ restart_running_services
 grep -Fx 'router-policy-helper:start' "$SERVICE_SEQUENCE_LOG" >/dev/null
 grep -Fx 'router-policy:start' "$SERVICE_SEQUENCE_LOG" >/dev/null
 grep -Fx 'control:healthy' "$SERVICE_SEQUENCE_LOG" >/dev/null
-grep -Fx 'router-policy-watchdog:start' "$SERVICE_SEQUENCE_LOG" >/dev/null
 if grep -E '^router-policy-(xray|zapret):restart$' "$SERVICE_SEQUENCE_LOG" >/dev/null; then
   echo "installer restarted production dataplane providers" >&2
   exit 1
@@ -634,9 +687,9 @@ fi
 controller_line=$(grep -n '^router-policy:start$' "$SERVICE_SEQUENCE_LOG" | cut -d: -f1)
 helper_line=$(grep -n '^router-policy-helper:start$' "$SERVICE_SEQUENCE_LOG" | cut -d: -f1)
 health_line=$(grep -n '^control:healthy$' "$SERVICE_SEQUENCE_LOG" | cut -d: -f1)
-watchdog_line=$(grep -n '^router-policy-watchdog:start$' "$SERVICE_SEQUENCE_LOG" | cut -d: -f1)
-[ "$helper_line" -lt "$controller_line" ] && [ "$controller_line" -lt "$health_line" ] && [ "$health_line" -lt "$watchdog_line" ] || {
-  echo "controller/watchdog recovery order is unsafe" >&2
+
+[ "$helper_line" -lt "$controller_line" ] && [ "$controller_line" -lt "$health_line" ] || {
+	echo "controller recovery order is unsafe" >&2
   exit 1
 }
 
@@ -656,11 +709,10 @@ sha256sum "$ROLLBACK_BACKUP/install-rollback/files.tar" | awk '{print $1}' > "$R
 cat > "$ROLLBACK_BACKUP/install-rollback/services.txt" <<'EOF'
 router-policy-helper|0|0
 router-policy|1|1
-router-policy-watchdog|1|1
 router-policy-xray|1|1
 router-policy-zapret|1|1
 EOF
-for service in router-policy router-policy-watchdog router-policy-xray router-policy-zapret; do
+for service in router-policy router-policy-xray router-policy-zapret; do
   cat > "$ROLLBACK_INIT/$service" <<'SH'
 #!/bin/sh
 if [ "${0##*/}" = "router-policy" ] && [ "$1" = "start" ]; then exit 1; fi
@@ -686,7 +738,7 @@ export ROLLBACK_HELPER_STATE ROLLBACK_HELPER_LOG
 BACKUP_DIR="$ROLLBACK_BACKUP"
 INIT_DIR="$ROLLBACK_INIT"
 INSTALL_TARGETS="$ROLLBACK_TARGET"
-ENABLE_SERVICES="router-policy-helper router-policy router-policy-watchdog router-policy-xray router-policy-zapret"
+ENABLE_SERVICES="router-policy-helper router-policy router-policy-xray router-policy-zapret"
 if rollback_output=$(restore_installation 2>&1); then
   echo "rollback reported success after controller restoration failed" >&2
   exit 1
@@ -712,7 +764,6 @@ printf 'present|%s\n' "$ROLLBACK_TARGET" > "$ROLLBACK_BACKUP/install-rollback/ma
 
 cat > "$ROLLBACK_BACKUP/install-rollback/services.txt" <<'EOF'
 router-policy|1|1
-router-policy-watchdog|1|1
 router-policy-xray|1|1
 foreign-service|1|1
 EOF
@@ -724,7 +775,6 @@ printf '%s\n' "$unowned_service_output" | grep -F 'unowned service manifest entr
 [ "$(cat "$ROLLBACK_TARGET")" = "changed-again" ]
 cat > "$ROLLBACK_BACKUP/install-rollback/services.txt" <<'EOF'
 router-policy|1|1
-router-policy-watchdog|1|1
 router-policy-xray|1|1
 router-policy-zapret|1|1
 EOF

@@ -1,6 +1,6 @@
 # API и плоскость управления
 
-> **Статус на `e97f8dd`:** API-контракт и локальные проверки актуальны. Любые
+> **Статус на `5fdaa63`:** API-контракт и локальные проверки актуальны. Любые
 > аппаратные результаты, упомянутые ниже, относятся к старым SHA и имеют
 > `STALE FOR CURRENT SHA`.
 
@@ -42,13 +42,14 @@ state-changing операция идёт через API и ChangeSet.
 
 | Конечная точка | Цель |
 |---|---|
-| `/api/v1/health` | неаутентифицированный health локального watchdog |
+| `/api/v1/health` | неаутентифицированный health control plane, recovery и adapter consistency; procd владеет lifecycle |
 | `/api/v1/auth/login` `setup` `logout` `me` | жизненный цикл сессии |
 | `/api/v1/overview` | обзор провайдера |
 | `/api/v1/topology` | топология, собранная из ubus, аренды, соседей, мостовой FDB и беспроводных станций; `privacy=hidden` редактирует адреса клиентов |
 | `/api/v1/devices` | LAN/гостевые/удаленные клиенты; адреса видны по умолчанию, и `privacy=hidden` удаляет необработанные значения перед сериализацией |
 | `/api/v1/services` | сконфигурированные и динамически наблюдаемые сервисы |
-| `/api/v1/services/classify` | создание или редактирование правила домена через черновик ChangeSet; необязательный `allowed_paths` сохраняет определенный пользователем резервный порядок |
+| `/api/v1/services/classify` | проверить и применить правило домена через bounded ChangeSet; `service_id` сохраняет существующее правило при переносе, `allowed_paths` задаёт только допустимые типы маршрутов |
+| `/api/v1/services/delete` | удалить committed service rule через bounded ChangeSet и автоматическое подтверждение |
 | `/api/v1/discovery` | текущий режим discovery, лимиты, состояние circuit breaker и suggestions |
 | `/api/v1/discovery/configure` | сохранение режима/ограничений обнаружения плоскости управления без изменения плоскости данных; при необходимости сбросить паузу отката |
 | `/api/v1/domains` | кэш политики / решения домена |
@@ -65,7 +66,7 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/diagnostics` | Происхождение диагностики сети (источник/хэш/срок действия/моделирование) |
 | `/api/v1/lifecycle` | procd ownership, PID/start time/executable/config и test-run manifests |
 | `/api/v1/storage` | storage sizes, rollback state и логические write counters |
-| `/api/v1/smart-dns` | отредактированное состояние и резервный порядок Smart DNS |
+| `/api/v1/smart-dns` | состояние именованных Smart DNS-кандидатов и динамическая selection semantics |
 | `/api/v1/smart-dns/configure` | проверить преобразователь IP/Port по UDP+ TCP DNS и HTTP/TLS, затем создать черновик ChangeSet |
 | `/api/v1/zapret` | управляемое состояние Zapret/nfqws И состояние контактов |
 | `/api/v1/zapret/setup/check` | проверить закрепленный источник/версию/SHA, двоичный, архитектура, NFQUEUE и nfqws сухой запуск без изменения конфигурации |
@@ -96,14 +97,25 @@ state-changing операция идёт через API и ChangeSet.
 | `/api/v1/telegram/test` | отправить настоящее тестовое уведомление |
 | `/api/v1/external-socks` | внешняя зависимость и статус маршрута |
 | `/api/v1/external-socks/check` | TCP/SOCKS5/удаленное соединение/TLS/HTTP предполет без изменений конфигурации |
-| `/api/v1/external-socks/activate` | создать один явный ChangeSet для связывания Xray, маршрута и тестового домена |
+| `/api/v1/external-socks/activate` | проверить и применить связывание Xray, маршрута и тестового домена через bounded ChangeSet |
 
 Конечные точки настройки VLESS и Zapret являются нормальной поверхностью управления, обращенной к пользователю.
 `/api/v1/changes` остается механизмом транзакций и продвинутым/разработчиком
 интерфейс; пользователям не нужно создавать указатели JSON для любого провайдера.
-Обе конечные точки активации создают только черновик. Стандарт
-Путь `validate → apply → VerifyManagementPath → VerifyDataPlane → confirm`
-по-прежнему является авторитетным; неудачное доказательство откатывает транзакцию назад.
+Явное действие активации может запросить автоматическое продолжение после
+создания черновика. Стандартный путь `validate → apply → VerifyManagementPath
+→ VerifyDataPlane → confirm` по-прежнему является авторитетным; неудачное
+доказательство откатывает транзакцию или переводит её в `requires_device`.
+
+`/api/v1/services/classify` принимает необязательный `selected_route_tag` для
+явного действия «применить подтверждённый маршрут». Backend повторно проверяет
+именно этот route tag и отклоняет подмену другим кандидатом. `system-default`
+остаётся только немаркированным baseline неизвестного домена и не может быть
+сохранён как управляемый route.
+
+ChangeSet states `prepared`, `applying`, `verifying` и `rolling_back` являются
+промежуточными; клиент обязан продолжать polling до terminal state. Состояние
+`prepared` само по себе не означает ни успех, ни rollback.
 
 Ручной ввод VLESS использует отдельное секретное хранилище в каталоге состояния Xray.
 API принимает URI `vless://`, проверяет поддерживаемые поля транспорта/безопасности,
@@ -276,3 +288,22 @@ Production CLI commands resolve `/etc/router-policy/config/default.json` when
 exclusive lock; a concurrent CLI state reader reports `persistent state is
 busy` and does not enter rescue mode or create a forensic copy. Rescue mode is
 reserved for an unreadable or structurally invalid database.
+### Smart DNS cards
+
+`POST /api/v1/smart-dns/configure` accepts named cards. Each card has one
+primary resolver (`ip`, optional `port`) and may have one ordered fallback
+resolver (`fallback_ip`, optional `fallback_port`). The endpoint validates
+each address independently before the bounded background ChangeSet continues.
+
+`POST /api/v1/smart-dns/remove` clears and disables one owned card by
+`route_tag`, then returns the ChangeSet whose committed state is authoritative.
+`POST /api/v1/smart-dns/reorder` accepts the complete resolver preference list
+for DNS fallback only. Neither field is a winner-order for cross-type route
+selection. Both operations use the normal recovery fence and transaction
+protocol; no foreign route is deleted or overwritten.
+
+Product actions from the UI request `auto_apply=true` only for an explicit
+administrator action. The API still persists the draft first, then advances it
+through validate/apply/confirm. A background failure is persisted as
+`failed`, `requires_device` or `recovery_required`; it is never left as an
+unexplained permanent `draft`.

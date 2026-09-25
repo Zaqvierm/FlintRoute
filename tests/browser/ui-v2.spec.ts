@@ -388,6 +388,265 @@ test.describe('FlintRoute UI v2', () => {
     await expect(page.getByText('Безопасный маршрут не найден')).toBeVisible();
   });
 
+  test('offers applying a verified configured route through the transaction API', async ({ page }) => {
+    let verifyCalls = 0;
+    let classifyCalls = 0;
+    await mockAPI(page);
+    await page.route('**/api/v1/health', async (route) => {
+      await route.fulfill(envelope({ status: 'ok', recovery_status: 'ok', checked_at: new Date().toISOString() }));
+    });
+    await page.route('**/api/v1/services/verify', async (route) => {
+      verifyCalls += 1;
+      await route.fulfill(envelope({
+        service_id: 'Discord', domain: 'discord.com', status: 'SELECTED', verification_state: 'verified',
+        path_verified: true, selected_route_tag: 'proxy-5', selected_route_type: 'vless',
+        checked_at: new Date().toISOString(), evidence_persisted: 1,
+        candidates: [{ route: 'proxy-5', route_type: 'vless', status: 'OK', path_verified: true, service_ok: true, reason: 'route_path_verified' }]
+      }));
+    });
+    await page.route('**/api/v1/services/classify', async (route) => {
+      classifyCalls += 1;
+      await route.fulfill(envelope({
+        change: { id: 'fixture-change', state: 'committed', version: 2 },
+        auto_apply_requested: true, auto_apply_started: true, selected_route_tag: 'proxy-5', selected_route_type: 'vless', path_verified: true
+      }));
+    });
+    await page.goto('/?screen=Сервисы');
+    await page.getByRole('button', { name: 'Открыть', exact: true }).first().click();
+    const drawer = page.getByRole('dialog');
+    await drawer.getByRole('button', { name: /Проверить путь/ }).click();
+    await expect.poll(() => verifyCalls).toBe(1);
+    await drawer.getByRole('button', { name: /Применить подтверждённый маршрут/ }).click();
+    await expect.poll(() => classifyCalls).toBe(1);
+  });
+
+  test('pins a fresh observed route without rechecking and omits the observation display id', async ({ page }) => {
+    let classifyBody: Record<string, unknown> | undefined;
+    let verificationCalls = 0;
+    await mockAPI(page);
+    await page.route('**/api/v1/services', async (route) => route.fulfill(envelope([{
+      id: 'UNKNOWN:amazon.com', display_name: 'amazon.com', category: 'DIRECT_PREFERRED',
+      domains: ['amazon.com'], allowed_paths: ['direct', 'smart_dns', 'vless', 'drop'],
+      eligible_route_types: ['direct', 'smart_dns', 'vless', 'drop'], source: 'automatic', sources: ['automatic'],
+      applied: false, selected_route_tag: 'smart', selected_route_type: 'smart_dns', status: 'SELECTED',
+      probe_state: 'verified_candidate', evidence_fresh: true,
+      checked_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString(),
+      candidate_matrix: [{ route: 'smart', route_type: 'smart_dns', status: 'OK', selected: true, path_verified: true, service_ok: true }]
+    }])));
+    await page.route('**/api/v1/services/verify', async (route) => {
+      verificationCalls += 1;
+      await route.fulfill(envelope({ error: { code: 'unexpected_reprobe', message: 'fresh evidence should be reused' } }, 500));
+    });
+    await page.route('**/api/v1/services/classify', async (route) => {
+      classifyBody = route.request().postDataJSON() as Record<string, unknown>;
+      await route.fulfill(envelope({
+        change: { id: 'pin-observed-change', state: 'committed', version: 3 },
+        auto_apply_requested: true, auto_apply_started: true, verification_reused: true,
+        verification_checked_at: new Date().toISOString(), selected_route_tag: 'smart',
+        selected_route_type: 'smart_dns', path_verified: true
+      }));
+    });
+    await page.route('**/api/v1/health', async (route) => route.fulfill(envelope({ status: 'ok', recovery_status: 'ok', checked_at: new Date().toISOString() })));
+    await page.route('**/api/v1/changes/pin-observed-change', async (route) => route.fulfill(envelope({ id: 'pin-observed-change', state: 'committed', version: 3, title: 'Pin observed route', validation: [] })));
+    await page.goto('/?screen=%D0%A1%D0%B5%D1%80%D0%B2%D0%B8%D1%81%D1%8B');
+    const card = page.locator('.service-card').filter({ hasText: 'amazon.com' });
+    await card.locator('button.service-edit').click();
+    const editor = page.getByRole('dialog');
+    const apply = editor.locator('button.primary').last();
+    await expect(apply).toBeEnabled();
+    await expect(editor.locator('.service-preview')).toContainText('smart');
+    await apply.click();
+    await expect.poll(() => classifyBody).toBeDefined();
+    expect(classifyBody?.domain).toBe('amazon.com');
+    expect(classifyBody?.service_id).toBeUndefined();
+    expect(classifyBody?.selected_route_tag).toBe('smart');
+    expect(verificationCalls).toBe(0);
+    await expect(editor).toHaveCount(0);
+  });
+
+  test('does not offer an expired observed route as a verified candidate', async ({ page }) => {
+    await mockAPI(page);
+    await page.route('**/api/v1/services', async (route) => route.fulfill(envelope([{
+      id: 'UNKNOWN:amazon.com', display_name: 'amazon.com', category: 'DIRECT_PREFERRED',
+      domains: ['amazon.com'], allowed_paths: ['direct', 'smart_dns', 'vless', 'drop'],
+      eligible_route_types: ['direct', 'smart_dns', 'vless', 'drop'], source: 'automatic', sources: ['automatic'],
+      applied: false, selected_route_tag: 'smart', selected_route_type: 'smart_dns', status: 'STALE_EVIDENCE',
+      probe_state: 'stale_evidence', verification_state: 'stale_evidence', evidence_fresh: false,
+      checked_at: '2026-09-22T10:48:38Z', expires_at: '2026-09-23T10:48:38Z',
+      candidate_matrix: [{ route: 'smart', route_type: 'smart_dns', status: 'OK', selected: true, path_verified: true, service_ok: true }]
+    }])));
+    await page.route('**/api/v1/health', async (route) => route.fulfill(envelope({ status: 'ok', recovery_status: 'ok', checked_at: new Date().toISOString() })));
+    await page.goto('/?screen=%D0%A1%D0%B5%D1%80%D0%B2%D0%B8%D1%81%D1%8B');
+    const card = page.locator('.service-card').filter({ hasText: 'amazon.com' });
+    await expect(card.locator('button.service-edit')).toHaveText('Проверить и закрепить');
+    await card.locator('button.service-edit').click();
+    const editor = page.getByRole('dialog');
+    await expect(editor.locator('.service-preview')).toHaveCount(0);
+    await expect(editor.locator('button.primary').last()).toBeDisabled();
+    await expect(editor.getByRole('button', { name: /Проверить домен/ })).toBeEnabled();
+  });
+
+  test('creates a manual domain rule from one verification and keeps it after reload', async ({ page }) => {
+    let ruleCreated = false;
+    let verificationCalls = 0;
+    let classifyBody: Record<string, unknown> | undefined;
+    await mockAPI(page);
+    await page.route('**/api/v1/health', async (route) => route.fulfill(envelope({ status: 'ok', recovery_status: 'ok', checked_at: new Date().toISOString() })));
+    await page.route('**/api/v1/services', async (route) => route.fulfill(envelope([
+      { id: 'Discord', name: 'Discord', category: 'TELEGRAM', domains: ['discord.com'], route: 'VLESS', applied: true, source: 'configured', health: 'ready' },
+      ...(ruleCreated ? [{ id: 'user_example_com', name: 'example.com', category: 'DIRECT_PREFERRED', domains: ['example.com'], allowed_paths: ['direct'], selected_route_tag: 'direct', applied: true, source: 'configured', health: 'CONFIGURED' }] : [])
+    ])));
+    await page.route('**/api/v1/services/verify', async (route) => {
+      verificationCalls += 1;
+      const body = route.request().postDataJSON() as { domain?: string; service_id?: string };
+      expect(body.domain).toBe('example.com');
+      expect(body.service_id).toBe('');
+      await route.fulfill(envelope({
+        service_id: 'preview_example_com', domain: 'example.com', status: 'SELECTED', verification_state: 'verified',
+        path_verified: true, selected_route_tag: 'direct', selected_route_type: 'direct',
+        checked_at: new Date().toISOString(), evidence_persisted: 1,
+        candidates: [{ route: 'direct', route_type: 'direct', status: 'OK', path_verified: true, service_ok: true, reason: 'route_path_verified' }]
+      }));
+    });
+    await page.route('**/api/v1/services/classify', async (route) => {
+      classifyBody = route.request().postDataJSON() as Record<string, unknown>;
+      ruleCreated = true;
+      await route.fulfill(envelope({
+        change: { id: 'create-manual-change', state: 'committed', version: 3 },
+        auto_apply_requested: true, auto_apply_started: true, selected_route_tag: 'direct',
+        selected_route_type: 'direct', path_verified: true, verification_reused: true
+      }));
+    });
+    await page.route('**/api/v1/changes/create-manual-change', async (route) => route.fulfill(envelope({ id: 'create-manual-change', state: 'committed', version: 3, title: 'Create manual rule', validation: [] })));
+    await page.goto('/?screen=%D0%A1%D0%B5%D1%80%D0%B2%D0%B8%D1%81%D1%8B');
+    await page.locator('.service-toolbar button.primary').click();
+    const editor = page.locator('.service-rule-dialog');
+    await editor.locator('input[placeholder="example.com"]').fill('example.com');
+    await editor.locator('.actions button.primary').first().click();
+    await expect(editor.locator('.service-preview')).toContainText('direct');
+    await editor.locator('button.primary').last().click();
+    await expect.poll(() => classifyBody).toBeDefined();
+    expect(verificationCalls).toBe(1);
+    expect(classifyBody?.domain).toBe('example.com');
+    expect(classifyBody?.service_id).toBeUndefined();
+    expect(classifyBody?.selected_route_tag).toBe('direct');
+    await expect(page.locator('.service-table tbody tr')).toHaveCount(2);
+    await page.reload();
+    await expect(page.locator('.service-table tbody tr')).toHaveCount(2);
+    await expect(page.locator('.service-table')).toContainText('example.com');
+  });
+
+  test('marks route edits as group-wide and locks the domain list', async ({ page }) => {
+    await mockAPI(page);
+    await page.route('**/api/v1/health', async (route) => route.fulfill(envelope({ status: 'ok', recovery_status: 'ok', checked_at: new Date().toISOString() })));
+    await page.route('**/api/v1/services', async (route) => route.fulfill(envelope([{
+      id: 'media', display_name: 'Media', category: 'DIRECT_PREFERRED',
+      domains: ['video.example', 'cdn.video.example'], allowed_paths: ['direct', 'smart_dns'],
+      selected_route_tag: 'direct', selected_route_type: 'direct', applied: true,
+      source: 'configured', sources: ['configured'], status: 'CONFIGURED', probe_state: 'not_checked'
+    }])));
+    await page.goto('/?screen=%D0%A1%D0%B5%D1%80%D0%B2%D0%B8%D1%81%D1%8B');
+    await page.locator('.service-table tbody tr').first().locator('button').click();
+    const drawer = page.getByRole('dialog').first();
+    await drawer.locator('button.primary').last().click();
+    const editor = page.locator('.service-rule-dialog');
+    await expect(editor.locator('input[placeholder="example.com"]')).toHaveAttribute('readonly', '');
+    await expect(editor.locator('p.action-status').filter({ hasText: '2' })).toBeVisible();
+  });
+
+  test('offers an explicit full route matrix after the quick direct check', async ({ page }) => {
+    const requests: Array<{ full_check?: boolean }> = [];
+    await mockAPI(page);
+    await page.route('**/api/v1/health', async (route) => {
+      await route.fulfill(envelope({ status: 'ok', recovery_status: 'ok', checked_at: new Date().toISOString() }));
+    });
+    await page.route('**/api/v1/services/verify', async (route) => {
+      const body = route.request().postDataJSON() as { full_check?: boolean };
+      requests.push(body);
+      const candidates = body.full_check
+        ? [
+            { route: 'direct', route_type: 'direct', status: 'OK', path_verified: true, service_ok: true, reason: 'route_path_verified' },
+            { route: 'zapret', route_type: 'zapret', status: 'OK', path_verified: true, service_ok: true, reason: 'route_path_verified' },
+            { route: 'smart-dns-primary', route_type: 'smart_dns', status: 'OK', path_verified: true, service_ok: true, reason: 'route_path_verified' }
+          ]
+        : [{ route: 'direct', route_type: 'direct', status: 'OK', path_verified: true, service_ok: true, reason: 'route_path_verified' }];
+      await route.fulfill(envelope({
+        service_id: 'preview_example_com', domain: 'example.com', status: 'SELECTED', verification_state: 'verified',
+        path_verified: true, selected_route_tag: 'direct', selected_route_type: 'direct',
+        checked_at: new Date().toISOString(), evidence_persisted: 0, candidates
+      }));
+    });
+    await page.goto('/?screen=Сервисы');
+    await page.getByRole('button', { name: '+ Новое правило' }).click();
+    const editor = page.getByRole('dialog');
+    await editor.getByPlaceholder('example.com').fill('example.com');
+    await editor.getByRole('button', { name: 'Проверить домен' }).click();
+    await expect.poll(() => requests.length).toBe(1);
+    await editor.getByRole('button', { name: 'Полная проверка маршрутов' }).click();
+    await expect.poll(() => requests.length).toBe(2);
+    expect(requests[0].full_check).not.toBe(true);
+    expect(requests[1].full_check).toBe(true);
+    await expect(editor.getByRole('button', { name: 'zapret', exact: true })).toBeVisible();
+    await expect(editor.getByText('smart-dns-primary', { exact: true }).last()).toBeVisible();
+  });
+
+  test('confirms configured rule deletion and waits for a committed terminal state', async ({ page }) => {
+    let deleteCalls = 0;
+    let changePolls = 0;
+    let ruleDeleted = false;
+    await mockAPI(page);
+    await page.route('**/api/v1/services', async (route) => route.fulfill(envelope(ruleDeleted ? [] : [
+      { id: 'Discord', name: 'Discord', category: 'TELEGRAM', domains: ['discord.com'], route: 'VLESS', applied: true, source: 'configured', health: 'ready' }
+    ])));
+    await page.route('**/api/v1/health', async (route) => {
+      await route.fulfill(envelope({ status: 'ok', recovery_status: 'ok', checked_at: new Date().toISOString() }));
+    });
+    await page.route('**/api/v1/services/delete', async (route) => {
+      deleteCalls += 1;
+      await route.fulfill(envelope({ change: { id: 'delete-change', state: 'draft', version: 1 }, service_id: 'Discord', auto_apply_requested: true, auto_apply_started: true }));
+    });
+    await page.route('**/api/v1/changes/delete-change', async (route) => {
+      changePolls += 1;
+      ruleDeleted = true;
+      await route.fulfill(envelope({ id: 'delete-change', state: 'committed', version: 4, title: 'Delete service rule', validation: [] }));
+    });
+    await page.goto('/?screen=Сервисы');
+    await page.getByRole('button', { name: 'Открыть', exact: true }).first().click();
+    const drawer = page.getByRole('dialog');
+    await drawer.getByRole('button', { name: /Удалить правило/ }).click();
+    await drawer.getByRole('button', { name: /Подтвердить удаление/ }).click();
+    await expect.poll(() => deleteCalls).toBe(1);
+    await expect.poll(() => changePolls).toBeGreaterThan(0);
+    await expect(page.locator('.service-table tbody tr')).toHaveCount(0);
+    await expect(page.getByText(/Правило Discord удалено/)).toBeVisible();
+  });
+
+  test('keeps the service list empty after a committed delete and page reload', async ({ page }) => {
+    let ruleDeleted = false;
+    await mockAPI(page);
+    await page.route('**/api/v1/health', async (route) => route.fulfill(envelope({ status: 'ok', recovery_status: 'ok', checked_at: new Date().toISOString() })));
+    await page.route('**/api/v1/services', async (route) => route.fulfill(envelope(ruleDeleted ? [] : [
+      { id: 'Discord', name: 'Discord', category: 'TELEGRAM', domains: ['discord.com'], route: 'VLESS', applied: true, source: 'configured', health: 'ready' }
+    ])));
+    await page.route('**/api/v1/services/delete', async (route) => route.fulfill(envelope({
+      change: { id: 'delete-reload-change', state: 'draft', version: 1 }, service_id: 'Discord',
+      auto_apply_requested: true, auto_apply_started: true
+    })));
+    await page.route('**/api/v1/changes/delete-reload-change', async (route) => {
+      ruleDeleted = true;
+      await route.fulfill(envelope({ id: 'delete-reload-change', state: 'committed', version: 4, title: 'Delete service rule', validation: [] }));
+    });
+    await page.goto('/?screen=%D0%A1%D0%B5%D1%80%D0%B2%D0%B8%D1%81%D1%8B');
+    await page.locator('.service-table tbody tr').first().locator('button').click();
+    const drawer = page.getByRole('dialog');
+    const deleteButton = drawer.locator('button.danger');
+    await deleteButton.click();
+    await deleteButton.click();
+    await expect(page.locator('.service-table tbody tr')).toHaveCount(0);
+    await page.reload();
+    await expect(page.locator('.service-table tbody tr')).toHaveCount(0);
+  });
+
   test('opens the compact HWID source table on the VLESS screen', async ({ page }) => {
     await mockAPI(page);
     await page.goto(`/?screen=${encodeURIComponent('VLESS-серверы')}`);

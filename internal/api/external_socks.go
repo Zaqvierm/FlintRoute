@@ -15,6 +15,7 @@ type externalSOCKSRequest struct {
 	BaseVersion int64  `json:"base_version"`
 	Endpoint    string `json:"endpoint"`
 	TestDomain  string `json:"test_domain"`
+	AutoApply   bool   `json:"auto_apply,omitempty"`
 }
 
 func (s *Server) handleExternalSOCKS(w http.ResponseWriter, r *http.Request) {
@@ -71,7 +72,7 @@ func (s *Server) handleExternalSOCKSActivate(w http.ResponseWriter, r *http.Requ
 		{Type: "set", Path: "/routes", Value: routes},
 		{Type: "set", Path: "/services", Value: services},
 	}
-	change, err := s.createDraftChange("Activate external SOCKS", "Bind a verified external loopback SOCKS dependency through the normal transaction path", request.BaseVersion, operations, currentSession(r).User)
+	change, err := s.createDraftChangeWithOptions("Activate external SOCKS", "Bind a verified external loopback SOCKS dependency through the normal transaction path", request.BaseVersion, operations, currentSession(r).User, request.AutoApply)
 	if err != nil {
 		if errors.Is(err, errBaseVersionConflict) {
 			writeError(w, r, http.StatusConflict, "base_version_conflict", "active revision changed while external SOCKS was being checked")
@@ -80,7 +81,7 @@ func (s *Server) handleExternalSOCKSActivate(w http.ResponseWriter, r *http.Requ
 		writeError(w, r, http.StatusInternalServerError, "external_socks_change_failed", err.Error())
 		return
 	}
-	writeData(w, r, map[string]any{"report": report, "change": change})
+	writeData(w, r, map[string]any{"report": report, "change": change, "auto_apply_requested": request.AutoApply, "auto_apply_started": request.AutoApply && s.startAutoApplyChange(change.ID)})
 }
 
 func (s *Server) checkExternalSOCKS(w http.ResponseWriter, r *http.Request) (externalSOCKSRequest, externalsocks.CheckReport, bool) {

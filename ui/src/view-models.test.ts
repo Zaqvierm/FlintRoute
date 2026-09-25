@@ -1,6 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { decisionVerificationPresentation, formatDateTime, groupServices, humanStatus, isAdministrativeEvent, isDecisionEvent, onboardingProgress, onboardingRouterReady, parseResolverInput, recoveryMutationAllowed, serviceColumnFor, statusTone, stringArray, textValue, toDecisionCard, verificationPresentationLabel } from './view-models';
+import { isChangePending, isChangeStale } from './api';
 import type { EventItem } from './api';
+
+describe('ChangeSet operation state contract', () => {
+  it.each(['prepared', 'applying', 'verifying', 'data_plane_unverified', 'rolling_back'])('%s remains pending until terminal evidence', (state) => {
+    expect(isChangePending(state)).toBe(true);
+  });
+
+  it.each(['committed', 'failed', 'rolled_back', 'requires_device', 'recovery_required'])('%s is terminal', (state) => {
+    expect(isChangePending(state)).toBe(false);
+  });
+
+  it('excludes abandoned old drafts from the active queue without deleting evidence', () => {
+    const now = Date.parse('2026-09-20T00:00:00Z');
+    expect(isChangeStale({ state: 'draft', created_at: '2026-09-18T00:00:00Z', updated_at: '2026-09-18T00:00:00Z' }, now)).toBe(true);
+    expect(isChangeStale({ state: 'draft', created_at: '2026-09-19T12:00:00Z', updated_at: '2026-09-19T12:00:00Z' }, now)).toBe(false);
+    expect(isChangeStale({ state: 'committed', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' }, now)).toBe(false);
+  });
+});
 
 describe('safe display values', () => {
   it('never renders object coercion text', () => {
@@ -15,6 +33,7 @@ describe('safe display values', () => {
     expect(humanStatus('ROUTE_AVAILABLE')).toBe('Интернет доступен');
     expect(humanStatus('not_installed')).toBe('Не установлен');
     expect(humanStatus('NO_SAFE_ROUTE')).toBe('Ни один безопасный маршрут не прошёл проверку');
+    expect(humanStatus('validated_idle')).toBe('Проверен, ожидает назначения');
   });
 
   it('does not paint negative states green because they contain positive words', () => {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +24,42 @@ type fakeOpenWrtCommands struct {
 	rulePriority   int
 	policyActions  map[string]bool
 	processRunning bool
+}
+
+func TestLoadRuntimeActivePathBindingPrefersControllerBinding(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "runtime")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := filepath.Join(root, "active-transaction.env")
+	dedicatedDir := root + "-controller"
+	dedicated := filepath.Join(dedicatedDir, "active-transaction.env")
+	if err := os.MkdirAll(dedicatedDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	writeBinding := func(path, revision string) {
+		t.Helper()
+		contents := fmt.Sprintf("transaction_id=tx_0011223344556677\nrevision_id=%s\ncandidate_hash=sha256:%s\nartifact_manifest_hash=sha256:%s\ntransaction_state=committed\n", revision, strings.Repeat("a", 64), strings.Repeat("b", 64))
+		if err := os.WriteFile(path, []byte(contents), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeBinding(legacy, "rev_2_001122334455")
+	writeBinding(dedicated, "rev_3_001122334455")
+
+	binding, path, err := loadRuntimeActivePathBinding(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != dedicated || binding.Binding.RevisionID != "rev_3_001122334455" {
+		t.Fatalf("dedicated controller binding was not selected: path=%q binding=%+v", path, binding)
+	}
+	if err := os.WriteFile(dedicated, []byte("corrupt\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadRuntimeActivePathBinding(root); err == nil {
+		t.Fatal("corrupt current binding fell back to an older revision")
+	}
 }
 
 func (f *fakeOpenWrtCommands) RouteGet(context.Context, string, string) (KernelRoute, error) {
@@ -134,7 +171,7 @@ func TestOpenWrtPathVerifierProvesBoundDirectFlow(t *testing.T) {
 		Observation: PathObservation{
 			Domain: "example.test", RouteTag: "direct", RouteType: "direct", DNSResolver: "192.0.2.53", DNSProtocol: "udp",
 			ResolvedIPs: []string{"203.0.113.10"}, ConnectedIP: "203.0.113.10", ConnectedPort: 443,
-			LocalIP: "192.0.2.2", AddressFamily: "ipv4", Transport: "direct", SocketMark: "0x41",
+			LocalIP: "192.0.2.2", AddressFamily: "ipv4", Transport: "direct",
 			HostPreserved: true, SNIPreserved: true, TLSResult: "OK", HTTPResult: "OK", ContentResult: "OK",
 			ExternalIPHash: "sha256:egress", ExternalCountry: "DE", StartedAt: started, CompletedAt: started.Add(20 * time.Millisecond),
 		},
@@ -144,6 +181,43 @@ func TestOpenWrtPathVerifierProvesBoundDirectFlow(t *testing.T) {
 	}
 	if proof.Status != "OK" || !proof.DirectBypassXray || !proof.DirectBypassZapret || proof.ConntrackMark != "0x41" || proof.RouteTable != 100 {
 		t.Fatalf("incomplete Direct proof: %+v", proof)
+	}
+}
+
+func TestOpenWrtPathVerifierAcceptsExactCandidateProofForUnusedRoute(t *testing.T) {
+	root, activePath, binding, manifestHash := generateDirectArtifacts(t)
+	commands := &fakeOpenWrtCommands{counter: 10, advance: true, routeTable: 100, conntrackMark: "0x41"}
+	verifier, err := NewOpenWrtPathVerifier(OpenWrtPathOptions{
+		ArtifactRoot: root, ActiveBindingPath: activePath, Binding: binding, ManifestHash: manifestHash,
+		Commands: commands, AllowSimulation: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fixture's route is mandatory for its only policy. Injecting an
+	// additional candidate proof models a configured route that is not yet
+	// selected by any policy but is still eligible for route-only probing.
+	verifier.plan.RequiredRouteProof = nil
+	verifier.plan.CandidateRouteProof = []artifact.RouteProof{{
+		Tag: "direct", Type: "direct", Mark: "0x41", Table: 100, RulePriority: 10010,
+		RequiresDNS: true, RequiresIPv4: true, RequiresEgress: true,
+	}}
+	started := time.Now().UTC()
+	session, err := verifier.Begin(context.Background(), PathProofStart{Domain: "example.test", Route: config.Route{Type: "direct", Tag: "direct"}, StartedAt: started})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := verifier.Verify(context.Background(), PathProofRequest{
+		Route: config.Route{Type: "direct", Tag: "direct"}, Session: session,
+		Observation: PathObservation{
+			Domain: "example.test", DNSResolver: "192.0.2.53", ResolvedIPs: []string{"203.0.113.10"}, ConnectedIP: "203.0.113.10", ConnectedPort: 443,
+			LocalIP: "192.0.2.2", AddressFamily: "ipv4", Transport: "direct", SocketMark: "0x41",
+			HostPreserved: true, SNIPreserved: true, TLSResult: "OK", HTTPResult: "OK", ContentResult: "OK",
+			ExternalIPHash: "sha256:egress", ExternalCountry: "DE", StartedAt: started, CompletedAt: started.Add(20 * time.Millisecond),
+		},
+	})
+	if err != nil || proof.Status != "OK" {
+		t.Fatalf("candidate proof was not accepted: proof=%+v err=%v", proof, err)
 	}
 }
 
@@ -164,6 +238,36 @@ func TestOpenWrtPathVerifierRejectsCounterThatDidNotAdvance(t *testing.T) {
 	_, err = verifier.Verify(context.Background(), PathProofRequest{Route: config.Route{Type: "direct", Tag: "direct"}, Session: session})
 	if err == nil {
 		t.Fatal("unchanged nft counter was accepted as proof")
+	}
+}
+
+func TestOpenWrtPathVerifierAcceptsGuardBoundDirectMarkWithConntrackProof(t *testing.T) {
+	root, activePath, binding, manifestHash := generateDirectArtifacts(t)
+	commands := &fakeOpenWrtCommands{counter: 10, advance: true, routeTable: 100, conntrackMark: "0x0"}
+	verifier, err := NewOpenWrtPathVerifier(OpenWrtPathOptions{
+		ArtifactRoot: root, ActiveBindingPath: activePath, Binding: binding, ManifestHash: manifestHash,
+		Commands: commands, AllowSimulation: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().UTC()
+	session, err := verifier.Begin(context.Background(), PathProofStart{Domain: "example.test", Route: config.Route{Type: "direct", Tag: "direct"}, StartedAt: started})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := verifier.Verify(context.Background(), PathProofRequest{
+		Route: config.Route{Type: "direct", Tag: "direct"}, Session: session,
+		Observation: PathObservation{
+			Domain: "example.test", DNSResolver: "192.0.2.53", DNSProtocol: "udp",
+			ResolvedIPs: []string{"203.0.113.10"}, ConnectedIP: "203.0.113.10", ConnectedPort: 443,
+			LocalIP: "192.0.2.2", AddressFamily: "ipv4", Transport: "direct", SocketMark: "0x41",
+			HostPreserved: true, SNIPreserved: true, TLSResult: "OK", HTTPResult: "OK", ContentResult: "OK",
+			ExternalIPHash: "sha256:egress", ExternalCountry: "DE", StartedAt: started, CompletedAt: started.Add(20 * time.Millisecond),
+		},
+	})
+	if err != nil || proof.Status != "OK" || proof.ConntrackMark != "0x41" {
+		t.Fatalf("guard-bound Direct proof was rejected: proof=%+v err=%v", proof, err)
 	}
 }
 

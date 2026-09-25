@@ -175,7 +175,11 @@ func (a *OpenWrt) runTransaction(ctx context.Context, command string, tx Transac
 	if err := a.validateTransaction(tx); err != nil {
 		return failedStep(command, start, err)
 	}
-	if command != "prepare" && command != "finalize-commit" {
+	// Finalize and generation-bound boot-guard clearing happen after the
+	// rollback capability is intentionally retired. Requiring rollback.cap for
+	// clear-boot-guard therefore turns every otherwise committed transaction
+	// into a false failure.
+	if command != "prepare" && command != "finalize-commit" && command != "clear-boot-guard" && command != "clear-boot-guard-bound" {
 		if _, err := ReadCapability(tx); err != nil {
 			return failedStep(command, start, err)
 		}
@@ -229,7 +233,11 @@ func (a *OpenWrt) executeHelperRequest(ctx context.Context, command string, star
 	response, callErr := helper.Call(ctx, a.helperSocket, request)
 	result := StepResult{ProtocolVersion: AdapterProtocolVersion, RequestID: request.RequestID, Operation: command, Step: stepName(command), StartedAt: start, FinishedAt: time.Now().UTC(), Evidence: map[string]any{}}
 	for key, value := range response.Evidence {
-		result.Evidence[key] = value
+		// The Unix helper transports shell metadata as strings. Normalize
+		// semantic booleans before transaction validators inspect the typed
+		// response; otherwise `rollback=true` becomes a string and a perfectly
+		// successful rollback is misclassified as rollback=false.
+		result.Evidence[key] = normalizeHelperEvidence(value)
 	}
 	result.Evidence["committed"] = response.Committed
 	result.Evidence["rollback_capable"] = response.RollbackCapable
@@ -249,6 +257,17 @@ func (a *OpenWrt) executeHelperRequest(ctx context.Context, command string, star
 	}
 	result.Status = "OK"
 	return result
+}
+
+func normalizeHelperEvidence(value string) any {
+	switch value {
+	case "true":
+		return true
+	case "false":
+		return false
+	default:
+		return value
+	}
 }
 
 func (a *OpenWrt) validateTransaction(tx Transaction) error {

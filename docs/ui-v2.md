@@ -3,6 +3,8 @@
 Документ описывает UI на remediation-ветке. При коммите он привязывается к
 точному SHA; локальные изменения не являются hardware evidence.
 
+Последний локально проверенный software checkpoint: `5fdaa63`.
+
 ## Правила правдивости
 
 - Завершение первичной настройки хранится в backend bucket `onboarding` bbolt.
@@ -101,3 +103,67 @@ in `ui/src/features/setup.tsx`; route definitions and location parsing live in
 `ui/src/app/messages.ts`. `ui/src/app/App.tsx` keeps shell, data refresh, screen
 dispatch, and the recovery banner; `main.tsx` only mounts `App`. This is a software-only
 refactor; it does not change dataplane behavior or provide hardware evidence.
+
+### Manual rule preview
+
+"New rule" is a two-step interaction: the user enters a domain, runs a
+read-only domain-only preview, sees the candidate matrix (Direct baseline,
+Zapret, Smart DNS, VLESS, and DROP where eligible), and only then can create
+the policy ChangeSet. A preview is ephemeral and never writes a ChangeSet or
+active policy. A bounded `VERIFYING` response keeps the button as
+"Continue verification"; it must not be rendered as `NO_SAFE_ROUTE`.
+
+An observed domain card with fresh PathVerified evidence opens the editor with
+that exact route already selected, so pinning takes one review click and one
+apply click instead of re-running the candidate matrix. The controller reuses
+only backend-persisted evidence bound to the exact domain, route, active
+revision, candidate inventory, route policy and freshness window. A stale
+observation is explicitly shown as stale and requires one new bounded check;
+after that check, Apply reuses its backend-stored proof. The observation
+display ID (for example `UNKNOWN:amazon.com`) is never sent as a configured
+`service_id`.
+
+Editing an existing multi-domain service keeps its complete domain list,
+classification seed and probe contract. The editor locks the domain field and
+states that the selected route update applies to the whole service group; the
+backend verifies the chosen domain with the existing probe contract before
+building the ChangeSet.
+
+The production controller binding is published at
+`/tmp/router-policy-controller/active-transaction.env` as root:daemon `0640`
+inside a root:daemon `0750` directory. The main runtime directory remains
+controller-owned tmpfs state; the non-root controller receives only the
+revision/hash binding it needs for path verification.
+
+For an existing configured rule, `Verify path now` is read-only and renders the
+fresh candidate evidence. Once a non-DROP candidate is PathVerified, the drawer
+offers `Apply verified route`; that action starts the same bounded transaction
+used by the rule editor and waits for its terminal state. Rule deletion follows
+the same contract: the confirmation action polls the ChangeSet until
+`committed`, `failed`, `rolled_back`, `requires_device`, or `recovery_required`
+and never leaves the user with an indefinite "deleting" state. Durable
+intermediate states (`prepared`, `applying`, `verifying`, `rolling_back`) remain
+pending; they are not terminal errors. The selected-route action sends the
+concrete route tag. The backend reuses a fresh exact-route proof only while its
+revision and inventory bindings still match; otherwise it performs a fresh
+proof for that exact tag, so a faster unrelated candidate cannot silently
+replace the user's choice. A configured-rule verification never authorizes a
+different domain or route.
+
+The synthetic `system-default` path is an unmarked OpenWrt baseline for an
+unknown domain, not an owned FlintRoute route. It is shown as a baseline in the
+trace, excluded from selectable candidate lists, and cannot be committed as a
+managed route.
+
+## Current operation and Smart DNS semantics
+
+The checked software checkpoint is the exact `HEAD` used by the associated
+local/CI evidence; never infer current status from an older SHA in this guide.
+Draft or validated operations older than 24 hours are shown as `stale` forensic
+records, excluded from the active operation count, and do not offer Validate or
+Apply actions.
+
+Smart DNS renders only saved cards. The next empty card is created only by
+`Add DNS card`. A freshly validated card that is not bound to a committed
+service or override is `validated_idle`, not unhealthy. Expired validation is
+shown as stale and requires explicit revalidation.

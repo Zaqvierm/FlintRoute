@@ -60,7 +60,7 @@ func TestDomainCheckExposesTheScoreUsedForSelection(t *testing.T) {
 		"smart-one": measuredSelectionResult("smart-one", "smart_dns", 70),
 		"vless-one": measuredSelectionResult("vless-one", "vless", 40),
 	}}
-	check, err := CheckDomain(context.Background(), cfg, "score.example", "", Options{RouteProber: prober, ActiveRevision: "rev-active"})
+	check, err := CheckDomain(context.Background(), cfg, "score.example", "", Options{RouteProber: prober, FullCheck: true, ActiveRevision: "rev-active"})
 	if err != nil || check.Selected == nil || check.Selected.Route != "vless-one" {
 		t.Fatalf("selection failed: %+v err=%v", check, err)
 	}

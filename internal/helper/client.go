@@ -27,7 +27,7 @@ func Call(ctx context.Context, socket string, request Request) (Response, error)
 		return Response{}, fmt.Errorf("connect helper: %w", err)
 	}
 	defer connection.Close()
-	_ = connection.SetDeadline(time.Now().Add(15 * time.Second))
+	_ = connection.SetDeadline(time.Now().Add(maxRequestDuration))
 	if err := json.NewEncoder(connection).Encode(request); err != nil {
 		return Response{}, fmt.Errorf("write helper request: %w", err)
 	}

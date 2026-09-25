@@ -203,9 +203,21 @@ func (h Harness) Baseline(ctx context.Context, options BaselineOptions) (Baselin
 	transactionState, err := readTransactionState(filepath.Join(h.Paths.RuntimeDir, "active-transaction.env"))
 	checks = append(checks, GateCheck{Name: "committed_runtime_binding", Passed: err == nil && transactionState == "committed", Reason: transactionReason(err, transactionState)})
 
+	// procd is the sole lifecycle owner.  The old separate watchdog service
+	// must be absent after migration; a present legacy script is a hard gate,
+	// even if it happens to be stopped.
 	watchdog := filepath.Join(h.Paths.InitDir, h.Paths.WatchdogService)
-	checks = append(checks, commandGate(ctx, h.Runner, "watchdog_running", watchdog, "running"))
-	checks = append(checks, commandGate(ctx, h.Runner, "watchdog_enabled", watchdog, "enabled"))
+	_, watchdogErr := os.Stat(watchdog)
+	watchdogAbsent := errors.Is(watchdogErr, os.ErrNotExist)
+	checks = append(checks, GateCheck{Name: "legacy_watchdog_absent", Passed: watchdogAbsent, Reason: func() string {
+		if watchdogAbsent {
+			return "legacy watchdog is absent"
+		}
+		if watchdogErr != nil {
+			return watchdogErr.Error()
+		}
+		return "legacy router-policy-watchdog service is still installed"
+	}()})
 
 	statusRaw, statusErr := h.Runner.Run(ctx, h.Paths.RouterPolicy, "status")
 	status := map[string]any{}

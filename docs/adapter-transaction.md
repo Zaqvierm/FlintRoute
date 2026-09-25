@@ -69,6 +69,11 @@ filesystem-адаптер сам. `cmd/router-policy` инжектирует `ad
 draft -> validated -> prepared -> applying -> verifying
       -> awaiting_confirmation -> committing -> committed
 rolling_back -> rolled_back | rollback_failed
+
+Rollback is idempotent across retries. If an adapter retry reports
+`rollback=false` but a status query proves the exact previously committed
+revision, transaction, candidate hash and artifact hash are active, the
+control plane records `rolled_back` instead of fencing a false ambiguity.
 failed | expired | requires_device
 ```
 

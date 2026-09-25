@@ -79,8 +79,8 @@ legacy in-place upgrade на указанном commit не повторялис
 | System default, managed Direct и unclassified разделены | API/artifact tests | clean baseline сохранил system default и не создал managed rules; Direct apply на текущем commit не повторялся |
 | Drop: NXDOMAIN + nft set/mark + forward guard | единый artifact regression test | прежний Drop evidence сохранён; этот commit не применялся |
 | Smart DNS resolver preflight и apply proof | UDP/TCP/HTTP/TLS validator tests, bogon guard и expiry gate | требуется повторный тест с выбранным production resolver |
-| Opt-in static rules и редактируемый fallback порядок | API tests и UI typecheck/build | требуется пользовательский apply на текущем Flint 2 |
-| TSPU fallback `Zapret → Smart DNS → VLESS → Direct → DROP` | planner test доказывает, что VLESS не вызывается до Smart DNS | требуется проверка с production resolver |
+| Opt-in static rules и динамический набор route candidates | API tests и UI typecheck/build | требуется пользовательский apply на текущем Flint 2 |
+| TSPU candidate eligibility и evidence scoring | planner/API tests доказывают набор Zapret/Smart DNS/VLESS/Drop без winner-order | требуется проверка с production resolver |
 | Пять VPN subscription slots и объединённая проверка outbound | API/UI/typecheck/build | требуется повторный subscription prepare |
 | Ручной VLESS URI без возврата UUID/URI через API | parser/store/API/UI tests; manual outbound входит в общий candidate bundle | требуется проверка с пользовательским сервером |
 | Карточный UI, decision flow, privacy mode и runtime topology | Vitest и typecheck/build; Wi-Fi/Ethernet берутся из station/FDB evidence | требуется установка текущего commit и browser smoke на реальных данных |
