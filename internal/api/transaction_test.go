@@ -410,6 +410,37 @@ func TestServiceClassifyReusesFreshInteractiveVerification(t *testing.T) {
 	if !strings.Contains(string(raw), `"verification_reused":true`) || checkerCalls != 0 {
 		t.Fatalf("interactive PathVerified evidence was probed again: checker_calls=%d body=%s", checkerCalls, raw)
 	}
+	var envelope Envelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(envelope.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Change ChangeSet `json:"change"`
+	}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Change.Operations) != 1 || payload.Change.Operations[0].Path != "/services/user_amazon_com" {
+		t.Fatalf("manual rule change was not scoped to the new domain: %+v", payload.Change.Operations)
+	}
+	if _, exists := srv.currentConfig().Services["github"]; !exists {
+		t.Fatal("creating amazon.com removed an unrelated existing GitHub rule")
+	}
+	encodedService, err := json.Marshal(payload.Change.Operations[0].Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pinned config.Service
+	if err := json.Unmarshal(encodedService, &pinned); err != nil {
+		t.Fatal(err)
+	}
+	if pinned.SelectedRouteTag != "smart" {
+		t.Fatalf("manual rule did not retain the exact verified route: %+v", pinned)
+	}
 }
 
 func TestServiceClassifyReprobesExpiredDiscoveryEvidence(t *testing.T) {

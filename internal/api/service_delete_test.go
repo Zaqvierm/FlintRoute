@@ -64,10 +64,15 @@ func TestServiceDeleteAutoApplyCommitsAndRemovesRule(t *testing.T) {
 	clone := *srv.activeConfig
 	clone.Services = map[string]config.Service{
 		"youtube": {Category: "TSPU_RESTRICTED", Domains: []string{"youtube.com"}, AllowedPaths: []string{"zapret", "smart_dns", "vless", "drop"}},
+		"keep":    {Category: "DIRECT_PREFERRED", Domains: []string{"keep.example"}, AllowedPaths: []string{"direct"}},
 	}
 	srv.activeConfig = &clone
 	srv.mu.Unlock()
-	change, err := srv.createDraftChangeWithOptions("Delete service rule", "test", srv.configVersion, []ChangeOp{{Type: "set", Path: "/services", Value: map[string]config.Service{}}}, "admin", true)
+	change, err := srv.createDraftChangeWithOptions("Delete service rule", "test", srv.configVersion, []ChangeOp{{
+		Type: "set", Path: "/services", Value: map[string]config.Service{
+			"keep": {Category: "DIRECT_PREFERRED", Domains: []string{"keep.example"}, AllowedPaths: []string{"direct"}},
+		},
+	}}, "admin", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,6 +88,9 @@ func TestServiceDeleteAutoApplyCommitsAndRemovesRule(t *testing.T) {
 		if current.State == "committed" {
 			if _, exists := active.Services["youtube"]; exists {
 				t.Fatal("committed delete left youtube in active config")
+			}
+			if _, exists := active.Services["keep"]; !exists {
+				t.Fatal("deleting youtube removed an unrelated service rule")
 			}
 			return
 		}
