@@ -123,6 +123,12 @@ after that check, Apply reuses its backend-stored proof. The observation
 display ID (for example `UNKNOWN:amazon.com`) is never sent as a configured
 `service_id`.
 
+Editing an existing multi-domain service keeps its complete domain list,
+classification seed and probe contract. The editor locks the domain field and
+states that the selected route update applies to the whole service group; the
+backend verifies the chosen domain with the existing probe contract before
+building the ChangeSet.
+
 The production controller binding is published at
 `/tmp/router-policy-controller/active-transaction.env` as root:daemon `0640`
 inside a root:daemon `0750` directory. The main runtime directory remains

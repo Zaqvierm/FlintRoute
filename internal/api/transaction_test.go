@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -440,6 +441,79 @@ func TestServiceClassifyReusesFreshInteractiveVerification(t *testing.T) {
 	}
 	if pinned.SelectedRouteTag != "smart" {
 		t.Fatalf("manual rule did not retain the exact verified route: %+v", pinned)
+	}
+}
+
+func TestServiceRouteEditPreservesSiblingDomainsAndProbeContract(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Services["media"] = config.Service{
+		Category: "DIRECT_PREFERRED", ClassificationSeed: "media-service",
+		Domains:      []string{"video.example", "cdn.video.example"},
+		AllowedPaths: []string{"direct", "smart_dns"},
+		ProbeURLs:    []config.ProbeCheck{{Name: "health", URL: "https://health.video.example/ready", Required: true, ExpectedCodes: []int{204}, BodyMode: "optional"}},
+	}
+	fake := newFakeAdapter()
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, cfg, fake)
+	defer srv.Close()
+	defer ts.Close()
+	srv.domainChecker = func(_ context.Context, candidate *config.Config, domain, serviceID string, opts planner.Options) (planner.DomainCheck, error) {
+		service := candidate.Services[serviceID]
+		if domain != "cdn.video.example" || serviceID != "media" || len(service.Domains) != 1 || service.Domains[0] != domain {
+			t.Fatalf("route proof did not target the selected domain only: domain=%q id=%q service=%+v", domain, serviceID, service)
+		}
+		if len(service.ProbeURLs) != 1 || service.ProbeURLs[0].URL != "https://health.video.example/ready" || service.ProbeURLs[0].ExpectedCodes[0] != 204 {
+			t.Fatalf("route proof discarded the existing service probe contract: %+v", service.ProbeURLs)
+		}
+		if opts.RequestedRouteTag != "smart" {
+			t.Fatalf("route switch lost the selected route: %+v", opts)
+		}
+		return planner.DomainCheck{Domain: domain, Service: serviceID, Status: "SELECTED", VerificationState: "verified",
+			Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", ServiceOK: true, PathVerified: true}}, nil
+	}
+	body := `{"domain":"cdn.video.example","service_id":"media","category":"DIRECT_PREFERRED","allowed_paths":["direct","smart_dns"],"base_version":1,"auto_apply":false,"selected_route_tag":"smart"}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/classify", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("route edit status=%d body=%s", resp.StatusCode, raw)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	var response Envelope
+	if err := json.Unmarshal(raw, &response); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(response.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Change ChangeSet `json:"change"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Change.Operations) != 1 || payload.Change.Operations[0].Path != "/services/media" {
+		t.Fatalf("route edit was not scoped to the selected service: %+v", payload.Change.Operations)
+	}
+	serviceJSON, err := json.Marshal(payload.Change.Operations[0].Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated config.Service
+	if err := json.Unmarshal(serviceJSON, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(updated.Domains, []string{"video.example", "cdn.video.example"}) {
+		t.Fatalf("route edit dropped sibling domains: %v", updated.Domains)
+	}
+	if len(updated.ProbeURLs) != 1 || updated.ProbeURLs[0].URL != "https://health.video.example/ready" || updated.ClassificationSeed != "media-service" || updated.SelectedRouteTag != "smart" {
+		t.Fatalf("route edit did not preserve the rest of the existing policy: %+v", updated)
 	}
 }
 

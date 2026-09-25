@@ -2302,18 +2302,54 @@ func (s *Server) handleServiceClassify(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, http.StatusBadRequest, "invalid_service_id", "service_id contains unsupported characters")
 			return
 		}
-		if _, exists := s.currentConfig().Services[requestedID]; !exists {
+		active := s.currentConfig()
+		if active == nil {
+			writeError(w, r, http.StatusServiceUnavailable, "active_config_unavailable", "active configuration is unavailable")
+			return
+		}
+		existing, exists := active.Services[requestedID]
+		if !exists {
 			writeError(w, r, http.StatusNotFound, "service_rule_missing", "service_id was not found")
 			return
 		}
+		if !serviceDomainContains(existing, domain) {
+			writeError(w, r, http.StatusConflict, "service_domain_mismatch", "domain does not belong to the selected service rule")
+			return
+		}
+		// A route edit changes the selected route of the existing policy; it is
+		// not a request to replace the policy with a one-domain shell. Preserve
+		// every sibling domain and the service probe contract, neither of which
+		// is editable in this flow. The selected domain is still checked exactly
+		// before the group-wide route change is built.
+		service.Domains = append([]string(nil), existing.Domains...)
+		if len(existing.ProbeURLs) > 0 {
+			service.ProbeURLs = append([]config.ProbeCheck(nil), existing.ProbeURLs...)
+		}
+		service.ClassificationSeed = existing.ClassificationSeed
+		if existing.Category == category {
+			for _, forbidden := range existing.ForbiddenPaths {
+				found := false
+				for _, current := range service.ForbiddenPaths {
+					if current == forbidden {
+						found = true
+						break
+					}
+				}
+				if !found {
+					service.ForbiddenPaths = append(service.ForbiddenPaths, forbidden)
+				}
+			}
+			service.RequireNonRUEgress = service.RequireNonRUEgress || existing.RequireNonRUEgress
+		}
 		id = requestedID
 	}
-	check, reused := s.reusableDiscoveryRouteEvidence(domain, category, service, request.SelectedRouteTag)
+	verificationService := serviceWithVerificationDomain(service, domain)
+	check, reused := s.reusableDiscoveryRouteEvidence(domain, category, verificationService, request.SelectedRouteTag)
 	if !reused {
-		check, reused = s.reusableStoredProbeEvidence(domain, category, service, request.SelectedRouteTag)
+		check, reused = s.reusableStoredProbeEvidence(domain, category, verificationService, request.SelectedRouteTag)
 	}
 	if !reused {
-		check, err = s.selectVerifiedServiceRouteWithOptions(r.Context(), id, service, 0, request.SelectedRouteTag, false)
+		check, err = s.selectVerifiedServiceRouteWithOptions(r.Context(), id, verificationService, 0, request.SelectedRouteTag, false)
 		if err != nil {
 			writeError(w, r, http.StatusUnprocessableEntity, "route_verification_failed", err.Error())
 			return

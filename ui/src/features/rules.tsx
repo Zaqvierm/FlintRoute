@@ -98,7 +98,7 @@ export function Services({
 }) {
   const [moving, setMoving] = useState('');
   const [message, setMessage] = useState('');
-  const [editor, setEditor] = useState<{ domain: string; category: string; paths: string[]; serviceID?: string } | null>(null);
+  const [editor, setEditor] = useState<{ domain: string; category: string; paths: string[]; serviceID?: string; domains?: string[] } | null>(null);
   const [selectedService, setSelectedService] = useState<any>(null);
   const [verificationBusy, setVerificationBusy] = useState(false);
   const [verificationMessage, setVerificationMessage] = useState('');
@@ -305,13 +305,16 @@ export function Services({
       evidence_persisted: 0, candidates: asArray(service?.candidate_matrix)
     } : null);
     setMessage(service?.probe_state === 'stale_evidence' ? 'Последняя проверка истекла или изменилась конфигурация. Перед закреплением нужен новый короткий тест.' : '');
+    const serviceID = service?.applied || asArray(service?.sources).includes('configured') ? textValue(service?.id, '') : undefined;
+    const domains = serviceID ? asArray(service?.domains).map((value) => textValue(value, '')).filter(Boolean) : domain ? [domain] : [];
     setEditor({
       domain,
       category,
       paths,
       // Discovery observation IDs are display keys (for example UNKNOWN:amazon.com),
       // not configured service IDs. Sending one makes the API reject new rules.
-      serviceID: service?.applied || asArray(service?.sources).includes('configured') ? service?.id : undefined
+      serviceID,
+      domains
     });
   }
 
@@ -356,7 +359,8 @@ export function Services({
           }}
         >
           <header class="modal-header"><h2 id="service-rule-title">Новое правило</h2><button type="button" class="icon-button" aria-label="Закрыть" onClick={() => { setEditor(null); setEditorVerification(null); }}>×</button></header>
-          <label>Домен<input value={editor.domain} placeholder="example.com" onInput={(event) => { setEditor({ ...editor, domain: event.currentTarget.value }); setEditorVerification(null); }} /></label>
+          <label>Домен<input value={editor.domain} placeholder="example.com" readOnly={Boolean(editor.serviceID)} onInput={(event) => { setEditor({ ...editor, domain: event.currentTarget.value }); setEditorVerification(null); }} /></label>
+          {editor.serviceID && (editor.domains?.length ?? 0) > 1 && <p class="action-status">Изменение маршрута затронет все {editor.domains?.length} доменов этой политики; список доменов и проверок сохранится.</p>}
           <div class="actions">
             <button type="button" class="primary" disabled={editorVerificationBusy || !editor.domain.trim()} onClick={() => void verifyEditorDomain()}>
               {editorVerificationBusy ? 'Проверяю…' : editorVerification?.verification_state === 'in_progress' ? 'Продолжить проверку' : 'Проверить домен'}

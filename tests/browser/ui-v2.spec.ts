@@ -536,6 +536,24 @@ test.describe('FlintRoute UI v2', () => {
     await expect(page.locator('.service-table')).toContainText('example.com');
   });
 
+  test('marks route edits as group-wide and locks the domain list', async ({ page }) => {
+    await mockAPI(page);
+    await page.route('**/api/v1/health', async (route) => route.fulfill(envelope({ status: 'ok', recovery_status: 'ok', checked_at: new Date().toISOString() })));
+    await page.route('**/api/v1/services', async (route) => route.fulfill(envelope([{
+      id: 'media', display_name: 'Media', category: 'DIRECT_PREFERRED',
+      domains: ['video.example', 'cdn.video.example'], allowed_paths: ['direct', 'smart_dns'],
+      selected_route_tag: 'direct', selected_route_type: 'direct', applied: true,
+      source: 'configured', sources: ['configured'], status: 'CONFIGURED', probe_state: 'not_checked'
+    }])));
+    await page.goto('/?screen=%D0%A1%D0%B5%D1%80%D0%B2%D0%B8%D1%81%D1%8B');
+    await page.locator('.service-table tbody tr').first().locator('button').click();
+    const drawer = page.getByRole('dialog').first();
+    await drawer.locator('button.primary').last().click();
+    const editor = page.locator('.service-rule-dialog');
+    await expect(editor.locator('input[placeholder="example.com"]')).toHaveAttribute('readonly', '');
+    await expect(editor.locator('p.action-status').filter({ hasText: '2' })).toBeVisible();
+  });
+
   test('offers an explicit full route matrix after the quick direct check', async ({ page }) => {
     const requests: Array<{ full_check?: boolean }> = [];
     await mockAPI(page);
