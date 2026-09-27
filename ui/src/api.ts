@@ -474,6 +474,7 @@ export type ServiceVerification = {
   selected_route_tag?: string;
   selected_route_type?: string;
   path_verified: boolean;
+  guarded_apply_available?: boolean;
   route_latency_ms?: number;
   route_latency_available?: boolean;
   end_to_end_latency_ms?: number;

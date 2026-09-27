@@ -2182,8 +2182,9 @@ func (s *Server) handleServiceVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	response := map[string]any{
 		"service_id": serviceID, "domain": domain, "status": check.Status,
-		"preview":            strings.HasPrefix(serviceID, "preview_"),
-		"verification_state": state, "reason": check.Reason,
+		"guarded_apply_available": check.Status == "CANDIDATE_REQUIRES_APPLY" && check.Selected != nil && guardedApplyCandidateEvidence(*check.Selected),
+		"preview":                 strings.HasPrefix(serviceID, "preview_"),
+		"verification_state":      state, "reason": check.Reason,
 		"classification_confidence": check.ClassificationConfidence,
 		"classification_state":      check.ClassificationState, "classification_reason": check.ClassificationReason,
 		"checked_at": check.CheckedAt, "verification_duration_ms": check.VerificationDurationMS,
@@ -2706,6 +2707,15 @@ func (s *Server) selectVerifiedServiceRouteWithOptions(ctx context.Context, serv
 	if s.probeEngineFactory != nil {
 		routeProber = s.probeEngineFactory(&candidate)
 	}
+	baseline := s.currentRecoveryStatus()
+	if (strings.HasPrefix(serviceID, "preview_") || strings.HasPrefix(serviceID, "user_")) && len(active.Services) == 0 && len(active.Overrides) == 0 &&
+		baseline.Status == "not_required" && baseline.CommitPhase == "baseline_confirmed" &&
+		baseline.BaselineAssignmentsAbsent && baseline.RevisionID == revision {
+		// Preview cannot mark a socket through a generation that does not exist.
+		// Check native transport only, clearly unverified as a managed path;
+		// explicit create/apply still requires post-apply route proof to commit.
+		routeProber = probe.NewUnboundDirectCandidateEngine()
+	}
 	check, err := s.domainChecker(probeCtx, &candidate, domain, serviceID, planner.Options{
 		TSPUResult: match,
 		// The ordinary UI action is a bounded quick check: stop at the first
@@ -2748,6 +2758,7 @@ func (s *Server) selectVerifiedServiceRouteWithOptions(ctx context.Context, serv
 		if check.Selected != nil {
 			check.Status = "CANDIDATE_REQUIRES_APPLY"
 			check.Reason = "candidate_transport_verified_requires_bound_path_apply"
+			check.VerificationState = "awaiting_guarded_apply"
 		}
 	}
 	if check.Selected == nil ||

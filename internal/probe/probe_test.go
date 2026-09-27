@@ -107,6 +107,31 @@ func TestProbeHTTP200WithMarker(t *testing.T) {
 	}
 }
 
+func TestUnboundDirectCandidateProvesOnlyTransportNotManagedPath(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { requests++; _, _ = w.Write([]byte("candidate contract")) }))
+	defer srv.Close()
+	engine := NewUnboundDirectCandidateEngine()
+	result := engine.ProbeRoute(context.Background(), testConfig(), "example.test", "preview_example_test", serviceWithProbe(srv.URL, []int{200}, "required", []string{"candidate contract"}), config.Route{Type: "direct", Tag: "direct", RequiresAdapter: true, Mark: "0x41"})
+	if requests != 1 || !result.DNSOK || !result.TransportOK || !result.ServiceOK || result.PathVerified || result.SocketMark != "" || result.Status != "UNVERIFIED" || result.ReasonCode != "route_not_bound_to_verification_plan" {
+		t.Fatalf("unbound transport was lost or falsely promoted to managed proof: requests=%d result=%+v", requests, result)
+	}
+	drop := engine.ProbeRoute(context.Background(), testConfig(), "example.test", "preview_example_test", config.Service{}, config.Route{Type: "drop", Tag: "drop", Mark: "0x7f"})
+	if drop.PathVerified || drop.ApplicationStatus == "DROP" || requests != 1 {
+		t.Fatalf("baseline claimed/attempted managed Drop: %+v", drop)
+	}
+}
+
+func TestMappedIPv4DNSAnswerRemainsAnIPv4ProbeTarget(t *testing.T) {
+	targets := routeProbeTargets([]netip.Addr{netip.MustParseAddr("::ffff:192.0.2.10")}, "ipv4")
+	if len(targets) != 1 || targets[0].String() != "192.0.2.10" {
+		t.Fatalf("mapped IPv4 address lost at family filter: %v", targets)
+	}
+	if got := routeProbeTargets([]netip.Addr{netip.MustParseAddr("::ffff:192.0.2.10")}, "ipv6"); len(got) != 0 {
+		t.Fatalf("mapped IPv4 mislabeled IPv6: %v", got)
+	}
+}
+
 func TestProbeAcceptsExpectedCrossHostRedirectWithoutFollowingIt(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatalf("cross-host redirect was followed")

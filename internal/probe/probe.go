@@ -179,6 +179,19 @@ func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, ser
 		result.Reason = &reason
 		return finalizeUnverifiedResult(result, startAll)
 	}
+	if e.unmarkedCandidate {
+		if route.Type != "direct" || route.SOCKS5 != "" {
+			result.Status = "NOT_APPLICABLE"
+			result.ApplicationStatus = "NOT_RUN"
+			result.ReasonCode = "managed_probe_requires_first_generation"
+			return finalizeUnverifiedResult(result, startAll)
+		}
+		ctx = context.WithValue(ctx, unmarkedCandidateContextKey{}, true)
+		if cfg != nil && !cfg.Platform.IPv6Enabled {
+			family = "ipv4"
+		}
+		result.EvidenceSource = "unbound_system_transport"
+	}
 	// Config.Validate enforces this bound for active configurations, but the
 	// probe engine is also called from recovery, tests and other defensive
 	// paths that may receive an unvalidated service value. Refuse the whole
@@ -503,6 +516,7 @@ func finalizeCheckResult(res CheckResult, startedAt time.Time) CheckResult {
 func routeProbeTargets(ips []netip.Addr, family string) []netip.Addr {
 	targets := make([]netip.Addr, 0, minInt(len(ips), maxRouteProbeTargets))
 	for _, ip := range ips {
+		ip = ip.Unmap()
 		if family == "ipv4" && !ip.Is4() || family == "ipv6" && !ip.Is6() {
 			continue
 		}
@@ -949,7 +963,7 @@ func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route,
 	// guard marks the packet after socket creation; conntrack proof below
 	// confirms that it actually took effect. Direct socket marking remains the
 	// fallback for test/legacy command implementations without a guard.
-	if guard == nil || isSystemDefaultRoute(route) {
+	if (guard == nil || isSystemDefaultRoute(route)) && ctx.Value(unmarkedCandidateContextKey{}) != true {
 		installRouteSocketMark(dialer, cfg, route, &observedSocketMark)
 	}
 	transport := &http.Transport{

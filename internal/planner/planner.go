@@ -489,7 +489,8 @@ func selectionEvidence(result probe.RouteResult) bool {
 		// A successful drop probe may report Status=OK after path proof, but
 		// ApplicationStatus remains DROP. Accept only that explicit safety
 		// outcome; a generic HTTP OK must never masquerade as DROP evidence.
-		return strings.EqualFold(result.Status, "DROP") || strings.EqualFold(result.ApplicationStatus, "DROP")
+		return result.PathVerified && (strings.EqualFold(result.Status, "DROP") ||
+			(strings.EqualFold(result.Status, "OK") && strings.EqualFold(result.ApplicationStatus, "DROP")))
 	}
 	if !strings.EqualFold(result.Status, "OK") || !result.PathVerified || !result.ServiceOK ||
 		result.RegionalBlock || result.AuthenticationRequired || result.WAFOrRateLimit ||

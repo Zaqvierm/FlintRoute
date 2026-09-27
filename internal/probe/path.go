@@ -97,7 +97,26 @@ type Engine struct {
 	// failure. The controller can start before the durable active binding is
 	// materialized; keeping the initial error verifier forever turns a transient
 	// boot race into a permanent route-not-verified state.
-	reload func() *Engine
+	reload            func() *Engine
+	unmarkedCandidate bool
+}
+
+type unmarkedCandidateContextKey struct{}
+
+// NewUnboundDirectCandidateEngine checks only DNS and the HTTP/TLS service
+// contract through the existing system transport. It NEVER produces managed
+// path proof. Only explicit guarded apply may subsequently verify/commit the
+// requested Direct route; automatic assignment cannot use this evidence.
+func NewUnboundDirectCandidateEngine() *Engine {
+	engine := NewEngine(unboundDirectCandidateVerifier{})
+	engine.unmarkedCandidate = true
+	return engine
+}
+
+type unboundDirectCandidateVerifier struct{}
+
+func (unboundDirectCandidateVerifier) Verify(context.Context, PathProofRequest) (evidence.RouteResult, error) {
+	return evidence.RouteResult{}, pathStatusError("UNVERIFIED", "route_not_bound_to_verification_plan", errors.New("Direct candidate transport checked; managed path requires guarded apply"))
 }
 
 func NewEngine(verifier PathProofVerifier) *Engine {

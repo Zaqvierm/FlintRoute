@@ -262,3 +262,21 @@ boolean fact, not a string; otherwise a successful resolver/rule removal can
 be mislabeled `rollback_failed`. Resolver CRUD, service-rule deletion, and
 route-class changes reuse only byte-for-byte unchanged committed route proof;
 they do not require an unrelated fresh probe of a route they did not modify.
+
+### First manual rule on a confirmed empty baseline
+
+An empty baseline has no managed Direct generation. Interactive Direct preview
+may run an unmarked DNS/HTTP/TLS transport check only after exact baseline
+recovery/absence proof. It reports `UNVERIFIED` and
+`route_not_bound_to_verification_plan`, never managed `PathVerified`.
+The API can offer `guarded_apply_available` for that transport-valid candidate;
+the explicit user action still uses the full bounded transaction and requires
+post-apply managed path proof before commit. This exception is not available to
+background discovery/auto-assignment and does not install a component or relabel
+the synthetic system-default path as a committed route.
+
+`DROP` is selectable as an observed safety outcome only with actual path proof.
+An unverified Drop probe cannot make read-only preview claim `drop_enforced`.
+The old selection fixture accepted a bare DROP enum and therefore encoded the
+wrong invariant; it now supplies proven Drop evidence and separately rejects
+unverified/failed Drop results.

@@ -21,7 +21,7 @@ func measuredSelectionResult(route, routeType string, latency int64) probe.Route
 
 func TestDropIsASelectableTerminalSafetyOutcome(t *testing.T) {
 	results := []probe.RouteResult{
-		{Route: "drop", RouteType: "drop", Status: "DROP", ReasonCode: "no_safe_route"},
+		{Route: "drop", RouteType: "drop", Status: "DROP", PathVerified: true, ReasonCode: "no_safe_route"},
 	}
 	if got := SelectBestWithPolicy(results, configPolicyForSelection(), "", nil); got == nil || got.Route != "drop" {
 		t.Fatalf("DROP must remain a selectable terminal outcome: %+v", got)
@@ -30,7 +30,7 @@ func TestDropIsASelectableTerminalSafetyOutcome(t *testing.T) {
 
 func TestDropDoesNotBeatVerifiedPathWithoutComparableLatency(t *testing.T) {
 	results := []probe.RouteResult{
-		{Route: "drop", RouteType: "drop", Status: "DROP", ApplicationStatus: "DROP"},
+		{Route: "drop", RouteType: "drop", Status: "DROP", ApplicationStatus: "DROP", PathVerified: true},
 		{Route: "vless-no-latency", RouteType: "vless", Status: "OK", ApplicationStatus: "OK", PathVerified: true, ServiceOK: true},
 	}
 	if got := SelectBestWithPolicy(results, configPolicyForSelection(), "", nil); got == nil || got.Route != "vless-no-latency" {

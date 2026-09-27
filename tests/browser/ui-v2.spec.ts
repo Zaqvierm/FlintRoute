@@ -543,6 +543,25 @@ test.describe('FlintRoute UI v2', () => {
     await expect(page.locator('.service-table')).toContainText('example.com');
   });
 
+  test('offers explicit guarded apply without claiming an unbound candidate is PathVerified', async ({ page }) => {
+    await mockAPI(page);
+    await page.route('**/api/v1/health', async route => route.fulfill(envelope({status:'ok',recovery_status:'ok'})));
+    await page.route('**/api/v1/services/verify', async route => route.fulfill(envelope({
+      service_id:'preview_example_org',domain:'example.org',status:'CANDIDATE_REQUIRES_APPLY',
+      verification_state:'awaiting_guarded_apply',guarded_apply_available:true,path_verified:false,
+      selected_route_tag:'direct',selected_route_type:'direct',evidence_persisted:1,
+      candidates:[{route:'direct',route_type:'direct',status:'UNVERIFIED',path_verified:false,service_ok:true,reason:'route_not_bound_to_verification_plan'}]
+    })));
+    await page.goto('/?screen=Сервисы');
+    await page.getByRole('button',{name:'+ Новое правило',exact:true}).click();
+    const editor=page.locator('.service-rule-dialog');
+    await editor.getByLabel('Домен',{exact:true}).fill('example.org');
+    await editor.getByRole('button',{name:'Проверить домен',exact:true}).click();
+    await expect(editor.getByRole('button',{name:'Применить и проверить правило',exact:true})).toBeEnabled();
+    await expect(editor.locator('.service-preview')).toContainText('Управляемый путь ещё не применён');
+    await expect(editor.locator('.service-preview')).not.toContainText('PathVerified');
+  });
+
   test('retries a lost manual apply response with the same idempotency key', async ({ page }) => {
     let verifyCalls = 0;
     let classifyCalls = 0;

@@ -196,6 +196,8 @@ export function Services({
       });
       setMessage(result.path_verified
         ? `Выбран ${result.selected_route_tag || result.selected_route_type || 'маршрут'}. Можно создать правило.`
+        : result.guarded_apply_available
+          ? 'Сайт отвечает через обычное подключение. Применить Direct и проверить управляемый путь?'
         : result.verification_state === 'in_progress'
           ? 'Проверка ещё идёт. Нажми «Продолжить проверку», чтобы получить следующий bounded результат.'
           : 'Безопасный маршрут не найден. Правило не создаю.');
@@ -441,11 +443,13 @@ export function Services({
             <p class={editorVerification.path_verified ? 'action-status ok' : 'action-status'}>
               {editorVerification.path_verified
                 ? `Выбрано: ${editorVerification.selected_route_tag || editorVerification.selected_route_type}. Продолжить и создать правило?`
+                : editorVerification.guarded_apply_available
+                  ? 'DNS и сайт отвечают. Управляемый путь ещё не применён; FlintRoute проверит его после применения и откатит правило при отказе.'
                 : 'Ни один допустимый маршрут не прошёл DNS, service и data-path проверку.'}
             </p>
           </div>}
           <div class="actions">
-            <button class="primary" disabled={mutationLocked || !editor.domain.trim() || editor.paths.length === 0 || !editorVerification?.path_verified || Boolean(moving)}>Создать и применить правило</button>
+            <button class="primary" disabled={mutationLocked || !editor.domain.trim() || editor.paths.length === 0 || !(editorVerification?.path_verified || editorVerification?.guarded_apply_available) || Boolean(moving)}>{editorVerification?.guarded_apply_available ? 'Применить и проверить правило' : 'Создать и применить правило'}</button>
             <button type="button" onClick={() => { setEditor(null); setEditorVerification(null); }}>Отмена</button>
           </div>
         </form>

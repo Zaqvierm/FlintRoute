@@ -94,6 +94,34 @@ func TestServiceVerifyIsReadOnlyAndPersistsFreshEvidence(t *testing.T) {
 	}
 }
 
+func TestGuardedPreviewDoesNotClaimManagedPathOrCreateMutation(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	srv.domainChecker = func(context.Context, *config.Config, string, string, planner.Options) (planner.DomainCheck, error) {
+		return planner.DomainCheck{Status: "NO_SAFE_ROUTE", VerificationState: "terminal_no_safe_route", Results: []probe.RouteResult{{Route: "direct", RouteType: "direct", Status: "UNVERIFIED", DNSOK: true, TransportOK: true, ServiceOK: true, ReasonCode: "route_not_bound_to_verification_plan"}}}, nil
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/services/verify", strings.NewReader(`{"domain":"example.org"}`))
+	rec := httptest.NewRecorder()
+	srv.handleServiceVerify(rec, req)
+	var response struct {
+		Data struct {
+			Status            string `json:"status"`
+			VerificationState string `json:"verification_state"`
+			Guarded           bool   `json:"guarded_apply_available"`
+			PathVerified      bool   `json:"path_verified"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.Data.Guarded || response.Data.PathVerified || response.Data.Status != "CANDIDATE_REQUIRES_APPLY" || response.Data.VerificationState != "awaiting_guarded_apply" {
+		t.Fatalf("candidate readiness was confused with path proof: %s", rec.Body.String())
+	}
+	if len(srv.changes) != 0 {
+		t.Fatal("read-only preview created a mutation")
+	}
+}
+
 func TestServiceVerifyFullCheckRequestsCompleteCandidateMatrix(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()

@@ -1097,3 +1097,15 @@ func TestUnknownServiceContractRejectsClientErrorAsUsable(t *testing.T) {
 		}
 	}
 }
+
+func TestUnverifiedDropIsNotAnEnforcedOrSelectedPath(t *testing.T) {
+	for _, status := range []string{"UNVERIFIED", "FAIL", "INFRA_ERROR", "DROP", "OK"} {
+		result := probe.RouteResult{Route: "drop", RouteType: "drop", Status: status, ApplicationStatus: "DROP", PathVerified: false}
+		if SelectionEvidence(result) {
+			t.Fatalf("unproven Drop was accepted as enforced: %+v", result)
+		}
+	}
+	if !SelectionEvidence(probe.RouteResult{Route: "drop", RouteType: "drop", Status: "OK", ApplicationStatus: "DROP", PathVerified: true}) {
+		t.Fatal("proven Drop outcome was rejected")
+	}
+}
