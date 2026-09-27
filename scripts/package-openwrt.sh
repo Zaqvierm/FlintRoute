@@ -5,10 +5,11 @@ ROOT=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd)
 DIST="$ROOT/dist"
 STAGING="$DIST/.flintroute-openwrt-arm64"
 ARCHIVE="$DIST/flintroute-openwrt-arm64.tar.gz"
+RAW_ARCHIVE="$ARCHIVE.tar.tmp"
 BINARY="$DIST/router-policy-linux-arm64"
 HELPER_BINARY="$DIST/router-policy-helper-linux-arm64"
 FILE_LIST="$DIST/.flintroute-package-files.$$"
-trap 'rm -rf "$STAGING"; rm -f "$FILE_LIST" "$ARCHIVE.tmp"' EXIT HUP INT TERM
+trap 'rm -rf "$STAGING"; rm -f "$FILE_LIST" "$ARCHIVE.tmp" "$RAW_ARCHIVE"' EXIT HUP INT TERM
 
 [ -f "$BINARY" ] || { echo "missing $BINARY; build the ARM64 binary first" >&2; exit 1; }
 [ -f "$HELPER_BINARY" ] || { echo "missing $HELPER_BINARY; build the ARM64 helper first" >&2; exit 1; }
@@ -44,7 +45,19 @@ tar --sort=name \
   --group=0 \
   --numeric-owner \
   --format=ustar \
-  -C "$STAGING" -cf - . | gzip -n >"$ARCHIVE.tmp"
+  --exclude='./dist/router-policy-helper-linux-arm64' \
+  --exclude='./dist/router-policy-linux-arm64' \
+  -C "$STAGING" -cf "$RAW_ARCHIVE" .
+# Windows/NTFS can report chmod success while GNU tar still observes 0644 on
+# extensionless cross-built ELF files. Bind their executable mode in the tar
+# headers themselves, not in host filesystem metadata. The append order is
+# fixed and all other entries retain their normal source permissions.
+tar --mtime='UTC 1970-01-01' \
+  --owner=0 --group=0 --numeric-owner --format=ustar --mode=0755 \
+  -C "$STAGING" -rf "$RAW_ARCHIVE" \
+  ./dist/router-policy-helper-linux-arm64 ./dist/router-policy-linux-arm64
+gzip -n <"$RAW_ARCHIVE" >"$ARCHIVE.tmp"
+rm -f "$RAW_ARCHIVE"
 mv "$ARCHIVE.tmp" "$ARCHIVE"
 tar -tzf "$ARCHIVE" >/dev/null
 archive_hash=$(sha256sum "$ARCHIVE" | awk '{print $1}')

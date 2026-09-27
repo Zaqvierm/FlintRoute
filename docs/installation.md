@@ -37,7 +37,11 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-go.ps1
 sh scripts/build-go.sh
 ```
 
-Готовый пакет находится в `dist/flintroute-openwrt-arm64.tar.gz`. Внутри есть
+Готовый пакет находится в `dist/flintroute-openwrt-arm64.tar.gz`. Упаковщик
+задаёт `0755` для обоих ARM64-бинарников непосредственно в tar headers:
+успешный `chmod` на Windows/NTFS не доказывает executable-биты Linux-пакета.
+`tests/package-openwrt.sh` проверяет эти права, manifest и воспроизводимость.
+Внутри есть
 `SHA256SUMS`; installer проверяет все файлы до изменения системы.
 Упаковка нормализует порядок, timestamps, owner/group и gzip header, поэтому две
 сборки из одинакового дерева дают одинаковый SHA-256 архива.

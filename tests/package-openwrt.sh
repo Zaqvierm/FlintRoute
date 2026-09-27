@@ -8,6 +8,13 @@ trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
 [ -s "$ARCHIVE" ] || { echo "OpenWrt package is missing" >&2; exit 1; }
 first_hash="$(sha256sum "$ARCHIVE" | awk '{print $1}')"
+for binary in router-policy-linux-arm64 router-policy-helper-linux-arm64; do
+  tar -tvzf "$ARCHIVE" "./dist/$binary" |
+    awk '$1 == "-rwxr-xr-x" { valid=1 } END { exit(valid ? 0 : 1) }' || {
+      echo "package binary is not executable in Linux tar metadata: $binary" >&2
+      exit 1
+    }
+done
 sh "$ROOT/scripts/package-openwrt.sh" >/dev/null
 second_hash="$(sha256sum "$ARCHIVE" | awk '{print $1}')"
 [ "$first_hash" = "$second_hash" ] || {
@@ -30,5 +37,6 @@ if ROUTER_POLICY_INSTALL_LIB_ONLY=1 sh -c 'script=$1; set --; . "$script"; prefl
   exit 1
 fi
 echo "openwrt_package_verified=true"
+echo "openwrt_package_executable_modes=true"
 echo "openwrt_package_tamper_blocked=true"
 echo "openwrt_package_reproducible=true"

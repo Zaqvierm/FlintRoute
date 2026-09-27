@@ -206,7 +206,8 @@ $env:CGO_ENABLED = "1"
   сохранение scheduler/ranking после restart, catalog-bound fingerprint
   isolation, transaction-bound switch, cooldown, pin, quarantine и возврат
   static baseline;
-- `tests/package-openwrt.sh` — состав, SHA-256 manifest, отказ при повреждении и
+- `tests/package-openwrt.sh` — состав, executable-биты ARM64-бинарников в реальных
+  tar headers (включая сборку на Windows), SHA-256 manifest, отказ при повреждении и
   одинаковый archive hash для двух последовательных упаковок без изменения
   исходников.
 
