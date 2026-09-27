@@ -71,6 +71,7 @@ case "\${1:-}" in
     printf '{"setup_required":false}\n'
     ;;
   backup) exit 0 ;;
+  internal-init-baseline) printf '{"baseline_initialized":true}\n' ;;
   internal-verify-state-backup) exit 0 ;;
   internal-health-field)
     shift
@@ -124,6 +125,12 @@ grep -Fx 'peer_uid=1' "$SYSTEM_ROOT/etc/router-policy/helper.env" >/dev/null
 grep -Fx 'socket=/var/run/router-policy/helper.sock' "$SYSTEM_ROOT/etc/router-policy/helper.env" >/dev/null
 [ "$(cat "$SYSTEM_ROOT/etc/router-policy/config/listener.conf")" = "$(cat "$ROOT/config/listener.conf")" ]
 grep -F 'v1:auth setup-token --if-needed' "$FAKE_CALL_LOG" >/dev/null
+baseline_line=$(grep -n 'v1:internal-init-baseline' "$FAKE_CALL_LOG" | head -n 1 | cut -d: -f1)
+register_line=$(grep -n 'v1:backup register' "$FAKE_CALL_LOG" | head -n 1 | cut -d: -f1)
+[ -n "$baseline_line" ] && [ -n "$register_line" ] && [ "$baseline_line" -lt "$register_line" ] || {
+  echo "fresh installer created bookkeeping before explicit committed baseline" >&2
+  exit 1
+}
 auth_line=$(grep -n 'v1:auth setup-token --if-needed' "$FAKE_CALL_LOG" | head -n 1 | cut -d: -f1)
 prune_line=$(grep -n 'v1:backup prune' "$FAKE_CALL_LOG" | head -n 1 | cut -d: -f1)
 [ -n "$auth_line" ] && [ -n "$prune_line" ] && [ "$prune_line" -gt "$auth_line" ] || {
@@ -1036,6 +1043,25 @@ for unsafe_path in \
   fi
 done
 echo "installer_rejects_lexical_path_traversal=true"
+
+# Production probes/hotplug emit these exact runtime names. They must not
+# prevent uninstall, while arbitrary similarly named files stay unowned.
+(
+  ROUTER_POLICY_UNINSTALL_LIB_ONLY=1
+  export ROUTER_POLICY_UNINSTALL_LIB_ONLY
+  # shellcheck source=uninstall.sh
+  . "$PROJECT_ROOT/uninstall.sh"
+  # uninstall itself issues maintenance begin before validating runtime.
+  # That command emits this exact product-owned lease file.
+  runtime_top_entry_allowed watchdog-inhibit.json
+  runtime_top_entry_allowed hotplug-events.log
+  runtime_top_entry_allowed probe-guard-probe_0123456789abcdef01234567.nft
+  if runtime_top_entry_allowed probe-guard-probe_not-a-nonce.nft || runtime_top_entry_allowed foreign.log || runtime_top_entry_allowed watchdog-inhibit-foreign.json; then
+    echo "uninstaller accepted unowned runtime name" >&2
+    exit 1
+  fi
+)
+echo "uninstaller_recognizes_exact_probe_hotplug_runtime=true"
 
 echo "installer_clean_install=true"
 echo "installer_idempotent_upgrade=true"

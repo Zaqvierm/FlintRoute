@@ -1176,6 +1176,56 @@ func run(args []string) error {
 			return printJSON(map[string]any{"status": "UNVERIFIED", "reason": err.Error()})
 		}
 		return printJSON(map[string]any{"status": "OK", "sha256": metadata.SHA256, "bytes": metadata.Bytes, "database_type": metadata.DatabaseType, "source_version": metadata.SourceVersion, "updated_at": metadata.UpdatedAt})
+	case "internal-verify-empty-baseline":
+		fs := flag.NewFlagSet("internal-verify-empty-baseline", flag.ContinueOnError)
+		revision := fs.String("revision", "", "confirmed baseline revision")
+		candidateHash := fs.String("candidate-hash", "", "confirmed baseline config hash")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return errors.New("unexpected baseline verification argument")
+		}
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			return err
+		}
+		canonical, err := json.Marshal(cfg)
+		if err != nil {
+			return err
+		}
+		digest := sha256.Sum256(canonical)
+		if *revision != fmt.Sprintf("rev_1_%x", digest[:6]) || *candidateHash != "sha256:"+hex.EncodeToString(digest[:]) {
+			return errors.New("baseline config binding mismatch")
+		}
+		return routeassignment.VerifyEmptyBaseline(cfg)
+	case "internal-init-baseline":
+		if len(args) != 1 {
+			return errors.New("usage: router-policy internal-init-baseline")
+		}
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			return err
+		}
+		path := cfg.Storage.Database
+		if path == "" {
+			path = filepath.Join(cfg.Storage.StateDir, "router-policy.bbolt")
+		}
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			if err != nil {
+				return err
+			}
+			return errors.New("fresh baseline initialization refused: database already exists")
+		}
+		store, err := state.Open(cfg)
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		if err := api.InitializeFreshBaseline(store, cfg, time.Now().UTC()); err != nil {
+			return err
+		}
+		return printJSON(map[string]any{"baseline_initialized": true})
 	case "init-db":
 		cfg, err := config.Load(cfgPath)
 		if err != nil {

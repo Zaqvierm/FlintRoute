@@ -13,6 +13,19 @@ import (
 
 const baselineRevisionKind = "baseline"
 
+// InitializeFreshBaseline is an explicit installer action, not a startup
+// fallback. It refuses populated state; committed history is never replaced.
+func InitializeFreshBaseline(store *state.Store, cfg *config.Config, now time.Time) error {
+	created, err := ensureBaselineRevision(store, cfg, now)
+	if err != nil {
+		return err
+	}
+	if !created {
+		return fmt.Errorf("fresh baseline initialization refused: state is not empty")
+	}
+	return nil
+}
+
 func ensureBaselineRevision(store *state.Store, cfg *config.Config, now time.Time) (bool, error) {
 	if store == nil || cfg == nil {
 		return false, fmt.Errorf("state store and config are required")

@@ -91,7 +91,7 @@ type OwnedIPStateSpec struct {
 }
 
 // VerifyNoOwnedIPState proves that the fixed FlintRoute IP ownership boundary
-// is empty.  This is used only by the uninstall no-binding path; it never
+// is empty. This is used by no-binding uninstall and fresh baseline proof; it never
 // mutates kernel state.  Failure to inspect is a hard failure because an
 // unreadable kernel state cannot justify claiming verified-empty.
 func VerifyNoOwnedIPState(ctx context.Context, runner CommandRunner, ipBinary string, spec OwnedIPStateSpec) error {
@@ -116,9 +116,12 @@ func VerifyNoOwnedIPState(ctx context.Context, runner CommandRunner, ipBinary st
 		if err != nil {
 			return err
 		}
-		raw, err := runner.Run(ctx, ipBinary, flag, "-j", "rule", "show")
+		raw, err := runner.Run(ctx, ipBinary, flag, "-N", "-j", "rule", "show")
 		if err != nil {
 			return fmt.Errorf("verify %s rules: %w", family, err)
+		}
+		if !bytes.HasPrefix(bytes.TrimSpace(raw), []byte("[")) {
+			return fmt.Errorf("verify %s rules: expected complete JSON array", family)
 		}
 		rows, err := parseRuleRows(raw)
 		if err != nil {
@@ -127,6 +130,9 @@ func VerifyNoOwnedIPState(ctx context.Context, runner CommandRunner, ipBinary st
 		for _, row := range rows {
 			mark := strings.ToLower(ruleMarkValue(row.FwMark))
 			table := ruleTableInt(row.Table)
+			if table <= 0 {
+				return fmt.Errorf("verify %s rules: invalid numeric table identity", family)
+			}
 			priorityOwned := spec.MinRulePriority > 0 && row.Priority >= spec.MinRulePriority && (spec.MaxRulePriority <= 0 || row.Priority <= spec.MaxRulePriority)
 			_, markOwned := marks[mark]
 			_, tableOwned := tables[table]
@@ -134,16 +140,35 @@ func VerifyNoOwnedIPState(ctx context.Context, runner CommandRunner, ipBinary st
 				return fmt.Errorf("owned %s rule remains: priority=%d mark=%s table=%d", family, row.Priority, mark, table)
 			}
 		}
-		for table := range tables {
-			raw, err := runner.Run(ctx, ipBinary, flag, "-j", "route", "show", "table", strconv.Itoa(table))
-			if err != nil {
-				return fmt.Errorf("verify %s route table %d: %w", family, table, err)
+		// A specific missing table can return "Dump terminated", notably on
+		// IPv6-disabled OpenWrt. A complete numeric all-table dump proves
+		// absence without treating any failed command as successful emptiness.
+		raw, err = runner.Run(ctx, ipBinary, flag, "-N", "-j", "route", "show", "table", "all")
+		if err != nil {
+			return fmt.Errorf("verify %s complete route dump: %w", family, err)
+		}
+		if !bytes.HasPrefix(bytes.TrimSpace(raw), []byte("[")) {
+			return fmt.Errorf("verify %s routes: expected complete JSON array", family)
+		}
+		routes, err := parseRouteRows(raw)
+		if err != nil {
+			return fmt.Errorf("verify %s complete route dump: %w", family, err)
+		}
+		for _, route := range routes {
+			table := 254 // ip omits the main table attribute in an all-table dump.
+			if len(route.Table) != 0 {
+				var value any
+				decoder := json.NewDecoder(bytes.NewReader(route.Table))
+				decoder.UseNumber()
+				if err := decoder.Decode(&value); err != nil {
+					return fmt.Errorf("verify %s route table: %w", family, err)
+				}
+				table = ruleTableInt(value)
+				if table <= 0 {
+					return fmt.Errorf("verify %s routes: invalid numeric table identity", family)
+				}
 			}
-			routes, err := parseRouteRows(raw)
-			if err != nil {
-				return fmt.Errorf("verify %s route table %d: %w", family, table, err)
-			}
-			if len(routes) > 0 {
+			if _, owned := tables[table]; owned {
 				return fmt.Errorf("owned %s route table %d is not empty", family, table)
 			}
 		}
@@ -503,10 +528,11 @@ func rulesEqual(a, b []IPStateRule) bool {
 }
 
 type ipRouteRow struct {
-	Dst     string `json:"dst"`
-	Gateway string `json:"gateway"`
-	Dev     string `json:"dev"`
-	Type    string `json:"type"`
+	Table   json.RawMessage `json:"table"`
+	Dst     string          `json:"dst"`
+	Gateway string          `json:"gateway"`
+	Dev     string          `json:"dev"`
+	Type    string          `json:"type"`
 }
 
 func (r ipRouteRow) typeKind() string {

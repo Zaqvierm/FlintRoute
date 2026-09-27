@@ -34,6 +34,7 @@ import (
 	"router-policy/internal/planner"
 	"router-policy/internal/platform"
 	"router-policy/internal/probe"
+	"router-policy/internal/routeassignment"
 	"router-policy/internal/secureid"
 	"router-policy/internal/security"
 	"router-policy/internal/state"
@@ -485,16 +486,51 @@ func (s *Server) StartScheduler(ctx context.Context) {
 	})
 }
 
-func (s *Server) reconcileRouteAssignments(ctx context.Context) error {
+func (s *Server) reconcileRouteAssignments(ctx context.Context) (err error) {
 	reconciler, ok := s.routeAssignmentRuntime.(RouteAssignmentReconciler)
 	if !ok {
 		return nil
 	}
+	// Recovery observation and mutation admission share the same boundary.
+	// Publish a failure fence before releasing it, not after another apply can
+	// slip between the observation and the caller's status update.
+	s.mutationGate.Lock()
+	defer func() {
+		if err != nil {
+			revision, _ := s.activeIdentity()
+			_ = s.setRecoveryStatusDuringMutation(failedRecovery(time.Now().UTC(), "route_assignment_reconcile_failed", err.Error(), adapter.RecoveryTarget{RevisionID: revision}))
+		}
+		s.mutationGate.Unlock()
+	}()
 	s.mu.Lock()
 	revision := s.activeRevision
 	s.mu.Unlock()
 	if revision == "" {
 		return nil
+	}
+	status := s.currentRecoveryStatus()
+	if !recoveryStatusAllowsMutation(status) {
+		return fmt.Errorf("route assignment reconcile is blocked by recovery status %q", status.Status)
+	}
+	if status.Status == "not_required" {
+		var record revisionRecord
+		if err := s.store.LoadJSON("revisions", revision, &record); err != nil {
+			return err
+		}
+		cfg := s.currentConfig()
+		if err := validateBaselineRevision(record, revision, cfg); err != nil {
+			return err
+		}
+		if status.RevisionID != revision || !constantEqual(status.CandidateHash, record.CandidateHash) {
+			return errors.New("baseline recovery binding changed before route assignment reconcile")
+		}
+		if status.BaselineAssignmentsAbsent {
+			// The root helper checked fixed protected paths before confirming
+			// this exact baseline. Do not widen dnsmasq directory permissions
+			// or try to repeat that privileged observation as daemon.
+			return nil
+		}
+		return routeassignment.VerifyEmptyBaseline(cfg)
 	}
 	// The runtime independently reads the durable binding and refuses stale
 	// manifests; passing only the context keeps controller code from gaining

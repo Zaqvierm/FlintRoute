@@ -81,7 +81,7 @@ func (a *OpenWrt) ClearBootGuardForBaseline(ctx context.Context, revisionID, can
 			Baseline:        &helper.BaselineRequest{Operation: "clear-boot-guard"},
 		}
 		result := a.executeHelperRequest(ctx, "clear-boot-guard-baseline", start, request)
-		if result.OK && (result.Evidence["boot_guard"] != "cleared" || result.SemanticState != "baseline_confirmed" || result.Evidence["active_revision"] != revisionID || result.Evidence["active_candidate_hash"] != candidateHash) {
+		if result.OK && (result.Evidence["boot_guard"] != "cleared" || result.Evidence["route_assignments"] != "absent" || result.SemanticState != "baseline_confirmed" || result.Evidence["active_revision"] != revisionID || result.Evidence["active_candidate_hash"] != candidateHash) {
 			result.OK = false
 			result.Status = "ERROR"
 			result.Reason = "adapter did not prove baseline-bound boot guard removal"
@@ -89,7 +89,7 @@ func (a *OpenWrt) ClearBootGuardForBaseline(ctx context.Context, revisionID, can
 		return result
 	}
 	result := a.execute(ctx, "clear-boot-guard-baseline", start, a.configPath, "baseline", revisionID, candidateHash)
-	if result.OK && (result.Evidence["boot_guard"] != "cleared" || result.SemanticState != "baseline_confirmed" || result.Evidence["active_revision"] != revisionID || result.Evidence["active_candidate_hash"] != candidateHash) {
+	if result.OK && (result.Evidence["boot_guard"] != "cleared" || result.Evidence["route_assignments"] != "absent" || result.SemanticState != "baseline_confirmed" || result.Evidence["active_revision"] != revisionID || result.Evidence["active_candidate_hash"] != candidateHash) {
 		result.OK = false
 		result.Status = "ERROR"
 		result.Reason = "adapter did not prove baseline-bound boot guard removal"

@@ -184,6 +184,83 @@ func TestSchemaRetentionAndCompactBackup(t *testing.T) {
 	}
 }
 
+func TestRetentionKeepsActiveAndReferencedJournal(t *testing.T) {
+	now := time.Now().UTC()
+	store, err := Open(&config.Config{Storage: config.Storage{StateDir: t.TempDir(), ChangeSetRetentionDays: 30, TransactionRetentionDays: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	old := now.Add(-60 * 24 * time.Hour).Format(time.RFC3339)
+	recent := now.Add(-3 * 24 * time.Hour).Format(time.RFC3339)
+	entries := []Entry{
+		{Bucket: "meta", Key: "active_revision", Value: "active"},
+		{Bucket: "revisions", Key: "active", Value: map[string]any{"change_id": "active", "transaction_id": "tx-active"}},
+		{Bucket: "changes", Key: "active", Value: map[string]any{"state": "committed", "updated_at": old, "transaction_id": "tx-active"}},
+		{Bucket: "changes", Key: "retained", Value: map[string]any{"state": "rolled_back", "updated_at": recent, "transaction_id": "tx-retained"}},
+		{Bucket: "changes", Key: "expired", Value: map[string]any{"state": "rolled_back", "updated_at": old, "transaction_id": "tx-expired"}},
+		{Bucket: "changes", Key: "failed-rollback", Value: map[string]any{"state": "rollback_failed", "updated_at": old, "transaction_id": "tx-rollback"}},
+	}
+	for _, id := range []string{"tx-active", "tx-retained", "tx-expired", "tx-rollback"} {
+		entries = append(entries, Entry{Bucket: "transactions", Key: id, Value: map[string]any{"state": "rolled_back", "completed_at": old}})
+	}
+	if err := store.SaveBatch(entries...); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Cleanup(now); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"active", "retained", "failed-rollback"} {
+		if _, err := store.GetRaw("changes", id); err != nil {
+			t.Fatalf("lost retained change %s: %v", id, err)
+		}
+	}
+	for _, id := range []string{"tx-active", "tx-retained", "tx-rollback"} {
+		if _, err := store.GetRaw("transactions", id); err != nil {
+			t.Fatalf("severed journal reference %s: %v", id, err)
+		}
+	}
+	if _, err := store.GetRaw("changes", "expired"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unreferenced expired change was not pruned: %v", err)
+	}
+	if _, err := store.GetRaw("transactions", "tx-expired"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unreferenced expired transaction was not pruned: %v", err)
+	}
+	before := store.WriteMetrics().PersistentTransactions
+	if _, err := store.Cleanup(now); err != nil {
+		t.Fatal(err)
+	}
+	if store.WriteMetrics().PersistentTransactions != before {
+		t.Fatal("protected old journal caused idle write loop")
+	}
+}
+
+func TestRetentionKeepsDurableRecoveryTarget(t *testing.T) {
+	now := time.Now().UTC()
+	store, err := Open(&config.Config{Storage: config.Storage{StateDir: t.TempDir(), ChangeSetRetentionDays: 1, TransactionRetentionDays: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	old := now.Add(-60 * 24 * time.Hour).Format(time.RFC3339)
+	if err := store.SaveBatch(
+		Entry{Bucket: "meta", Key: "recovery_status", Value: map[string]any{"status": "recovery_required", "transaction_id": "ambiguous"}},
+		Entry{Bucket: "changes", Key: "ambiguous-change", Value: map[string]any{"state": "failed", "updated_at": old, "transaction_id": "ambiguous"}},
+		Entry{Bucket: "transactions", Key: "ambiguous", Value: map[string]any{"state": "failed", "completed_at": old}},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Cleanup(now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetRaw("changes", "ambiguous-change"); err != nil {
+		t.Fatal("recovery ChangeSet was pruned:", err)
+	}
+	if _, err := store.GetRaw("transactions", "ambiguous"); err != nil {
+		t.Fatal("durable recovery target was pruned:", err)
+	}
+}
+
 func TestIdenticalSaveJSONDoesNotOpenPersistentWrite(t *testing.T) {
 	store, err := Open(&config.Config{Storage: config.Storage{StateDir: t.TempDir()}})
 	if err != nil {

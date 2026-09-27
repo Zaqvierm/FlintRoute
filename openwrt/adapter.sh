@@ -500,7 +500,25 @@ clear_boot_guard_baseline() {
     echo "reason=baseline_candidate_binding_invalid" >&2
     return 1
   }
+  take_lock
+  [ ! -e "$active_file" ] && [ ! -L "$active_file" ] && [ ! -e "$pending_file" ] && [ ! -L "$pending_file" ] || {
+    echo "reason=baseline_has_transaction_state" >&2
+    return 1
+  }
+  ROUTER_POLICY_CONFIG="$config" "$router_policy_bin" internal-verify-empty-baseline \
+    --revision "$revision" --candidate-hash "$recovery_candidate_hash" || return 1
+  ROUTER_POLICY_CONFIG="$config" "$router_policy_bin" internal-verify-no-owned-ip-state || return 1
+  baseline_tables="$("$nft_bin" list tables)" || return 1
+  if printf '%s\n' "$baseline_tables" | grep -Ev '^[[:space:]]*$|^table[[:space:]]+(ip|ip6|inet|arp|bridge|netdev)[[:space:]]+[A-Za-z_][A-Za-z0-9_.-]*[[:space:]]*$' >/dev/null; then
+    echo "reason=baseline_nft_inventory_invalid" >&2
+    return 1
+  fi
+  if printf '%s\n' "$baseline_tables" | grep -Eq '^table[[:space:]]+inet[[:space:]]+router_policy[[:space:]]*$'; then
+    echo "reason=baseline_has_dataplane_table" >&2
+    return 1
+  fi
   clear_boot_guard
+  echo "route_assignments=absent"
   echo "protocol_version=1"
   echo "operation=clear-boot-guard-baseline"
   echo "generation=$revision"

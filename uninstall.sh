@@ -120,10 +120,15 @@ validate_backup_paths() {
 
 runtime_top_entry_allowed() {
   case "$1" in
-    active-transaction.env|pending-transaction.env|boot-guard.nft|dns-observations.log|install-health.json|write-events.log|uninstall-empty-ip-state.json)
+    active-transaction.env|pending-transaction.env|boot-guard.nft|dns-observations.log|install-health.json|write-events.log|hotplug-events.log|uninstall-empty-ip-state.json|watchdog-inhibit.json)
       return 0 ;;
     nft-transition-tx_*.nft|nft-boot-guard-transition-tx_*.nft|management-proof-*.error)
       printf '%s\n' "$1" | grep -Eq '^(nft-transition|nft-boot-guard-transition)-tx_[0-9a-f]{16}\.nft$|^management-proof-rev_[0-9]+_[0-9a-f]{12}-tx_[0-9a-f]{16}\.error$'
+      ;;
+    probe-guard-probe_*.nft)
+      # This exact nonce format is emitted by adapter probe_guard_command.
+      # It is accepted only inside the dedicated regular-file runtime root.
+      printf '%s\n' "$1" | grep -Eq '^probe-guard-probe_[0-9a-f]{24}\.nft$'
       ;;
     transaction.lock|rollback-timers|management-proofs)
       return 0 ;;

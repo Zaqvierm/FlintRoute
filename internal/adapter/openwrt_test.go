@@ -267,6 +267,7 @@ func TestOpenWrtBaselineBootGuardUsesTypedBoundHelper(t *testing.T) {
 			"active_revision":       revision,
 			"active_candidate_hash": candidateHash,
 			"boot_guard":            "cleared",
+			"route_assignments":     "absent",
 			"transaction_state":     "baseline_confirmed",
 		}
 		_ = json.NewEncoder(connection).Encode(response)

@@ -762,7 +762,10 @@ snapshot_installation() {
       # FlintRoute does not own.  Exact files (including managed secret files)
       # are listed separately below.  Other owned directory targets (notably
       # the code prefix) retain their existing recursive snapshot semantics.
-      if [ "$p" != "$ETC_DIR/secrets" ] || [ ! -d "$p" ]; then
+      # The observer log is writer-owned runtime data, not boot/config state.
+      # Copying/replaying it can require twice its size in tmpfs and destroy
+      # observations appended after the snapshot. Roll back its metadata only.
+      if [ "$p" != "${observation_target:-}" ] && { [ "$p" != "$ETC_DIR/secrets" ] || [ ! -d "$p" ]; }; then
         relative="${p#/}"
         mkdir -p "$staging/$(dirname "$relative")"
         copy_preserving_metadata "$p" "$staging/$relative"
@@ -820,6 +823,7 @@ snapshot_installation() {
     # files are separate archive members.  Other owned directory targets keep
     # recursive archive semantics (for example the active code prefix).
     [ "$p" != "$ETC_DIR/secrets" ] || continue
+    [ "$p" != "${observation_target:-}" ] || continue
     relative="${p#/}"
     [ -n "$relative" ] || { rm -f "$file_list"; return 1; }
     printf '%s\n' "$relative" >> "$file_list"
@@ -875,7 +879,11 @@ restore_installation() {
     echo "automatic install rollback blocked: critical system directory invariant failed" >&2
     return 1
   }
+  # State data and access metadata are part of the rollback proof. Validate
+  # them before stopping services or replacing any installation target.
+  restore_state_database --verify-only || return 1
   service_restore_ok=1
+  observer_runtime_retained=0
   if [ -z "$SYSTEM_ROOT" ]; then
     # Stop the non-root controller before the privileged helper so rollback
     # cannot restore a mixed binary/config generation underneath a live peer.
@@ -964,6 +972,24 @@ restore_installation() {
           echo "automatic install rollback blocked: secrets target changed type" >&2
           return 1
         fi
+      fi
+      continue
+    fi
+    if [ "$p" = "${observation_target:-}" ]; then
+      if [ -e "$p" ]; then
+        [ -f "$p" ] && [ ! -L "$p" ] || { rm -rf "$restore_staging"; echo "automatic install rollback blocked: observer log changed type" >&2; return 1; }
+      fi
+      if [ "$presence" = present ]; then
+        [ -e "$p" ] || : > "$p"
+        chmod "$target_mode" "$p" || { rm -rf "$restore_staging"; return 1; }
+        if [ "$(id -u)" = 0 ]; then
+          chown "$uid:$gid" "$p" || { rm -rf "$restore_staging"; return 1; }
+        fi
+      elif [ -e "$p" ]; then
+        # dnsmasq is not stopped with the controller/helper. Do not unlink a
+        # log it may still hold open. Restore control-plane availability and
+        # report the exact remaining runtime cleanup instead of false success.
+        observer_runtime_retained=1
       fi
       continue
     fi
@@ -1073,6 +1099,11 @@ restore_installation() {
     echo "install_rollback=files-restored-services-unverified" >&2
     return 1
   fi
+  if [ "$observer_runtime_retained" = 1 ]; then
+    echo "install_rollback=runtime-log-retained" >&2
+    echo "reason=observer-log-writer-close-not-proven" >&2
+    return 1
+  fi
   clear_prefix_switch_marker || {
     echo "automatic install rollback unavailable: prefix switch marker could not be cleared" >&2
     return 1
@@ -1085,7 +1116,9 @@ snapshot_state_database() {
   presence="$snapshot/state-database.presence"
   backup_path="$snapshot/router-policy.bbolt"
   hash_path="$snapshot/router-policy.bbolt.sha256"
-  rm -f "$backup_path" "$hash_path"
+  metadata_path="$snapshot/state-database.metadata"
+  metadata_hash_path="$snapshot/state-database.metadata.sha256"
+  rm -f "$backup_path" "$hash_path" "$metadata_path" "$metadata_hash_path"
   if [ ! -e "$STATE_DATABASE" ]; then
     echo "absent" > "$presence"
     return 0
@@ -1094,6 +1127,8 @@ snapshot_state_database() {
     echo "automatic install rollback unavailable: unsafe state database" >&2
     return 1
   }
+  path_metadata "$STATE_DATABASE" > "$metadata_path" || return 1
+  hash_file "$metadata_path" > "$metadata_hash_path" || return 1
   cp "$STATE_DATABASE" "$backup_path.tmp"
   mv "$backup_path.tmp" "$backup_path"
   hash_file "$backup_path" > "$hash_path.tmp"
@@ -1105,6 +1140,8 @@ snapshot_state_database() {
 }
 
 restore_state_database() {
+  state_verify_only=0
+  case "${1:-}" in "") ;; --verify-only) state_verify_only=1 ;; *) return 2;; esac
   snapshot="$BACKUP_DIR/install-rollback"
   presence="$snapshot/state-database.presence"
   [ -s "$presence" ] || return 0
@@ -1114,11 +1151,14 @@ restore_state_database() {
   }
   case "$(cat "$presence")" in
     absent)
+      [ "$state_verify_only" = 0 ] || return 0
       rm -f "$STATE_DATABASE"
       ;;
     present)
       backup_path="$snapshot/router-policy.bbolt"
       hash_path="$snapshot/router-policy.bbolt.sha256"
+      metadata_path="$snapshot/state-database.metadata"
+      metadata_hash_path="$snapshot/state-database.metadata.sha256"
       [ -f "$backup_path" ] && [ ! -L "$backup_path" ] && [ -s "$hash_path" ] && [ ! -L "$hash_path" ] || {
         echo "automatic install rollback unavailable: invalid state backup" >&2
         return 1
@@ -1129,12 +1169,28 @@ restore_state_database() {
         echo "automatic install rollback unavailable: state backup hash mismatch" >&2
         return 1
       }
+      [ -s "$metadata_path" ] && [ ! -L "$metadata_path" ] && [ -s "$metadata_hash_path" ] && [ ! -L "$metadata_hash_path" ] || {
+        echo "automatic install rollback unavailable: state access metadata is missing" >&2
+        return 1
+      }
+      [ "$(hash_file "$metadata_path")" = "$(cat "$metadata_hash_path")" ] || {
+        echo "automatic install rollback unavailable: state metadata checksum mismatch" >&2
+        return 1
+      }
+      IFS='|' read -r database_mode database_uid database_gid < "$metadata_path"
+      case "$database_mode" in ''|*[!0-7]*) echo "invalid state mode" >&2; return 1;; esac
+      case "$database_uid" in ''|*[!0-9]*) echo "invalid state UID" >&2; return 1;; esac
+      case "$database_gid" in ''|*[!0-9]*) echo "invalid state GID" >&2; return 1;; esac
       if [ -x "$ROUTER_POLICY_BIN" ]; then
         run_bounded env ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$ROUTER_POLICY_BIN" internal-verify-state-backup --path "$backup_path" >/dev/null
       fi
+      [ "$state_verify_only" = 0 ] || return 0
       mkdir -p "$(dirname "$STATE_DATABASE")"
       cp "$backup_path" "$STATE_DATABASE.restore.$$"
-      chmod 600 "$STATE_DATABASE.restore.$$"
+      chmod "$database_mode" "$STATE_DATABASE.restore.$$" || return 1
+      if [ "$(id -u)" = 0 ]; then
+        chown "$database_uid:$database_gid" "$STATE_DATABASE.restore.$$" || return 1
+      fi
       mv "$STATE_DATABASE.restore.$$" "$STATE_DATABASE"
       ;;
     *)
@@ -1999,6 +2055,9 @@ case "$mode" in
       activate_dns_observer
     fi
     ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$ROUTER_POLICY_BIN" validate-config
+    if [ "$(cat "$BACKUP_DIR/install-rollback/state-database.presence")" = absent ]; then
+      ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$ROUTER_POLICY_BIN" internal-init-baseline
+    fi
     "$ROUTER_POLICY_BIN" backup register --root "$BACKUP_DIR" --operation "$(basename "$BACKUP_DIR")" --version "$ROUTER_POLICY_VERSION" --reason install --retention-class installer-fallback >/dev/null
     echo "== setup token =="
     ROUTER_POLICY_CONFIG="$ETC_DIR/config/default.json" "$ROUTER_POLICY_BIN" auth setup-token --if-needed

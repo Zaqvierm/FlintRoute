@@ -1,5 +1,10 @@
 # Тестирование
 
+Startup regression: пустой committed baseline не требует отсутствующий
+production assignment binding, но residual manifest/overlay оставляет mutation
+fenced. Проверка выполняется для immediate/deferred recovery; concurrent lease
+не допускается между незавершённым assignment reconcile и публикацией ошибки.
+
 > Список отражает проверки, включённые в локальный test suite.
 >
 > Любые упоминания прогона на Flint 2 ниже — исторические и не являются PASS
@@ -210,6 +215,10 @@ $env:CGO_ENABLED = "1"
   tar headers (включая сборку на Windows), SHA-256 manifest, отказ при повреждении и
   одинаковый archive hash для двух последовательных упаковок без изменения
   исходников.
+- `tests/installer-state-metadata.sh` — Linux root/non-root проверка mode/UID/GID
+  восстановленной базы, отказ на повреждённую metadata и сохранение append в
+  writer-owned log при rollback без replay содержимого. На Windows —
+  `NOT RUN LOCALLY`; CI запускает настоящий filesystem test через sudo.
 
 ## Четыре уровня covered
 

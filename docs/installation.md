@@ -113,7 +113,7 @@ allowlisted-кандидата и не активирует их в обход C
 
 Перед первым изменением installer требует доступные `ubus` и procd, отсутствие
 активного forwarding boot guard и, для уже запущенного control plane, рабочий
-loopback health endpoint. Каждый вызов ubus/init ограничен timeout. Провал
+health endpoint на фактически настроенном локальном listener. Каждый вызов ubus/init ограничен timeout. Провал
 preflight останавливает установку до snapshot и записи файлов.
 Factory OpenWrt не требует отдельного `coreutils-stat`: режим существующего
 regular file проверяется переносимо штатными `ls` и `awk`.
@@ -128,6 +128,34 @@ Installer сохраняет backup и печатает его путь. Есл�
 `install_rollback=restored` печатается только после подтверждённого service
 recovery; частичный откат возвращает ненулевой код и
 `files-restored-services-unverified`.
+Snapshot bbolt сохраняет не только данные/checksum, но и checksum-bound
+mode/UID/GID. Восстановление root-owned временного файла без этих атрибутов
+делает базу недоступной непривилегированному controller. Старый snapshot без
+access metadata не считается достаточным для автоматического восстановления.
+DNS observation log — runtime-данные активного writer: installer сохраняет и
+восстанавливает только его права/ownership, не копирует и не replay-ит содержимое.
+Иначе rollback большого файла может переполнить tmpfs и стереть свежие события.
+Если до rollback log отсутствовал, а новый writer ещё может держать файл,
+installer сохраняет его и явно сообщает `runtime-log-retained`, не объявляя
+полный cleanup успешным и не удаляя inode из-под writer.
+
+Чистая установка явно создаёт committed baseline через
+`internal-init-baseline` **до** root-side backup/auth bookkeeping. Команда
+отказывается работать с уже существующей базой; она не является recovery
+или fallback для повреждённого/missing active journal. После root-side writes
+ownership передаётся непривилегированному controller.
+Пустой подтверждённый baseline не имеет production adapter binding. Поэтому
+route-only reconcile на нём не запускается: сначала read-only проверяется
+отсутствие assignment manifest, last-good binding и DNS overlay. Проверку
+root-only путей выполняет helper в baseline-bound операции и возвращает typed
+`route_assignments=absent`; controller не расширяет права dnsmasq confdir.
+Отсутствие owned IP state доказывается complete numeric JSON dumps для обеих
+families. Запрос отдельной несуществующей IPv6 table может вернуть
+`Dump terminated`; эта ошибка не маскируется как пустое состояние.
+Остаток любого из этих объектов
+означает recovery fence, а не разрешение игнорировать или удалить его.
+Первый managed ChangeSet создаёт обычную production generation; после этого
+restart снова требует exact-bound route-only reconcile.
 Перед остановкой сервисов или удалением старых targets rollback проверяет hash
 архива и требует, чтобы manifest содержал ровно allowlisted файлы и сервисы
 FlintRoute. Неизвестная или повреждённая запись блокирует откат без изменений.

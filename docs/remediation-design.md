@@ -56,6 +56,13 @@ hash candidate, hash manifest артефактов, generation и фактиче
 adapter. Rollback capability удаляется только после сравнения durable active
 revision с состоянием adapter.
 
+Retention сохраняет ChangeSet активной revision, unresolved recovery/rollback
+evidence и transaction records, на которые ссылаются retained ChangeSet.
+Различающиеся TTL history/transactions не должны создавать dangling references
+и ломать последующий startup. При неоднозначном active journal cleanup сохраняет
+recovery evidence вместо его удаления; защищённая старая запись сама по себе не
+создаёт повторные persistent writes в idle cleanup.
+
 ## Размещение конфигурации
 
 `bootstrap.json` — неизменяемые параметры запуска. В нём нет pending candidate,
