@@ -226,18 +226,24 @@ test.describe('FlintRoute UI v2', () => {
 
   test('returns to login when a background request loses authorization', async ({ page }) => {
     await mockAPI(page);
-    await page.goto(`/?screen=${encodeURIComponent('\u041e\u0431\u0437\u043e\u0440')}`);
-    await expect(page.locator('.session-bar')).toBeVisible();
-
+    let unauthorizedResponses = 0;
     await page.route('**/api/v1/services', async (route) => {
+      // The overview bootstrap also fetches services. Expire the session
+      // only once the navigation under test has happened; otherwise a valid
+      // early logout removes the button before this test tries to click it.
+      if (new URL(page.url()).searchParams.get('screen') !== 'Сервисы') return route.fallback();
+      unauthorizedResponses += 1;
       await route.fulfill({
         status: 401,
         contentType: 'application/json',
         body: JSON.stringify({ error: { code: 'unauthorized', message: 'login required' } })
       });
     });
+    await page.goto(`/?screen=${encodeURIComponent('\u041e\u0431\u0437\u043e\u0440')}`);
+    await expect(page.locator('.session-bar')).toBeVisible();
     await page.getByRole('button', { name: '\u0421\u0435\u0440\u0432\u0438\u0441\u044b', exact: true }).first().click();
 
+    await expect.poll(() => unauthorizedResponses).toBeGreaterThan(0);
     await expect(page.getByRole('heading', { name: '\u0412\u0445\u043e\u0434' })).toBeVisible();
     await expect(page.getByText('\u0421\u0435\u0441\u0441\u0438\u044f \u0437\u0430\u0432\u0435\u0440\u0448\u0438\u043b\u0430\u0441\u044c. \u0412\u043e\u0439\u0434\u0438\u0442\u0435 \u0441\u043d\u043e\u0432\u0430.')).toBeVisible();
     await expect(page.locator('.session-bar')).toHaveCount(0);
@@ -530,10 +536,59 @@ test.describe('FlintRoute UI v2', () => {
     expect(classifyBody?.domain).toBe('example.com');
     expect(classifyBody?.service_id).toBeUndefined();
     expect(classifyBody?.selected_route_tag).toBe('direct');
+    expect(typeof classifyBody?.request_id).toBe('string');
     await expect(page.locator('.service-table tbody tr')).toHaveCount(2);
     await page.reload();
     await expect(page.locator('.service-table tbody tr')).toHaveCount(2);
     await expect(page.locator('.service-table')).toContainText('example.com');
+  });
+
+  test('retries a lost manual apply response with the same idempotency key', async ({ page }) => {
+    let verifyCalls = 0;
+    let classifyCalls = 0;
+    const requestIDs: string[] = [];
+    await mockAPI(page);
+    await page.route('**/api/v1/health', async (route) => route.fulfill(envelope({ status: 'ok', recovery_status: 'ok', checked_at: new Date().toISOString() })));
+    await page.route('**/api/v1/services/verify', async (route) => {
+      verifyCalls += 1;
+      await route.fulfill(envelope({
+        service_id: 'preview_retry_example', domain: 'retry.example', status: 'SELECTED', verification_state: 'verified',
+        path_verified: true, selected_route_tag: 'direct', selected_route_type: 'direct',
+        checked_at: new Date().toISOString(), evidence_persisted: 1,
+        candidates: [{ route: 'direct', route_type: 'direct', status: 'OK', path_verified: true, service_ok: true }]
+      }));
+    });
+    await page.route('**/api/v1/services/classify', async (route) => {
+      classifyCalls += 1;
+      const body = route.request().postDataJSON() as { request_id?: string };
+      requestIDs.push(String(body.request_id ?? ''));
+      if (classifyCalls === 1) {
+        await route.abort();
+        return;
+      }
+      await route.fulfill(envelope({
+        change: { id: 'retry-manual-change', state: 'committed', version: 3 },
+        auto_apply_requested: true, auto_apply_started: true, deduplicated: true,
+        selected_route_tag: 'direct', selected_route_type: 'direct', path_verified: true
+      }));
+    });
+    await page.route('**/api/v1/changes/retry-manual-change', async (route) => route.fulfill(envelope({ id: 'retry-manual-change', state: 'committed', version: 3, title: 'Create manual rule', validation: [] })));
+    await page.goto('/?screen=%D0%A1%D0%B5%D1%80%D0%B2%D0%B8%D1%81%D1%8B');
+    await page.locator('.service-toolbar button.primary').click();
+    const editor = page.locator('.service-rule-dialog');
+    await editor.locator('input[placeholder="example.com"]').fill('retry.example');
+    await editor.locator('.actions button.primary').first().click();
+    await expect.poll(() => verifyCalls).toBe(1);
+    const submit = editor.locator('button.primary').last();
+    await submit.click();
+    await expect.poll(() => classifyCalls).toBe(1);
+    await expect(editor).toBeVisible();
+    await submit.click();
+    await expect.poll(() => classifyCalls).toBe(2);
+    expect(requestIDs[0]).not.toBe('');
+    expect(requestIDs[1]).toBe(requestIDs[0]);
+    expect(verifyCalls).toBe(1);
+    await expect(editor).toHaveCount(0);
   });
 
   test('marks route edits as group-wide and locks the domain list', async ({ page }) => {
@@ -552,6 +607,27 @@ test.describe('FlintRoute UI v2', () => {
     const editor = page.locator('.service-rule-dialog');
     await expect(editor.locator('input[placeholder="example.com"]')).toHaveAttribute('readonly', '');
     await expect(editor.locator('p.action-status').filter({ hasText: '2' })).toBeVisible();
+  });
+
+  test('does not offer a second apply when a configured rule already uses the verified route', async ({ page }) => {
+    await mockAPI(page);
+    await page.route('**/api/v1/health', async (route) => route.fulfill(envelope({ status: 'ok', recovery_status: 'ok', checked_at: new Date().toISOString() })));
+    await page.route('**/api/v1/services', async (route) => route.fulfill(envelope([{
+      id: 'Discord', name: 'Discord', category: 'TELEGRAM', domains: ['discord.com'], applied: true,
+      source: 'configured', sources: ['configured'], selected_route_tag: 'proxy-5',
+      applied_route_tag: 'proxy-5', selected_route_type: 'vless', status: 'CONFIGURED', probe_state: 'not_checked'
+    }])));
+    await page.route('**/api/v1/services/verify', async (route) => route.fulfill(envelope({
+      service_id: 'Discord', domain: 'discord.com', status: 'SELECTED', verification_state: 'verified',
+      path_verified: true, selected_route_tag: 'proxy-5', selected_route_type: 'vless',
+      checked_at: new Date().toISOString(), evidence_persisted: 1,
+      candidates: [{ route: 'proxy-5', route_type: 'vless', status: 'OK', path_verified: true, service_ok: true }]
+    })));
+    await page.goto('/?screen=%D0%A1%D0%B5%D1%80%D0%B2%D0%B8%D1%81%D1%8B');
+    await page.locator('.service-table tbody tr').first().locator('button').click();
+    const drawer = page.getByRole('dialog');
+    await drawer.locator('button.primary').first().click();
+    await expect(drawer.locator('button.primary').filter({ hasText: /РџСЂРёРјРµРЅРёС‚СЊ РїРѕРґС‚РІРµСЂР¶РґС‘РЅРЅС‹Р№ РјР°СЂС€СЂСѓС‚/ })).toHaveCount(0);
   });
 
   test('offers an explicit full route matrix after the quick direct check', async ({ page }) => {
@@ -623,15 +699,26 @@ test.describe('FlintRoute UI v2', () => {
 
   test('keeps the service list empty after a committed delete and page reload', async ({ page }) => {
     let ruleDeleted = false;
+    let deleteCalls = 0;
+    const requestIDs: string[] = [];
     await mockAPI(page);
     await page.route('**/api/v1/health', async (route) => route.fulfill(envelope({ status: 'ok', recovery_status: 'ok', checked_at: new Date().toISOString() })));
     await page.route('**/api/v1/services', async (route) => route.fulfill(envelope(ruleDeleted ? [] : [
       { id: 'Discord', name: 'Discord', category: 'TELEGRAM', domains: ['discord.com'], route: 'VLESS', applied: true, source: 'configured', health: 'ready' }
     ])));
-    await page.route('**/api/v1/services/delete', async (route) => route.fulfill(envelope({
-      change: { id: 'delete-reload-change', state: 'draft', version: 1 }, service_id: 'Discord',
-      auto_apply_requested: true, auto_apply_started: true
-    })));
+    await page.route('**/api/v1/services/delete', async (route) => {
+      deleteCalls += 1;
+      const body = route.request().postDataJSON() as { request_id?: string };
+      requestIDs.push(String(body.request_id ?? ''));
+      if (deleteCalls === 1) {
+        await route.abort();
+        return;
+      }
+      await route.fulfill(envelope({
+        change: { id: 'delete-reload-change', state: 'draft', version: 1 }, service_id: 'Discord',
+        auto_apply_requested: true, auto_apply_started: true, deduplicated: true
+      }));
+    });
     await page.route('**/api/v1/changes/delete-reload-change', async (route) => {
       ruleDeleted = true;
       await route.fulfill(envelope({ id: 'delete-reload-change', state: 'committed', version: 4, title: 'Delete service rule', validation: [] }));
@@ -642,6 +729,12 @@ test.describe('FlintRoute UI v2', () => {
     const deleteButton = drawer.locator('button.danger');
     await deleteButton.click();
     await deleteButton.click();
+    await expect.poll(() => deleteCalls).toBe(1);
+    await expect(deleteButton).toBeVisible();
+    await deleteButton.click();
+    await expect.poll(() => deleteCalls).toBe(2);
+    expect(requestIDs[0]).not.toBe('');
+    expect(requestIDs[1]).toBe(requestIDs[0]);
     await expect(page.locator('.service-table tbody tr')).toHaveCount(0);
     await page.reload();
     await expect(page.locator('.service-table tbody tr')).toHaveCount(0);

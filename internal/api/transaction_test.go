@@ -517,6 +517,173 @@ func TestServiceRouteEditPreservesSiblingDomainsAndProbeContract(t *testing.T) {
 	}
 }
 
+func TestServiceClassifyRetryAfterLostResponseReturnsSameChange(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer srv.Close()
+	defer ts.Close()
+	checkerCalls := 0
+	srv.domainChecker = func(_ context.Context, _ *config.Config, domain, serviceID string, _ planner.Options) (planner.DomainCheck, error) {
+		checkerCalls++
+		return planner.DomainCheck{Domain: domain, Service: serviceID, Status: "SELECTED", VerificationState: "verified",
+			Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", ServiceOK: true, PathVerified: true}}, nil
+	}
+	body := `{"domain":"retry.example","category":"DIRECT_PREFERRED","allowed_paths":["direct","smart_dns"],"base_version":1,"auto_apply":false,"selected_route_tag":"smart","request_id":"classify-retry-0001"}`
+	post := func(payload string) (ChangeSet, bool, int) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/classify", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-CSRF-Token", csrf)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		var envelope Envelope
+		if err := json.Unmarshal(raw, &envelope); err != nil && resp.StatusCode == http.StatusOK {
+			t.Fatal(err)
+		}
+		encoded, _ := json.Marshal(envelope.Data)
+		var result struct {
+			Change       ChangeSet `json:"change"`
+			Deduplicated bool      `json:"deduplicated"`
+		}
+		_ = json.Unmarshal(encoded, &result)
+		return result.Change, result.Deduplicated, resp.StatusCode
+	}
+	first, duplicate, status := post(body)
+	if status != http.StatusOK || duplicate || first.ID == "" || checkerCalls != 1 {
+		t.Fatalf("initial classify result=%+v deduplicated=%v status=%d checker_calls=%d", first, duplicate, status, checkerCalls)
+	}
+	var durable ChangeSet
+	if err := srv.store.LoadJSON("changes", first.ID, &durable); err != nil || durable.RequestID != "classify-retry-0001" || durable.RequestFingerprint == "" {
+		t.Fatalf("retry binding was not persisted with the draft: change=%+v err=%v", durable, err)
+	}
+	second, duplicate, status := post(body)
+	if status != http.StatusOK || !duplicate || second.ID != first.ID || checkerCalls != 1 {
+		t.Fatalf("lost-response retry created/reprobed a second change: first=%s second=%s deduplicated=%v status=%d checker_calls=%d", first.ID, second.ID, duplicate, status, checkerCalls)
+	}
+	conflictBody := strings.Replace(body, `"selected_route_tag":"smart"`, `"selected_route_tag":"direct"`, 1)
+	_, _, status = post(conflictBody)
+	if status != http.StatusConflict || checkerCalls != 1 {
+		t.Fatalf("same idempotency key accepted a different route: status=%d checker_calls=%d", status, checkerCalls)
+	}
+}
+
+func TestServiceClassifyCoalescesEquivalentPendingChangeAfterReload(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer srv.Close()
+	defer ts.Close()
+	_, service, err := serviceForClassifyRequest(serviceClassifyRequest{
+		Domain: "retry.example", Category: "DIRECT_PREFERRED", AllowedPaths: []string{"direct", "smart_dns"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SelectedRouteTag = "smart"
+	original, err := srv.createDraftChangeWithOptions(
+		"Change route class for retry.example", "Persist the selected route class for an observed domain",
+		srv.configVersion, []ChangeOp{{Type: "set", Path: "/services/user_retry_example", Value: service}}, "admin", true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reloaded ChangeSet JSON represents operation values as maps rather than
+	// the original typed Service. The replay must still retain its identity.
+	serialized, err := json.Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reloaded ChangeSet
+	if err := json.Unmarshal(serialized, &reloaded); err != nil {
+		t.Fatal(err)
+	}
+	srv.mu.Lock()
+	srv.changes[original.ID] = reloaded
+	srv.mu.Unlock()
+	checkerCalls := 0
+	srv.domainChecker = func(context.Context, *config.Config, string, string, planner.Options) (planner.DomainCheck, error) {
+		checkerCalls++
+		return planner.DomainCheck{}, errors.New("an identical pending change should not trigger another probe")
+	}
+	body := `{"domain":"retry.example","category":"DIRECT_PREFERRED","allowed_paths":["direct","smart_dns"],"base_version":1,"auto_apply":true,"selected_route_tag":"smart","request_id":"reload-retry-0001"}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/classify", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(raw), `"deduplicated":true`) || checkerCalls != 0 {
+		t.Fatalf("pending equivalent operation was not reused: status=%d checker_calls=%d body=%s", resp.StatusCode, checkerCalls, raw)
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(envelope.Data)
+	var retry struct {
+		Change ChangeSet `json:"change"`
+	}
+	if err := json.Unmarshal(encoded, &retry); err != nil {
+		t.Fatal(err)
+	}
+	if retry.Change.ID != original.ID {
+		t.Fatalf("retry changed operation identity: original=%s retry=%s", original.ID, retry.Change.ID)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		srv.mu.Lock()
+		current := srv.changes[original.ID]
+		srv.mu.Unlock()
+		if current.State == "committed" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("coalesced operation did not commit: %+v", current)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	replay := func() (int, string) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/classify", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-CSRF-Token", csrf)
+		response, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		raw, _ := io.ReadAll(response.Body)
+		return response.StatusCode, string(raw)
+	}
+	status, replayBody := replay()
+	if status != http.StatusOK || !strings.Contains(replayBody, `"deduplicated":true`) || checkerCalls != 0 {
+		t.Fatalf("lost coalesced response could not replay after commit: status=%d probes=%d body=%s", status, checkerCalls, replayBody)
+	}
+	srv.autoApplyWG.Wait()
+	srv.mu.Lock()
+	changed := *srv.activeConfig
+	changed.Services = make(map[string]config.Service, len(srv.activeConfig.Services))
+	for id, service := range srv.activeConfig.Services {
+		changed.Services[id] = service
+	}
+	service = changed.Services["user_retry_example"]
+	service.SelectedRouteTag = "direct"
+	changed.Services["user_retry_example"] = service
+	srv.activeConfig = &changed
+	srv.configVersion++
+	srv.mu.Unlock()
+	status, replayBody = replay()
+	if status != http.StatusConflict || !strings.Contains(replayBody, "base_version_conflict") || checkerCalls != 0 {
+		t.Fatalf("historical commit masked a later policy change: status=%d probes=%d body=%s", status, checkerCalls, replayBody)
+	}
+}
+
 func TestServiceClassifyReprobesExpiredDiscoveryEvidence(t *testing.T) {
 	fake := newFakeAdapter()
 	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
@@ -593,6 +760,18 @@ func TestServicesDoesNotExposeExpiredDomainEvidenceAsVerified(t *testing.T) {
 		!strings.Contains(body, `"status":"STALE_EVIDENCE"`) ||
 		!strings.Contains(body, `"evidence_fresh":false`) {
 		t.Fatalf("expired PathVerified evidence was still presented as current: %s", body)
+	}
+	srv.mu.Lock()
+	committed := *srv.activeConfig
+	committed.Services = map[string]config.Service{"user_amazon_com": {
+		Category: "DIRECT_PREFERRED", Domains: []string{domain}, AllowedPaths: []string{"smart_dns"}, SelectedRouteTag: "smart",
+	}}
+	srv.activeConfig = &committed
+	srv.mu.Unlock()
+	recorder = httptest.NewRecorder()
+	srv.handleServices(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/services", nil))
+	if strings.Contains(recorder.Body.String(), `"source":"automatic"`) || !strings.Contains(recorder.Body.String(), `"applied_route_tag":"smart"`) {
+		t.Fatalf("committed domain still offered a second pin action: %s", recorder.Body.String())
 	}
 }
 

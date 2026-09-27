@@ -29,7 +29,8 @@ func TestServiceDeleteCreatesBoundedAutoApplyChange(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client, csrf := login(t, ts.URL)
-	request, err := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/delete", strings.NewReader(`{"service_id":"youtube","base_version":1}`))
+	requestBody := `{"service_id":"youtube","base_version":1,"request_id":"delete-retry-0001"}`
+	request, err := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/delete", strings.NewReader(requestBody))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,6 +55,49 @@ func TestServiceDeleteCreatesBoundedAutoApplyChange(t *testing.T) {
 	}
 	if strings.Contains(string(raw), `"operation":"shell"`) {
 		t.Fatalf("delete response exposed an arbitrary operation: %s", raw)
+	}
+	var first struct {
+		Change       ChangeSet `json:"change"`
+		Deduplicated bool      `json:"deduplicated"`
+	}
+	if err := json.Unmarshal(raw, &first); err != nil {
+		t.Fatal(err)
+	}
+	srv.mu.Lock()
+	changeCount := len(srv.changes)
+	srv.mu.Unlock()
+	retry, err := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/delete", strings.NewReader(requestBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry.Header.Set("Content-Type", "application/json")
+	retry.Header.Set("X-CSRF-Token", csrf)
+	retryResponse, err := client.Do(retry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retryRaw, _ := io.ReadAll(retryResponse.Body)
+	retryResponse.Body.Close()
+	if retryResponse.StatusCode != http.StatusOK {
+		t.Fatalf("delete retry status=%d body=%s", retryResponse.StatusCode, retryRaw)
+	}
+	var retryEnvelope Envelope
+	if err := json.Unmarshal(retryRaw, &retryEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	retryData, _ := json.Marshal(retryEnvelope.Data)
+	var second struct {
+		Change       ChangeSet `json:"change"`
+		Deduplicated bool      `json:"deduplicated"`
+	}
+	if err := json.Unmarshal(retryData, &second); err != nil {
+		t.Fatal(err)
+	}
+	srv.mu.Lock()
+	changesAfterRetry := len(srv.changes)
+	srv.mu.Unlock()
+	if !second.Deduplicated || first.Change.ID == "" || second.Change.ID != first.Change.ID || changesAfterRetry != changeCount {
+		t.Fatalf("lost-response delete retry created a duplicate: first=%+v second=%+v before=%d after=%d", first, second, changeCount, changesAfterRetry)
 	}
 }
 

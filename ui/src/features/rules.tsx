@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   changeAction,
   classifyService,
@@ -74,6 +74,21 @@ const editableServiceColumns = serviceColumns.filter((column) => column.category
 
 const serviceRoutePaths = ['direct', 'zapret', 'smart_dns', 'vless', 'drop'];
 
+function newMutationRequestID(): string {
+  const cryptoAPI = globalThis.crypto;
+  if (typeof cryptoAPI?.randomUUID === 'function') return cryptoAPI.randomUUID();
+  if (cryptoAPI?.getRandomValues) {
+    const bytes = cryptoAPI.getRandomValues(new Uint8Array(16));
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+  // This ID is an idempotency handle, not a credential.
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function terminalChange(state: string): boolean {
+  return ['committed', 'failed', 'rolled_back', 'expired', 'requires_device', 'recovery_required'].includes(state);
+}
+
 function defaultServicePaths(category: string): string[] {
   if (category === 'GEO_LOCKED') return ['smart_dns', 'vless', 'drop'];
   if (category === 'TSPU_RESTRICTED') return ['zapret', 'smart_dns', 'vless', 'drop'];
@@ -108,6 +123,8 @@ export function Services({
   const [serviceQuery, setServiceQuery] = useState('');
   const [editorVerification, setEditorVerification] = useState<ServiceVerification | null>(null);
   const [editorVerificationBusy, setEditorVerificationBusy] = useState(false);
+  const classifyRequestRef = useRef<{ fingerprint: string; id: string } | null>(null);
+  const deleteRequestIDsRef = useRef(new Map<string, { fingerprint: string; id: string }>());
   const grouped = useMemo(() => groupServices(services), [services]);
   const configuredServices = useMemo(() => grouped.filter((item) => Boolean(item.applied) || asArray(item.sources).includes('configured')), [grouped]);
   const observedServices = useMemo(() => grouped.filter((item) => !Boolean(item.applied) && !asArray(item.sources).includes('configured')), [grouped]);
@@ -119,11 +136,19 @@ export function Services({
 
   async function commitRule(domain: string, category: string, paths?: string[], serviceID?: string, selectedRouteTag?: string) {
     if (role !== 'administrator' || mutationLocked || !configVersion || moving) return;
+    const fingerprint = JSON.stringify({
+      domain: domain.trim().toLowerCase(), category, paths: paths ?? [], serviceID: serviceID ?? '',
+      selectedRouteTag: selectedRouteTag ?? '', configVersion
+    });
+    if (!classifyRequestRef.current || classifyRequestRef.current.fingerprint !== fingerprint) {
+      classifyRequestRef.current = { fingerprint, id: newMutationRequestID() };
+    }
+    const requestID = classifyRequestRef.current.id;
     setMoving(domain);
     setMessage(`Готовлю правило для ${domain}…`);
     try {
-      const result = await classifyService(domain, category, configVersion, paths, false, true, serviceID, selectedRouteTag);
-      setMessage(result.verification_reused
+      const result = await classifyService(domain, category, configVersion, paths, false, true, serviceID, selectedRouteTag, requestID);
+      setMessage(result.deduplicated ? 'Изменение уже отправлено; показываю его результат.' : result.verification_reused
         ? `Использую свежую проверку маршрута от ${formatDateTime(result.verification_checked_at)}. Запускаю применение…`
         : `Проверяю и применяю правило для ${domain}…`);
       setEditor(null);
@@ -134,6 +159,7 @@ export function Services({
         return;
       }
       const change = await waitForChangeTerminal(result.change.id);
+      if (terminalChange(change.state)) classifyRequestRef.current = null;
       if (change.state === 'committed') {
         setMessage(`${domain}: правило применено, commit подтверждён.`);
       } else {
@@ -254,16 +280,24 @@ export function Services({
       return;
     }
     setDeleteBusy(true);
+    const fingerprint = `${serviceID}:${configVersion}`;
+    let pendingRequest = deleteRequestIDsRef.current.get(serviceID);
+    if (!pendingRequest || pendingRequest.fingerprint !== fingerprint) {
+      pendingRequest = { fingerprint, id: newMutationRequestID() };
+      deleteRequestIDsRef.current.set(serviceID, pendingRequest);
+    }
     setVerificationMessage('Удаляю правило через безопасную транзакцию…');
     try {
-      const result = await deleteServiceRule(serviceID, configVersion);
+      const result = await deleteServiceRule(serviceID, configVersion, pendingRequest.id);
       setDeleteConfirm('');
       setSelectedService(null);
+      if (result.deduplicated) setVerificationMessage('Удаление уже отправлено; проверяю его итоговый результат.');
       if (!result.auto_apply_started) {
         setMessage('Удаление создано, но worker не начал применение. Активное правило пока сохранено.');
       } else {
         setMessage('Удаление выполняется; жду конечное состояние операции…');
         const current = await waitForChangeTerminal(result.change.id);
+        if (terminalChange(current.state)) deleteRequestIDsRef.current.delete(serviceID);
         setMessage(current.state === 'committed'
           ? `Правило ${serviceID} удалено, commit подтверждён.`
           : isChangePending(current.state)
@@ -580,7 +614,7 @@ function ServiceDetails({ service, onVerify, onApplyVerified, verifyBusy = false
     <h3>Связанные домены</h3><div class="domain-list">{asArray(service.domains).map((domain) => <span class="chip mono">{textValue(domain)}</span>)}</div>
     <h3>Наследование и исключения</h3><p>{asArray(service.forbidden_paths).length ? `Запрещены: ${asArray(service.forbidden_paths).join(', ')}` : 'Явных конфликтов и исключений нет.'}</p>
     {onVerify && <div class="actions"><button class="primary" disabled={verifyBusy} onClick={onVerify}>{verifyBusy ? 'Проверяю…' : 'Проверить путь сейчас'}</button></div>}
-    {onApplyVerified && serviceVerification === 'verified' && !isDrop && !systemDefaultBaseline && <div class="actions"><button class="primary" onClick={onApplyVerified}>Применить подтверждённый маршрут</button></div>}
+    {onApplyVerified && serviceVerification === 'verified' && !isDrop && !systemDefaultBaseline && (!service.applied_route_tag || service.applied_route_tag !== service.selected_route_tag) && <div class="actions"><button class="primary" onClick={onApplyVerified}>Применить подтверждённый маршрут</button></div>}
     {verifyMessage && <p class="action-status">{verifyMessage}</p>}
     {onEdit && <button class="primary" onClick={onEdit}>Настроить правило</button>}{onDelete && <button class="danger" disabled={deleteBusy} onClick={onDelete}>{deleteBusy ? 'Удаляю…' : deleteArmed ? 'Подтвердить удаление' : 'Удалить правило'}</button>}<RawDisclosure value={service} /></>;
 }

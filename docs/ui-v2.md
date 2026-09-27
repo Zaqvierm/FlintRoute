@@ -123,6 +123,15 @@ after that check, Apply reuses its backend-stored proof. The observation
 display ID (for example `UNKNOWN:amazon.com`) is never sent as a configured
 `service_id`.
 
+Manual apply and delete carry a request ID bound server-side to the actor and
+canonical operation fingerprint. A repeated request after a lost response
+returns the existing ChangeSet; reusing that ID for different rule content is
+rejected. The UI retains the ID only while retrying the same in-flight action,
+not as evidence that the rule was applied.
+Concurrent requests sharing that ID serialize the lookup/persist/publish
+boundary: only one durable operation can be created. A failed state-store
+write never exposes an executable draft to a retry.
+
 Editing an existing multi-domain service keeps its complete domain list,
 classification seed and probe contract. The editor locks the domain field and
 states that the selected route update applies to the whole service group; the
@@ -149,6 +158,8 @@ revision and inventory bindings still match; otherwise it performs a fresh
 proof for that exact tag, so a faster unrelated candidate cannot silently
 replace the user's choice. A configured-rule verification never authorizes a
 different domain or route.
+If the verified tag already equals `applied_route_tag`, the drawer hides the
+apply action; repeating a no-op must not mint another ChangeSet.
 
 The synthetic `system-default` path is an unmarked OpenWrt baseline for an
 unknown domain, not an owned FlintRoute route. It is shown as a baseline in the

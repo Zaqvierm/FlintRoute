@@ -132,7 +132,10 @@ type Server struct {
 	// mutationGate closes the recovery-to-mutation TOCTOU window. Recovery
 	// status transitions take the write side; every write-capable operation
 	// holds the read side for its entire lifetime.
-	mutationGate           sync.RWMutex
+	mutationGate sync.RWMutex
+	// draftCreationMu serializes lookup, durable persistence and publication.
+	// The recovery read lease alone permits concurrent requests with one key.
+	draftCreationMu        sync.Mutex
 	changes                map[string]ChangeSet
 	actionLocks            map[string]*actionLockEntry
 	autoApplyMu            sync.Mutex
@@ -1771,6 +1774,7 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 			"id": id, "category": svc.Category, "domains": svc.Domains,
 			"allowed_paths": svc.AllowedPaths, "forbidden_paths": svc.ForbiddenPaths,
 			"selected_route_tag": svc.SelectedRouteTag,
+			"applied_route_tag":  svc.SelectedRouteTag,
 			"probe_count":        len(svc.ProbeURLs), "require_non_ru_egress": svc.RequireNonRUEgress,
 			"source": "configured", "applied": true,
 			// A persisted policy is not proof that its path was checked against
@@ -1808,6 +1812,13 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 	now := s.discoveryNow()
 	if s.domainDecisions != nil {
 		for _, decision := range s.domainDecisions.Snapshot() {
+			// Once a committed service policy owns this domain, do not leave its
+			// former observation card behind as a second "pin" action. This also
+			// makes a retry after a lost response observe the committed rule rather
+			// than generating another draft from the stale suggestion.
+			if cfg.ServiceForDomain(decision.Domain) != "" {
+				continue
+			}
 			category := decision.Category
 			if category != "GEO_LOCKED" && (decision.TSPUStatus == "MATCH" || decision.TSPUStatus == "STALE_MATCH" || decision.SelectedType == "zapret") {
 				category = "TSPU_RESTRICTED"
@@ -2006,6 +2017,7 @@ func routeTypeInOrder(order []string, routeType string) bool {
 type serviceClassifyRequest struct {
 	Domain                     string   `json:"domain"`
 	ServiceID                  string   `json:"service_id,omitempty"`
+	RequestID                  string   `json:"request_id,omitempty"`
 	Category                   string   `json:"category"`
 	AllowedPaths               []string `json:"allowed_paths,omitempty"`
 	BaseVersion                int64    `json:"base_version"`
@@ -2290,6 +2302,29 @@ func (s *Server) handleServiceClassify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "bad_json", err.Error())
 		return
 	}
+	requestID, requestFingerprint, err := requestIDFromBody(request.RequestID, "service.classify", currentSession(r).User, func() serviceClassifyRequest {
+		copy := request
+		copy.RequestID = ""
+		return copy
+	}())
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request_id", err.Error())
+		return
+	}
+	request.RequestID = requestID
+	if requestID != "" {
+		if existing, found, lookupErr := s.findIdempotentMutation(requestID, requestFingerprint, currentSession(r).User); lookupErr != nil {
+			writeError(w, r, http.StatusConflict, "idempotency_key_conflict", "request_id was already used for a different rule change")
+			return
+		} else if found {
+			started := request.AutoApply && s.startAutoApplyChange(existing.ID)
+			writeData(w, r, map[string]any{
+				"change": existing, "domain": request.Domain, "selected_route_tag": request.SelectedRouteTag,
+				"auto_apply_requested": request.AutoApply, "auto_apply_started": started, "deduplicated": true,
+			})
+			return
+		}
+	}
 	category, service, err := serviceForClassifyRequest(request)
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_service_rule", err.Error())
@@ -2343,6 +2378,27 @@ func (s *Server) handleServiceClassify(w http.ResponseWriter, r *http.Request) {
 		}
 		id = requestedID
 	}
+	title := "Change route class for " + domain
+	description := "Persist the selected route class for an observed domain"
+	if request.AutoApply && strings.TrimSpace(request.SelectedRouteTag) != "" {
+		desired := service
+		desired.SelectedRouteTag = request.SelectedRouteTag
+		operations := []ChangeOp{{Type: "set", Path: "/services/" + id, Value: desired}}
+		if request.AllowDisableFlowOffloading {
+			operations = append(operations, ChangeOp{Type: "set", Path: "/openwrt/flow_offloading_policy", Value: "disable"})
+		}
+		if existing, found := s.findReplayableEquivalentAutoApply(request.BaseVersion, title, description, currentSession(r).User, operations); found {
+			writeData(w, r, map[string]any{
+				"change": existing, "domain": domain, "selected_route_tag": request.SelectedRouteTag,
+				"auto_apply_requested": true, "auto_apply_started": s.startAutoApplyChange(existing.ID), "deduplicated": true,
+			})
+			return
+		}
+	}
+	if _, currentVersion := s.activeIdentity(); request.BaseVersion != currentVersion {
+		writeError(w, r, http.StatusConflict, "base_version_conflict", "active revision changed")
+		return
+	}
 	verificationService := serviceWithVerificationDomain(service, domain)
 	check, reused := s.reusableDiscoveryRouteEvidence(domain, category, verificationService, request.SelectedRouteTag)
 	if !reused {
@@ -2360,17 +2416,23 @@ func (s *Server) handleServiceClassify(w http.ResponseWriter, r *http.Request) {
 	if request.AllowDisableFlowOffloading {
 		operations = append(operations, ChangeOp{Type: "set", Path: "/openwrt/flow_offloading_policy", Value: "disable"})
 	}
-	change, err := s.createDraftChangeWithOptions(
-		"Change route class for "+domain,
-		"Persist the selected route class for an observed domain",
+	change, deduplicated, err := s.createDraftChangeWithRequestID(
+		title,
+		description,
 		request.BaseVersion,
 		operations,
 		currentSession(r).User,
 		request.AutoApply,
+		requestID,
+		requestFingerprint,
 	)
 	if err != nil {
 		if errors.Is(err, errBaseVersionConflict) {
 			writeError(w, r, http.StatusConflict, "base_version_conflict", "active revision changed")
+			return
+		}
+		if errors.Is(err, errIdempotencyKeyConflict) {
+			writeError(w, r, http.StatusConflict, "idempotency_key_conflict", "request_id was already used for a different rule change")
 			return
 		}
 		writeError(w, r, http.StatusInternalServerError, "state_store_failed", err.Error())
@@ -2385,6 +2447,7 @@ func (s *Server) handleServiceClassify(w http.ResponseWriter, r *http.Request) {
 		"candidates":               discoveryCandidateDetails(check.Results),
 		"auto_apply_requested":     request.AutoApply,
 		"auto_apply_started":       request.AutoApply && s.startAutoApplyChange(change.ID),
+		"deduplicated":             deduplicated,
 	})
 }
 

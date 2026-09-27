@@ -70,6 +70,8 @@ type ChangeSet struct {
 	UpdatedAt          string               `json:"updated_at"`
 	ExpiresAt          string               `json:"expires_at,omitempty"`
 	Author             string               `json:"author"`
+	RequestID          string               `json:"request_id,omitempty"`
+	RequestFingerprint string               `json:"request_fingerprint,omitempty"`
 }
 
 type ChangeOp struct {

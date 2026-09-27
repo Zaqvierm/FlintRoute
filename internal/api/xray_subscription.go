@@ -585,35 +585,55 @@ func (s *Server) createDraftChange(title, description string, baseVersion int64,
 // could be persisted as an ordinary user draft before its execution flag was
 // stored.
 func (s *Server) createDraftChangeWithOptions(title, description string, baseVersion int64, operations []ChangeOp, author string, autoApply bool) (ChangeSet, error) {
+	change, _, err := s.createDraftChangeWithRequestID(title, description, baseVersion, operations, author, autoApply, "", "")
+	return change, err
+}
+
+func (s *Server) createDraftChangeWithRequestID(title, description string, baseVersion int64, operations []ChangeOp, author string, autoApply bool, requestID, requestFingerprint string) (ChangeSet, bool, error) {
 	release, failure := s.acquireMutationLease()
 	if failure != nil {
-		return ChangeSet{}, &mutationBlockedError{failure: failure}
+		return ChangeSet{}, false, &mutationBlockedError{failure: failure}
 	}
 	defer release()
+	s.draftCreationMu.Lock()
+	defer s.draftCreationMu.Unlock()
 	s.mu.Lock()
+	if requestID != "" {
+		existing, found, lookupErr := s.findIdempotentMutationLocked(requestID, requestFingerprint, author)
+		if lookupErr != nil {
+			s.mu.Unlock()
+			return ChangeSet{}, false, lookupErr
+		}
+		if found {
+			s.mu.Unlock()
+			return existing, true, nil
+		}
+	}
 	if baseVersion != s.configVersion {
 		s.mu.Unlock()
-		return ChangeSet{}, errBaseVersionConflict
+		return ChangeSet{}, false, errBaseVersionConflict
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	randomID, err := secureRandomHex(8)
 	if err != nil {
 		s.mu.Unlock()
-		return ChangeSet{}, fmt.Errorf("generate change ID: %w", err)
+		return ChangeSet{}, false, fmt.Errorf("generate change ID: %w", err)
 	}
 	change := ChangeSet{
 		ID: "chg_" + randomID, State: "draft", Title: title, Description: description,
 		BaseVersion: baseVersion, Version: 1, Operations: operations, CreatedAt: now, UpdatedAt: now, Author: author,
-		AutoApply: autoApply,
+		AutoApply: autoApply, RequestID: requestID, RequestFingerprint: requestFingerprint,
 	}
-	s.changes[change.ID] = change
 	s.mu.Unlock()
 	if err := s.persistChangeSet(change); err != nil {
-		s.mu.Lock()
-		delete(s.changes, change.ID)
-		s.mu.Unlock()
-		return ChangeSet{}, err
+		return ChangeSet{}, false, err
 	}
+	// A retry may find and start a published ChangeSet immediately. Publish it
+	// only after durable persistence has succeeded, so idempotency cannot turn
+	// an uncommitted in-memory draft into an executable operation.
+	s.mu.Lock()
+	s.changes[change.ID] = change
+	s.mu.Unlock()
 	s.publishEvent(Event{Type: "change.created", Severity: "info", ReasonCode: "draft_created", Details: map[string]any{"change_id": change.ID}})
-	return change, nil
+	return change, false, nil
 }

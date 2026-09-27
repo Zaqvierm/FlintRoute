@@ -13,6 +13,7 @@ import (
 type serviceDeleteRequest struct {
 	BaseVersion int64  `json:"base_version"`
 	ServiceID   string `json:"service_id"`
+	RequestID   string `json:"request_id,omitempty"`
 }
 
 // serviceCandidateMatrix is deliberately a read model.  It never runs a
@@ -120,6 +121,27 @@ func (s *Server) handleServiceDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	request.ServiceID = strings.TrimSpace(request.ServiceID)
+	rawRequestID := request.RequestID
+	request.RequestID = ""
+	requestID, fingerprint, err := requestIDFromBody(rawRequestID, "service.delete", currentSession(r).User, request)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request_id", err.Error())
+		return
+	}
+	request.RequestID = requestID
+	if requestID != "" {
+		if existing, found, lookupErr := s.findIdempotentMutation(requestID, fingerprint, currentSession(r).User); lookupErr != nil {
+			writeError(w, r, http.StatusConflict, "idempotency_key_conflict", "request_id was already used for a different deletion")
+			return
+		} else if found {
+			started := existing.AutoApply && s.startAutoApplyChange(existing.ID)
+			writeData(w, r, map[string]any{
+				"change": existing, "service_id": request.ServiceID,
+				"auto_apply_requested": existing.AutoApply, "auto_apply_started": started, "deduplicated": true,
+			})
+			return
+		}
+	}
 	if request.BaseVersion <= 0 || request.ServiceID == "" {
 		writeError(w, r, http.StatusBadRequest, "invalid_service_delete", "base_version and service_id are required")
 		return
@@ -139,17 +161,33 @@ func (s *Server) handleServiceDelete(w http.ResponseWriter, r *http.Request) {
 			services[id] = service
 		}
 	}
-	change, err := s.createDraftChangeWithOptions(
-		"Delete service rule",
-		"Remove the selected committed service policy through the normal transaction path",
+	title := "Delete service rule"
+	description := "Remove the selected committed service policy through the normal transaction path"
+	operations := []ChangeOp{{Type: "set", Path: "/services", Value: services}}
+	if existing, found := s.findReplayableEquivalentAutoApply(request.BaseVersion, title, description, currentSession(r).User, operations); found {
+		writeData(w, r, map[string]any{
+			"change": existing, "service_id": request.ServiceID,
+			"auto_apply_requested": true, "auto_apply_started": s.startAutoApplyChange(existing.ID), "deduplicated": true,
+		})
+		return
+	}
+	change, deduplicated, err := s.createDraftChangeWithRequestID(
+		title,
+		description,
 		request.BaseVersion,
-		[]ChangeOp{{Type: "set", Path: "/services", Value: services}},
+		operations,
 		currentSession(r).User,
 		true,
+		requestID,
+		fingerprint,
 	)
 	if err != nil {
 		if errors.Is(err, errBaseVersionConflict) {
 			writeError(w, r, http.StatusConflict, "base_version_conflict", "base_version does not match current revision")
+			return
+		}
+		if errors.Is(err, errIdempotencyKeyConflict) {
+			writeError(w, r, http.StatusConflict, "idempotency_key_conflict", "request_id was already used for a different deletion")
 			return
 		}
 		writeError(w, r, http.StatusInternalServerError, "service_delete_failed", err.Error())
@@ -158,6 +196,6 @@ func (s *Server) handleServiceDelete(w http.ResponseWriter, r *http.Request) {
 	started := s.startAutoApplyChange(change.ID)
 	writeData(w, r, map[string]any{
 		"change": change, "service_id": request.ServiceID,
-		"auto_apply_requested": true, "auto_apply_started": started,
+		"auto_apply_requested": true, "auto_apply_started": started, "deduplicated": deduplicated,
 	})
 }
