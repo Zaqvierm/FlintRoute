@@ -295,3 +295,14 @@ mutations; startup recovery must compare both durable sides again. Health reads
 one consistent snapshot and reports degraded on
 unknown/fenced recovery or a revision mismatch instead of mixing a new revision
 with an old baseline hash.
+
+Egress identity collection tries up to four normalized, policy-safe DNS
+answers instead of treating the first address as the endpoint. IPv6-disabled
+configurations use IPv4 targets. Every attempt preserves the original HTTPS
+Host/SNI and verifies certificates; no fallback to an unpinned system dial is
+allowed. Each address has a maximum two-second attempt budget, each endpoint
+eight seconds, and the independent sources share the remaining caller budget
+while reserving two seconds for final kernel/path evidence. Failure to obtain
+the required country consensus remains a failure; neither HTTP success nor a
+single identity source grants PathVerified. These bounds prevent a dead first
+DNS answer from turning a successful service check into an expired nft query.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -27,6 +28,12 @@ import (
 )
 
 const maxRouteProbeTargets = 4
+
+const (
+	maxEgressEndpointDuration = 8 * time.Second
+	maxEgressAddressDuration  = 2 * time.Second
+	pathEvidenceTimeReserve   = 2 * time.Second
+)
 
 type RouteResult struct {
 	Domain                 string                `json:"domain"`
@@ -1283,14 +1290,39 @@ func probeExternalIPWithFetcher(ctx context.Context, cfg *config.Config, route c
 	if len(cfg.GeoIP.Endpoints) > config.MaxGeoIPEndpoints {
 		return "", "", nil, fmt.Errorf("egress_country_sources_exceed_bound:%d", config.MaxGeoIPEndpoints)
 	}
+	// Remote metadata must not consume the final kernel/path proof budget.
+	// Split the remaining bounded time between the independent sources so a
+	// dead first source cannot prevent even attempting the second one.
+	budget := time.Duration(len(cfg.GeoIP.Endpoints)) * maxEgressEndpointDuration
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline) - pathEvidenceTimeReserve
+		if remaining <= 0 {
+			return "", "", nil, errors.New("egress_country_budget_unavailable")
+		}
+		if remaining < budget {
+			budget = remaining
+		}
+	}
+	egressCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
 	type vote struct {
 		ip      netip.Addr
 		country string
 		source  string
 	}
 	votes := make([]vote, 0, len(cfg.GeoIP.Endpoints)+1)
-	for _, endpoint := range cfg.GeoIP.Endpoints {
-		body, fetchErr := fetch(ctx, route, endpoint.URL)
+	for index, endpoint := range cfg.GeoIP.Endpoints {
+		deadline, _ := egressCtx.Deadline()
+		sourceBudget := time.Until(deadline) / time.Duration(len(cfg.GeoIP.Endpoints)-index)
+		if sourceBudget <= 0 {
+			break
+		}
+		if sourceBudget > maxEgressEndpointDuration {
+			sourceBudget = maxEgressEndpointDuration
+		}
+		sourceCtx, sourceCancel := context.WithTimeout(egressCtx, sourceBudget)
+		body, fetchErr := fetch(sourceCtx, route, endpoint.URL)
+		sourceCancel()
 		if fetchErr != nil {
 			continue
 		}
@@ -1365,29 +1397,69 @@ func fetchTextViaRoute(ctx context.Context, cfg *config.Config, route config.Rou
 		return "", errors.New("invalid_egress_endpoint")
 	}
 	host := parsed.Hostname()
+	ips, _, _, err := resolveForRoute(ctx, cfg, route, host)
+	if err != nil || len(ips) == 0 {
+		return "", errors.New("egress_endpoint_resolution_failed")
+	}
+	targets := make([]netip.Addr, 0, len(ips))
+	family := ""
+	if cfg != nil && !cfg.Platform.IPv6Enabled {
+		family = "ipv4"
+	}
+	for _, candidate := range routeProbeTargets(ips, family) {
+		if !allowPrivateProbe(cfg) && isUnsafeAddr(candidate) {
+			continue
+		}
+		targets = append(targets, candidate)
+	}
+	if len(targets) == 0 {
+		return "", errors.New("ssrf_private_address_blocked")
+	}
+	return fetchEgressFromTargets(ctx, route, parsed, targets, nil)
+}
+
+// Production always uses the system trust store (roots=nil). A fixture may
+// supply its own trusted CA without disabling certificate/name verification.
+func fetchEgressFromTargets(ctx context.Context, route config.Route, parsed *url.URL, targets []netip.Addr, roots *x509.CertPool) (string, error) {
+	targets = routeProbeTargets(targets, "")
+	if len(targets) == 0 {
+		return "", errors.New("egress_endpoint_resolution_failed")
+	}
+	endpointCtx, cancel := context.WithTimeout(ctx, maxEgressEndpointDuration)
+	defer cancel()
+	var lastErr error
+	for index, target := range targets {
+		deadline, _ := endpointCtx.Deadline()
+		attemptBudget := time.Until(deadline) / time.Duration(len(targets)-index)
+		if attemptBudget <= 0 {
+			break
+		}
+		if attemptBudget > maxEgressAddressDuration {
+			attemptBudget = maxEgressAddressDuration
+		}
+		attemptCtx, attemptCancel := context.WithTimeout(endpointCtx, attemptBudget)
+		body, err := fetchEgressAtTarget(attemptCtx, route, parsed, target, roots)
+		attemptCancel()
+		if err == nil {
+			return body, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = errors.New("egress_endpoint_budget_exhausted")
+	}
+	return "", lastErr
+}
+
+func fetchEgressAtTarget(ctx context.Context, route config.Route, parsed *url.URL, target netip.Addr, roots *x509.CertPool) (string, error) {
+	host := parsed.Hostname()
 	port := parsed.Port()
 	if port == "" {
 		port = "443"
 	}
 
-	var target netip.Addr
-	ips, _, _, err := resolveForRoute(ctx, cfg, route, host)
-	if err != nil || len(ips) == 0 {
-		return "", errors.New("egress_endpoint_resolution_failed")
-	}
-	for _, candidate := range ips {
-		if !allowPrivateProbe(cfg) && isUnsafeAddr(candidate) {
-			continue
-		}
-		target = candidate
-		break
-	}
-	if !target.IsValid() {
-		return "", errors.New("ssrf_private_address_blocked")
-	}
-
 	dialer := &net.Dialer{Timeout: 8 * time.Second}
-	transport := &http.Transport{TLSClientConfig: &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}}
+	transport := &http.Transport{TLSClientConfig: &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12, RootCAs: roots}}
 	defer transport.CloseIdleConnections()
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		if route.SOCKS5 != "" {
@@ -1410,11 +1482,11 @@ func fetchTextViaRoute(ctx context.Context, cfg *config.Config, route config.Rou
 		}
 		return nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
 		return "", err
 	}
-	req.Host = host
+	req.Host = parsed.Host
 	req.Header.Set("User-Agent", "router-policy-probe/0.2")
 	resp, err := client.Do(req)
 	if err != nil {

@@ -2,14 +2,17 @@ package probe
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +25,126 @@ import (
 	"router-policy/internal/config"
 	"router-policy/internal/evidence"
 )
+
+func TestEgressFetchFallsBackFromDeadFirstAddressWithVerifiedTLS(t *testing.T) {
+	type requestSnapshot struct{ host, uri, sni string }
+	received := make(chan requestSnapshot, 2)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- requestSnapshot{r.Host, r.URL.RequestURI(), r.TLS.ServerName}
+		_, _ = w.Write([]byte("bound-egress"))
+	}))
+	defer srv.Close()
+	certificate := srv.Certificate()
+	if len(certificate.DNSNames) == 0 {
+		t.Fatal("TLS fixture needs a DNS name for an actual SNI assertion")
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(certificate)
+	localURL, _ := url.Parse(srv.URL)
+	endpoint, err := url.Parse("https://" + net.JoinHostPort(certificate.DNSNames[0], localURL.Port()) + "/geo?scope=retained")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	body, err := fetchEgressFromTargets(ctx, config.Route{Type: "direct", Tag: "direct"}, endpoint, []netip.Addr{
+		netip.MustParseAddr("127.0.0.2"), // nothing listens here at the fixture port
+		netip.MustParseAddr("127.0.0.1"),
+	}, roots)
+	if err != nil || body != "bound-egress" {
+		t.Fatalf("dead first address discarded a working DNS answer: body=%q err=%v", body, err)
+	}
+	select {
+	case actual := <-received:
+		if actual.host != endpoint.Host || actual.uri != "/geo?scope=retained" || actual.sni != endpoint.Hostname() {
+			t.Fatalf("fallback changed original Host/SNI/request: %+v", actual)
+		}
+	default:
+		t.Fatal("working endpoint was never requested")
+	}
+}
+
+func TestEgressFetchBlackholeDoesNotConsumeTheNextAddressBudget(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("fallback-after-timeout"))
+	}))
+	defer srv.Close()
+	endpoint, _ := url.Parse(srv.URL)
+	blackhole, err := net.Listen("tcp", net.JoinHostPort("127.0.0.2", endpoint.Port()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blackhole.Close()
+	accepted := make(chan struct{}, 1)
+	go func() {
+		conn, err := blackhole.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		accepted <- struct{}{}
+		_, _ = io.Copy(io.Discard, conn) // consumes ClientHello but sends nothing
+	}()
+	roots := x509.NewCertPool()
+	roots.AddCert(srv.Certificate())
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	body, err := fetchEgressFromTargets(ctx, config.Route{Type: "direct", Tag: "direct"}, endpoint, []netip.Addr{
+		netip.MustParseAddr("127.0.0.2"), netip.MustParseAddr("127.0.0.1"),
+	}, roots)
+	if err != nil || body != "fallback-after-timeout" || ctx.Err() != nil {
+		t.Fatalf("one TLS blackhole exhausted the whole endpoint budget: body=%q err=%v parent=%v", body, err, ctx.Err())
+	}
+	select {
+	case <-accepted:
+	default:
+		t.Fatal("fixture did not exercise the first-address TLS blackhole")
+	}
+}
+
+func TestEgressFallbackNeverAcceptsAnUntrustedCertificate(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("must-not-be-accepted"))
+	}))
+	defer srv.Close()
+	endpoint, _ := url.Parse(srv.URL)
+	body, err := fetchEgressFromTargets(context.Background(), config.Route{Type: "direct", Tag: "direct"}, endpoint, []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil)
+	if err == nil || body != "" {
+		t.Fatalf("fallback bypassed TLS trust: body=%q err=%v", body, err)
+	}
+	var untrusted x509.UnknownAuthorityError
+	if !errors.As(err, &untrusted) {
+		t.Fatalf("failure was not certificate validation: %v", err)
+	}
+}
+
+func TestEgressSourcesPreserveKernelProofTimeAndStillRequireConsensus(t *testing.T) {
+	cfg := testConfig()
+	if err := json.Unmarshal([]byte(`{"endpoints":[{"name":"slow","url":"https://slow.invalid/","provider":"country_is"},{"name":"working","url":"https://working.invalid/","provider":"country_is"}]}`), &cfg.GeoIP); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	calls := 0
+	_, _, _, err := probeExternalIPWithFetcher(ctx, cfg, config.Route{Type: "direct", Tag: "direct"}, func(sourceCtx context.Context, _ config.Route, endpoint string) (string, error) {
+		calls++
+		if endpoint == "https://slow.invalid/" {
+			<-sourceCtx.Done()
+			return "", sourceCtx.Err()
+		}
+		return `{"ip":"8.8.8.8","country":"US"}`, nil
+	})
+	if calls != 2 || ctx.Err() != nil {
+		t.Fatalf("slow source skipped the next source or killed path proof: calls=%d parent=%v err=%v", calls, ctx.Err(), err)
+	}
+	if err == nil || err.Error() != "egress_country_consensus_insufficient" {
+		t.Fatalf("one successful source was falsely promoted to consensus: %v", err)
+	}
+	deadline, _ := ctx.Deadline()
+	if time.Until(deadline) < pathEvidenceTimeReserve {
+		t.Fatal("egress source calls consumed reserved kernel/path evidence time")
+	}
+}
 
 func TestPreferIPv4KeepsEveryAddressAndMovesIPv4First(t *testing.T) {
 	input := []netip.Addr{
