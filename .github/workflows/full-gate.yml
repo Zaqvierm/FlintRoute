@@ -91,11 +91,17 @@ jobs:
           run_fixture installer-disk-preflight sh tests/installer-disk-preflight.sh
           run_fixture installer-durability sh tests/installer-durability.sh
           run_fixture installer-lifecycle sh tests/installer-lifecycle.sh
+          run_fixture installer-secret-ownership sh tests/installer-secret-ownership.sh
+          # Deliberately removes directory traversal permissions; restoring
+          # the installer-owned snapshot requires the real root/DAC context.
+          run_fixture installer-secret-rollback sudo sh tests/installer-secret-rollback.sh
+          run_fixture installer-dnsmasq-rollback sh tests/installer-dnsmasq-rollback.sh
           run_fixture installer-prefix-switch sh tests/installer-prefix-switch.sh
           run_fixture content-aware-install sh tests/content-aware-install.sh
           run_fixture shell-library sh tests/shell-library.sh
           run_fixture dns-observer-bootstrap sh tests/dns-observer-bootstrap.sh
           run_fixture boot-guard-service sh tests/boot-guard-service.sh
+          run_fixture boot-guard-baseline sh tests/boot-guard-baseline.sh
           run_fixture controller-bind-safety sh tests/controller-bind-safety.sh
           run_fixture boot-guard-policy sh tests/boot-guard-policy.sh
           run_fixture helper-service sh tests/helper-service.sh

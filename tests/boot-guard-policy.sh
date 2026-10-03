@@ -96,12 +96,14 @@ for failure in manifest ip_state nft_table active_transaction; do
   printf 'guard-sentinel\n' > "$boot_guard_file"
   if (
     case "$failure" in
-      manifest) export BASELINE_EMPTY_STATUS=1 ;;
-      ip_state) export BASELINE_IP_STATUS=1 ;;
-      nft_table) export NFT_FOREIGN_CLASSIFIER=1 ;;
-      active_transaction) printf 'committed\n' > "$active_file" ;;
+      manifest) BASELINE_EMPTY_STATUS=1 baseline_clear_fixture ;;
+      ip_state) BASELINE_IP_STATUS=1 baseline_clear_fixture ;;
+      nft_table) NFT_FOREIGN_CLASSIFIER=1 baseline_clear_fixture ;;
+      active_transaction)
+        printf 'committed\n' > "$active_file"
+        baseline_clear_fixture
+        ;;
     esac
-    baseline_clear_fixture
   ) > "$TMP/baseline-failed.txt" 2>&1; then
     echo "baseline clear accepted unproven state: $failure" >&2
     exit 1

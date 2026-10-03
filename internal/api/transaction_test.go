@@ -37,6 +37,66 @@ type artifactDiagnosticsTestProvider struct {
 	simulation  bool
 }
 
+func TestFirstManualAssignmentCannotReuseAnUnprovedBaselineRoute(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Services = map[string]config.Service{}
+	cfg.OpenWrt.DNSMasqInclude = filepath.Join(t.TempDir(), "router-policy.conf")
+	srv, err := NewServerWithOptions(cfg, Options{Provider: platform.DevelopmentMockProvider{}, ProductionAdapter: newFakeAdapter(), Development: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	change, err := srv.createDraftChange("Change route class for example.org", "first assignment", 1, []ChangeOp{{Type: "set", Path: "/services/user_example_org", Value: config.Service{Category: "DIRECT_PREFERRED", Domains: []string{"example.org"}, AllowedPaths: []string{"direct"}, SelectedRouteTag: "direct", ProbeURLs: []config.ProbeCheck{{Name: "https", URL: "https://example.org/", Required: true, ExpectedCodes: []int{200}, BodyMode: "optional"}}}}}, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	validated, failure := srv.validateChangeSet(change)
+	if failure != nil {
+		t.Fatalf("validate: %+v validation=%+v", failure, validated.Validation)
+	}
+	tx, failure := srv.loadVerifiedTransaction(validated)
+	if failure != nil {
+		t.Fatalf("load tx: %+v", failure)
+	}
+	plan, err := artifact.LoadVerificationPlan(filepath.Join(tx.ArtifactRoot, artifact.VerifyPlanFile), artifact.Binding{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, proof := range plan.RequiredRouteProof {
+		if proof.Tag == "direct" {
+			return
+		}
+	}
+	t.Fatalf("first managed assignment has no mandatory Direct post-proof: required=%+v reused=%v", plan.RequiredRouteProof, plan.ReusedRouteProofTags)
+}
+
+func TestCommitHealthCannotKeepThePreviousBaselineBinding(t *testing.T) {
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), newFakeAdapter())
+	defer srv.Close()
+	defer ts.Close()
+	change := createValidatedChange(t, client, csrf, ts.URL, "GEO_LOCKED")
+	var status int
+	change, status = postAction(t, client, csrf, ts.URL, change.ID, "apply", `{}`)
+	if status != http.StatusOK {
+		t.Fatalf("apply status=%d change=%+v", status, change)
+	}
+	change, status = postAction(t, client, csrf, ts.URL, change.ID, "confirm", `{}`)
+	if status != http.StatusOK || change.State != "committed" {
+		t.Fatalf("confirm status=%d change=%+v", status, change)
+	}
+	rec := httptest.NewRecorder()
+	srv.handleHealth(rec, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+	var env struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Data["recovery_status"] != "ok" || env.Data["active_revision"] != change.RevisionID || env.Data["active_candidate_hash"] != change.CandidateHash || env.Data["active_artifact_manifest_hash"] != change.ArtifactManifestHash {
+		t.Fatalf("health mixed new revision with stale baseline proof: %s", rec.Body.String())
+	}
+}
+
 func (p artifactDiagnosticsTestProvider) Name() string     { return "artifact-diagnostics-test-provider" }
 func (p artifactDiagnosticsTestProvider) Simulation() bool { return p.simulation }
 func (p artifactDiagnosticsTestProvider) NetworkDiagnostics(*config.Config) platform.NetworkDiagnostics {
@@ -1064,6 +1124,80 @@ func TestLegacyCommitPersistenceFailureIsRecoveryRequired(t *testing.T) {
 	}
 	if got := srv.currentRecoveryStatus().Status; got != "recovery_required" {
 		t.Fatalf("expected recovery_required, got %s", got)
+	}
+}
+
+func TestFinalRecoveryStatusPersistenceFailureFencesCommittedTransaction(t *testing.T) {
+	for _, split := range []bool{false, true} {
+		t.Run(fmt.Sprintf("split_commit_%t", split), func(t *testing.T) {
+			fake := newFakeAdapter()
+			var production adapter.Interface = fake
+			if split {
+				production = &splitFakeAdapter{fakeAdapter: fake}
+			}
+			srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), production)
+			defer srv.Close()
+			defer ts.Close()
+			change := createValidatedChange(t, client, csrf, ts.URL, "GEO_LOCKED")
+			change, status := postAction(t, client, csrf, ts.URL, change.ID, "apply", `{}`)
+			if status != http.StatusOK || change.State != "awaiting_confirmation" {
+				t.Fatalf("apply precondition: status=%d change=%+v", status, change)
+			}
+			injected := false
+			srv.store.SetFaultHook(func(op string) error {
+				if op == "save_json:meta" {
+					injected = true
+					return fmt.Errorf("injected recovery status write failure")
+				}
+				return nil
+			})
+			_, status = postAction(t, client, csrf, ts.URL, change.ID, "confirm", `{}`)
+			srv.store.SetFaultHook(nil)
+			if !injected || status != http.StatusServiceUnavailable {
+				t.Fatalf("final recovery write failure not surfaced: injected=%t status=%d", injected, status)
+			}
+			recovery := srv.currentRecoveryStatus()
+			if recovery.Status != "recovery_required" || recovery.ReasonCode != "recovery_status_persist_failed" || recovery.RevisionID != change.RevisionID || recovery.CandidateHash != change.CandidateHash || recovery.ArtifactManifestHash != change.ArtifactManifestHash {
+				t.Fatalf("exact committed binding was not fenced: %+v", recovery)
+			}
+			var persisted ChangeSet
+			if err := srv.store.LoadJSON("changes", change.ID, &persisted); err != nil || persisted.State != "committed" {
+				t.Fatalf("durable commit was misrepresented: state=%s err=%v", persisted.State, err)
+			}
+			var revision revisionRecord
+			if err := srv.store.LoadJSON("revisions", change.RevisionID, &revision); err != nil || revision.State != "committed" {
+				t.Fatalf("durable revision was misrepresented: state=%s err=%v", revision.State, err)
+			}
+			fake.mu.Lock()
+			adapterState := fake.transactionState
+			callsBefore := len(fake.calls)
+			fake.mu.Unlock()
+			if adapterState != "committed" || fake.callCount("rollback") != 0 {
+				t.Fatalf("finalized adapter was incorrectly rolled back: state=%s", adapterState)
+			}
+			for _, action := range []string{"apply", "confirm", "rollback"} {
+				if _, code := postAction(t, client, csrf, ts.URL, change.ID, action, `{}`); code != http.StatusServiceUnavailable {
+					t.Fatalf("%s escaped recovery fence: status=%d", action, code)
+				}
+			}
+			fake.mu.Lock()
+			callsAfter := len(fake.calls)
+			fake.mu.Unlock()
+			if callsAfter != callsBefore {
+				t.Fatalf("fenced requests reached adapter: before=%d after=%d", callsBefore, callsAfter)
+			}
+			rec := httptest.NewRecorder()
+			srv.handleHealth(rec, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+			var env struct {
+				Data map[string]any `json:"data"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+				t.Fatal(err)
+			}
+			if env.Data["status"] != "degraded" || env.Data["recovery_status"] != "recovery_required" || env.Data["active_revision"] != change.RevisionID {
+				t.Fatalf("health hid persistence failure: %+v", env.Data)
+			}
+		})
 	}
 }
 

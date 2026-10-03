@@ -17,6 +17,7 @@ import (
 	"router-policy/internal/adapter"
 	"router-policy/internal/artifact"
 	"router-policy/internal/config"
+	"router-policy/internal/evidence"
 	"router-policy/internal/platform"
 	"router-policy/internal/state"
 )
@@ -147,6 +148,7 @@ func (s *Server) validateChangeSet(cs ChangeSet) (ChangeSet, *actionFailure) {
 	s.mu.Lock()
 	currentVersion := s.configVersion
 	active := s.activeConfig
+	activeRevisionID := s.activeRevision
 	s.mu.Unlock()
 	if cs.BaseVersion != currentVersion {
 		return cs, conflict("base_version_conflict", "base_version does not match current revision")
@@ -170,9 +172,6 @@ func (s *Server) validateChangeSet(cs ChangeSet) (ChangeSet, *actionFailure) {
 	}
 	if len(diff) == 0 {
 		var activeRevision revisionRecord
-		s.mu.Lock()
-		activeRevisionID := s.activeRevision
-		s.mu.Unlock()
 		candidateHash := sha256.Sum256(canonical)
 		if activeRevisionID != "" && s.store.LoadJSON("revisions", activeRevisionID, &activeRevision) == nil &&
 			activeRevision.State == "committed" && activeRevision.CandidateHash == "sha256:"+hex.EncodeToString(candidateHash[:]) {
@@ -219,13 +218,26 @@ func (s *Server) validateChangeSet(cs ChangeSet) (ChangeSet, *actionFailure) {
 	}
 	generatedAt := time.Now().UTC()
 	artifactOptions := artifact.GenerateOptions{}
+	provenRoutes := s.committedRouteProofTags(activeRevisionID)
+	freshServiceRoutes := map[string]bool{}
+	for id, service := range candidate.Services {
+		if previous, exists := active.Services[id]; exists && reflect.DeepEqual(previous, service) {
+			continue
+		}
+		for _, route := range candidate.Routes {
+			if route.Enabled() && config.PathAllowed(service, route, candidate.Policy) &&
+				(service.SelectedRouteTag == "" || service.SelectedRouteTag == route.Tag) {
+				freshServiceRoutes[route.Tag] = true
+			}
+		}
+	}
 	if cs.Title == "Activate managed Xray" {
 		activeRoutes := map[string]config.Route{}
 		for _, route := range active.Routes {
 			activeRoutes[route.Tag] = route
 		}
 		for _, route := range candidate.Routes {
-			if previous, ok := activeRoutes[route.Tag]; ok && route.Tag == "zapret" && reflect.DeepEqual(previous, route) {
+			if previous, ok := activeRoutes[route.Tag]; ok && route.Tag == "zapret" && reflect.DeepEqual(previous, route) && provenRoutes[route.Tag] && !freshServiceRoutes[route.Tag] {
 				artifactOptions.ReuseRouteProofTags = []string{"zapret"}
 			}
 		}
@@ -239,7 +251,7 @@ func (s *Server) validateChangeSet(cs ChangeSet) (ChangeSet, *actionFailure) {
 			activeRoutes[route.Tag] = route
 		}
 		for _, route := range candidate.Routes {
-			if previous, ok := activeRoutes[route.Tag]; ok && reflect.DeepEqual(previous, route) {
+			if previous, ok := activeRoutes[route.Tag]; ok && reflect.DeepEqual(previous, route) && provenRoutes[route.Tag] && !freshServiceRoutes[route.Tag] {
 				artifactOptions.ReuseRouteProofTags = append(artifactOptions.ReuseRouteProofTags, route.Tag)
 			}
 		}
@@ -303,6 +315,34 @@ func (s *Server) validateChangeSet(cs ChangeSet) (ChangeSet, *actionFailure) {
 	s.setChange(cs)
 	s.publishChangeEvent(cs, "candidate_validated")
 	return cs, nil
+}
+
+// Config equality is not path evidence. In particular, a fresh baseline has
+// Direct in its inventory but no committed dataplane proof to reuse.
+func (s *Server) committedRouteProofTags(revisionID string) map[string]bool {
+	tags := map[string]bool{}
+	var revision revisionRecord
+	if s.store.LoadJSON("revisions", revisionID, &revision) != nil || revision.Kind == baselineRevisionKind || revision.State != "committed" || revision.TransactionID == "" || revision.ArtifactManifestHash == "" {
+		return tags
+	}
+	var record transactionRecord
+	if s.store.LoadJSON("transactions", revision.TransactionID, &record) != nil || record.State != "committed" {
+		return tags
+	}
+	tx := record.Transaction
+	if tx.RevisionID != revisionID || tx.CandidateHash != revision.CandidateHash || tx.ArtifactManifestHash != revision.ArtifactManifestHash {
+		return tags
+	}
+	report, err := evidence.LoadAndVerify(filepath.Join(tx.ArtifactRoot, artifact.VerifyPlanFile), filepath.Join(filepath.Dir(tx.ArtifactRoot), "data-plane-evidence.json"), artifact.Binding{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash}, tx.ArtifactManifestHash)
+	if err != nil {
+		return tags
+	}
+	for _, route := range report.Routes {
+		if !route.Simulation && route.Status == "OK" && !route.CheckedAt.IsZero() && time.Since(route.CheckedAt) <= configuredServiceProofFreshness && !route.CheckedAt.After(time.Now().UTC().Add(time.Minute)) {
+			tags[route.RouteTag] = true
+		}
+	}
+	return tags
 }
 
 func (s *Server) applyChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet, *actionFailure) {
@@ -642,14 +682,27 @@ func (s *Server) confirmChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet,
 			return cs, failure
 		}
 	}
+	nowRecovered := time.Now().UTC()
+	committedRecovery := recoveryStatus{Status: "ok", TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash, ArtifactManifestHash: tx.ArtifactManifestHash, CommitPhase: cs.CommitPhase, StartedAt: nowRecovered, FinishedAt: nowRecovered}
+	recoveryPersistErr := s.store.SaveJSON("meta", "recovery_status", committedRecovery)
+	if recoveryPersistErr != nil {
+		committedRecovery.Status = "recovery_required"
+		committedRecovery.ReasonCode = "recovery_status_persist_failed"
+		committedRecovery.Reason = "committed recovery binding persistence failed: " + recoveryPersistErr.Error()
+	}
 	s.mu.Lock()
 	s.activeConfig = candidate
 	s.adaptiveZapret = adaptiveRuntime
 	s.activeRevision = tx.RevisionID
 	s.configVersion = tx.CandidateVersion
 	s.changes[cs.ID] = cs
+	s.recovery = committedRecovery
 	s.cancelExpiryLocked(cs.ID)
 	s.mu.Unlock()
+	if recoveryPersistErr != nil {
+		s.publishEvent(Event{Type: "recovery.status_persist_failed", Severity: "critical", ReasonCode: committedRecovery.ReasonCode})
+		return cs, &actionFailure{Status: 503, Code: "recovery_required", Message: "committed binding could not be durably published to recovery status"}
+	}
 	s.cleanupCommittedResources(tx, previousRevision)
 	s.publishChangeEvent(cs, "adapter_commit_succeeded")
 	return cs, nil

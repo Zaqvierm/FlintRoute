@@ -280,3 +280,18 @@ An unverified Drop probe cannot make read-only preview claim `drop_enforced`.
 The old selection fixture accepted a bare DROP enum and therefore encoded the
 wrong invariant; it now supplies proven Drop evidence and separately rejects
 unverified/failed Drop results.
+
+Unchanged route configuration is not reusable path evidence. Validation reuses
+only a fresh, bound, non-simulated proof from the current committed transaction.
+New/changed service assignments require post-apply proof for their selected
+route even if the route object itself is unchanged. An empty baseline therefore
+cannot erase the first Direct proof from the verification plan.
+
+Final commit persists the exact revision/candidate/artifact recovery binding
+before publishing it together with in-memory active identity and releasing the
+mutation lease. If that write fails after finalization, the durable commit is
+preserved, health reports degraded, and a memory recovery fence rejects new
+mutations; startup recovery must compare both durable sides again. Health reads
+one consistent snapshot and reports degraded on
+unknown/fenced recovery or a revision mismatch instead of mixing a new revision
+with an old baseline hash.

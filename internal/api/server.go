@@ -3665,8 +3665,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
 		return
 	}
-	recovery := s.currentRecoveryStatus()
 	s.mu.Lock()
+	recovery := s.recovery
 	activeRevision := s.activeRevision
 	s.mu.Unlock()
 	if activeRevision == "" {
@@ -3675,8 +3675,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	status := "ok"
 	if recovery.Status == "starting" {
 		status = "starting"
-	} else if recovery.Status == "error" {
+	} else if !recoveryStatusAllowsMutation(recovery) {
 		status = "degraded"
+	}
+	if status == "ok" && recovery.RevisionID != activeRevision {
+		status = "degraded"
+		recovery.ReasonCode = "recovery_binding_mismatch"
+		recovery.Reason = "recovery proof does not match active revision"
 	}
 	writeData(w, r, map[string]any{
 		"status": status, "provider": s.provider.Name(), "simulation": s.provider.Simulation(),
