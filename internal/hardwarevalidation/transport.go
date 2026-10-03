@@ -248,21 +248,26 @@ func normalizeResolver(value string) string {
 func resolveTransportTargets(ctx context.Context, cfg *config.Config, route config.Route, domain string) ([]netip.Addr, error) {
 	var resolved []netip.Addr
 	if route.Type == "smart_dns" && route.DNSServer != "" {
-		client := &dns.Client{Net: "udp4", Timeout: 4 * time.Second}
-		message := new(dns.Msg)
-		message.SetQuestion(dns.Fqdn(domain), dns.TypeA)
-		response, _, err := client.ExchangeContext(ctx, message, normalizeResolver(route.DNSServer))
-		if err == nil && response != nil {
-			for _, answer := range response.Answer {
-				if record, ok := answer.(*dns.A); ok {
-					address, parseErr := netip.ParseAddr(record.A.String())
-					if parseErr == nil && address.Is4() {
-						resolved = append(resolved, address)
+		for _, resolver := range []string{route.DNSServer, route.DNSFallbackServer} {
+			if resolver == "" {
+				continue
+			}
+			client := &dns.Client{Net: "udp4", Timeout: 4 * time.Second}
+			message := new(dns.Msg)
+			message.SetQuestion(dns.Fqdn(domain), dns.TypeA)
+			response, _, err := client.ExchangeContext(ctx, message, normalizeResolver(resolver))
+			if err == nil && response != nil {
+				for _, answer := range response.Answer {
+					if record, ok := answer.(*dns.A); ok {
+						address, parseErr := netip.ParseAddr(record.A.String())
+						if parseErr == nil && address.Is4() {
+							resolved = append(resolved, address)
+						}
 					}
 				}
-			}
-			if len(resolved) > 0 {
-				return resolved, nil
+				if len(resolved) > 0 {
+					return resolved, nil
+				}
 			}
 		}
 	}

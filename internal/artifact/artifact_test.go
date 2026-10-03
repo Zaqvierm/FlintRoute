@@ -484,7 +484,7 @@ func TestGeneratedDNSMasqBindsDomainsToRouteSetsAndFormatsResolver(t *testing.T)
 	cfg.Policy.UnknownDomainBackgroundCheck = true
 	cfg.Storage.RuntimeDir = filepath.Join(root, "runtime")
 	cfg.Routes = append(cfg.Routes, config.Route{
-		Type: "smart_dns", Tag: "smart-primary", Priority: 15, DNSServer: "1.1.1.1:5353", ConnectToResolvedIP: true,
+		Type: "smart_dns", Tag: "smart-primary", Priority: 15, DNSServer: "1.1.1.1:5353", DNSFallbackServer: "8.8.8.8:53", ConnectToResolvedIP: true,
 	})
 	cfg.Services["smart"] = config.Service{
 		Category: "GEO_LOCKED", Domains: []string{"smart.example"}, AllowedPaths: []string{"smart_dns", "vless", "drop"}, RequireNonRUEgress: true,
@@ -500,7 +500,7 @@ func TestGeneratedDNSMasqBindsDomainsToRouteSetsAndFormatsResolver(t *testing.T)
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, fragment := range []string{"stop-dns-rebind", "log-queries=extra", "log-async=25", "dns-observations.log", "svc_", "route_", "4#inet#router_policy#", "6#inet#router_policy#", "server=/smart.example/1.1.1.1#5353"} {
+	for _, fragment := range []string{"stop-dns-rebind", "log-queries=extra", "log-async=25", "dns-observations.log", "svc_", "route_", "4#inet#router_policy#", "6#inet#router_policy#", "server=/smart.example/1.1.1.1#5353", "server=/smart.example/8.8.8.8#53"} {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("generated dnsmasq config lacks %q:\n%s", fragment, text)
 		}
@@ -863,6 +863,36 @@ func TestRoutesUsedByPoliciesExcludesConfiguredButUnusedRoutes(t *testing.T) {
 	got := routesUsedByPolicies(routes, policies)
 	if len(got) != 1 || got[0].Tag != "smart" {
 		t.Fatalf("active policy route was not selected: %+v", got)
+	}
+}
+
+func TestVerificationPlanCarriesCandidateProofsForUnusedEnabledRoutes(t *testing.T) {
+	root := t.TempDir()
+	cfg := testConfig(t, root)
+	cfg.Services = map[string]config.Service{"github": cfg.Services["github"]}
+	cfg.Routes = append(cfg.Routes, config.Route{Type: "smart_dns", Tag: "smart", Priority: 30, DNSServer: "1.1.1.1:53", ConnectToResolvedIP: true})
+	binding := Binding{TransactionID: "tx_0011223344556677", RevisionID: "rev_2_001122334455", CandidateHash: "sha256:candidate"}
+	generated := filepath.Join(root, "generated")
+	if _, _, err := Generate(cfg, generated, binding, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := LoadVerificationPlan(filepath.Join(generated, VerifyPlanFile), binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, proof := range plan.RequiredRouteProof {
+		if proof.Tag == "smart" {
+			t.Fatalf("unused Smart DNS route became mandatory: %+v", plan.RequiredRouteProof)
+		}
+	}
+	found := false
+	for _, proof := range plan.CandidateRouteProof {
+		if proof.Tag == "smart" && proof.Type == "smart_dns" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("unused enabled route unavailable for candidate probing: %+v", plan.CandidateRouteProof)
 	}
 }
 

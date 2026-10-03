@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +18,143 @@ import (
 	"router-policy/internal/probe"
 	"router-policy/internal/state"
 )
+
+type baselineAssignmentReconciler struct{ calls int }
+
+func (r *baselineAssignmentReconciler) ApplyRouteAssignment(context.Context, RouteAssignmentRequest) (RouteAssignmentReceipt, error) {
+	return RouteAssignmentReceipt{}, errors.New("unexpected baseline assignment")
+}
+func (r *baselineAssignmentReconciler) RollbackRouteAssignment(context.Context, RouteAssignmentRequest, RouteAssignmentReceipt) error {
+	return errors.New("unexpected baseline assignment rollback")
+}
+func (r *baselineAssignmentReconciler) ReconcileRouteAssignments(context.Context) error {
+	r.calls++
+	return errors.New("route assignment committed binding is unavailable")
+}
+
+type blockedAssignmentReconciler struct {
+	baselineAssignmentReconciler
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *blockedAssignmentReconciler) ReconcileRouteAssignments(context.Context) error {
+	close(r.started)
+	<-r.release
+	return errors.New("helper assignment binding mismatch")
+}
+
+func TestAssignmentRecoveryFailureFencesBeforeConcurrentMutationAdmission(t *testing.T) {
+	cfg := testAPIConfig(t)
+	srv, err := NewServerWithOptions(cfg, Options{Provider: platform.DevelopmentMockProvider{}, ProductionAdapter: newFakeAdapter(), Development: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	runtime := &blockedAssignmentReconciler{started: make(chan struct{}), release: make(chan struct{})}
+	srv.routeAssignmentRuntime = runtime
+	if err := srv.setRecoveryStatus(recoveryStatus{Status: "ok", RevisionID: srv.activeRevision}); err != nil {
+		t.Fatal(err)
+	}
+	reconciled := make(chan error, 1)
+	go func() { reconciled <- srv.reconcileRouteAssignments(context.Background()) }()
+	select {
+	case <-runtime.started:
+	case <-time.After(5 * time.Second):
+		close(runtime.release)
+		t.Fatal("assignment reconcile did not reach its bounded barrier")
+	}
+	admitted := make(chan *actionFailure, 1)
+	go func() {
+		release, failure := srv.acquireMutationLease()
+		if release != nil {
+			release()
+		}
+		admitted <- failure
+	}()
+	select {
+	case failure := <-admitted:
+		close(runtime.release)
+		<-reconciled
+		t.Fatalf("mutation entered while assignment recovery was unresolved: %+v", failure)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(runtime.release)
+	select {
+	case err := <-reconciled:
+		if err == nil {
+			t.Fatal("reconcile failure was swallowed")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("assignment reconcile did not terminate")
+	}
+	select {
+	case failure := <-admitted:
+		if failure == nil || failure.Status != 503 {
+			t.Fatalf("mutation was not fenced before unlock: %+v", failure)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("mutation admission did not terminate")
+	}
+}
+
+func TestFreshBaselineDoesNotRequireProductionAssignmentBinding(t *testing.T) {
+	for _, deferred := range []bool{false, true} {
+		t.Run(fmt.Sprint(deferred), func(t *testing.T) {
+			cfg := testAPIConfig(t)
+			cfg.Services = map[string]config.Service{}
+			cfg.OpenWrt.DNSMasqInclude = filepath.Join(t.TempDir(), "router-policy.conf")
+			runtime := &baselineAssignmentReconciler{}
+			fake := &baselineGuardFakeAdapter{fakeAdapter: newFakeAdapter()}
+			srv, err := NewServerWithOptions(cfg, Options{Provider: platform.DevelopmentMockProvider{}, ProductionAdapter: fake, RouteAssignmentRuntime: runtime, Development: true, DeferRecovery: deferred})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer srv.Close()
+			if deferred {
+				srv.recoverCommittedDataplane(context.Background())
+				if err := srv.reconcileRouteAssignments(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			status := srv.currentRecoveryStatus()
+			if !recoveryStatusAllowsMutation(status) || status.Status != "not_required" || runtime.calls != 0 {
+				t.Fatalf("empty baseline incorrectly requires production binding: recovery=%+v calls=%d", status, runtime.calls)
+			}
+		})
+	}
+}
+
+func TestBaselineWithResidualAssignmentStateIsFenced(t *testing.T) {
+	for _, residual := range []string{"manifest", "overlay"} {
+		t.Run(residual, func(t *testing.T) {
+			cfg := testAPIConfig(t)
+			cfg.Services = map[string]config.Service{}
+			confdir := t.TempDir()
+			cfg.OpenWrt.DNSMasqInclude = filepath.Join(confdir, "router-policy.conf")
+			path := filepath.Join(cfg.Storage.StateDir, "route-assignments.json")
+			if residual == "overlay" {
+				path = filepath.Join(confdir, "router-policy-route-assignments.conf")
+			}
+			if err := os.WriteFile(path, []byte("residual state\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			runtime := &baselineAssignmentReconciler{}
+			srv, err := NewServerWithOptions(cfg, Options{Provider: platform.DevelopmentMockProvider{}, ProductionAdapter: newFakeAdapter(), RouteAssignmentRuntime: runtime, Development: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer srv.Close()
+			if srv.mutationFailure() == nil || srv.currentRecoveryStatus().Status != "error" || runtime.calls != 0 {
+				t.Fatalf("residual baseline was not fenced before helper: recovery=%+v calls=%d", srv.currentRecoveryStatus(), runtime.calls)
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil || string(raw) != "residual state\n" {
+				t.Fatalf("residual evidence changed: %q %v", raw, err)
+			}
+		})
+	}
+}
 
 func TestFreshStoreCreatesCommittedBaselineWithoutDataplaneCalls(t *testing.T) {
 	cfg := testAPIConfig(t)
@@ -72,11 +212,35 @@ func (f *baselineGuardFakeAdapter) ClearBootGuardForBaseline(_ context.Context, 
 		SemanticState:   "baseline_confirmed",
 		Evidence: map[string]any{
 			"boot_guard":            "cleared",
+			"route_assignments":     "absent",
 			"active_revision":       revisionID,
 			"active_candidate_hash": candidateHash,
 		},
 		StartedAt:  time.Now().UTC(),
 		FinishedAt: time.Now().UTC(),
+	}
+}
+
+type missingBaselineAssignmentProofAdapter struct{ baselineGuardFakeAdapter }
+
+func (f *missingBaselineAssignmentProofAdapter) ClearBootGuardForBaseline(ctx context.Context, revision, hash string) adapter.StepResult {
+	result := f.baselineGuardFakeAdapter.ClearBootGuardForBaseline(ctx, revision, hash)
+	delete(result.Evidence, "route_assignments")
+	return result
+}
+
+func TestBaselineCannotOpenMutationGateWithoutHelperAbsenceProof(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Services = map[string]config.Service{}
+	fake := &missingBaselineAssignmentProofAdapter{baselineGuardFakeAdapter{fakeAdapter: newFakeAdapter()}}
+	srv, err := NewServerWithOptions(cfg, Options{Provider: platform.DevelopmentMockProvider{}, ProductionAdapter: fake, Development: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	status := srv.currentRecoveryStatus()
+	if status.Status != "error" || status.ReasonCode != "baseline_assignment_proof_missing" || srv.mutationFailure() == nil {
+		t.Fatalf("missing privileged absence proof admitted mutation: %+v", status)
 	}
 }
 

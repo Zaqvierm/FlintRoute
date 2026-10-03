@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -40,6 +41,8 @@ type Request struct {
 	Service              *ServiceRequest         `json:"service,omitempty"`
 	Artifact             *ArtifactRequest        `json:"artifact,omitempty"`
 	Global               *GlobalRequest          `json:"global,omitempty"`
+	Probe                *ProbeRequest           `json:"probe,omitempty"`
+	Diagnostics          *DiagnosticsRequest     `json:"diagnostics,omitempty"`
 	RouteAssignment      *RouteAssignmentRequest `json:"route_assignment,omitempty"`
 }
 
@@ -82,6 +85,29 @@ type ArtifactRequest struct {
 // provider data, or shell fragment; the helper maps the operation to one
 // fixed adapter verb.
 type GlobalRequest struct {
+	Operation string `json:"operation"`
+}
+
+// ProbeRequest is a read-only request used by the unprivileged controller to
+// obtain kernel dataplane evidence. It deliberately contains values, not
+// commands or paths; the helper maps each operation to a fixed executable.
+type ProbeRequest struct {
+	Operation   string `json:"operation"`
+	Destination string `json:"destination,omitempty"`
+	Mark        string `json:"mark,omitempty"`
+	Family      string `json:"family,omitempty"`
+	Table       int    `json:"table,omitempty"`
+	Process     string `json:"process,omitempty"`
+	LocalIP     string `json:"local_ip,omitempty"`
+	ConnectedIP string `json:"connected_ip,omitempty"`
+	RouteTag    string `json:"route_tag,omitempty"`
+	GuardID     string `json:"guard_id,omitempty"`
+}
+
+// DiagnosticsRequest is intentionally unbound and read-only. It exposes only
+// the fixed capability snapshot needed by the unprivileged platform provider;
+// no path, executable, or provider payload crosses the socket.
+type DiagnosticsRequest struct {
 	Operation string `json:"operation"`
 }
 
@@ -208,6 +234,19 @@ func ValidateRequest(request Request) error {
 		if request.Global == nil || request.Global.Operation != globalOperation(request.Command) || !globalRequestBound(request) {
 			return ErrInvalidRequest
 		}
+	case "probe.route_get", "probe.rules", "probe.default_route", "probe.nft_policy", "probe.process", "probe.conntrack", "probe.guard_begin", "probe.guard_end":
+		if request.Probe == nil || request.Probe.Operation != strings.TrimPrefix(request.Command, "probe.") ||
+			request.Generation != request.RevisionID || request.TransactionID != "probe" || request.RollbackTokenHash != "" ||
+			!safeHash(request.CandidateHash) || !safeHash(request.ArtifactManifestHash) || hasAnyNonProbeResourcePayload(request) {
+			return ErrInvalidRequest
+		}
+		if err := validateProbeRequest(*request.Probe); err != nil {
+			return err
+		}
+	case "diagnostics.capabilities":
+		if request.Diagnostics == nil || request.Diagnostics.Operation != "capabilities" || request.Generation != "diagnostics" || request.RevisionID != "diagnostics" || request.TransactionID != "diagnostics" || request.RollbackTokenHash != "" || request.CandidateHash != "" || request.ArtifactManifestHash != "" || hasAnyNonDiagnosticsPayload(request) {
+			return ErrInvalidRequest
+		}
 	case "route_assignment.apply", "route_assignment.rollback":
 		if !routeAssignmentRequestValid(request) {
 			return ErrInvalidRequest
@@ -259,11 +298,21 @@ func hasResourcePayload(request Request, allowed string) bool {
 	if allowed != "route_assignment" && request.RouteAssignment != nil {
 		return true
 	}
+	if allowed != "probe" && request.Probe != nil {
+		return true
+	}
+	if allowed != "diagnostics" && request.Diagnostics != nil {
+		return true
+	}
 	return false
 }
 
 func hasAnyResourcePayload(request Request) bool {
-	return request.Transaction != nil || request.Baseline != nil || request.NFT != nil || request.IPPlan != nil || request.Service != nil || request.Artifact != nil || request.Global != nil
+	return request.Transaction != nil || request.Baseline != nil || request.NFT != nil || request.IPPlan != nil || request.Service != nil || request.Artifact != nil || request.Global != nil || request.Probe != nil || request.Diagnostics != nil
+}
+
+func hasAnyNonProbeResourcePayload(request Request) bool {
+	return request.Transaction != nil || request.Baseline != nil || request.NFT != nil || request.IPPlan != nil || request.Service != nil || request.Artifact != nil || request.Global != nil || request.RouteAssignment != nil || request.Diagnostics != nil
 }
 
 func routeAssignmentRequestValid(request Request) bool {
@@ -351,6 +400,51 @@ func safeToken(value string) bool {
 	return true
 }
 
+func validateProbeRequest(request ProbeRequest) error {
+	switch request.Operation {
+	case "guard_begin", "guard_end":
+		if !safeObjectName(request.RouteTag) || !safeObjectName(request.GuardID) || !validProbeMark(request.Mark) ||
+			(request.Mark != "0x41" && request.Mark != "0x42") || request.Destination != "" || request.Family != "" || request.Table != 0 || request.Process != "" || request.LocalIP != "" || request.ConnectedIP != "" {
+			return ErrInvalidRequest
+		}
+	case "route_get":
+		if net.ParseIP(request.Destination) == nil || (request.Mark != "" && !validProbeMark(request.Mark)) {
+			return ErrInvalidRequest
+		}
+	case "rules":
+		if (request.Family != "4" && request.Family != "6") || request.Destination != "" || request.Mark != "" || request.Table != 0 || request.Process != "" || request.LocalIP != "" || request.ConnectedIP != "" || request.RouteTag != "" {
+			return ErrInvalidRequest
+		}
+	case "default_route":
+		if (request.Family != "4" && request.Family != "6") || request.Table < 0 || request.Table > 1<<31-1 {
+			return ErrInvalidRequest
+		}
+	case "nft_policy":
+		if !safeObjectName(request.RouteTag) {
+			return ErrInvalidRequest
+		}
+	case "process":
+		if request.Process != "nfqws" && request.Process != "xray" {
+			return ErrInvalidRequest
+		}
+	case "conntrack":
+		if net.ParseIP(request.LocalIP) == nil || net.ParseIP(request.ConnectedIP) == nil {
+			return ErrInvalidRequest
+		}
+	default:
+		return ErrInvalidRequest
+	}
+	return nil
+}
+
+func validProbeMark(value string) bool {
+	if !strings.HasPrefix(value, "0x") || len(value) < 3 || len(value) > 10 {
+		return false
+	}
+	_, err := strconv.ParseUint(value[2:], 16, 32)
+	return err == nil
+}
+
 func safeObjectName(value string) bool {
 	if !safeToken(value) || len(value) > 64 {
 		return false
@@ -395,6 +489,10 @@ func allowlistedService(name string) bool {
 	return false
 }
 
+func hasAnyNonDiagnosticsPayload(request Request) bool {
+	return request.Transaction != nil || request.Baseline != nil || request.NFT != nil || request.IPPlan != nil || request.Service != nil || request.Artifact != nil || request.Global != nil || request.Probe != nil || request.RouteAssignment != nil
+}
+
 func allowlistedArtifact(kind string) bool {
 	switch kind {
 	case "xray_config", "zapret_config", "zapret_profile_manifest", "nft_table", "dnsmasq_config", "ip_plan":
@@ -414,6 +512,13 @@ type ServerOptions struct {
 }
 
 const defaultMaxConnections = 16
+
+// maxRequestDuration is deliberately longer than the production dataplane
+// proof budget (which is at least one minute on hardware).  The old 15-second
+// wire deadline expired while nft/NFQUEUE/Xray evidence was still being
+// collected, turning a bounded proof into a false rollback.  It remains a
+// hard upper bound for every helper request.
+const maxRequestDuration = 70 * time.Second
 
 func ServeUnix(ctx context.Context, options ServerOptions) error {
 	if options.SocketPath == "" {
@@ -506,7 +611,7 @@ func prepareSocketPath(path string) error {
 
 func serveConnection(ctx context.Context, connection net.Conn, executor Executor, expectedPeerUID int) {
 	defer connection.Close()
-	_ = connection.SetDeadline(time.Now().Add(15 * time.Second))
+	_ = connection.SetDeadline(time.Now().Add(maxRequestDuration))
 	if uid, err := peerUID(connection); err != nil || ValidatePeerUID(uid, expectedPeerUID) != nil {
 		_ = writeResponse(connection, Response{ProtocolVersion: ProtocolVersion, State: "rejected", ErrorCode: "peer_rejected", Error: "helper peer credentials rejected"})
 		return

@@ -143,6 +143,14 @@ if grep -F "$TMP/etc/router-policy/config/foreign.conf" "$CHOWN_LOG" >/dev/null;
   exit 1
 fi
 
+# End the foreign-owner scenario before testing a different rejection. Leaving
+# this entry behind makes prepare_controller_identity fail on config ownership
+# before it reaches the secret symlink, so the next assertion tests the wrong
+# cause on POSIX systems (Windows skips that symlink branch).
+rm -f "$TMP/etc/router-policy/config/foreign.conf"
+prepare_controller_identity
+echo "installer_secret_foreign_owner_fenced=true"
+
 mkdir -p "$TMP/foreign-runtime"
 if ln -s "$TMP/foreign-runtime" "$TMP/runtime-link" 2>/dev/null && [ -L "$TMP/runtime-link" ]; then
   original_runtime_dir="$RUNTIME_DIR"
@@ -159,7 +167,8 @@ else
 fi
 
 rm -f "$TMP/etc/router-policy/secrets/telegram.json"
-if ln -s "$TMP/foreign-secret" "$TMP/etc/router-policy/secrets/telegram.json" 2>/dev/null; then
+printf 'foreign-secret-fixture\n' > "$TMP/foreign-secret"
+if ln -s "$TMP/foreign-secret" "$TMP/etc/router-policy/secrets/telegram.json" 2>/dev/null && [ -L "$TMP/etc/router-policy/secrets/telegram.json" ]; then
   set +e
   symlink_output=$(prepare_controller_identity 2>&1)
   symlink_rc=$?
@@ -186,6 +195,12 @@ if ln -s "$TMP/foreign-secret" "$TMP/etc/router-policy/secrets/telegram.json" 2>
   set -e
   [ "$install_rc" -ne 0 ]
   printf '%s\n' "$install_output" | grep -F 'managed secret is a symlink' >/dev/null
+  [ "$(cat "$TMP/foreign-secret")" = foreign-secret-fixture ]
+  if grep -F "$TMP/foreign-secret" "$CHOWN_LOG" >/dev/null; then
+    echo "secret symlink target was assigned to the controller" >&2
+    exit 1
+  fi
+  echo "installer_secret_symlink_target_preserved=true"
 else
   echo "secret_symlink_test=skipped-filesystem"
 fi
@@ -193,7 +208,7 @@ fi
 # The directory itself must be checked again at install_files() entry.  This
 # models a path replacement after preflight/snapshot and proves no mkdir or
 # subscription-file write follows a foreign secrets symlink.
-if ln -s "$TMP/foreign-secret-dir" "$TMP/etc/router-policy/secrets-dir" 2>/dev/null; then
+if ln -s "$TMP/foreign-secret-dir" "$TMP/etc/router-policy/secrets-dir" 2>/dev/null && [ -L "$TMP/etc/router-policy/secrets-dir" ]; then
   rm -rf "$TMP/etc/router-policy/secrets"
   ln -s "$TMP/foreign-secret-dir" "$TMP/etc/router-policy/secrets"
   mkdir -p "$TMP/foreign-secret-dir"
@@ -213,7 +228,7 @@ if ln -s "$TMP/foreign-secret-dir" "$TMP/etc/router-policy/secrets-dir" 2>/dev/n
   install_rc=$?
   set -e
   [ "$install_rc" -ne 0 ]
-  printf '%s\n' "$install_output" | grep -F 'secrets path contains a symlink' >/dev/null
+  printf '%s\n' "$install_output" | grep -Fx "install blocked: managed path contains a symlink or unsafe component: $ETC_DIR/secrets" >/dev/null
   [ ! -e "$TMP/foreign-secret-dir/vpn-subscription-url" ]
 else
   echo "secret_directory_symlink_test=skipped-filesystem"

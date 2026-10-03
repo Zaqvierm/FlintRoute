@@ -23,6 +23,7 @@ set -eu
 case "${1:-}" in
   list)
     if [ "${2:-}" = "tables" ]; then
+      if [ "${NFT_FOREIGN_CLASSIFIER:-0}" = "1" ]; then printf '%s\n' 'table inet router_policy'; fi
       exit 0
     fi
     if [ "${2:-}" = "table" ] && [ "${3:-}" = "inet" ] && [ "${4:-}" = "router_policy" ]; then
@@ -49,6 +50,8 @@ chmod +x "$TMP/nft"
 cat > "$TMP/router-policy" <<'SH'
 #!/bin/sh
 case "$1" in
+  internal-verify-empty-baseline) exit "${BASELINE_EMPTY_STATUS:-0}" ;;
+  internal-verify-no-owned-ip-state) exit "${BASELINE_IP_STATUS:-0}" ;;
   internal-verify-candidate|internal-verify-artifacts)
     exit 0
     ;;
@@ -72,14 +75,48 @@ NFT_BIN="$TMP/nft"
 ROUTER_POLICY_BIN="$TMP/router-policy"
 BOOT_GUARD_CAPTURE="$TMP/captured.nft"
 NFT_COMMAND_LOG="$TMP/nft.commands"
+boot_guard_file="$RUNTIME_DIR/boot-guard.nft"
+active_file="$RUNTIME_DIR/active-transaction.env"
 : > "$NFT_COMMAND_LOG"
 export ROUTER_POLICY_ADAPTER_LIB_ONLY STATE_DIR RUNTIME_DIR ROUTER_POLICY_CONFIG_PATH NFT_BIN ROUTER_POLICY_BIN BOOT_GUARD_CAPTURE NFT_COMMAND_LOG
 # shellcheck source=openwrt/adapter.sh
 . "$ROOT/openwrt/adapter.sh"
-
+# A baseline clear may happen only after root-side absence checks. The parser
+# itself is covered by CLI tests and the real read-only UID0/UID1 fixture.
+baseline_clear_fixture() {
+  txid=baseline
+  revision=rev_1_0123456789ab
+  recovery_candidate_hash=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  export txid revision recovery_candidate_hash
+  clear_boot_guard_baseline
+}
+(baseline_clear_fixture) > "$TMP/baseline-clear.txt"
+grep -Fx 'route_assignments=absent' "$TMP/baseline-clear.txt" >/dev/null
+for failure in manifest ip_state nft_table active_transaction; do
+  printf 'guard-sentinel\n' > "$boot_guard_file"
+  if (
+    case "$failure" in
+      manifest) BASELINE_EMPTY_STATUS=1 baseline_clear_fixture ;;
+      ip_state) BASELINE_IP_STATUS=1 baseline_clear_fixture ;;
+      nft_table) NFT_FOREIGN_CLASSIFIER=1 baseline_clear_fixture ;;
+      active_transaction)
+        printf 'committed\n' > "$active_file"
+        baseline_clear_fixture
+        ;;
+    esac
+  ) > "$TMP/baseline-failed.txt" 2>&1; then
+    echo "baseline clear accepted unproven state: $failure" >&2
+    exit 1
+  fi
+  [ "$(cat "$boot_guard_file")" = guard-sentinel ]
+  rm -f "$active_file"
+done
 install_boot_guard >/dev/null
-grep -Fx '    type filter hook forward priority -300; policy drop;' "$BOOT_GUARD_CAPTURE" >/dev/null
-grep -F 'rp boot_guard action=drop_unclassified' "$BOOT_GUARD_CAPTURE" >/dev/null
+grep -Fx '    type filter hook forward priority -300; policy accept;' "$BOOT_GUARD_CAPTURE" >/dev/null
+if grep -F 'rp boot_guard action=drop_mark' "$BOOT_GUARD_CAPTURE" >/dev/null; then
+  echo 'unbound guard unexpectedly emitted a drop mark' >&2
+  exit 1
+fi
 if grep -F 'table inet router_policy {' "$BOOT_GUARD_CAPTURE" >/dev/null; then
   exit 1
 fi
@@ -122,7 +159,8 @@ guard_line=$(grep -n '^table inet router_policy_boot_guard {' "$BOOT_GUARD_CAPTU
 
 # An existing classifier with no FlintRoute ownership proof is a hard fence:
 # do not redeclare or delete it, and do not admit any mark whose producer is
-# unknown.  The guard remains DROP-only until an owned generation is proven.
+# unknown. Ordinary forwarding remains available; only an explicit drop mark
+# is blocked by the guard.
 export NFT_FOREIGN_CLASSIFIER=1
 install_boot_guard >/dev/null
 if grep -F 'table inet router_policy {' "$BOOT_GUARD_CAPTURE" >/dev/null; then
@@ -133,14 +171,15 @@ if grep -E 'allow=meta|allow=conntrack' "$BOOT_GUARD_CAPTURE" >/dev/null; then
   echo 'foreign classifier caused mark admission' >&2
   exit 1
 fi
-grep -Fx '    type filter hook forward priority -300; policy drop;' "$BOOT_GUARD_CAPTURE" >/dev/null
-grep -F 'rp boot_guard action=drop_unclassified' "$BOOT_GUARD_CAPTURE" >/dev/null
+grep -Fx '    type filter hook forward priority -300; policy accept;' "$BOOT_GUARD_CAPTURE" >/dev/null
+grep -F 'rp boot_guard action=drop_mark' "$BOOT_GUARD_CAPTURE" >/dev/null
 if grep -F 'delete table inet router_policy' "$NFT_COMMAND_LOG" >/dev/null; then
   echo 'foreign classifier was deleted during boot guard install' >&2
   exit 1
 fi
 unset NFT_FOREIGN_CLASSIFIER
 
-echo "boot_guard_unclassified_forwarding_fenced=true"
+echo "boot_guard_unclassified_forwarding_preserved=true"
 echo "boot_guard_early_classifier_verified=true"
 echo "boot_guard_foreign_classifier_fenced=true"
+echo "baseline_guard_clear_requires_root_absence_proof=true"

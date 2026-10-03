@@ -10,16 +10,17 @@ import (
 )
 
 type recoveryStatus struct {
-	Status               string    `json:"status"`
-	ReasonCode           string    `json:"reason_code,omitempty"`
-	Reason               string    `json:"reason,omitempty"`
-	TransactionID        string    `json:"transaction_id,omitempty"`
-	RevisionID           string    `json:"revision_id,omitempty"`
-	CandidateHash        string    `json:"candidate_hash,omitempty"`
-	ArtifactManifestHash string    `json:"artifact_manifest_hash,omitempty"`
-	CommitPhase          string    `json:"commit_phase,omitempty"`
-	StartedAt            time.Time `json:"started_at"`
-	FinishedAt           time.Time `json:"finished_at"`
+	Status                    string    `json:"status"`
+	ReasonCode                string    `json:"reason_code,omitempty"`
+	Reason                    string    `json:"reason,omitempty"`
+	TransactionID             string    `json:"transaction_id,omitempty"`
+	RevisionID                string    `json:"revision_id,omitempty"`
+	CandidateHash             string    `json:"candidate_hash,omitempty"`
+	ArtifactManifestHash      string    `json:"artifact_manifest_hash,omitempty"`
+	CommitPhase               string    `json:"commit_phase,omitempty"`
+	BaselineAssignmentsAbsent bool      `json:"baseline_assignments_absent,omitempty"`
+	StartedAt                 time.Time `json:"started_at"`
+	FinishedAt                time.Time `json:"finished_at"`
 }
 
 type mutationBlockedError struct{ failure *actionFailure }
@@ -79,10 +80,16 @@ func (s *Server) recoverCommittedDataplane(ctx context.Context) {
 					s.setRecoveryStatus(result)
 					return
 				}
+				if evidenceString(clearResult, "route_assignments") != "absent" {
+					s.setRecoveryStatus(failedRecovery(started, "baseline_assignment_proof_missing", "helper did not prove empty baseline assignment state", adapter.RecoveryTarget{RevisionID: activeRevision, CandidateHash: revision.CandidateHash}))
+					return
+				}
+				result.BaselineAssignmentsAbsent = true
 			}
 			result = recoveryStatus{
 				Status: "not_required", RevisionID: activeRevision, CandidateHash: revision.CandidateHash,
 				CommitPhase: "baseline_confirmed", StartedAt: started, FinishedAt: time.Now().UTC(),
+				BaselineAssignmentsAbsent: result.BaselineAssignmentsAbsent,
 			}
 		}
 		s.setRecoveryStatus(result)

@@ -55,6 +55,21 @@ func TestConntrackMarkRequiresMatchingTuple(t *testing.T) {
 	}
 }
 
+func TestConntrackMarkSkipsTransientUnmarkedTuple(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "nf_conntrack")
+	content := "ipv4 2 tcp 6 120 ESTABLISHED src=192.0.2.2 dst=203.0.113.10 sport=50000 dport=443 mark=0 use=1\n" +
+		"ipv4 2 tcp 6 120 ESTABLISHED src=192.0.2.2 dst=203.0.113.10 sport=50001 dport=443 mark=66 use=1\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	commands := &ExecOpenWrtCommands{conntrackPath: path}
+	mark, err := commands.ConntrackMark("192.0.2.2", "203.0.113.10")
+	if err != nil || mark != "0x42" {
+		t.Fatalf("transient zero mark was treated as proof: mark=%q err=%v", mark, err)
+	}
+}
+
 func TestMalformedCommandJSONIsRejected(t *testing.T) {
 	if _, err := parseRouteGet([]byte(`{"dev":"wan"}`)); err == nil {
 		t.Fatal("non-array route output was accepted")

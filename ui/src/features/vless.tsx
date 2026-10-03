@@ -6,12 +6,14 @@ import {
   getSubscriptionHWID,
   getSubscriptionSecretStatus,
   getVLESSPool,
+  isChangePending,
   prepareSubscription,
   removeSubscriptionSource,
   runVLESSSpeedTest,
   saveSubscriptionHWID,
   saveSubscriptionSecrets,
   setVLESSTariff,
+  waitForChangeTerminal,
   type ComponentStatus,
   type ManualVLESSServer,
   type SessionInfo,
@@ -91,6 +93,7 @@ export function Vless({
   const [pool, setPool] = useState<any>({ tariff_mbps: 300, sources: [], servers: [], provider_matches: [] });
   const [tariff, setTariff] = useState(300);
   const [xrayAvailable, setXrayAvailable] = useState(false);
+  const [xrayComponent, setXrayComponent] = useState<ComponentStatus | null>(null);
   const confirmDialog = useConfirmDialog();
 
   function forceHappPreset(value: SubscriptionHWIDSettings): SubscriptionHWIDSettings {
@@ -124,6 +127,7 @@ export function Vless({
       }
       if (componentsResult.status === 'fulfilled') {
         const xrayComponent = componentsResult.value.find((item: ComponentStatus) => item.kind === 'xray');
+        setXrayComponent(xrayComponent ?? null);
         setXrayAvailable(Boolean(xrayComponent?.installed || xrayComponent?.health_ready || xrayComponent?.service_state === 'running'));
       }
       if (!subscription || !manual) return;
@@ -225,7 +229,23 @@ export function Vless({
     if (mutationLocked) { setMessage('Подписка временно заблокирована recovery fence. Просмотр серверов доступен.'); return; }
     const values = urls.map((value) => value.trim()).filter(Boolean);
     if (!values.length) {
-      setMessage('Вставь хотя бы одну HTTPS-ссылку подписки.');
+      // Stored sources are intentionally never returned to the browser in
+      // plaintext.  The primary action must still be useful after a reload:
+      // with an existing protected source, refresh its provider bundle rather
+      // than asking the user to paste the secret again.
+      if (sourceStatuses.length === 0 && !(present === true && configuredCount > 0)) {
+        setMessage('Вставь хотя бы одну HTTPS-ссылку подписки.');
+        return;
+      }
+      setBusy(true);
+      setMessage('Проверяю сохранённую подписку и серверы. Это может занять несколько минут.');
+      try {
+        await prepareCandidates('Сохранённые подписки проверены');
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : 'Не удалось проверить сохранённую подписку.');
+      } finally {
+        setBusy(false);
+      }
       return;
     }
     setBusy(true);
@@ -334,14 +354,27 @@ export function Vless({
   async function activateManaged() {
     if (mutationLocked) { setMessage('Включение managed Xray временно заблокировано recovery fence.'); return; }
     setBusy(true);
-    setMessage('Создаю черновик включения managed Xray…');
+    setMessage('Проверяю и включаю managed Xray…');
     try {
-      const result = await prepareSubscription(configVersion, true);
+      const result = await prepareSubscription(configVersion, true, true);
       if (!result.change) throw new Error('Backend не создал транзакцию managed Xray.');
       setManagedAvailable(false);
-      setMessage('Черновик managed Xray создан. Проверь diff и запусти применение отдельно в очереди изменений.');
+      if (result.auto_apply_started) {
+        const change = await waitForChangeTerminal(result.change.id);
+        setMessage(change.state === 'committed'
+          ? 'Managed Xray включён, commit подтверждён.'
+          : isChangePending(change.state)
+            ? 'Managed Xray всё ещё применяется. Открой «Операции» для текущего этапа.'
+            : `Managed Xray не включён: операция завершилась состоянием ${change.state}. Предыдущая конфигурация сохранена.`);
+        if (change.state !== 'committed') setManagedAvailable(true);
+      } else {
+        setManagedAvailable(true);
+        setMessage('Операция managed Xray создана, но worker не запустился. Открой «Операции» для ручного продолжения.');
+        navigate('Операции');
+      }
       await refresh();
     } catch (error) {
+      setManagedAvailable(true);
       setMessage(error instanceof Error ? error.message : 'Managed Xray не включён; транзакция откатилась или ждёт устройство.');
     } finally {
       setBusy(false);
@@ -389,6 +422,9 @@ export function Vless({
   return (
     <section>
       <PageHeader title="VLESS-серверы" text="Подписки и ручные серверы разделены. Ping — задержка проверки, а не скорость канала." />
+      <Card title="Компонент Xray">
+        <div class="row"><b>{xrayComponent?.health_ready ? 'Готов' : xrayComponent?.installed ? 'Установлен · требуется проверка' : xrayComponent?.ownership === 'foreign' ? 'Обнаружен вне FlintRoute' : 'Не установлен'}</b><span>{textValue(xrayComponent?.service_state, 'состояние неизвестно')}</span><small>{textValue(xrayComponent?.health_reason, xrayComponent?.health_ready ? 'Health check подтверждён; VLESS inventory доступен.' : 'Установка сама по себе не доказывает готовность dataplane.')}</small></div>
+      </Card>
       <Card title="Выбор сервера">
         {candidateServers.find((server: any) => server.selected) ? (() => { const active = candidateServers.find((server: any) => server.selected); return <div class="row"><b>{textValue(active.name ?? active.tag, 'VLESS server')}</b><span>{active.latency_ms ? `${active.latency_ms} мс` : 'latency неизвестна'} · {active.measured_mbps ? `${active.measured_mbps.toFixed(0)} Мбит/с` : 'speedtest не запускался'}</span><small>{active.path_verified ? 'PathVerified' : 'путь не подтверждён'} · score {Number(active.score ?? 0).toFixed(1)}</small></div>; })() : <p>Активного проверенного сервера пока нет.</p>}
         <div class="smart-dns-editor">
@@ -447,7 +483,7 @@ export function Vless({
               <div class="row"><span>Текущий HWID</span><code>{hwidMode === 'disabled' ? 'отключён' : hwid?.current_hwid || 'недоступен'}</code><button type="button" onClick={() => void copyHWID()} disabled={!hwid?.current_hwid || hwidMode === 'disabled'}>Копировать</button></div>
               <div class="actions"><button type="button" onClick={() => setHWIDOpen(false)}>Отмена</button><button class="primary" disabled={busy || mutationLocked || role !== 'administrator'} onClick={() => void saveHWIDSettings()}>Сохранить выбор</button></div>
             </section></div>}
-            {message && <div class="action-status"><p>{message}</p>{message.includes('черновик') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
+            {message && <div class="action-status"><p>{message}</p>{message.includes('Операции') && <button type="button" onClick={() => navigate('Операции')}>Открыть центр операций</button>}</div>}
           </div>
         ) : <p>Импорт подписки доступен администратору.</p>}
       </Card>

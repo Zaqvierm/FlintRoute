@@ -7,11 +7,14 @@ repository.
 ## Eligibility is not priority
 
 `eligibleRouteTypesForService` describes the eligible route types and the order in which a
-bounded planner may collect evidence. It is not a winner rule. A normal domain
-is selected only after every applicable candidate has a terminal result (or a
-bounded timeout), hard safety filters have run, and the remaining candidates
-have been scored. Explicit user overrides are the only exception: they are a
-forced route decision and retain DROP as the failure fallback.
+bounded planner may collect evidence. It is not a winner rule. In explicit
+full-check mode a normal domain is selected only after every applicable
+candidate has a terminal result (or a bounded timeout), hard safety filters
+have run, and the remaining candidates have been scored. The ordinary quick
+path may stop after a verified Direct baseline or the first verified VLESS path
+to avoid probe storms; it still never assigns that observation without complete
+evidence. Explicit user overrides are forced route decisions and retain DROP
+as the failure fallback.
 
 The planner never treats an HTTP success, DNS answer, process start, simulated
 result, or array position as proof of a usable route. A selectable network
@@ -94,7 +97,12 @@ remains authoritative for routes marked unhealthy.
 Unknown-domain decisions are cached by normalized eTLD+1, active revision,
 TSPU state, and a hash of the eligible route inventory. Inventory or revision
 changes invalidate the cached decision; ordinary repeated DNS queries do not
-rerun the flowchart. The initial unknown policy is explicit (`balanced`,
+rerun the flowchart. The synthetic `system-default` result is an unmarked
+OpenWrt baseline, not an owned FlintRoute route. It is useful for the initial
+unknown-domain trace but is not a selectable managed candidate and cannot be
+persisted as a route assignment.
+
+The initial unknown policy is explicit (`balanced`,
 `privacy_first`, or `fail_closed`; `direct`, `vless`, and `drop` are accepted
 compatibility aliases). The planner enforces the constraint in its candidate
 set: balanced may include the unmarked system-default baseline, privacy-first

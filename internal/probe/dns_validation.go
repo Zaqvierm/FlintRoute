@@ -128,7 +128,14 @@ func ValidateSmartDNSCandidate(ctx context.Context, endpoint, domain string) (Sm
 	result.HTTPStatus = check.HTTPCode
 	result.TLSOK = check.TLSOK && check.SNIPreserved
 	result.HTTPOK = check.HTTPOK && check.HostPreserved
-	if !smartDNSApplicationProofAccepted(routeResult) || !check.DNSOK || !check.TransportOK || !result.TLSOK || !result.HTTPOK || !check.ExpectedCodeMatched || check.ConnectedIP == "" {
+	// Candidate endpoint validation proves DNS/TCP/TLS/HTTP usability. It is
+	// intentionally not a production route proof: the candidate is not yet a
+	// committed FlintRoute object, so a missing nft path counter here must not
+	// make a valid resolver impossible to add. Route assignment still requires
+	// the separate bound PathVerified contract later.
+	applicationOK := check.DNSOK && check.TransportOK && check.TLSOK && check.HTTPOK && check.ExpectedCodeMatched &&
+		!check.RegionalBlock && !check.AuthenticationRequired && !check.WAFOrRateLimit
+	if !applicationOK || !result.TLSOK || !result.HTTPOK || check.ConnectedIP == "" {
 		reason := check.Reason
 		if reason == "" {
 			reason = "HTTP/TLS path was not verified"

@@ -98,6 +98,15 @@ func TestDiscoveryCandidateDetailsExcludeProxySecrets(t *testing.T) {
 	}
 }
 
+func TestDiscoveryCandidateDetailsMarksSystemDefaultAsBaseline(t *testing.T) {
+	items := discoveryCandidateDetails([]probe.RouteResult{{
+		Route: "system-default", RouteType: "direct", Status: "OK", PathVerified: true, ServiceOK: true,
+	}})
+	if len(items) != 1 || items[0]["baseline"] != true || items[0]["selection_eligible"] != false {
+		t.Fatalf("system default was exposed as a selectable candidate: %+v", items)
+	}
+}
+
 func TestCachedVerificationDurationUsesStoredEvidence(t *testing.T) {
 	check := planner.DomainCheck{
 		Cached: true, VerificationDurationMS: 812,
@@ -351,6 +360,33 @@ func TestDiscoverySuggestionApplyCommitsRevisionBoundRouteAssignment(t *testing.
 	}
 }
 
+func TestDiscoverySuggestionApplyRejectsSyntheticSystemDefaultBaseline(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, _ := newDiscoveryModeServer(t, "suggest", true, fake)
+	defer srv.Close()
+	runtime := &fakeRouteAssignmentRuntime{}
+	srv.routeAssignmentRuntime = runtime
+	srv.saveDiscoverySuggestion(discovery.Observation{Domain: "baseline.example", QueryType: "A"}, planner.DomainCheck{
+		Domain: "baseline.example", ETLDPlusOne: "baseline.example", Category: "DIRECT_PREFERRED", Confidence: 0.99,
+		ClassificationConfidence: 0.95, ClassificationSource: "fixture", ClassificationEvidence: "no_match",
+		Status: "SELECTED", VerificationState: "verified",
+		Selected: &probe.RouteResult{Route: "system-default", RouteType: "direct", PathVerified: true, ServiceOK: true, Status: "OK"},
+	})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/discovery/suggestions/baseline.example/apply", strings.NewReader("{}"))
+	srv.handleDiscoverySuggestionAction(recorder, request)
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "automatic_route_not_allowed_or_unavailable") {
+		t.Fatalf("synthetic baseline was offered as an assignable route: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if runtime.applied != 0 || fakeAdapterCallCount(fake) != 0 {
+		t.Fatalf("synthetic baseline apply mutated runtime: assignments=%d adapter_calls=%d", runtime.applied, fakeAdapterCallCount(fake))
+	}
+	items := srv.discoverySuggestions(10)
+	if len(items) != 1 || items[0].PolicyState != "suggested" {
+		t.Fatalf("baseline suggestion was not retained after safe rejection: %+v", items)
+	}
+}
+
 func TestDiscoverySuggestionApplyIsFencedWithoutRuntimeConsumer(t *testing.T) {
 	fake := newFakeAdapter()
 	srv, _ := newDiscoveryModeServer(t, "suggest", true, fake)
@@ -531,6 +567,20 @@ func TestDiscoveryVerifyingSuggestionRemainsTransient(t *testing.T) {
 	var persisted []discoverySuggestion
 	if err := srv.store.LoadJSON("discovery", discoverySuggestionKey, &persisted); err == nil && len(persisted) != 0 {
 		t.Fatalf("in-progress suggestion was persisted: %+v", persisted)
+	}
+}
+
+func TestDiscoveryInfrastructureFailureDoesNotRemainVerifying(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, _ := newDiscoveryModeServer(t, "suggest", true, fake)
+	defer srv.Close()
+	srv.saveDiscoverySuggestionTransient(discovery.Observation{Domain: "failed.example", QueryType: "A"}, planner.DomainCheck{
+		Domain: "failed.example", Category: "UNKNOWN", Status: "ERROR",
+		Reason: "automatic_domain_check_failed: active binding unavailable", VerificationState: "error",
+	})
+	items := srv.discoverySuggestions(10)
+	if len(items) != 1 || items[0].ProbeState != "error" || !strings.Contains(items[0].Reason, "active binding unavailable") {
+		t.Fatalf("infrastructure failure remained misleadingly in progress: %+v", items)
 	}
 }
 
@@ -743,7 +793,7 @@ func TestDiscoveryRollbackCircuitBreakerStopsFurtherApply(t *testing.T) {
 	}
 }
 
-func TestDomainCheckerFailureDoesNotCreateSuggestion(t *testing.T) {
+func TestDomainCheckerFailureCreatesTerminalDiagnosticSuggestion(t *testing.T) {
 	fake := newFakeAdapter()
 	srv, _ := newDiscoveryModeServer(t, "suggest", true, fake)
 	defer srv.Close()
@@ -751,8 +801,9 @@ func TestDomainCheckerFailureDoesNotCreateSuggestion(t *testing.T) {
 		return planner.DomainCheck{}, errors.New("probe failed")
 	}
 	srv.discoverDomain(context.Background(), discovery.Observation{Domain: "failed.example", QueryType: "A"})
-	if len(srv.discoverySuggestions(10)) != 0 {
-		t.Fatal("failed observation created a suggestion")
+	items := srv.discoverySuggestions(10)
+	if len(items) != 1 || items[0].ProbeState != "error" || !strings.Contains(items[0].Reason, "probe failed") {
+		t.Fatalf("failed observation did not become an actionable terminal diagnostic: %+v", items)
 	}
 }
 

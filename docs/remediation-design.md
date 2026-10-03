@@ -56,6 +56,13 @@ hash candidate, hash manifest артефактов, generation и фактиче
 adapter. Rollback capability удаляется только после сравнения durable active
 revision с состоянием adapter.
 
+Retention сохраняет ChangeSet активной revision, unresolved recovery/rollback
+evidence и transaction records, на которые ссылаются retained ChangeSet.
+Различающиеся TTL history/transactions не должны создавать dangling references
+и ломать последующий startup. При неоднозначном active journal cleanup сохраняет
+recovery evidence вместо его удаления; защищённая старая запись сама по себе не
+создаёт повторные persistent writes в idle cleanup.
+
 ## Размещение конфигурации
 
 `bootstrap.json` — неизменяемые параметры запуска. В нём нет pending candidate,
@@ -227,3 +234,64 @@ Decision cache отдельно сохраняет полную verification dur
 и не подставляет wall-clock поиска в кэше. Ответ RouteProber с пустым или
 in-progress status также non-terminal и не может стать `NO_SAFE_ROUTE` без
 bounded terminal result.
+
+Helper request deadlines are bounded to 70 seconds. This is intentionally longer
+than the one-minute hardware dataplane proof budget: nft/NFQUEUE/Xray evidence
+collection must not be cut off by a shorter transport deadline and misreported as
+a failed rollback. The bound remains finite for every helper request and socket.
+
+Managed Xray activation records unchanged Zapret topology as a reused committed
+route proof instead of forcing a fresh Zapret probe during an unrelated Xray
+transaction. The candidate records the reused route tag in its verification plan;
+if the route object changes, it becomes a normal required proof again.
+
+Recovery also admits an adapter-committed transaction when its ChangeSet was
+left in a recovery-phase failure state. The exact bound is checked against the
+active revision, candidate hash, artifact hash, and adapter state before the
+control-plane record is finalized. Route-assignment reconciliation reads the
+dedicated daemon-readable runtime binding
+(`/tmp/router-policy-controller/active-transaction.env`) before the root-owned
+last-good directory; the main runtime remains a bounded controller-owned
+tmpfs tree, while the binding used for helper authorization remains
+root:daemon-owned. This keeps restart recovery usable without weakening
+ownership or generation checks.
+
+Helper transaction evidence normalizes shell boolean fields before semantic
+validation. In particular, `rollback=true` from the typed Unix helper is a
+boolean fact, not a string; otherwise a successful resolver/rule removal can
+be mislabeled `rollback_failed`. Resolver CRUD, service-rule deletion, and
+route-class changes reuse only byte-for-byte unchanged committed route proof;
+they do not require an unrelated fresh probe of a route they did not modify.
+
+### First manual rule on a confirmed empty baseline
+
+An empty baseline has no managed Direct generation. Interactive Direct preview
+may run an unmarked DNS/HTTP/TLS transport check only after exact baseline
+recovery/absence proof. It reports `UNVERIFIED` and
+`route_not_bound_to_verification_plan`, never managed `PathVerified`.
+The API can offer `guarded_apply_available` for that transport-valid candidate;
+the explicit user action still uses the full bounded transaction and requires
+post-apply managed path proof before commit. This exception is not available to
+background discovery/auto-assignment and does not install a component or relabel
+the synthetic system-default path as a committed route.
+
+`DROP` is selectable as an observed safety outcome only with actual path proof.
+An unverified Drop probe cannot make read-only preview claim `drop_enforced`.
+The old selection fixture accepted a bare DROP enum and therefore encoded the
+wrong invariant; it now supplies proven Drop evidence and separately rejects
+unverified/failed Drop results.
+
+Unchanged route configuration is not reusable path evidence. Validation reuses
+only a fresh, bound, non-simulated proof from the current committed transaction.
+New/changed service assignments require post-apply proof for their selected
+route even if the route object itself is unchanged. An empty baseline therefore
+cannot erase the first Direct proof from the verification plan.
+
+Final commit persists the exact revision/candidate/artifact recovery binding
+before publishing it together with in-memory active identity and releasing the
+mutation lease. If that write fails after finalization, the durable commit is
+preserved, health reports degraded, and a memory recovery fence rejects new
+mutations; startup recovery must compare both durable sides again. Health reads
+one consistent snapshot and reports degraded on
+unknown/fenced recovery or a revision mismatch instead of mixing a new revision
+with an old baseline hash.
