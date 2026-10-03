@@ -306,3 +306,11 @@ while reserving two seconds for final kernel/path evidence. Failure to obtain
 the required country consensus remains a failure; neither HTTP success nor a
 single identity source grants PathVerified. These bounds prevent a dead first
 DNS answer from turning a successful service check into an expired nft query.
+
+The helper's fixed `transaction.verify_data_plane` subprocess does not inherit
+the controller's helper socket selector. The existing privileged collector
+uses native kernel observation/socket marks; other operations and the non-root
+controller retain typed socket access. This prevents UID0 self-RPC rejection
+without admitting root peers or relaxing semantic evidence checks. It is not a
+claim that synthetic probe HTTP has been completely deprivileged: that remains
+a separate privilege-boundary limitation of the existing collector.

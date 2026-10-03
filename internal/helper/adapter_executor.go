@@ -387,6 +387,7 @@ func (e AdapterExecutor) executeTransaction(ctx context.Context, request Request
 	}
 	args := []string{verb, e.ConfigPath, request.TransactionID, request.RevisionID, request.CandidateHash, request.ArtifactManifestHash}
 	command := exec.CommandContext(ctx, e.AdapterPath, args...)
+	command.Env = transactionCommandEnvironment(os.Environ(), request.Command)
 	raw, err := command.Output()
 	if exitErr := new(exec.ExitError); errors.As(err, &exitErr) {
 		raw = append(raw, exitErr.Stderr...)
@@ -494,6 +495,21 @@ func (e AdapterExecutor) executeTransaction(ctx context.Context, request Request
 	response.Accepted = true
 	response.State = "accepted"
 	return response
+}
+
+func transactionCommandEnvironment(base []string, command string) []string {
+	child := make([]string, 0, len(base))
+	for _, entry := range base {
+		// This one fixed root-owned operation launches the privileged collector.
+		// It must inspect the kernel natively, not recursively connect to its
+		// parent's UID1-only socket as UID0. Controller/other operations retain
+		// their transport; no peer credential or response check is relaxed.
+		if command == "transaction.verify_data_plane" && strings.HasPrefix(entry, "ROUTER_POLICY_HELPER_SOCKET=") {
+			continue
+		}
+		child = append(child, entry)
+	}
+	return child
 }
 
 func ownedVerb(request Request) (verb string, extra string, ok bool) {
