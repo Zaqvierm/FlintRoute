@@ -124,6 +124,9 @@ export function Vless({
       if (poolResult.status === 'fulfilled') {
         setPool(poolResult.value);
         setTariff(poolResult.value.tariff_mbps || 300);
+		// Restore the action, not an applied/healthy claim. Activation still
+		// revalidates the prepared bundle and runs the bounded transaction.
+		setManagedAvailable((poolResult.value.servers ?? []).some((server: any) => server.path_verified === true));
       }
       if (componentsResult.status === 'fulfilled') {
         const xrayComponent = componentsResult.value.find((item: ComponentStatus) => item.kind === 'xray');

@@ -354,3 +354,9 @@ HWID. Enrollment redirects are rejected, every remote target retains SSRF/DNS
 pinning and TLS verification, and the original enrollment link remains the
 refresh source. Tokens, crypt payloads and resolved credentials are not exposed
 in diagnostics. Portal, decoder or provider failures leave active policy intact.
+
+The VLESS screen restores the explicit activation action from the persisted
+verified candidate pool after navigation/reload, rather than a component-local
+boolean. This only exposes an action; it does not assert managed activation.
+The backend still refreshes/validates the bundle and requires the transactional
+activation/post-proof before reporting committed routes.

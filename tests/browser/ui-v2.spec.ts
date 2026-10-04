@@ -790,4 +790,17 @@ test.describe('FlintRoute UI v2', () => {
     expect(body?.allowed_paths).toEqual(['smart_dns','vless','drop']);
     await expect(editor.getByRole('button',{name:'Создать и применить правило'})).toBeDisabled();
   });
+
+  test('keeps prepared VLESS activation reachable after navigation and reload without another import', async ({ page }) => {
+    await mockAPI(page);
+    await page.route('**/api/v1/health',async(route)=>route.fulfill(envelope({status:'ok',recovery_status:'ok',checked_at:new Date().toISOString()})));
+    await page.route('**/api/v1/xray/pool',async(route)=>route.fulfill(envelope({tariff_mbps:300,sources:[],servers:[{tag:'fixture-vless',name:'Prepared fixture',path_verified:true}]})));
+    await page.goto(`/?screen=${encodeURIComponent('VLESS-серверы')}`);
+    await expect(page.getByRole('button',{name:'Явно включить managed Xray'})).toBeVisible();
+    await page.getByRole('button',{name:'Сервисы',exact:true}).click();
+    await page.getByRole('button',{name:'VLESS-серверы',exact:true}).click();
+    await expect(page.getByRole('button',{name:'Явно включить managed Xray'})).toBeVisible();
+    await page.reload();
+    await expect(page.getByRole('button',{name:'Явно включить managed Xray'})).toBeVisible();
+  });
 });
