@@ -107,6 +107,14 @@ func TestDiscoveryCandidateDetailsMarksSystemDefaultAsBaseline(t *testing.T) {
 	}
 }
 
+func TestCandidateDetailsKeepServiceEgressAndPathFailuresSeparate(t *testing.T) {
+	items := discoveryCandidateDetails([]probe.RouteResult{{Route: "vpn-one", RouteType: "vless", Status: "FAIL", ApplicationStatus: "FAIL", DNSOK: true, EgressReason: "egress_country_budget_unavailable", ReasonCode: "route_vpn_one_lacks_egress_proof", Checks: []probe.CheckResult{{Required: true, Status: "WAF_OR_RATE_LIMIT"}}}})
+	row := items[0]
+	if row["reason"] != "egress_country_budget_unavailable" || row["service_result"] != "WAF_OR_RATE_LIMIT" || row["path_reason"] != "route_vpn_one_lacks_egress_proof" || row["path_verified"] != false || row["service_ok"] != false {
+		t.Fatalf("failure layers were conflated or promoted to success: %+v", row)
+	}
+}
+
 func TestCachedVerificationDurationUsesStoredEvidence(t *testing.T) {
 	check := planner.DomainCheck{
 		Cached: true, VerificationDurationMS: 812,

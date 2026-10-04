@@ -132,11 +132,26 @@ func discoveryCandidateDetails(results []probe.RouteResult) []map[string]any {
 	items := make([]map[string]any, 0, len(results))
 	for _, result := range results {
 		baseline := result.Route == "system-default" && result.RouteType == "direct"
+		reason := result.ReasonCode
+		serviceResult := result.ApplicationStatus
+		for _, check := range result.Checks {
+			if check.Required && check.Status != "OK" && check.Status != "DEGRADED" {
+				serviceResult = check.Status
+				break
+			}
+		}
+		if result.EgressReason != "" {
+			reason = result.EgressReason
+		}
 		item := map[string]any{
 			"route": result.Route, "route_type": result.RouteType, "status": result.Status,
 			"baseline": baseline, "selection_eligible": !baseline,
 			"path_verified": result.PathVerified, "service_ok": result.ServiceOK,
-			"reason":                       result.ReasonCode,
+			"reason":      reason,
+			"path_reason": result.ReasonCode, "egress_reason": result.EgressReason,
+			"dns_ok": result.DNSOK, "tls_ok": result.TLSOK, "http_ok": result.HTTPOK,
+			"application_status": result.ApplicationStatus,
+			"service_result":     serviceResult, "external_country": result.ExternalCountry,
 			"selection_score":              result.SelectionScore,
 			"regional_block":               result.RegionalBlock,
 			"authentication_required":      result.AuthenticationRequired,

@@ -199,7 +199,7 @@ export function Services({
         : result.guarded_apply_available
           ? 'Сайт отвечает через обычное подключение. Применить Direct и проверить управляемый путь?'
         : result.verification_state === 'in_progress'
-          ? 'Проверка ещё идёт. Нажми «Продолжить проверку», чтобы получить следующий bounded результат.'
+          ? 'Общий лимит проверки достигнут; не все маршруты проверены. Повторный запуск начнёт новую проверку.'
           : 'Безопасный маршрут не найден. Правило не создаю.');
     } catch (error) {
       const info = errorInfo(error);
@@ -399,7 +399,7 @@ export function Services({
           {editor.serviceID && (editor.domains?.length ?? 0) > 1 && <p class="action-status">Изменение маршрута затронет все {editor.domains?.length} доменов этой политики; список доменов и проверок сохранится.</p>}
           <div class="actions">
             <button type="button" class="primary" disabled={editorVerificationBusy || !editor.domain.trim()} onClick={() => void verifyEditorDomain()}>
-              {editorVerificationBusy ? 'Проверяю…' : editorVerification?.verification_state === 'in_progress' ? 'Продолжить проверку' : 'Проверить домен'}
+              {editorVerificationBusy ? 'Проверяю…' : editorVerification?.verification_state === 'in_progress' ? 'Повторить проверку' : 'Проверить домен'}
             </button>
             <button type="button" disabled={editorVerificationBusy || !editor.domain.trim()} onClick={() => void verifyEditorDomain(true)}>
               Полная проверка маршрутов
@@ -440,6 +440,7 @@ export function Services({
               <b>{candidate.route ?? candidate.route_type ?? 'route'}</b>
               <span>{candidate.status ?? 'UNVERIFIED'}{candidate.selected ? ' · выбрано' : ''}</span>
               <small>{candidate.path_verified ? 'PathVerified' : 'не подтверждено'}{candidate.reason ? ` · ${candidate.reason}` : ''}</small>
+              <small>{typeof candidate.dns_ok === 'boolean' ? `DNS: ${candidate.dns_ok ? 'OK' : 'FAIL'} · ` : ''}{candidate.service_result ? `Сервис: ${candidate.service_result} · ` : ''}{candidate.external_country ? `Выход: ${candidate.external_country}` : ''}</small>
             </div>)}
             <p class={editorVerification.path_verified ? 'action-status ok' : 'action-status'}>
               {editorVerification.path_verified

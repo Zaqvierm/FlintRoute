@@ -360,3 +360,12 @@ verified candidate pool after navigation/reload, rather than a component-local
 boolean. This only exposes an action; it does not assert managed activation.
 The backend still refreshes/validates the bundle and requires the transactional
 activation/post-proof before reporting committed routes.
+
+Interactive service verification allocates a per-candidate timeout and an
+inventory-sized overall budget (maximum two minutes). A timeout in one candidate
+does not cancel the next candidate's budget. The HTTP response deadline covers
+that bounded job plus five seconds; the ordinary server write timeout must not
+cut off a valid full matrix. Background discovery budgets are unchanged. The
+matrix exposes egress failure separately from packet-path failure, and a partial
+job offers a new check rather than falsely claiming to resume retained progress.
+No budget change relaxes ServiceOK, PathVerified, non-RU consensus or binding.

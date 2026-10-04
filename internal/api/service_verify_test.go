@@ -113,6 +113,81 @@ func TestManualGEOPreviewUsesSelectedPolicyWithoutMutation(t *testing.T) {
 	}
 }
 
+func TestInteractivePreviewBudgetsEligibleCandidatesNotOneSharedProbe(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	srv.mu.Lock()
+	copy := *srv.activeConfig
+	copy.Policy.MaxProbeSeconds = 15
+	copy.Routes = []config.Route{{Tag: "dns-one", Type: "smart_dns", DNSServer: "8.8.8.8"}, {Tag: "dns-two", Type: "smart_dns", DNSServer: "1.1.1.1"}, {Tag: "vpn-one", Type: "vless"}, {Tag: "direct", Type: "direct"}}
+	srv.activeConfig = &copy
+	srv.mu.Unlock()
+	called := false
+	srv.domainChecker = func(ctx context.Context, _ *config.Config, _, _ string, _ planner.Options) (planner.DomainCheck, error) {
+		called = true
+		deadline, ok := ctx.Deadline()
+		remaining := time.Until(deadline)
+		if !ok || remaining < 44*time.Second || remaining > 46*time.Second {
+			t.Fatalf("three GEO candidates share %v instead of independent bounded budgets", remaining)
+		}
+		return planner.DomainCheck{Status: "NO_SAFE_ROUTE", VerificationState: "terminal_no_safe_route"}, nil
+	}
+	rec := httptest.NewRecorder()
+	srv.handleServiceVerify(rec, httptest.NewRequest(http.MethodPost, "/api/v1/services/verify", strings.NewReader(`{"domain":"chatgpt.com","category":"GEO_LOCKED"}`)))
+	if rec.Code != 200 || !called {
+		t.Fatalf("preview status=%d called=%v", rec.Code, called)
+	}
+}
+
+type interactiveProberFunc func(context.Context, *config.Config, string, string, config.Service, config.Route) probe.RouteResult
+
+func (f interactiveProberFunc) ProbeRoute(ctx context.Context, cfg *config.Config, domain, id string, svc config.Service, route config.Route) probe.RouteResult {
+	return f(ctx, cfg, domain, id, svc, route)
+}
+
+func TestInteractiveCandidateTimeoutDoesNotCancelTheNextCandidate(t *testing.T) {
+	parent, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	count := 0
+	p := interactiveBoundedProber{limit: 10 * time.Millisecond, inner: interactiveProberFunc(func(ctx context.Context, _ *config.Config, _, _ string, _ config.Service, _ config.Route) probe.RouteResult {
+		count++
+		if count == 1 {
+			<-ctx.Done()
+			return probe.RouteResult{Status: "FAIL", ReasonCode: "timeout"}
+		}
+		if ctx.Err() != nil {
+			t.Fatal("previous candidate cancelled this candidate")
+		}
+		return probe.RouteResult{Status: "OK"}
+	})}
+	first := p.ProbeRoute(parent, nil, "test.example", "preview_test", config.Service{}, config.Route{})
+	second := p.ProbeRoute(parent, nil, "test.example", "preview_test", config.Service{}, config.Route{})
+	if first.Status != "FAIL" || second.Status != "OK" || count != 2 || parent.Err() != nil {
+		t.Fatal("candidate budget was not isolated")
+	}
+}
+
+func TestInteractiveVerificationResponseOutlivesShortOrdinaryHTTPWriteDeadline(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	srv.domainChecker = func(context.Context, *config.Config, string, string, planner.Options) (planner.DomainCheck, error) {
+		time.Sleep(60 * time.Millisecond)
+		return planner.DomainCheck{Status: "NO_SAFE_ROUTE", VerificationState: "terminal_no_safe_route"}, nil
+	}
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(srv.handleServiceVerify))
+	ts.Config.WriteTimeout = 20 * time.Millisecond
+	ts.Start()
+	defer ts.Close()
+	resp, err := http.Post(ts.URL, "application/json", strings.NewReader(`{"domain":"example.org"}`))
+	if err != nil {
+		t.Fatalf("bounded verification response was cut off by ordinary HTTP deadline: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+}
+
 func TestGuardedPreviewDoesNotClaimManagedPathOrCreateMutation(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()

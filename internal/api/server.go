@@ -2160,9 +2160,11 @@ func (s *Server) handleServiceVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Read-only interactive verification stays bounded. A partial VERIFYING
-	// response is rendered with "Continue verification" instead of blocking
-	// the UI for a long opaque probe job.
-	check, verifyErr := s.selectVerifiedServiceRouteWithOptions(r.Context(), serviceID, serviceWithVerificationDomain(service, domain), 0, "", request.FullCheck)
+	// response is incomplete, not falsely resumable retained work. Eligible
+	// candidates have separate bounds within one bounded job.
+	jobBudget := interactiveVerificationBudget(s.currentConfig(), service, request.FullCheck)
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(jobBudget + 5*time.Second))
+	check, verifyErr := s.selectVerifiedServiceRouteWithOptions(r.Context(), serviceID, serviceWithVerificationDomain(service, domain), jobBudget, "", request.FullCheck)
 	persisted := 0
 	if s.store != nil {
 		for _, result := range check.Results {
@@ -2704,15 +2706,13 @@ func (s *Server) selectVerifiedServiceRouteWithOptions(ctx context.Context, serv
 		// sequential candidate inventory.  The per-route probe timeout remains
 		// the policy value; this only prevents the last candidate from being
 		// cut off by the ordinary quick-check deadline.
-		fullSeconds := maxInt(active.Policy.MaxProbeSeconds, 15) * maxInt(len(active.Routes), 1)
-		fullSeconds = maxInt(fullSeconds, 60)
-		if fullSeconds > 120 {
-			fullSeconds = 120
-		}
-		probeSeconds = time.Duration(fullSeconds) * time.Second
+		probeSeconds = interactiveVerificationBudget(active, service, true)
 	}
 	if budget > probeSeconds {
 		probeSeconds = budget
+	}
+	if probeSeconds > 2*time.Minute {
+		probeSeconds = 2 * time.Minute
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, probeSeconds)
 	defer cancel()
@@ -2728,6 +2728,12 @@ func (s *Server) selectVerifiedServiceRouteWithOptions(ctx context.Context, serv
 		// Check native transport only, clearly unverified as a managed path;
 		// explicit create/apply still requires post-apply route proof to commit.
 		routeProber = probe.NewUnboundDirectCandidateEngine()
+	}
+	if budget > 0 || fullCheck {
+		if routeProber == nil {
+			routeProber = probe.NewEngine(nil)
+		}
+		routeProber = interactiveBoundedProber{inner: routeProber, limit: time.Duration(maxInt(active.Policy.MaxProbeSeconds, 15)) * time.Second}
 	}
 	check, err := s.domainChecker(probeCtx, &candidate, domain, serviceID, planner.Options{
 		TSPUResult: match,
@@ -2783,6 +2789,47 @@ func (s *Server) selectVerifiedServiceRouteWithOptions(ctx context.Context, serv
 		return check, fmt.Errorf("verified route %q is not part of the active configuration", check.Selected.Route)
 	}
 	return check, nil
+}
+
+// Only explicit interactive checks receive an inventory-sized job budget.
+// Background discovery keeps its existing event/job bounds.
+func interactiveVerificationBudget(cfg *config.Config, service config.Service, full bool) time.Duration {
+	if cfg == nil {
+		return 15 * time.Second
+	}
+	allowed := map[string]bool{}
+	for _, kind := range service.AllowedPaths {
+		allowed[kind] = true
+	}
+	forbidden := map[string]bool{}
+	for _, kind := range service.ForbiddenPaths {
+		forbidden[kind] = true
+	}
+	count := 0
+	for _, route := range cfg.Routes {
+		if route.Enabled() && route.Type != "drop" && !forbidden[route.Type] && (len(allowed) == 0 || allowed[route.Type]) {
+			count++
+		}
+	}
+	seconds := maxInt(count, 1) * maxInt(cfg.Policy.MaxProbeSeconds, 15)
+	if full {
+		seconds = maxInt(seconds, 60)
+	}
+	if seconds > 120 {
+		seconds = 120
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+type interactiveBoundedProber struct {
+	inner planner.RouteProber
+	limit time.Duration
+}
+
+func (p interactiveBoundedProber) ProbeRoute(ctx context.Context, cfg *config.Config, domain, id string, svc config.Service, route config.Route) probe.RouteResult {
+	child, cancel := context.WithTimeout(ctx, p.limit)
+	defer cancel()
+	return p.inner.ProbeRoute(child, cfg, domain, id, svc, route)
 }
 
 func candidateRequiringGuardedApply(results []probe.RouteResult, allowedPaths []string, policy config.Policy, health *probe.HealthTracker) *probe.RouteResult {
