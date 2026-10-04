@@ -66,6 +66,16 @@ func run(args []string) error {
 	cfgPath := defaultConfigPath()
 
 	switch args[0] {
+	case "internal-validate-zapret-quick":
+		if len(args) != 6 {
+			return errors.New("quick validation requires an exact transaction binding")
+		}
+		return validateZapretQuickRuntime(cfgPath, args[1:])
+	case "internal-zapret-https-probe":
+		if len(args) != 3 {
+			return errors.New("quick HTTPS probe requires domain and pinned IPv4")
+		}
+		return runZapretHTTPSProbe(args[1], args[2])
 	case "internal-health-field":
 		fs := flag.NewFlagSet("internal-health-field", flag.ContinueOnError)
 		path := fs.String("path", "", "health response JSON path")
@@ -1675,10 +1685,11 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 		}
 		zapretRelease := component.SupportedCatalog()[component.KindZapret]
 		zapretCalibration = zapret.NewCalibrationManager(zapret.ExecCalibrationRunner{
-			Script:      "/usr/lib/router-policy/scripts/calibrate-zapret.sh",
-			QuickScript: "/usr/lib/router-policy/scripts/quick-zapret-check.sh",
-			Blockcheck:  filepath.Join("/usr/lib/router-policy/components/zapret", zapretRelease.Version, "blockcheck.sh"),
-			Config:      cfgPath, RouterPolicyBin: "/usr/bin/router-policy", NFQWSBin: cfg.Zapret.Binary, ManagedQueue: cfg.Zapret.QueueNum,
+			HelperSocket: helperSocket,
+			Script:       "/usr/lib/router-policy/scripts/calibrate-zapret.sh",
+			QuickScript:  "/usr/lib/router-policy/scripts/quick-zapret-check.sh",
+			Blockcheck:   filepath.Join("/usr/lib/router-policy/components/zapret", zapretRelease.Version, "blockcheck.sh"),
+			Config:       cfgPath, RouterPolicyBin: "/usr/bin/router-policy", NFQWSBin: cfg.Zapret.Binary, ManagedQueue: cfg.Zapret.QueueNum,
 			ZapretInit: cfg.Zapret.InitScript, RuntimeDir: cfg.Storage.RuntimeDir,
 			CatalogOut: "/etc/router-policy/zapret/catalog.json",
 		})

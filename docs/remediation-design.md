@@ -314,3 +314,43 @@ controller retain typed socket access. This prevents UID0 self-RPC rejection
 without admitting root peers or relaxing semantic evidence checks. It is not a
 claim that synthetic probe HTTP has been completely deprivileged: that remains
 a separate privilege-boundary limitation of the existing collector.
+
+### Quick Zapret and manual policy preview
+
+The production non-root controller requests `zapret.quick_check` through the
+typed helper protocol; it must not execute the root-only quick script itself.
+The request carries only a domain, a reviewed bundle identifier, a network
+fingerprint and bounded public IPv4 targets, plus exact committed transaction,
+revision, candidate/artifact hashes and rollback-token binding. The helper
+compares active metadata with the transaction, verifies generated artifacts
+and candidate bytes, and admits only fixed owned executable/runtime paths.
+It runs the existing six curated General presets, never upstream exhaustive
+search or a production service restart. The operation is bounded by the
+existing five-minute quick budget; socket cancellation terminates its process
+group and retains the runner's owned cleanup checks. When OpenWrt lacks `su`,
+the fixed Go HTTPS child drops to UID/GID 65534 before executing pinned curl.
+Root HTTP fallback is removed. A curl/path PASS is not universal application
+verification. Exhaustive probing still requires a separately implemented
+privileged maintenance runner; it is not silently substituted for Quick.
+New curated catalogs carry the explicit `owner: flintroute` marker (optional
+metadata in the version-1 catalog reader). The helper refuses to overwrite an
+existing catalog without that marker and root-only write permissions; an old
+unmarked catalog requires explicit migration rather than implicit adoption.
+
+A new manual-rule preview sends its selected category and allowed route types
+to the backend. The backend constructs the same policy constraints as create,
+without changing committed state. In particular GEO previews exclude Direct
+and Zapret and require non-RU egress; selecting GEO is not itself evidence that
+regional denial was observed. WAF/ambiguous responses remain failures rather
+than being relabeled as functional success.
+
+### Provider enrollment sources
+
+NoClip `/connect/<token>` sources are enrollment links, not subscription HTTP
+targets. The unprivileged subscription pipeline resolves the allowlisted
+portal JSON endpoint, reads a bounded `happImportUrl`, selects its exact Happ
+decoder, then fetches the decrypted HTTPS subscription with the configured
+HWID. Enrollment redirects are rejected, every remote target retains SSRF/DNS
+pinning and TLS verification, and the original enrollment link remains the
+refresh source. Tokens, crypt payloads and resolved credentials are not exposed
+in diagnostics. Portal, decoder or provider failures leave active policy intact.

@@ -483,10 +483,10 @@ export type ServiceVerification = {
   evidence_persisted: number;
   candidates: unknown[];
 };
-export async function verifyService(serviceID: string, domain?: string, fullCheck = false): Promise<ServiceVerification> {
+export async function verifyService(serviceID: string, domain?: string, fullCheck = false, policy?: { category: string; allowed_paths: string[] }): Promise<ServiceVerification> {
   return request('/services/verify', {
     method: 'POST',
-    body: JSON.stringify({ service_id: serviceID, domain, full_check: fullCheck })
+    body: JSON.stringify({ service_id: serviceID, domain, full_check: fullCheck, ...policy })
   });
 }
 export async function deleteServiceRule(serviceID: string, baseVersion: number, requestID?: string): Promise<{ change: ChangeSet; service_id: string; auto_apply_requested?: boolean; auto_apply_started?: boolean; deduplicated?: boolean }> {

@@ -27,7 +27,13 @@ func Call(ctx context.Context, socket string, request Request) (Response, error)
 		return Response{}, fmt.Errorf("connect helper: %w", err)
 	}
 	defer connection.Close()
-	_ = connection.SetDeadline(time.Now().Add(maxRequestDuration))
+	deadline := time.Now().Add(requestDuration(request.Command))
+	if callerDeadline, ok := ctx.Deadline(); ok && callerDeadline.Before(deadline) {
+		deadline = callerDeadline
+	}
+	_ = connection.SetDeadline(deadline)
+	stopCancellation := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopCancellation()
 	if err := json.NewEncoder(connection).Encode(request); err != nil {
 		return Response{}, fmt.Errorf("write helper request: %w", err)
 	}

@@ -94,6 +94,25 @@ func TestServiceVerifyIsReadOnlyAndPersistsFreshEvidence(t *testing.T) {
 	}
 }
 
+func TestManualGEOPreviewUsesSelectedPolicyWithoutMutation(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	called := false
+	srv.domainChecker = func(_ context.Context, cfg *config.Config, domain, id string, _ planner.Options) (planner.DomainCheck, error) {
+		called = true
+		svc := cfg.Services[id]
+		if domain != "chatgpt.com" || svc.Category != "GEO_LOCKED" || !svc.RequireNonRUEgress || strings.Join(svc.ForbiddenPaths, ",") != "direct,zapret" || strings.Join(svc.AllowedPaths, ",") != "smart_dns,vless,drop" {
+			t.Fatalf("GEO choice was lost before planner: %+v", svc)
+		}
+		return planner.DomainCheck{Status: "NO_SAFE_ROUTE", VerificationState: "terminal_no_safe_route"}, nil
+	}
+	rec := httptest.NewRecorder()
+	srv.handleServiceVerify(rec, httptest.NewRequest(http.MethodPost, "/api/v1/services/verify", strings.NewReader(`{"domain":"chatgpt.com","category":"GEO_LOCKED","allowed_paths":["smart_dns","vless","drop"]}`)))
+	if rec.Code != http.StatusOK || !called || len(srv.changes) != 0 {
+		t.Fatalf("preview status=%d called=%v changes=%d", rec.Code, called, len(srv.changes))
+	}
+}
+
 func TestGuardedPreviewDoesNotClaimManagedPathOrCreateMutation(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()

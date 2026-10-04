@@ -32,6 +32,9 @@ func (e AdapterExecutor) Execute(ctx context.Context, request Request) Response 
 		response.Error = err.Error()
 		return response
 	}
+	if request.Command == "zapret.quick_check" {
+		return e.executeZapretQuick(ctx, request)
+	}
 	if strings.HasPrefix(request.Command, "transaction.") {
 		return e.executeTransaction(ctx, request)
 	}

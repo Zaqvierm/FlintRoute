@@ -122,7 +122,7 @@ func FetchSource(ctx context.Context, client *http.Client, originalSource, outpu
 	if resolver == nil {
 		resolver = NewDefaultSourceResolver()
 	}
-	resolution, err := resolver.Resolve(ctx, originalSource)
+	resolution, err := resolveFetchSource(ctx, client, originalSource, resolver)
 	if err != nil {
 		return FetchSummary{}, err
 	}

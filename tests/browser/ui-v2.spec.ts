@@ -771,4 +771,23 @@ test.describe('FlintRoute UI v2', () => {
     const presetHWID = ['a330268d', '7d9d', '4343', '8672', 'f6191f80a25c'].join('-');
     await expect(dialog.locator('table')).toContainText(presetHWID);
   });
+
+  test('manual GEO preview sends policy constraints rather than silently checking Direct', async ({ page }) => {
+    await mockAPI(page);
+	await page.route('**/api/v1/health', async (route) => route.fulfill(envelope({status:'ok',recovery_status:'ok',checked_at:new Date().toISOString()})));
+    let body: Record<string, unknown> | undefined;
+    await page.route('**/api/v1/services/verify', async (route) => {
+      body = route.request().postDataJSON();
+      await route.fulfill(envelope({service_id:'preview_chatgpt_com',domain:'chatgpt.com',status:'NO_SAFE_ROUTE',verification_state:'terminal_no_safe_route',path_verified:false,evidence_persisted:0,candidates:[]}));
+    });
+    await page.goto('/?screen=Сервисы');
+    await page.getByRole('button',{name:'+ Новое правило'}).click();
+    const editor=page.getByRole('dialog');
+    await editor.getByPlaceholder('example.com').fill('chatgpt.com');
+    await editor.locator('select').selectOption('GEO_LOCKED');
+    await editor.getByRole('button',{name:'Проверить домен'}).click();
+    await expect.poll(()=>body?.category).toBe('GEO_LOCKED');
+    expect(body?.allowed_paths).toEqual(['smart_dns','vless','drop']);
+    await expect(editor.getByRole('button',{name:'Создать и применить правило'})).toBeDisabled();
+  });
 });

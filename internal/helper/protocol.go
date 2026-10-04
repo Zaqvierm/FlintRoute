@@ -9,11 +9,14 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"router-policy/internal/netpolicy"
 )
 
 const ProtocolVersion = 1
@@ -44,6 +47,15 @@ type Request struct {
 	Probe                *ProbeRequest           `json:"probe,omitempty"`
 	Diagnostics          *DiagnosticsRequest     `json:"diagnostics,omitempty"`
 	RouteAssignment      *RouteAssignmentRequest `json:"route_assignment,omitempty"`
+	ZapretQuick          *ZapretQuickRequest     `json:"zapret_quick,omitempty"`
+}
+
+// No script, path, strategy arguments or provider response crosses this API.
+type ZapretQuickRequest struct {
+	Domain             string   `json:"domain"`
+	BundleID           string   `json:"bundle_id"`
+	NetworkFingerprint string   `json:"network_fingerprint"`
+	ResolvedIPv4       []string `json:"resolved_ipv4"`
 }
 
 type TransactionRequest struct {
@@ -198,7 +210,20 @@ func ValidateRequest(request Request) error {
 	if request.Command == "" {
 		return ErrUnknownCommand
 	}
+	if request.Command != "zapret.quick_check" && request.ZapretQuick != nil {
+		return ErrInvalidRequest
+	}
 	switch request.Command {
+	case "zapret.quick_check":
+		if request.ZapretQuick == nil || request.Generation != request.RevisionID || !requestBound(request) || hasResourcePayload(request, "zapret_quick") || !safeDomain(request.ZapretQuick.Domain) || !safeObjectName(request.ZapretQuick.BundleID) || !safeHash(request.ZapretQuick.NetworkFingerprint) || len(request.ZapretQuick.ResolvedIPv4) == 0 || len(request.ZapretQuick.ResolvedIPv4) > 8 {
+			return ErrInvalidRequest
+		}
+		for _, value := range request.ZapretQuick.ResolvedIPv4 {
+			ip, err := netip.ParseAddr(value)
+			if err != nil || !ip.Is4() || !netpolicy.PublicResolverAddr(ip) {
+				return ErrInvalidRequest
+			}
+		}
 	case "transaction.prepare", "transaction.validate_candidate", "transaction.snapshot_current", "transaction.apply_candidate", "transaction.verify_management", "transaction.verify_data_plane", "transaction.commit_prepared", "transaction.finalize_commit", "transaction.rollback", "transaction.clear_boot_guard":
 		if request.Transaction == nil || request.Transaction.Operation != transactionOperation(request.Command) || !requestBound(request) {
 			return ErrInvalidRequest
@@ -274,6 +299,9 @@ func globalRequestBound(request Request) bool {
 }
 
 func hasResourcePayload(request Request, allowed string) bool {
+	if allowed != "zapret_quick" && request.ZapretQuick != nil {
+		return true
+	}
 	if allowed != "transaction" && request.Transaction != nil {
 		return true
 	}
@@ -308,11 +336,11 @@ func hasResourcePayload(request Request, allowed string) bool {
 }
 
 func hasAnyResourcePayload(request Request) bool {
-	return request.Transaction != nil || request.Baseline != nil || request.NFT != nil || request.IPPlan != nil || request.Service != nil || request.Artifact != nil || request.Global != nil || request.Probe != nil || request.Diagnostics != nil
+	return request.ZapretQuick != nil || request.Transaction != nil || request.Baseline != nil || request.NFT != nil || request.IPPlan != nil || request.Service != nil || request.Artifact != nil || request.Global != nil || request.Probe != nil || request.Diagnostics != nil
 }
 
 func hasAnyNonProbeResourcePayload(request Request) bool {
-	return request.Transaction != nil || request.Baseline != nil || request.NFT != nil || request.IPPlan != nil || request.Service != nil || request.Artifact != nil || request.Global != nil || request.RouteAssignment != nil || request.Diagnostics != nil
+	return request.ZapretQuick != nil || request.Transaction != nil || request.Baseline != nil || request.NFT != nil || request.IPPlan != nil || request.Service != nil || request.Artifact != nil || request.Global != nil || request.RouteAssignment != nil || request.Diagnostics != nil
 }
 
 func routeAssignmentRequestValid(request Request) bool {
@@ -490,7 +518,7 @@ func allowlistedService(name string) bool {
 }
 
 func hasAnyNonDiagnosticsPayload(request Request) bool {
-	return request.Transaction != nil || request.Baseline != nil || request.NFT != nil || request.IPPlan != nil || request.Service != nil || request.Artifact != nil || request.Global != nil || request.Probe != nil || request.RouteAssignment != nil
+	return request.ZapretQuick != nil || request.Transaction != nil || request.Baseline != nil || request.NFT != nil || request.IPPlan != nil || request.Service != nil || request.Artifact != nil || request.Global != nil || request.Probe != nil || request.RouteAssignment != nil
 }
 
 func allowlistedArtifact(kind string) bool {
@@ -519,6 +547,13 @@ const defaultMaxConnections = 16
 // collected, turning a bounded proof into a false rollback.  It remains a
 // hard upper bound for every helper request.
 const maxRequestDuration = 70 * time.Second
+
+func requestDuration(command string) time.Duration {
+	if command == "zapret.quick_check" {
+		return 5*time.Minute + 15*time.Second
+	}
+	return maxRequestDuration
+}
 
 func ServeUnix(ctx context.Context, options ServerOptions) error {
 	if options.SocketPath == "" {
@@ -627,7 +662,15 @@ func serveConnection(ctx context.Context, connection net.Conn, executor Executor
 		_ = writeResponse(connection, ResponseFrom(request, false, errorCode(err), "helper request rejected"))
 		return
 	}
-	response := executor.Execute(ctx, request)
+	_ = connection.SetDeadline(time.Now().Add(requestDuration(request.Command)))
+	operationCtx, cancel := context.WithTimeout(ctx, requestDuration(request.Command))
+	defer cancel()
+	if request.Command == "zapret.quick_check" {
+		// A cancelled controller call closes its socket. Do not leave the root
+		// runner alive until its global timeout when its caller has gone away.
+		go func() { var extra [1]byte; _, _ = connection.Read(extra[:]); cancel() }()
+	}
+	response := executor.Execute(operationCtx, request)
 	if response.ProtocolVersion == 0 {
 		response.ProtocolVersion = ProtocolVersion
 	}

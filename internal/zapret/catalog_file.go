@@ -12,6 +12,7 @@ import (
 const maxCatalogFileBytes = 256 << 10
 
 type CatalogFile struct {
+	Owner    string               `json:"owner,omitempty"`
 	Version  int                  `json:"version"`
 	Profiles []CatalogFileProfile `json:"profiles"`
 	Bundles  []BundleSpec         `json:"bundles"`

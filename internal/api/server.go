@@ -2131,9 +2131,11 @@ func serviceForClassifyRequest(request serviceClassifyRequest) (string, config.S
 }
 
 type serviceVerifyRequest struct {
-	ServiceID string `json:"service_id,omitempty"`
-	Domain    string `json:"domain,omitempty"`
-	FullCheck bool   `json:"full_check,omitempty"`
+	ServiceID    string   `json:"service_id,omitempty"`
+	Domain       string   `json:"domain,omitempty"`
+	FullCheck    bool     `json:"full_check,omitempty"`
+	Category     string   `json:"category,omitempty"`
+	AllowedPaths []string `json:"allowed_paths,omitempty"`
 }
 
 // handleServiceVerify performs a read-only path check for an already persisted
@@ -2253,6 +2255,17 @@ func (s *Server) configuredServiceForVerification(request serviceVerifyRequest) 
 		previewID, preview, previewErr := previewServiceForDomain(domain)
 		if previewErr != nil {
 			return "", config.Service{}, "", previewErr
+		}
+		if request.Category != "" || len(request.AllowedPaths) > 0 {
+			category := request.Category
+			if category == "" {
+				category = "DIRECT_PREFERRED"
+			}
+			_, selectedPolicy, policyErr := serviceForClassifyRequest(serviceClassifyRequest{Domain: domain, Category: category, AllowedPaths: request.AllowedPaths})
+			if policyErr != nil {
+				return "", config.Service{}, "", policyErr
+			}
+			preview = selectedPolicy
 		}
 		return previewID, preview, preview.Domains[0], nil
 	}
@@ -2680,7 +2693,7 @@ func (s *Server) selectVerifiedServiceRouteWithOptions(ctx context.Context, serv
 	// TSPU match is still shown as evidence after that baseline, but must not
 	// hide Direct from the interactive candidate trace before the user chooses
 	// whether to continue with alternatives.
-	if strings.HasPrefix(serviceID, "preview_") {
+	if strings.HasPrefix(serviceID, "preview_") && (service.Category == "DIRECT_PREFERRED" || service.Category == "DIRECT_ONLY") {
 		match = tspu.Match{Domain: domain, Status: "NO_MATCH"}
 	}
 

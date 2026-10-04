@@ -20,9 +20,10 @@ import (
 type SourceType string
 
 const (
-	SourceTypeHTTP  SourceType = "http"
-	SourceTypeHTTPS SourceType = "https"
-	SourceTypeHapp  SourceType = "happ"
+	SourceTypeHTTP   SourceType = "http"
+	SourceTypeHTTPS  SourceType = "https"
+	SourceTypeHapp   SourceType = "happ"
+	SourceTypePortal SourceType = "portal_enrollment"
 )
 
 // SourceInfo is the safe, parsed description of an original source. Payload
@@ -175,6 +176,11 @@ func DetectSource(raw string) (SourceInfo, error) {
 		return SourceInfo{Canonical: parsed.String(), Type: SourceTypeHTTP}, nil
 	case "https":
 		canonicalURL := parsed.String()
+		if _, present, err := portalEnrollmentEndpoint(canonicalURL); err != nil {
+			return SourceInfo{}, err
+		} else if present {
+			return SourceInfo{Canonical: canonicalURL, Type: SourceTypePortal}, nil
+		}
 		nested, present, err := wrappedHappSource(parsed)
 		if err != nil {
 			return SourceInfo{}, err
@@ -256,6 +262,9 @@ func (r *SourceResolver) Resolve(_ context.Context, raw string) (SourceResolutio
 	}
 	if info.Type == SourceTypeHTTP {
 		return SourceResolution{}, &SourceError{Code: "insecure_source", Message: "subscription endpoint must use HTTPS"}
+	}
+	if info.Type == SourceTypePortal {
+		return SourceResolution{}, &SourceError{Code: "portal_resolution_required", Message: "portal source requires enrollment resolution before subscription download"}
 	}
 	if info.Type == SourceTypeHTTPS {
 		if _, err := validateSubscriptionURL(info.Canonical); err != nil {
@@ -415,6 +424,9 @@ func parseRSAPrivateKey(raw []byte) (*rsa.PrivateKey, error) {
 }
 
 func maskSource(info SourceInfo) string {
+	if info.Type == SourceTypePortal {
+		return "https://portal.noclip.ink/connect/****"
+	}
 	if info.WrappedSource != "" {
 		return maskURL(info.Canonical)
 	}

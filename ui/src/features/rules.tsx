@@ -182,9 +182,9 @@ export function Services({
       return;
     }
     setEditorVerificationBusy(true);
-    setMessage(fullCheck ? `Проверяю ${domain}: все доступные маршруты…` : `Проверяю ${domain}: Direct → доступные альтернативы…`);
+    setMessage(`Проверяю ${domain}: ${fullCheck ? 'все ' : ''}допустимые маршруты выбранной политики…`);
     try {
-      const result = await verifyService('', domain, fullCheck);
+      const result = await verifyService('', domain, fullCheck, { category: editor.category, allowed_paths: editor.paths });
       setEditorVerification((previous) => {
         if (!previous || previous.domain !== result.domain) return result;
         const byRoute = new Map<string, any>();
@@ -395,7 +395,7 @@ export function Services({
           }}
         >
           <header class="modal-header"><h2 id="service-rule-title">Новое правило</h2><button type="button" class="icon-button" aria-label="Закрыть" onClick={() => { setEditor(null); setEditorVerification(null); }}>×</button></header>
-          <label>Домен<input value={editor.domain} placeholder="example.com" readOnly={Boolean(editor.serviceID)} onInput={(event) => { setEditor({ ...editor, domain: event.currentTarget.value }); setEditorVerification(null); }} /></label>
+          <label>Домен<input value={editor.domain} placeholder="example.com" readOnly={Boolean(editor.serviceID) || editorVerificationBusy} onInput={(event) => { setEditor({ ...editor, domain: event.currentTarget.value }); setEditorVerification(null); }} /></label>
           {editor.serviceID && (editor.domains?.length ?? 0) > 1 && <p class="action-status">Изменение маршрута затронет все {editor.domains?.length} доменов этой политики; список доменов и проверок сохранится.</p>}
           <div class="actions">
             <button type="button" class="primary" disabled={editorVerificationBusy || !editor.domain.trim()} onClick={() => void verifyEditorDomain()}>
@@ -408,6 +408,7 @@ export function Services({
           <label>
             Класс
             <select
+              disabled={editorVerificationBusy}
               value={editor.category}
               onChange={(event) => {
                 const category = event.currentTarget.value;
@@ -425,7 +426,7 @@ export function Services({
               {serviceRoutePaths.map((path) => {
                 const position = editor.paths.indexOf(path);
                 return (
-                  <button type="button" class={position >= 0 ? 'selected' : ''} onClick={() => togglePath(path)}>
+                  <button type="button" disabled={editorVerificationBusy} class={position >= 0 ? 'selected' : ''} onClick={() => togglePath(path)}>
                     {path}
                   </button>
                 );
