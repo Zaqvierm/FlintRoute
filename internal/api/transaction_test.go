@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -21,16 +23,78 @@ import (
 	"router-policy/internal/artifact"
 	"router-policy/internal/auth"
 	"router-policy/internal/config"
+	"router-policy/internal/domaincache"
 	"router-policy/internal/managementproof"
 	"router-policy/internal/planner"
 	"router-policy/internal/platform"
 	"router-policy/internal/probe"
+	"router-policy/internal/tspu"
 )
 
 type artifactDiagnosticsTestProvider struct {
 	platform.DevelopmentMockProvider
 	diagnostics platform.NetworkDiagnostics
 	simulation  bool
+}
+
+func TestFirstManualAssignmentCannotReuseAnUnprovedBaselineRoute(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Services = map[string]config.Service{}
+	cfg.OpenWrt.DNSMasqInclude = filepath.Join(t.TempDir(), "router-policy.conf")
+	srv, err := NewServerWithOptions(cfg, Options{Provider: platform.DevelopmentMockProvider{}, ProductionAdapter: newFakeAdapter(), Development: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	change, err := srv.createDraftChange("Change route class for example.org", "first assignment", 1, []ChangeOp{{Type: "set", Path: "/services/user_example_org", Value: config.Service{Category: "DIRECT_PREFERRED", Domains: []string{"example.org"}, AllowedPaths: []string{"direct"}, SelectedRouteTag: "direct", ProbeURLs: []config.ProbeCheck{{Name: "https", URL: "https://example.org/", Required: true, ExpectedCodes: []int{200}, BodyMode: "optional"}}}}}, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	validated, failure := srv.validateChangeSet(change)
+	if failure != nil {
+		t.Fatalf("validate: %+v validation=%+v", failure, validated.Validation)
+	}
+	tx, failure := srv.loadVerifiedTransaction(validated)
+	if failure != nil {
+		t.Fatalf("load tx: %+v", failure)
+	}
+	plan, err := artifact.LoadVerificationPlan(filepath.Join(tx.ArtifactRoot, artifact.VerifyPlanFile), artifact.Binding{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, proof := range plan.RequiredRouteProof {
+		if proof.Tag == "direct" {
+			return
+		}
+	}
+	t.Fatalf("first managed assignment has no mandatory Direct post-proof: required=%+v reused=%v", plan.RequiredRouteProof, plan.ReusedRouteProofTags)
+}
+
+func TestCommitHealthCannotKeepThePreviousBaselineBinding(t *testing.T) {
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), newFakeAdapter())
+	defer srv.Close()
+	defer ts.Close()
+	change := createValidatedChange(t, client, csrf, ts.URL, "GEO_LOCKED")
+	var status int
+	change, status = postAction(t, client, csrf, ts.URL, change.ID, "apply", `{}`)
+	if status != http.StatusOK {
+		t.Fatalf("apply status=%d change=%+v", status, change)
+	}
+	change, status = postAction(t, client, csrf, ts.URL, change.ID, "confirm", `{}`)
+	if status != http.StatusOK || change.State != "committed" {
+		t.Fatalf("confirm status=%d change=%+v", status, change)
+	}
+	rec := httptest.NewRecorder()
+	srv.handleHealth(rec, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+	var env struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Data["recovery_status"] != "ok" || env.Data["active_revision"] != change.RevisionID || env.Data["active_candidate_hash"] != change.CandidateHash || env.Data["active_artifact_manifest_hash"] != change.ArtifactManifestHash {
+		t.Fatalf("health mixed new revision with stale baseline proof: %s", rec.Body.String())
+	}
 }
 
 func (p artifactDiagnosticsTestProvider) Name() string     { return "artifact-diagnostics-test-provider" }
@@ -301,6 +365,473 @@ func TestServiceClassifyCanExplicitlyDisableFlowOffloading(t *testing.T) {
 	}
 	if !foundService || !foundFlowOffloading {
 		t.Fatalf("explicit auto-fix operations are incomplete: %+v", change.Operations)
+	}
+}
+
+func TestServiceClassifyReusesFreshExactDiscoveryEvidence(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer srv.Close()
+	defer ts.Close()
+	domain := "amazon.com"
+	plan, err := planner.BuildCandidates(srv.currentConfig(), domain, "", planner.Options{HealthTracker: srv.healthTracker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	result := probe.RouteResult{
+		Route: "smart", RouteType: "smart_dns", Status: "OK", ServiceOK: true, PathVerified: true,
+		AdapterRevision: srv.activeRevision, CandidateHash: "candidate-amazon-smart", ArtifactManifestHash: "artifact-amazon-smart",
+	}
+	_, err = srv.domainDecisions.Save(domain, domaincache.Decision{
+		Domain: domain, Service: plan.Service, Category: "DIRECT_PREFERRED", TSPUStatus: plan.TSPUStatus,
+		CandidateInventoryHash: plan.InventoryHash, SelectedRoute: result.Route, SelectedType: result.RouteType,
+		Status: "SELECTED", Reason: "verified_candidate", AdapterRevision: srv.activeRevision,
+		Confidence: 0.9, Results: []probe.RouteResult{result}, CheckedAt: now, ExpiresAt: now.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkerCalls := 0
+	srv.domainChecker = func(context.Context, *config.Config, string, string, planner.Options) (planner.DomainCheck, error) {
+		checkerCalls++
+		return planner.DomainCheck{}, errors.New("unexpected reprobe")
+	}
+	body := `{"domain":"amazon.com","category":"DIRECT_PREFERRED","allowed_paths":["direct","smart_dns","vless","drop"],"base_version":1,"auto_apply":false,"selected_route_tag":"smart"}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/classify", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("classify status=%d body=%s", resp.StatusCode, raw)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(raw), `"verification_reused":true`) || checkerCalls != 0 {
+		t.Fatalf("fresh exact evidence was not reused: checker_calls=%d body=%s", checkerCalls, raw)
+	}
+	if !strings.Contains(string(raw), `"selected_route_tag":"smart"`) {
+		t.Fatalf("user-selected route was not preserved: %s", raw)
+	}
+}
+
+func TestServiceClassifyReusesFreshInteractiveVerification(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer srv.Close()
+	defer ts.Close()
+	domain := "amazon.com"
+	previewID, preview, err := previewServiceForDomain(domain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := *srv.currentConfig()
+	candidate.Services = make(map[string]config.Service, len(srv.currentConfig().Services)+1)
+	for id, existing := range srv.currentConfig().Services {
+		candidate.Services[id] = existing
+	}
+	candidate.Services[previewID] = preview
+	plan, err := planner.BuildCandidates(&candidate, domain, previewID, planner.Options{
+		TSPUResult: tspu.Match{Domain: domain, Status: "NO_MATCH"}, HealthTracker: srv.healthTracker,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := probe.RouteResult{
+		Domain: domain, Service: previewID, Route: "smart", RouteType: "smart_dns", Status: "OK",
+		ServiceOK: true, PathVerified: true, AdapterRevision: srv.activeRevision,
+		CandidateInventoryHash: plan.InventoryHash, CheckedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := srv.store.StoreProbeResult(result); err != nil {
+		t.Fatal(err)
+	}
+	checkerCalls := 0
+	srv.domainChecker = func(context.Context, *config.Config, string, string, planner.Options) (planner.DomainCheck, error) {
+		checkerCalls++
+		return planner.DomainCheck{}, errors.New("fresh interactive evidence should be reused")
+	}
+	body := `{"domain":"amazon.com","category":"DIRECT_PREFERRED","allowed_paths":["direct","smart_dns","vless","drop"],"base_version":1,"auto_apply":false,"selected_route_tag":"smart"}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/classify", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("classify status=%d body=%s", resp.StatusCode, raw)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(raw), `"verification_reused":true`) || checkerCalls != 0 {
+		t.Fatalf("interactive PathVerified evidence was probed again: checker_calls=%d body=%s", checkerCalls, raw)
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(envelope.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Change ChangeSet `json:"change"`
+	}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Change.Operations) != 1 || payload.Change.Operations[0].Path != "/services/user_amazon_com" {
+		t.Fatalf("manual rule change was not scoped to the new domain: %+v", payload.Change.Operations)
+	}
+	if _, exists := srv.currentConfig().Services["github"]; !exists {
+		t.Fatal("creating amazon.com removed an unrelated existing GitHub rule")
+	}
+	encodedService, err := json.Marshal(payload.Change.Operations[0].Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pinned config.Service
+	if err := json.Unmarshal(encodedService, &pinned); err != nil {
+		t.Fatal(err)
+	}
+	if pinned.SelectedRouteTag != "smart" {
+		t.Fatalf("manual rule did not retain the exact verified route: %+v", pinned)
+	}
+}
+
+func TestServiceRouteEditPreservesSiblingDomainsAndProbeContract(t *testing.T) {
+	cfg := testAPIConfig(t)
+	cfg.Services["media"] = config.Service{
+		Category: "DIRECT_PREFERRED", ClassificationSeed: "media-service",
+		Domains:      []string{"video.example", "cdn.video.example"},
+		AllowedPaths: []string{"direct", "smart_dns"},
+		ProbeURLs:    []config.ProbeCheck{{Name: "health", URL: "https://health.video.example/ready", Required: true, ExpectedCodes: []int{204}, BodyMode: "optional"}},
+	}
+	fake := newFakeAdapter()
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, cfg, fake)
+	defer srv.Close()
+	defer ts.Close()
+	srv.domainChecker = func(_ context.Context, candidate *config.Config, domain, serviceID string, opts planner.Options) (planner.DomainCheck, error) {
+		service := candidate.Services[serviceID]
+		if domain != "cdn.video.example" || serviceID != "media" || len(service.Domains) != 1 || service.Domains[0] != domain {
+			t.Fatalf("route proof did not target the selected domain only: domain=%q id=%q service=%+v", domain, serviceID, service)
+		}
+		if len(service.ProbeURLs) != 1 || service.ProbeURLs[0].URL != "https://health.video.example/ready" || service.ProbeURLs[0].ExpectedCodes[0] != 204 {
+			t.Fatalf("route proof discarded the existing service probe contract: %+v", service.ProbeURLs)
+		}
+		if opts.RequestedRouteTag != "smart" {
+			t.Fatalf("route switch lost the selected route: %+v", opts)
+		}
+		return planner.DomainCheck{Domain: domain, Service: serviceID, Status: "SELECTED", VerificationState: "verified",
+			Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", ServiceOK: true, PathVerified: true}}, nil
+	}
+	body := `{"domain":"cdn.video.example","service_id":"media","category":"DIRECT_PREFERRED","allowed_paths":["direct","smart_dns"],"base_version":1,"auto_apply":false,"selected_route_tag":"smart"}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/classify", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("route edit status=%d body=%s", resp.StatusCode, raw)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	var response Envelope
+	if err := json.Unmarshal(raw, &response); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(response.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Change ChangeSet `json:"change"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Change.Operations) != 1 || payload.Change.Operations[0].Path != "/services/media" {
+		t.Fatalf("route edit was not scoped to the selected service: %+v", payload.Change.Operations)
+	}
+	serviceJSON, err := json.Marshal(payload.Change.Operations[0].Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated config.Service
+	if err := json.Unmarshal(serviceJSON, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(updated.Domains, []string{"video.example", "cdn.video.example"}) {
+		t.Fatalf("route edit dropped sibling domains: %v", updated.Domains)
+	}
+	if len(updated.ProbeURLs) != 1 || updated.ProbeURLs[0].URL != "https://health.video.example/ready" || updated.ClassificationSeed != "media-service" || updated.SelectedRouteTag != "smart" {
+		t.Fatalf("route edit did not preserve the rest of the existing policy: %+v", updated)
+	}
+}
+
+func TestServiceClassifyRetryAfterLostResponseReturnsSameChange(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer srv.Close()
+	defer ts.Close()
+	checkerCalls := 0
+	srv.domainChecker = func(_ context.Context, _ *config.Config, domain, serviceID string, _ planner.Options) (planner.DomainCheck, error) {
+		checkerCalls++
+		return planner.DomainCheck{Domain: domain, Service: serviceID, Status: "SELECTED", VerificationState: "verified",
+			Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", ServiceOK: true, PathVerified: true}}, nil
+	}
+	body := `{"domain":"retry.example","category":"DIRECT_PREFERRED","allowed_paths":["direct","smart_dns"],"base_version":1,"auto_apply":false,"selected_route_tag":"smart","request_id":"classify-retry-0001"}`
+	post := func(payload string) (ChangeSet, bool, int) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/classify", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-CSRF-Token", csrf)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		var envelope Envelope
+		if err := json.Unmarshal(raw, &envelope); err != nil && resp.StatusCode == http.StatusOK {
+			t.Fatal(err)
+		}
+		encoded, _ := json.Marshal(envelope.Data)
+		var result struct {
+			Change       ChangeSet `json:"change"`
+			Deduplicated bool      `json:"deduplicated"`
+		}
+		_ = json.Unmarshal(encoded, &result)
+		return result.Change, result.Deduplicated, resp.StatusCode
+	}
+	first, duplicate, status := post(body)
+	if status != http.StatusOK || duplicate || first.ID == "" || checkerCalls != 1 {
+		t.Fatalf("initial classify result=%+v deduplicated=%v status=%d checker_calls=%d", first, duplicate, status, checkerCalls)
+	}
+	var durable ChangeSet
+	if err := srv.store.LoadJSON("changes", first.ID, &durable); err != nil || durable.RequestID != "classify-retry-0001" || durable.RequestFingerprint == "" {
+		t.Fatalf("retry binding was not persisted with the draft: change=%+v err=%v", durable, err)
+	}
+	second, duplicate, status := post(body)
+	if status != http.StatusOK || !duplicate || second.ID != first.ID || checkerCalls != 1 {
+		t.Fatalf("lost-response retry created/reprobed a second change: first=%s second=%s deduplicated=%v status=%d checker_calls=%d", first.ID, second.ID, duplicate, status, checkerCalls)
+	}
+	conflictBody := strings.Replace(body, `"selected_route_tag":"smart"`, `"selected_route_tag":"direct"`, 1)
+	_, _, status = post(conflictBody)
+	if status != http.StatusConflict || checkerCalls != 1 {
+		t.Fatalf("same idempotency key accepted a different route: status=%d checker_calls=%d", status, checkerCalls)
+	}
+}
+
+func TestServiceClassifyCoalescesEquivalentPendingChangeAfterReload(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer srv.Close()
+	defer ts.Close()
+	_, service, err := serviceForClassifyRequest(serviceClassifyRequest{
+		Domain: "retry.example", Category: "DIRECT_PREFERRED", AllowedPaths: []string{"direct", "smart_dns"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SelectedRouteTag = "smart"
+	original, err := srv.createDraftChangeWithOptions(
+		"Change route class for retry.example", "Persist the selected route class for an observed domain",
+		srv.configVersion, []ChangeOp{{Type: "set", Path: "/services/user_retry_example", Value: service}}, "admin", true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reloaded ChangeSet JSON represents operation values as maps rather than
+	// the original typed Service. The replay must still retain its identity.
+	serialized, err := json.Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reloaded ChangeSet
+	if err := json.Unmarshal(serialized, &reloaded); err != nil {
+		t.Fatal(err)
+	}
+	srv.mu.Lock()
+	srv.changes[original.ID] = reloaded
+	srv.mu.Unlock()
+	checkerCalls := 0
+	srv.domainChecker = func(context.Context, *config.Config, string, string, planner.Options) (planner.DomainCheck, error) {
+		checkerCalls++
+		return planner.DomainCheck{}, errors.New("an identical pending change should not trigger another probe")
+	}
+	body := `{"domain":"retry.example","category":"DIRECT_PREFERRED","allowed_paths":["direct","smart_dns"],"base_version":1,"auto_apply":true,"selected_route_tag":"smart","request_id":"reload-retry-0001"}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/classify", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(raw), `"deduplicated":true`) || checkerCalls != 0 {
+		t.Fatalf("pending equivalent operation was not reused: status=%d checker_calls=%d body=%s", resp.StatusCode, checkerCalls, raw)
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(envelope.Data)
+	var retry struct {
+		Change ChangeSet `json:"change"`
+	}
+	if err := json.Unmarshal(encoded, &retry); err != nil {
+		t.Fatal(err)
+	}
+	if retry.Change.ID != original.ID {
+		t.Fatalf("retry changed operation identity: original=%s retry=%s", original.ID, retry.Change.ID)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		srv.mu.Lock()
+		current := srv.changes[original.ID]
+		srv.mu.Unlock()
+		if current.State == "committed" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("coalesced operation did not commit: %+v", current)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	replay := func() (int, string) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/classify", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-CSRF-Token", csrf)
+		response, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		raw, _ := io.ReadAll(response.Body)
+		return response.StatusCode, string(raw)
+	}
+	status, replayBody := replay()
+	if status != http.StatusOK || !strings.Contains(replayBody, `"deduplicated":true`) || checkerCalls != 0 {
+		t.Fatalf("lost coalesced response could not replay after commit: status=%d probes=%d body=%s", status, checkerCalls, replayBody)
+	}
+	srv.autoApplyWG.Wait()
+	srv.mu.Lock()
+	changed := *srv.activeConfig
+	changed.Services = make(map[string]config.Service, len(srv.activeConfig.Services))
+	for id, service := range srv.activeConfig.Services {
+		changed.Services[id] = service
+	}
+	service = changed.Services["user_retry_example"]
+	service.SelectedRouteTag = "direct"
+	changed.Services["user_retry_example"] = service
+	srv.activeConfig = &changed
+	srv.configVersion++
+	srv.mu.Unlock()
+	status, replayBody = replay()
+	if status != http.StatusConflict || !strings.Contains(replayBody, "base_version_conflict") || checkerCalls != 0 {
+		t.Fatalf("historical commit masked a later policy change: status=%d probes=%d body=%s", status, checkerCalls, replayBody)
+	}
+}
+
+func TestServiceClassifyReprobesExpiredDiscoveryEvidence(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer srv.Close()
+	defer ts.Close()
+	domain := "amazon.com"
+	plan, err := planner.BuildCandidates(srv.currentConfig(), domain, "", planner.Options{HealthTracker: srv.healthTracker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := time.Now().UTC().Add(-2 * time.Hour)
+	result := probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", ServiceOK: true, PathVerified: true, AdapterRevision: srv.activeRevision}
+	_, err = srv.domainDecisions.Save(domain, domaincache.Decision{
+		Domain: domain, Service: plan.Service, Category: "DIRECT_PREFERRED", TSPUStatus: plan.TSPUStatus,
+		CandidateInventoryHash: plan.InventoryHash, SelectedRoute: result.Route, SelectedType: result.RouteType,
+		Status: "SELECTED", AdapterRevision: srv.activeRevision, Confidence: 0.9,
+		Results: []probe.RouteResult{result}, CheckedAt: checked, ExpiresAt: checked.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkerCalls := 0
+	srv.domainChecker = func(_ context.Context, _ *config.Config, domain, serviceID string, _ planner.Options) (planner.DomainCheck, error) {
+		checkerCalls++
+		return planner.DomainCheck{Domain: domain, Service: serviceID, Status: "SELECTED", VerificationState: "verified",
+			Selected: &probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", ServiceOK: true, PathVerified: true}}, nil
+	}
+	body := `{"domain":"amazon.com","category":"DIRECT_PREFERRED","allowed_paths":["direct","smart_dns","vless","drop"],"base_version":1,"auto_apply":false,"selected_route_tag":"smart"}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/services/classify", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || checkerCalls != 1 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expired evidence did not trigger a fresh verification: status=%d checker_calls=%d body=%s", resp.StatusCode, checkerCalls, raw)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(raw), `"verification_reused":true`) {
+		t.Fatalf("expired evidence was reported as reused: %s", raw)
+	}
+}
+
+func TestServicesDoesNotExposeExpiredDomainEvidenceAsVerified(t *testing.T) {
+	fake := newFakeAdapter()
+	srv, _ := newDiscoveryModeServer(t, "suggest", true, fake)
+	defer srv.Close()
+	domain := "amazon.com"
+	plan, err := planner.BuildCandidates(srv.currentConfig(), domain, "", planner.Options{HealthTracker: srv.healthTracker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := time.Now().UTC().Add(-2 * time.Hour)
+	result := probe.RouteResult{Route: "smart", RouteType: "smart_dns", Status: "OK", ServiceOK: true, PathVerified: true, AdapterRevision: srv.activeRevision}
+	_, err = srv.domainDecisions.Save(domain, domaincache.Decision{
+		Domain: domain, Service: plan.Service, Category: "DIRECT_PREFERRED", TSPUStatus: plan.TSPUStatus,
+		CandidateInventoryHash: plan.InventoryHash, SelectedRoute: result.Route, SelectedType: result.RouteType,
+		Status: "SELECTED", AdapterRevision: srv.activeRevision, Confidence: 0.9,
+		Results: []probe.RouteResult{result}, CheckedAt: checked, ExpiresAt: checked.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	srv.handleServices(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/services", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("services status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, `"probe_state":"stale_evidence"`) ||
+		!strings.Contains(body, `"status":"STALE_EVIDENCE"`) ||
+		!strings.Contains(body, `"evidence_fresh":false`) {
+		t.Fatalf("expired PathVerified evidence was still presented as current: %s", body)
+	}
+	srv.mu.Lock()
+	committed := *srv.activeConfig
+	committed.Services = map[string]config.Service{"user_amazon_com": {
+		Category: "DIRECT_PREFERRED", Domains: []string{domain}, AllowedPaths: []string{"smart_dns"}, SelectedRouteTag: "smart",
+	}}
+	srv.activeConfig = &committed
+	srv.mu.Unlock()
+	recorder = httptest.NewRecorder()
+	srv.handleServices(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/services", nil))
+	if strings.Contains(recorder.Body.String(), `"source":"automatic"`) || !strings.Contains(recorder.Body.String(), `"applied_route_tag":"smart"`) {
+		t.Fatalf("committed domain still offered a second pin action: %s", recorder.Body.String())
 	}
 }
 
@@ -596,6 +1127,80 @@ func TestLegacyCommitPersistenceFailureIsRecoveryRequired(t *testing.T) {
 	}
 }
 
+func TestFinalRecoveryStatusPersistenceFailureFencesCommittedTransaction(t *testing.T) {
+	for _, split := range []bool{false, true} {
+		t.Run(fmt.Sprintf("split_commit_%t", split), func(t *testing.T) {
+			fake := newFakeAdapter()
+			var production adapter.Interface = fake
+			if split {
+				production = &splitFakeAdapter{fakeAdapter: fake}
+			}
+			srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), production)
+			defer srv.Close()
+			defer ts.Close()
+			change := createValidatedChange(t, client, csrf, ts.URL, "GEO_LOCKED")
+			change, status := postAction(t, client, csrf, ts.URL, change.ID, "apply", `{}`)
+			if status != http.StatusOK || change.State != "awaiting_confirmation" {
+				t.Fatalf("apply precondition: status=%d change=%+v", status, change)
+			}
+			injected := false
+			srv.store.SetFaultHook(func(op string) error {
+				if op == "save_json:meta" {
+					injected = true
+					return fmt.Errorf("injected recovery status write failure")
+				}
+				return nil
+			})
+			_, status = postAction(t, client, csrf, ts.URL, change.ID, "confirm", `{}`)
+			srv.store.SetFaultHook(nil)
+			if !injected || status != http.StatusServiceUnavailable {
+				t.Fatalf("final recovery write failure not surfaced: injected=%t status=%d", injected, status)
+			}
+			recovery := srv.currentRecoveryStatus()
+			if recovery.Status != "recovery_required" || recovery.ReasonCode != "recovery_status_persist_failed" || recovery.RevisionID != change.RevisionID || recovery.CandidateHash != change.CandidateHash || recovery.ArtifactManifestHash != change.ArtifactManifestHash {
+				t.Fatalf("exact committed binding was not fenced: %+v", recovery)
+			}
+			var persisted ChangeSet
+			if err := srv.store.LoadJSON("changes", change.ID, &persisted); err != nil || persisted.State != "committed" {
+				t.Fatalf("durable commit was misrepresented: state=%s err=%v", persisted.State, err)
+			}
+			var revision revisionRecord
+			if err := srv.store.LoadJSON("revisions", change.RevisionID, &revision); err != nil || revision.State != "committed" {
+				t.Fatalf("durable revision was misrepresented: state=%s err=%v", revision.State, err)
+			}
+			fake.mu.Lock()
+			adapterState := fake.transactionState
+			callsBefore := len(fake.calls)
+			fake.mu.Unlock()
+			if adapterState != "committed" || fake.callCount("rollback") != 0 {
+				t.Fatalf("finalized adapter was incorrectly rolled back: state=%s", adapterState)
+			}
+			for _, action := range []string{"apply", "confirm", "rollback"} {
+				if _, code := postAction(t, client, csrf, ts.URL, change.ID, action, `{}`); code != http.StatusServiceUnavailable {
+					t.Fatalf("%s escaped recovery fence: status=%d", action, code)
+				}
+			}
+			fake.mu.Lock()
+			callsAfter := len(fake.calls)
+			fake.mu.Unlock()
+			if callsAfter != callsBefore {
+				t.Fatalf("fenced requests reached adapter: before=%d after=%d", callsBefore, callsAfter)
+			}
+			rec := httptest.NewRecorder()
+			srv.handleHealth(rec, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+			var env struct {
+				Data map[string]any `json:"data"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+				t.Fatal(err)
+			}
+			if env.Data["status"] != "degraded" || env.Data["recovery_status"] != "recovery_required" || env.Data["active_revision"] != change.RevisionID {
+				t.Fatalf("health hid persistence failure: %+v", env.Data)
+			}
+		})
+	}
+}
+
 func TestSplitCommitNeverPersistsRollbackAfterAdapterActivation(t *testing.T) {
 	fake := newSplitFakeAdapter()
 	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
@@ -693,6 +1298,60 @@ func TestSplitCommitRecoveryFinalizesAfterRestart(t *testing.T) {
 	}
 }
 
+func TestRollbackFalseSuccessAcceptedWhenCommittedBaselineIsProven(t *testing.T) {
+	fake := &idempotentRollbackAdapter{fakeAdapter: newFakeAdapter()}
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer ts.Close()
+	defer srv.Close()
+
+	var baseline revisionRecord
+	if err := srv.store.LoadJSON("revisions", srv.activeRevision, &baseline); err != nil {
+		t.Fatal(err)
+	}
+	fake.baseline = adapter.RecoveryTarget{
+		TransactionID: baseline.TransactionID, RevisionID: baseline.RevisionID,
+		CandidateHash: baseline.CandidateHash, ArtifactManifestHash: baseline.ArtifactManifestHash,
+	}
+	cs := createValidatedChange(t, client, csrf, ts.URL, "GEO_LOCKED")
+	tx, failure := srv.loadTransaction(cs)
+	if failure != nil {
+		t.Fatal(failure)
+	}
+	srv.transactionMu.Lock()
+	rolled, rollbackFailure := srv.rollbackLocked(context.Background(), cs, tx, "rolled_back", "idempotent_test")
+	srv.transactionMu.Unlock()
+	if rollbackFailure != nil || rolled.State != "rolled_back" {
+		t.Fatalf("proven baseline did not make rollback idempotent: state=%s failure=%v", rolled.State, rollbackFailure)
+	}
+	if got := srv.currentRecoveryStatus().Status; got == "recovery_required" {
+		t.Fatalf("idempotent rollback incorrectly fenced recovery: %+v", srv.currentRecoveryStatus())
+	}
+}
+
+func TestRollbackErrorIsAcceptedWhenCommittedBaselineIsProven(t *testing.T) {
+	fake := &idempotentRollbackAdapter{fakeAdapter: newFakeAdapter(), omitRollbackEvidence: true}
+	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
+	defer ts.Close()
+	defer srv.Close()
+
+	var baseline revisionRecord
+	if err := srv.store.LoadJSON("revisions", srv.activeRevision, &baseline); err != nil {
+		t.Fatal(err)
+	}
+	fake.baseline = adapter.RecoveryTarget{TransactionID: baseline.TransactionID, RevisionID: baseline.RevisionID, CandidateHash: baseline.CandidateHash, ArtifactManifestHash: baseline.ArtifactManifestHash}
+	cs := createValidatedChange(t, client, csrf, ts.URL, "GEO_LOCKED")
+	tx, failure := srv.loadTransaction(cs)
+	if failure != nil {
+		t.Fatal(failure)
+	}
+	srv.transactionMu.Lock()
+	rolled, rollbackFailure := srv.rollbackLocked(context.Background(), cs, tx, "rolled_back", "error_baseline_test")
+	srv.transactionMu.Unlock()
+	if rollbackFailure != nil || rolled.State != "rolled_back" {
+		t.Fatalf("baseline-proven adapter error was not idempotent: state=%s failure=%v", rolled.State, rollbackFailure)
+	}
+}
+
 func TestConfirmRejectsAdapterArtifactMismatch(t *testing.T) {
 	fake := newFakeAdapter()
 	srv, ts, client, csrf, _ := newTransactionHTTP(t, testAPIConfig(t), fake)
@@ -738,7 +1397,12 @@ func TestExpiredTransactionAutomaticallyRollsBack(t *testing.T) {
 	defer ts.Close()
 	cs := createValidatedChange(t, client, csrf, ts.URL, "GEO_LOCKED")
 	cs, _ = postAction(t, client, csrf, ts.URL, cs.ID, "apply", `{}`)
-	deadline := time.Now().Add(3 * time.Second)
+	// The expiry callback first persists rolling_back and then performs the
+	// external rollback plus cleanup. Under -race the state transition can
+	// legitimately spend more than one rollback window in that intermediate
+	// state; the invariant is the terminal expired state with exactly one
+	// rollback, not an arbitrary wall-clock slice through the callback.
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		srv.mu.Lock()
 		stateName := srv.changes[cs.ID].State
@@ -1455,5 +2119,17 @@ func TestSaveCleanupStatusUsesCanonicalRecord(t *testing.T) {
 	}
 	if got, ok := store.value.(map[string]any); !ok || got["transaction_id"] != "tx-2" || got["status"] != "complete" {
 		t.Fatalf("unexpected cleanup status value: %#v", store.value)
+	}
+}
+
+func TestRollbackStepSucceededRecognizesIdempotentAdapterResult(t *testing.T) {
+	if !rollbackStepSucceeded(transactionRecord{Steps: []adapter.StepResult{{Operation: "rollback", SemanticState: "rolled_back"}}}) {
+		t.Fatal("semantic rolled_back step was not recognized")
+	}
+	if !rollbackStepSucceeded(transactionRecord{Steps: []adapter.StepResult{{Operation: "rollback", Evidence: map[string]any{"already_rolled_back": "true"}}}}) {
+		t.Fatal("already_rolled_back evidence was not recognized")
+	}
+	if rollbackStepSucceeded(transactionRecord{Steps: []adapter.StepResult{{Operation: "rollback", Status: "ERROR"}}}) {
+		t.Fatal("failed rollback step was treated as successful")
 	}
 }

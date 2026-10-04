@@ -50,6 +50,36 @@ func TestValidateRequestRejectsUnknownCommandsAndObjects(t *testing.T) {
 	}
 }
 
+func TestQuickRequestIsTypedBoundedAndCannotCarryOtherCommands(t *testing.T) {
+	r := validRequest("zapret.quick_check")
+	r.Generation = r.RevisionID
+	r.ZapretQuick = &ZapretQuickRequest{Domain: "youtube.com", BundleID: "auto-youtube", NetworkFingerprint: r.CandidateHash, ResolvedIPv4: []string{"8.8.8.8"}}
+	if err := ValidateRequest(r); err != nil {
+		t.Fatal(err)
+	}
+	for _, ip := range []string{"127.0.0.1", "192.168.0.1", "169.254.0.1", "not-an-ip", "::1"} {
+		r.ZapretQuick.ResolvedIPv4 = []string{ip}
+		if ValidateRequest(r) == nil {
+			t.Fatal("unsafe target accepted")
+		}
+	}
+	r.ZapretQuick.ResolvedIPv4 = []string{"8.8.8.8"}
+	r.ZapretQuick.Domain = "youtube.com;id"
+	if ValidateRequest(r) == nil {
+		t.Fatal("command text accepted as domain")
+	}
+	r.ZapretQuick.Domain = "youtube.com"
+	r.Service = &ServiceRequest{Name: "router-policy-xray", Operation: "stop"}
+	if ValidateRequest(r) == nil {
+		t.Fatal("quick request smuggled a service action")
+	}
+	r.Service = nil
+	r.Command = "service.start"
+	if ValidateRequest(r) == nil {
+		t.Fatal("quick payload accepted on unrelated operation")
+	}
+}
+
 func TestValidateRequestBindsGenerationAndHashes(t *testing.T) {
 	request := validRequest("nft.replace_owned_table")
 	request.NFT = &NFTRequest{Family: "inet", Table: "router_policy", Generation: "different", ArtifactHash: request.ArtifactManifestHash}
@@ -60,6 +90,53 @@ func TestValidateRequestBindsGenerationAndHashes(t *testing.T) {
 	request.NFT.Table = "../../etc"
 	if err := ValidateRequest(request); err == nil {
 		t.Fatal("path traversal table was accepted")
+	}
+}
+
+func TestValidateRequestAllowsOnlyBoundProbeReads(t *testing.T) {
+	request := validRequest("probe.nft_policy")
+	request.Generation = request.RevisionID
+	request.TransactionID = "probe"
+	request.RollbackTokenHash = ""
+	request.Probe = &ProbeRequest{Operation: "nft_policy", RouteTag: "vless-de"}
+	if err := ValidateRequest(request); err != nil {
+		t.Fatalf("bound read-only probe was rejected: %v", err)
+	}
+	request.Probe.RouteTag = "../../etc"
+	if err := ValidateRequest(request); err == nil {
+		t.Fatal("probe accepted an unsafe route tag")
+	}
+	request = validRequest("probe.route_get")
+	request.Generation = request.RevisionID
+	request.TransactionID = "probe"
+	request.RollbackTokenHash = ""
+	request.Probe = &ProbeRequest{Operation: "route_get", Destination: "198.51.100.10", Mark: "0x42"}
+	if err := ValidateRequest(request); err != nil {
+		t.Fatalf("bound route probe was rejected: %v", err)
+	}
+}
+
+func TestValidateRequestAllowsOnlyUnboundReadOnlyDiagnostics(t *testing.T) {
+	request := Request{
+		ProtocolVersion: ProtocolVersion,
+		RequestID:       "diag-1",
+		Command:         "diagnostics.capabilities",
+		Generation:      "diagnostics",
+		RevisionID:      "diagnostics",
+		TransactionID:   "diagnostics",
+		Diagnostics:     &DiagnosticsRequest{Operation: "capabilities"},
+	}
+	if err := ValidateRequest(request); err != nil {
+		t.Fatalf("read-only diagnostics request was rejected: %v", err)
+	}
+	request.Diagnostics.Operation = "shell"
+	if err := ValidateRequest(request); err == nil {
+		t.Fatal("unknown diagnostics operation was accepted")
+	}
+	request.Diagnostics.Operation = "capabilities"
+	request.Global = &GlobalRequest{Operation: "status"}
+	if err := ValidateRequest(request); err == nil {
+		t.Fatal("diagnostics request carrying a second resource was accepted")
 	}
 }
 

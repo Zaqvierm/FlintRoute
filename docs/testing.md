@@ -1,5 +1,10 @@
 # Тестирование
 
+Startup regression: пустой committed baseline не требует отсутствующий
+production assignment binding, но residual manifest/overlay оставляет mutation
+fenced. Проверка выполняется для immediate/deferred recovery; concurrent lease
+не допускается между незавершённым assignment reconcile и публикацией ошибки.
+
 > Список отражает проверки, включённые в локальный test suite.
 >
 > Любые упоминания прогона на Flint 2 ниже — исторические и не являются PASS
@@ -11,7 +16,8 @@
 powershell -ExecutionPolicy Bypass -File .\tests\run-all.ps1
 ```
 
-Текущий локальный baseline: `all_tests_ok=true`. Этот результат не включает SSH,
+Текущий локальный baseline для `5fdaa637953bf4069356e0e28094c49e2778fa17`:
+`all_tests_ok=true`. Этот результат не включает SSH,
 применение на роутере или повторную аппаратную проверку.
 
 Набор включает Go tests/vet, frontend typecheck/build, Windows и Linux arm64
@@ -205,9 +211,14 @@ $env:CGO_ENABLED = "1"
   сохранение scheduler/ranking после restart, catalog-bound fingerprint
   isolation, transaction-bound switch, cooldown, pin, quarantine и возврат
   static baseline;
-- `tests/package-openwrt.sh` — состав, SHA-256 manifest, отказ при повреждении и
+- `tests/package-openwrt.sh` — состав, executable-биты ARM64-бинарников в реальных
+  tar headers (включая сборку на Windows), SHA-256 manifest, отказ при повреждении и
   одинаковый archive hash для двух последовательных упаковок без изменения
   исходников.
+- `tests/installer-state-metadata.sh` — Linux root/non-root проверка mode/UID/GID
+  восстановленной базы, отказ на повреждённую metadata и сохранение append в
+  writer-owned log при rollback без replay содержимого. На Windows —
+  `NOT RUN LOCALLY`; CI запускает настоящий filesystem test через sudo.
 
 ## Четыре уровня covered
 

@@ -18,6 +18,7 @@ SETSID_BIN="${SETSID_BIN:-/usr/bin/setsid}"
 SU_BIN="${SU_BIN:-/bin/su}"
 IP_BIN="${IP_BIN:-/sbin/ip}"
 PROBE_USER="${ZAPRET_QUICK_PROBE_USER:-nobody}"
+PROBE_EXEC_BIN="${ROUTER_POLICY_BIN:-/usr/bin/router-policy}"
 QUEUE_BASE="${ZAPRET_QUICK_QUEUE_BASE:-30000}"
 MANAGED_QUEUE="${ZAPRET_MANAGED_QUEUE:-}"
 MAX_ADDRESSES="${ZAPRET_QUICK_MAX_ADDRESSES:-2}"
@@ -130,8 +131,8 @@ require_binary "$SETSID_BIN" "setsid" yes
 
 # Most desktop Linux images provide `su`, but the supported embedded OpenWrt
 # images often do not.  The runner is already a root-owned, bounded operation;
-# when no safe privilege-drop helper exists we keep the path proof by matching
-# the output rule to UID 0 and record that fact in every attempt.  We never
+# when su is absent the fixed Go child drops to UID/GID 65534 before curl.
+# Root remains only the nft/NFQUEUE/process executor. We never
 # silently fall back when a configured helper exists but is invalid: that is a
 # deployment error, not a reason to weaken the contract.
 if [ -x "$SU_BIN" ]; then
@@ -143,12 +144,15 @@ if [ -x "$SU_BIN" ]; then
 else
   [ "$SU_BIN" = "/bin/su" ] || die "su is unavailable"
   [ "$(id -u)" = "0" ] || die "no privilege-drop helper is available; curated dataplane check must run as root"
-  probe_mode="root_fallback"
-  probe_user=0
+  require_binary "$PROBE_EXEC_BIN" "fixed unprivileged probe executor" no
+  probe_mode="fixed_unprivileged"
+  probe_user=65534
 fi
 
-mkdir -p "$RUNTIME_DIR"
-chmod 700 "$RUNTIME_DIR"
+if [ ! -d "$RUNTIME_DIR" ]; then
+  mkdir -p "$RUNTIME_DIR"
+  chmod 700 "$RUNTIME_DIR"
+fi
 lock_dir="$RUNTIME_DIR/zapret-calibration.lock"
 mkdir "$lock_dir" 2>/dev/null || die "another Zapret calibration is active"
 lock_acquired=1
@@ -423,7 +427,7 @@ case "$MANAGED_QUEUE" in ""|*[!0-9]*) die "invalid managed production NFQUEUE" ;
 allocate_queue
 profile_count=0
 {
-  printf '{"version":1,"profiles":['
+  printf '{"version":1,"owner":"flintroute","profiles":['
   for profile in $profiles; do
     [ "$profile_count" -eq 0 ] || printf ','
     # Keep the production artifact (bound to the managed queue) separate from
@@ -660,7 +664,7 @@ probe_once() {
   if [ "$probe_mode" = "unprivileged" ]; then
     "$SU_BIN" -s /bin/sh "$PROBE_USER" -c "$command_string" > "$out" 2> "$errfile"
   else
-    /bin/sh -c "$command_string" > "$out" 2> "$errfile"
+    "$PROBE_EXEC_BIN" internal-zapret-https-probe "$domain" "$ip" > "$out" 2> "$errfile"
   fi
   curl_status=$?
   set -e

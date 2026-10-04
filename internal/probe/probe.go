@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -28,6 +29,12 @@ import (
 
 const maxRouteProbeTargets = 4
 
+const (
+	maxEgressEndpointDuration = 8 * time.Second
+	maxEgressAddressDuration  = 2 * time.Second
+	pathEvidenceTimeReserve   = 2 * time.Second
+)
+
 type RouteResult struct {
 	Domain                 string                `json:"domain"`
 	Service                string                `json:"service"`
@@ -39,6 +46,7 @@ type RouteResult struct {
 	PathVerified           bool                  `json:"path_verified"`
 	AdapterRevision        string                `json:"adapter_revision,omitempty"`
 	CandidateHash          string                `json:"candidate_hash,omitempty"`
+	CandidateInventoryHash string                `json:"candidate_inventory_hash,omitempty"`
 	ArtifactManifestHash   string                `json:"artifact_manifest_hash,omitempty"`
 	NFTMark                string                `json:"nft_mark,omitempty"`
 	ConntrackMark          string                `json:"conntrack_mark,omitempty"`
@@ -138,6 +146,11 @@ func ProbeRoute(ctx context.Context, cfg *config.Config, domain, serviceName str
 }
 
 func (e *Engine) ProbeRoute(ctx context.Context, cfg *config.Config, domain, serviceName string, svc config.Service, route config.Route) RouteResult {
+	if e != nil && e.reload != nil {
+		if fresh := e.reload(); fresh != nil {
+			return fresh.ProbeRoute(ctx, cfg, domain, serviceName, svc, route)
+		}
+	}
 	return e.probeRoute(ctx, cfg, domain, serviceName, svc, route, "")
 }
 
@@ -145,6 +158,11 @@ func (e *Engine) ProbeRoute(ctx context.Context, cfg *config.Config, domain, ser
 // application connection to use one address family. It is used by adaptive
 // calibration so IPv4 evidence cannot be counted as IPv6 evidence or vice versa.
 func (e *Engine) ProbeRouteFamily(ctx context.Context, cfg *config.Config, domain, serviceName string, svc config.Service, route config.Route, family string) RouteResult {
+	if e != nil && e.reload != nil {
+		if fresh := e.reload(); fresh != nil {
+			return fresh.ProbeRouteFamily(ctx, cfg, domain, serviceName, svc, route, family)
+		}
+	}
 	return e.probeRoute(ctx, cfg, domain, serviceName, svc, route, family)
 }
 
@@ -167,6 +185,19 @@ func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, ser
 		result.ReasonCode = reason
 		result.Reason = &reason
 		return finalizeUnverifiedResult(result, startAll)
+	}
+	if e.unmarkedCandidate {
+		if route.Type != "direct" || route.SOCKS5 != "" {
+			result.Status = "NOT_APPLICABLE"
+			result.ApplicationStatus = "NOT_RUN"
+			result.ReasonCode = "managed_probe_requires_first_generation"
+			return finalizeUnverifiedResult(result, startAll)
+		}
+		ctx = context.WithValue(ctx, unmarkedCandidateContextKey{}, true)
+		if cfg != nil && !cfg.Platform.IPv6Enabled {
+			family = "ipv4"
+		}
+		result.EvidenceSource = "unbound_system_transport"
 	}
 	// Config.Validate enforces this bound for active configurations, but the
 	// probe engine is also called from recovery, tests and other defensive
@@ -201,7 +232,7 @@ func (e *Engine) probeRoute(ctx context.Context, cfg *config.Config, domain, ser
 		return finalizeUnverifiedResult(result, startAll)
 	}
 	for _, check := range svc.ProbeURLs {
-		checkResult := probeOne(ctx, cfg, route, check, family)
+		checkResult := probeOne(ctx, cfg, route, check, family, e.guard)
 		result.Checks = append(result.Checks, checkResult)
 		result.DNSOK = result.DNSOK || checkResult.DNSOK
 		result.TransportOK = result.TransportOK || checkResult.TransportOK
@@ -352,7 +383,7 @@ func finalizeUnverifiedResult(result RouteResult, startedAt time.Time) RouteResu
 	return result
 }
 
-func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check config.ProbeCheck, family string) CheckResult {
+func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check config.ProbeCheck, family string, guard RouteProbeGuard) CheckResult {
 	start := time.Now()
 	res := CheckResult{
 		Name:     check.Name,
@@ -419,7 +450,7 @@ func probeOne(ctx context.Context, cfg *config.Config, route config.Route, check
 			continue
 		}
 		attemptStarted := time.Now()
-		attempt := runHTTPAttempt(ctx, cfg, route, check, parsed, host, port, ip)
+		attempt := runHTTPAttempt(ctx, cfg, route, check, parsed, host, port, ip, guard)
 		if attempt.ConnectedIP != "" {
 			res.ConnectedIP = attempt.ConnectedIP
 			res.ConnectedPort = attempt.ConnectedPort
@@ -492,6 +523,7 @@ func finalizeCheckResult(res CheckResult, startedAt time.Time) CheckResult {
 func routeProbeTargets(ips []netip.Addr, family string) []netip.Addr {
 	targets := make([]netip.Addr, 0, minInt(len(ips), maxRouteProbeTargets))
 	for _, ip := range ips {
+		ip = ip.Unmap()
 		if family == "ipv4" && !ip.Is4() || family == "ipv6" && !ip.Is6() {
 			continue
 		}
@@ -519,14 +551,38 @@ func resolveForRoute(ctx context.Context, cfg *config.Config, route config.Route
 		if !route.ConnectToResolvedIP {
 			return nil, "", "", errors.New("smart_dns_connect_to_answer_required")
 		}
-		addrs, protocol, err := queryDNS(ctx, route.DNSServer, host)
-		return preferIPv4(addrs), normalizeDNSServer(route.DNSServer), protocol, err
+		var lastErr error
+		for _, resolver := range smartDNSResolvers(route) {
+			addrs, protocol, err := queryDNS(ctx, resolver, host)
+			if err == nil && len(addrs) > 0 {
+				return preferIPv4(addrs), normalizeDNSServer(resolver), protocol, nil
+			}
+			lastErr = err
+		}
+		return nil, normalizeDNSServer(route.DNSServer), "udp", lastErr
 	}
 	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 	if err != nil {
 		return nil, "system", "system", err
 	}
 	return preferIPv4(addrs), "system", "system", nil
+}
+
+func smartDNSResolvers(route config.Route) []string {
+	resolvers := make([]string, 0, 2)
+	seen := make(map[string]struct{}, 2)
+	for _, resolver := range []string{route.DNSServer, route.DNSFallbackServer} {
+		resolver = strings.TrimSpace(resolver)
+		if resolver == "" || strings.Contains(resolver, "PLACEHOLDER") {
+			continue
+		}
+		if _, ok := seen[resolver]; ok {
+			continue
+		}
+		seen[resolver] = struct{}{}
+		resolvers = append(resolvers, resolver)
+	}
+	return resolvers
 }
 
 func preferIPv4(addrs []netip.Addr) []netip.Addr {
@@ -854,19 +910,69 @@ type attemptResult struct {
 	RouteLatencyAvailable  bool
 }
 
-func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route, check config.ProbeCheck, parsed *url.URL, host, port string, ip netip.Addr) attemptResult {
+func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route, check config.ProbeCheck, parsed *url.URL, host, port string, ip netip.Addr, guard RouteProbeGuard) (result attemptResult) {
 	timeout := time.Duration(cfg.Policy.MaxProbeSeconds) * time.Second
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	var releaseGuard func() error
+	var guardMark uint32
+	// The synthetic system-default candidate is intentionally unmarked.  It
+	// must use the kernel's ordinary route and the system-default verifier;
+	// applying the managed mark guard here turns valid baseline evidence into
+	// a false `system_default_probe_was_marked` failure.
+	if guard != nil && route.SOCKS5 == "" && !isSystemDefaultRoute(route) &&
+		(route.Type == "direct" || route.Type == "zapret" || route.Type == "smart_dns") {
+		var guardErr error
+		releaseGuard, guardErr = guard.BeginProbeGuard(ctx, route)
+		if guardErr != nil {
+			return attemptResult{Status: "FAIL", Reason: "probe_guard_begin_failed: " + guardErr.Error()}
+		}
+		// The helper's semantic guard response proves that the exact owned
+		// output hook was installed.  The controller cannot read SO_MARK after
+		// nft applies it, so carry the bound mark into the observation; the
+		// verifier still requires the later conntrack proof before accepting it.
+		markText := strings.TrimSpace(route.Mark)
+		if markText == "" && cfg != nil {
+			switch route.Type {
+			case "direct", "smart_dns":
+				markText = cfg.OpenWrt.DirectMark
+			case "zapret":
+				markText = cfg.OpenWrt.ZapretMark
+			}
+		}
+		if mark, err := parseSocketMark(markText); err == nil {
+			guardMark = mark
+		}
+		defer func() {
+			if releaseGuard != nil {
+				if err := releaseGuard(); err != nil {
+					result.Status = "FAIL"
+					result.TransportOK = false
+					result.Reason = "probe_guard_cleanup_failed: " + err.Error()
+				}
+			}
+		}()
+	}
 
 	var connectedIP, localIP, addressFamily, dialTransport string
 	var observedSocketMark uint32
+	if guardMark != 0 {
+		observedSocketMark = guardMark
+	}
 	connectedPort, _ := strconv.Atoi(port)
 	dialer := &net.Dialer{Timeout: 8 * time.Second}
-	installRouteSocketMark(dialer, cfg, route, &observedSocketMark)
+	// With the helper-backed guard the non-root controller must not attempt
+	// SO_MARK itself: Setsockopt(SO_MARK) requires CAP_NET_ADMIN and would
+	// fail the connect before a socket observation exists. The exact-owned nft
+	// guard marks the packet after socket creation; conntrack proof below
+	// confirms that it actually took effect. Direct socket marking remains the
+	// fallback for test/legacy command implementations without a guard.
+	if (guard == nil || isSystemDefaultRoute(route)) && ctx.Value(unmarkedCandidateContextKey{}) != true {
+		installRouteSocketMark(dialer, cfg, route, &observedSocketMark)
+	}
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12},
 	}
@@ -915,13 +1021,18 @@ func runHTTPAttempt(ctx context.Context, cfg *config.Config, route config.Route,
 			return http.ErrUseLastResponse
 		}
 		if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
-			return errors.New("redirect_scheme_blocked")
+			// Keep the original response available for typed probe evaluation;
+			// never follow an unsafe scheme.
+			return http.ErrUseLastResponse
 		}
 		if !strings.EqualFold(req.URL.Hostname(), host) {
-			return errors.New("redirect_cross_host_blocked")
+			// A cross-host redirect is not followed, but a valid 3xx response
+			// (for example YouTube's youtube.com -> www.youtube.com) is still
+			// meaningful evidence when the service contract allows that code.
+			return http.ErrUseLastResponse
 		}
 		if addr, err := netip.ParseAddr(req.URL.Hostname()); err == nil && !allowPrivateProbe(cfg) && isUnsafeAddr(addr) {
-			return errors.New("redirect_private_address_blocked")
+			return http.ErrUseLastResponse
 		}
 		return nil
 	}
@@ -1179,14 +1290,39 @@ func probeExternalIPWithFetcher(ctx context.Context, cfg *config.Config, route c
 	if len(cfg.GeoIP.Endpoints) > config.MaxGeoIPEndpoints {
 		return "", "", nil, fmt.Errorf("egress_country_sources_exceed_bound:%d", config.MaxGeoIPEndpoints)
 	}
+	// Remote metadata must not consume the final kernel/path proof budget.
+	// Split the remaining bounded time between the independent sources so a
+	// dead first source cannot prevent even attempting the second one.
+	budget := time.Duration(len(cfg.GeoIP.Endpoints)) * maxEgressEndpointDuration
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline) - pathEvidenceTimeReserve
+		if remaining <= 0 {
+			return "", "", nil, errors.New("egress_country_budget_unavailable")
+		}
+		if remaining < budget {
+			budget = remaining
+		}
+	}
+	egressCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
 	type vote struct {
 		ip      netip.Addr
 		country string
 		source  string
 	}
 	votes := make([]vote, 0, len(cfg.GeoIP.Endpoints)+1)
-	for _, endpoint := range cfg.GeoIP.Endpoints {
-		body, fetchErr := fetch(ctx, route, endpoint.URL)
+	for index, endpoint := range cfg.GeoIP.Endpoints {
+		deadline, _ := egressCtx.Deadline()
+		sourceBudget := time.Until(deadline) / time.Duration(len(cfg.GeoIP.Endpoints)-index)
+		if sourceBudget <= 0 {
+			break
+		}
+		if sourceBudget > maxEgressEndpointDuration {
+			sourceBudget = maxEgressEndpointDuration
+		}
+		sourceCtx, sourceCancel := context.WithTimeout(egressCtx, sourceBudget)
+		body, fetchErr := fetch(sourceCtx, route, endpoint.URL)
+		sourceCancel()
 		if fetchErr != nil {
 			continue
 		}
@@ -1261,29 +1397,69 @@ func fetchTextViaRoute(ctx context.Context, cfg *config.Config, route config.Rou
 		return "", errors.New("invalid_egress_endpoint")
 	}
 	host := parsed.Hostname()
+	ips, _, _, err := resolveForRoute(ctx, cfg, route, host)
+	if err != nil || len(ips) == 0 {
+		return "", errors.New("egress_endpoint_resolution_failed")
+	}
+	targets := make([]netip.Addr, 0, len(ips))
+	family := ""
+	if cfg != nil && !cfg.Platform.IPv6Enabled {
+		family = "ipv4"
+	}
+	for _, candidate := range routeProbeTargets(ips, family) {
+		if !allowPrivateProbe(cfg) && isUnsafeAddr(candidate) {
+			continue
+		}
+		targets = append(targets, candidate)
+	}
+	if len(targets) == 0 {
+		return "", errors.New("ssrf_private_address_blocked")
+	}
+	return fetchEgressFromTargets(ctx, route, parsed, targets, nil)
+}
+
+// Production always uses the system trust store (roots=nil). A fixture may
+// supply its own trusted CA without disabling certificate/name verification.
+func fetchEgressFromTargets(ctx context.Context, route config.Route, parsed *url.URL, targets []netip.Addr, roots *x509.CertPool) (string, error) {
+	targets = routeProbeTargets(targets, "")
+	if len(targets) == 0 {
+		return "", errors.New("egress_endpoint_resolution_failed")
+	}
+	endpointCtx, cancel := context.WithTimeout(ctx, maxEgressEndpointDuration)
+	defer cancel()
+	var lastErr error
+	for index, target := range targets {
+		deadline, _ := endpointCtx.Deadline()
+		attemptBudget := time.Until(deadline) / time.Duration(len(targets)-index)
+		if attemptBudget <= 0 {
+			break
+		}
+		if attemptBudget > maxEgressAddressDuration {
+			attemptBudget = maxEgressAddressDuration
+		}
+		attemptCtx, attemptCancel := context.WithTimeout(endpointCtx, attemptBudget)
+		body, err := fetchEgressAtTarget(attemptCtx, route, parsed, target, roots)
+		attemptCancel()
+		if err == nil {
+			return body, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = errors.New("egress_endpoint_budget_exhausted")
+	}
+	return "", lastErr
+}
+
+func fetchEgressAtTarget(ctx context.Context, route config.Route, parsed *url.URL, target netip.Addr, roots *x509.CertPool) (string, error) {
+	host := parsed.Hostname()
 	port := parsed.Port()
 	if port == "" {
 		port = "443"
 	}
 
-	var target netip.Addr
-	ips, _, _, err := resolveForRoute(ctx, cfg, route, host)
-	if err != nil || len(ips) == 0 {
-		return "", errors.New("egress_endpoint_resolution_failed")
-	}
-	for _, candidate := range ips {
-		if !allowPrivateProbe(cfg) && isUnsafeAddr(candidate) {
-			continue
-		}
-		target = candidate
-		break
-	}
-	if !target.IsValid() {
-		return "", errors.New("ssrf_private_address_blocked")
-	}
-
 	dialer := &net.Dialer{Timeout: 8 * time.Second}
-	transport := &http.Transport{TLSClientConfig: &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}}
+	transport := &http.Transport{TLSClientConfig: &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12, RootCAs: roots}}
 	defer transport.CloseIdleConnections()
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		if route.SOCKS5 != "" {
@@ -1306,11 +1482,11 @@ func fetchTextViaRoute(ctx context.Context, cfg *config.Config, route config.Rou
 		}
 		return nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
 		return "", err
 	}
-	req.Host = host
+	req.Host = parsed.Host
 	req.Header.Set("User-Agent", "router-policy-probe/0.2")
 	resp, err := client.Do(req)
 	if err != nil {
@@ -1347,6 +1523,18 @@ func dialSOCKS5(ctx context.Context, proxyAddr, targetAddr string) (net.Conn, er
 	d := net.Dialer{Timeout: 8 * time.Second}
 	conn, err := d.DialContext(ctx, "tcp", proxyAddr)
 	if err != nil {
+		return nil, err
+	}
+	// DialContext does not interrupt protocol reads after the TCP connection
+	// is established.  Bound the complete SOCKS handshake by both the route
+	// probe deadline and the normal per-attempt timeout; otherwise a proxy that
+	// accepts and then stops replying can hold a full-check worker forever.
+	deadline := time.Now().Add(8 * time.Second)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		_ = conn.Close()
 		return nil, err
 	}
 	br := bufio.NewReader(conn)
@@ -1416,5 +1604,6 @@ func dialSOCKS5(ctx context.Context, proxyAddr, targetAddr string) (net.Conn, er
 		conn.Close()
 		return nil, err
 	}
+	_ = conn.SetDeadline(time.Time{})
 	return conn, nil
 }

@@ -12,6 +12,7 @@ RUNTIME_DIR="${RUNTIME_DIR:-$SYSTEM_ROOT/tmp/router-policy}"
 INIT_DIR="${INIT_DIR:-$SYSTEM_ROOT/etc/init.d}"
 HOTPLUG_IFACE_DIR="${HOTPLUG_IFACE_DIR:-$SYSTEM_ROOT/etc/hotplug.d/iface}"
 HOTPLUG_FIREWALL_DIR="${HOTPLUG_FIREWALL_DIR:-$SYSTEM_ROOT/etc/hotplug.d/firewall}"
+UBUS_ACL_DIR="${UBUS_ACL_DIR:-$SYSTEM_ROOT/usr/share/acl.d}"
 DNSMASQ_DIR="${DNSMASQ_DIR:-$SYSTEM_ROOT/tmp/dnsmasq.d}"
 NFTABLES_DIR="${NFTABLES_DIR:-$SYSTEM_ROOT/etc/nftables.d}"
 ZAPRET_PROFILE_DIR="${ZAPRET_PROFILE_DIR:-$ETC_DIR/zapret/profiles}"
@@ -119,10 +120,15 @@ validate_backup_paths() {
 
 runtime_top_entry_allowed() {
   case "$1" in
-    active-transaction.env|pending-transaction.env|boot-guard.nft|dns-observations.log|install-health.json|write-events.log|uninstall-empty-ip-state.json)
+    active-transaction.env|pending-transaction.env|boot-guard.nft|dns-observations.log|install-health.json|write-events.log|hotplug-events.log|uninstall-empty-ip-state.json|watchdog-inhibit.json)
       return 0 ;;
     nft-transition-tx_*.nft|nft-boot-guard-transition-tx_*.nft|management-proof-*.error)
       printf '%s\n' "$1" | grep -Eq '^(nft-transition|nft-boot-guard-transition)-tx_[0-9a-f]{16}\.nft$|^management-proof-rev_[0-9]+_[0-9a-f]{12}-tx_[0-9a-f]{16}\.error$'
+      ;;
+    probe-guard-probe_*.nft)
+      # This exact nonce format is emitted by adapter probe_guard_command.
+      # It is accepted only inside the dedicated regular-file runtime root.
+      printf '%s\n' "$1" | grep -Eq '^probe-guard-probe_[0-9a-f]{24}\.nft$'
       ;;
     transaction.lock|rollback-timers|management-proofs)
       return 0 ;;
@@ -319,7 +325,8 @@ managed_static_paths() {
     "$INIT_DIR/router-policy-xray" \
     "$INIT_DIR/router-policy-zapret" \
     "$HOTPLUG_IFACE_DIR/95-router-policy" \
-    "$HOTPLUG_FIREWALL_DIR/95-router-policy"
+    "$HOTPLUG_FIREWALL_DIR/95-router-policy" \
+    "$UBUS_ACL_DIR/router-policy-provider.json"
 }
 
 prefix_top_entry_allowed() {

@@ -131,10 +131,27 @@ func (s *Server) releasePendingDiscovery(domain string) {
 func discoveryCandidateDetails(results []probe.RouteResult) []map[string]any {
 	items := make([]map[string]any, 0, len(results))
 	for _, result := range results {
+		baseline := result.Route == "system-default" && result.RouteType == "direct"
+		reason := result.ReasonCode
+		serviceResult := result.ApplicationStatus
+		for _, check := range result.Checks {
+			if check.Required && check.Status != "OK" && check.Status != "DEGRADED" {
+				serviceResult = check.Status
+				break
+			}
+		}
+		if result.EgressReason != "" {
+			reason = result.EgressReason
+		}
 		item := map[string]any{
 			"route": result.Route, "route_type": result.RouteType, "status": result.Status,
+			"baseline": baseline, "selection_eligible": !baseline,
 			"path_verified": result.PathVerified, "service_ok": result.ServiceOK,
-			"reason":                       result.ReasonCode,
+			"reason":      reason,
+			"path_reason": result.ReasonCode, "egress_reason": result.EgressReason,
+			"dns_ok": result.DNSOK, "tls_ok": result.TLSOK, "http_ok": result.HTTPOK,
+			"application_status": result.ApplicationStatus,
+			"service_result":     serviceResult, "external_country": result.ExternalCountry,
 			"selection_score":              result.SelectionScore,
 			"regional_block":               result.RegionalBlock,
 			"authentication_required":      result.AuthenticationRequired,
@@ -275,6 +292,8 @@ func plannerProbeState(check planner.DomainCheck) string {
 			return "verifying"
 		case "terminal_no_safe_route":
 			return "no_safe_route"
+		case "error":
+			return "error"
 		}
 	}
 	switch check.Status {
@@ -298,6 +317,8 @@ func plannerProbeState(check planner.DomainCheck) string {
 		return "verifying"
 	case "VERIFYING":
 		return "verifying"
+	case "ERROR", "TIMEOUT":
+		return "error"
 	default:
 		if check.Selected != nil {
 			return "verifying"
@@ -764,6 +785,9 @@ func (s *Server) saveDiscoverySuggestionState(observation discovery.Observation,
 		ClassificationState: check.ClassificationState, ProbeState: probeState, PolicyState: "suggested",
 		Candidates: discoveryCandidateDetails(check.Results), VerificationDurationMS: check.VerificationDurationMS,
 		CandidateInventoryHash: check.CandidateInventoryHash,
+	}
+	if strings.TrimSpace(check.Reason) != "" && probeState == "error" {
+		suggestion.Reason = check.Reason
 	}
 	if probeState == "no_safe_route" || probeState == "drop_enforced" {
 		suggestion.Reason = "no verified route selected"

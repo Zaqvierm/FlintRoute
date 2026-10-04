@@ -96,10 +96,12 @@
             "enum": ["direct", "zapret", "smart_dns", "external_socks", "vless", "drop"]
           },
           "tag": { "type": "string", "minLength": 1 },
+          "name": { "type": "string", "maxLength": 64 },
           "priority": { "type": "integer" },
           "disabled": { "type": "boolean" },
           "status": { "type": "string", "enum": ["NOT_CONFIGURED", "CONFIGURED", "ACTIVE", "DEGRADED", "SELECTED", "STANDBY", "QUARANTINED", "UNSUPPORTED"] },
           "dns_server": { "type": "string" },
+          "dns_fallback_server": { "type": "string" },
           "connect_to_resolved_ip": { "type": "boolean" },
           "socks5": { "type": "string" },
           "http_proxy": { "type": "string" },

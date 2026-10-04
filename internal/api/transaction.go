@@ -17,6 +17,7 @@ import (
 	"router-policy/internal/adapter"
 	"router-policy/internal/artifact"
 	"router-policy/internal/config"
+	"router-policy/internal/evidence"
 	"router-policy/internal/platform"
 	"router-policy/internal/state"
 )
@@ -147,6 +148,7 @@ func (s *Server) validateChangeSet(cs ChangeSet) (ChangeSet, *actionFailure) {
 	s.mu.Lock()
 	currentVersion := s.configVersion
 	active := s.activeConfig
+	activeRevisionID := s.activeRevision
 	s.mu.Unlock()
 	if cs.BaseVersion != currentVersion {
 		return cs, conflict("base_version_conflict", "base_version does not match current revision")
@@ -170,9 +172,6 @@ func (s *Server) validateChangeSet(cs ChangeSet) (ChangeSet, *actionFailure) {
 	}
 	if len(diff) == 0 {
 		var activeRevision revisionRecord
-		s.mu.Lock()
-		activeRevisionID := s.activeRevision
-		s.mu.Unlock()
 		candidateHash := sha256.Sum256(canonical)
 		if activeRevisionID != "" && s.store.LoadJSON("revisions", activeRevisionID, &activeRevision) == nil &&
 			activeRevision.State == "committed" && activeRevision.CandidateHash == "sha256:"+hex.EncodeToString(candidateHash[:]) {
@@ -218,7 +217,46 @@ func (s *Server) validateChangeSet(cs ChangeSet) (ChangeSet, *actionFailure) {
 		return cs, internalFailure(err)
 	}
 	generatedAt := time.Now().UTC()
-	manifest, manifestHash, err := artifact.Generate(candidate, tx.ArtifactRoot, artifact.Binding{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash}, generatedAt)
+	artifactOptions := artifact.GenerateOptions{}
+	provenRoutes := s.committedRouteProofTags(activeRevisionID)
+	freshServiceRoutes := map[string]bool{}
+	for id, service := range candidate.Services {
+		if previous, exists := active.Services[id]; exists && reflect.DeepEqual(previous, service) {
+			continue
+		}
+		for _, route := range candidate.Routes {
+			if route.Enabled() && config.PathAllowed(service, route, candidate.Policy) &&
+				(service.SelectedRouteTag == "" || service.SelectedRouteTag == route.Tag) {
+				freshServiceRoutes[route.Tag] = true
+			}
+		}
+	}
+	if cs.Title == "Activate managed Xray" {
+		activeRoutes := map[string]config.Route{}
+		for _, route := range active.Routes {
+			activeRoutes[route.Tag] = route
+		}
+		for _, route := range candidate.Routes {
+			if previous, ok := activeRoutes[route.Tag]; ok && route.Tag == "zapret" && reflect.DeepEqual(previous, route) && provenRoutes[route.Tag] && !freshServiceRoutes[route.Tag] {
+				artifactOptions.ReuseRouteProofTags = []string{"zapret"}
+			}
+		}
+	} else if cs.Title == "Configure Smart DNS resolvers" || cs.Title == "Remove Smart DNS resolver" || cs.Title == "Reorder Smart DNS resolvers" || cs.Title == "Delete service rule" || strings.HasPrefix(cs.Title, "Change route class for ") {
+		// Resolver CRUD changes membership/order, not the implementation of
+		// unrelated routes. Reuse exact committed proof bindings for route
+		// objects that are byte-for-byte unchanged; the changed resolver card
+		// is never reused.
+		activeRoutes := map[string]config.Route{}
+		for _, route := range active.Routes {
+			activeRoutes[route.Tag] = route
+		}
+		for _, route := range candidate.Routes {
+			if previous, ok := activeRoutes[route.Tag]; ok && reflect.DeepEqual(previous, route) && provenRoutes[route.Tag] && !freshServiceRoutes[route.Tag] {
+				artifactOptions.ReuseRouteProofTags = append(artifactOptions.ReuseRouteProofTags, route.Tag)
+			}
+		}
+	}
+	manifest, manifestHash, err := artifact.GenerateWithOptions(candidate, tx.ArtifactRoot, artifact.Binding{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash}, generatedAt, artifactOptions)
 	if err != nil {
 		if cleanupErr := adapter.RetireCapability(tx); cleanupErr != nil {
 			err = fmt.Errorf("%w; cleanup rollback capability: %v", err, cleanupErr)
@@ -229,7 +267,7 @@ func (s *Server) validateChangeSet(cs ChangeSet) (ChangeSet, *actionFailure) {
 	tx.ArtifactsReady = manifest.DeploymentReady
 	tx.ArtifactBlockReason = manifest.BlockReason
 	tx.ArtifactsSimulation = manifest.Simulation
-	if err := bindAdaptiveCandidate(&tx, candidate); err != nil {
+	if err := bindAdaptiveCandidate(&tx, active, candidate); err != nil {
 		if cleanupErr := adapter.RetireCapability(tx); cleanupErr != nil {
 			err = fmt.Errorf("%w; cleanup rollback capability: %v", err, cleanupErr)
 		}
@@ -277,6 +315,34 @@ func (s *Server) validateChangeSet(cs ChangeSet) (ChangeSet, *actionFailure) {
 	s.setChange(cs)
 	s.publishChangeEvent(cs, "candidate_validated")
 	return cs, nil
+}
+
+// Config equality is not path evidence. In particular, a fresh baseline has
+// Direct in its inventory but no committed dataplane proof to reuse.
+func (s *Server) committedRouteProofTags(revisionID string) map[string]bool {
+	tags := map[string]bool{}
+	var revision revisionRecord
+	if s.store.LoadJSON("revisions", revisionID, &revision) != nil || revision.Kind == baselineRevisionKind || revision.State != "committed" || revision.TransactionID == "" || revision.ArtifactManifestHash == "" {
+		return tags
+	}
+	var record transactionRecord
+	if s.store.LoadJSON("transactions", revision.TransactionID, &record) != nil || record.State != "committed" {
+		return tags
+	}
+	tx := record.Transaction
+	if tx.RevisionID != revisionID || tx.CandidateHash != revision.CandidateHash || tx.ArtifactManifestHash != revision.ArtifactManifestHash {
+		return tags
+	}
+	report, err := evidence.LoadAndVerify(filepath.Join(tx.ArtifactRoot, artifact.VerifyPlanFile), filepath.Join(filepath.Dir(tx.ArtifactRoot), "data-plane-evidence.json"), artifact.Binding{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash}, tx.ArtifactManifestHash)
+	if err != nil {
+		return tags
+	}
+	for _, route := range report.Routes {
+		if !route.Simulation && route.Status == "OK" && !route.CheckedAt.IsZero() && time.Since(route.CheckedAt) <= configuredServiceProofFreshness && !route.CheckedAt.After(time.Now().UTC().Add(time.Minute)) {
+			tags[route.RouteTag] = true
+		}
+	}
+	return tags
 }
 
 func (s *Server) applyChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet, *actionFailure) {
@@ -616,14 +682,27 @@ func (s *Server) confirmChangeSet(ctx context.Context, cs ChangeSet) (ChangeSet,
 			return cs, failure
 		}
 	}
+	nowRecovered := time.Now().UTC()
+	committedRecovery := recoveryStatus{Status: "ok", TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash, ArtifactManifestHash: tx.ArtifactManifestHash, CommitPhase: cs.CommitPhase, StartedAt: nowRecovered, FinishedAt: nowRecovered}
+	recoveryPersistErr := s.store.SaveJSON("meta", "recovery_status", committedRecovery)
+	if recoveryPersistErr != nil {
+		committedRecovery.Status = "recovery_required"
+		committedRecovery.ReasonCode = "recovery_status_persist_failed"
+		committedRecovery.Reason = "committed recovery binding persistence failed: " + recoveryPersistErr.Error()
+	}
 	s.mu.Lock()
 	s.activeConfig = candidate
 	s.adaptiveZapret = adaptiveRuntime
 	s.activeRevision = tx.RevisionID
 	s.configVersion = tx.CandidateVersion
 	s.changes[cs.ID] = cs
+	s.recovery = committedRecovery
 	s.cancelExpiryLocked(cs.ID)
 	s.mu.Unlock()
+	if recoveryPersistErr != nil {
+		s.publishEvent(Event{Type: "recovery.status_persist_failed", Severity: "critical", ReasonCode: committedRecovery.ReasonCode})
+		return cs, &actionFailure{Status: 503, Code: "recovery_required", Message: "committed binding could not be durably published to recovery status"}
+	}
 	s.cleanupCommittedResources(tx, previousRevision)
 	s.publishChangeEvent(cs, "adapter_commit_succeeded")
 	return cs, nil
@@ -725,6 +804,28 @@ func (s *Server) rollbackLocked(ctx context.Context, cs ChangeSet, tx adapter.Tr
 	cs.Steps = append(cs.Steps, result)
 	cs.AdapterStatus = result.Status
 	if result.Operation != "" || result.ProtocolVersion != 0 {
+		// The adapter can legitimately report rollback=false when a second
+		// idempotent rollback observes that the active binding already moved
+		// back to the committed revision. Prove that baseline before changing
+		// the semantic result; ValidateRollback still checks the exact tx bind.
+		rollbackReportedFalse := false
+		if value, present := result.Evidence["rollback"]; present {
+			rolled, ok := value.(bool)
+			rollbackReportedFalse = ok && !rolled
+		}
+		// A failed helper invocation may omit semantic rollback evidence after
+		// the adapter has already restored the committed baseline (for example
+		// active_revision_changed).  Prove the exact baseline independently;
+		// otherwise startup recovery replays the same harmless rollback forever.
+		if s.adapterAlreadyAtCommittedActive(ctx, tx) && (!stepOK(result) || rollbackReportedFalse) {
+			result.Status = "OK"
+			result.OK = true
+			result.SemanticState = "rolled_back"
+			result.Reason = "rollback already completed at committed active revision"
+			result.Evidence["rollback"] = true
+			cs.Steps[len(cs.Steps)-1] = result
+			cs.AdapterStatus = result.Status
+		}
 		if err := adapter.ValidateRollback(result, tx); err != nil {
 			if progressErr := s.saveProgress(&cs, tx, "rollback_failed"); progressErr != nil {
 				err = fmt.Errorf("%w; persist rollback_failed state: %v", err, progressErr)
@@ -771,6 +872,42 @@ func (s *Server) rollbackLocked(ctx context.Context, cs ChangeSet, tx adapter.Tr
 		s.publishEvent(Event{Type: "storage.cleanup_failed", Severity: "error", ReasonCode: "cleanup_status_persist_failed", Details: map[string]any{"revision_id": tx.RevisionID, "error": err.Error()}})
 	}
 	return cs, nil
+}
+
+func (s *Server) adapterAlreadyAtCommittedActive(ctx context.Context, failed adapter.Transaction) bool {
+	if s == nil || s.store == nil {
+		return false
+	}
+	s.mu.Lock()
+	activeRevision := s.activeRevision
+	s.mu.Unlock()
+	if activeRevision == "" || activeRevision == failed.RevisionID {
+		return false
+	}
+	var revision revisionRecord
+	if err := s.store.LoadJSON("revisions", activeRevision, &revision); err != nil || revision.State != "committed" {
+		return false
+	}
+	status := s.adapter.Status(ctx)
+	if !stepOK(status) || evidenceString(status, "active_revision") != revision.RevisionID || evidenceString(status, "active_candidate_hash") != revision.CandidateHash {
+		return false
+	}
+	if evidenceString(status, "transaction_state") != "committed" {
+		return false
+	}
+	if revision.Kind == baselineRevisionKind {
+		activeTx := evidenceString(status, "active_transaction")
+		if activeTx == "" || activeTx != failed.ID {
+			return true
+		}
+		return false
+	}
+	activeTx := evidenceString(status, "active_transaction")
+	activeArtifact := evidenceString(status, "active_artifact_manifest_hash")
+	if revision.ArtifactManifestHash != "" && activeArtifact == revision.ArtifactManifestHash && activeTx != "" && activeTx != failed.ID {
+		return true
+	}
+	return false
 }
 
 type cleanupStatusStore interface {
@@ -845,7 +982,20 @@ func (s *Server) loadVerifiedTransaction(cs ChangeSet) (adapter.Transaction, *ac
 		return tx, failure
 	}
 	if !capabilityMatches(tx) {
-		return tx, conflict("rollback_token_invalid", "stored rollback token failed verification")
+		// A non-terminal prepared transaction may lose only its materialized
+		// capability file during a restart/installer race. The transaction record
+		// still contains the token hash and token, so recreate the exact bound
+		// capability instead of leaving auto-apply stuck at prepared. Terminal
+		// transactions are never resurrected.
+		switch cs.State {
+		case "prepared", "validated", "applying", "verifying", "awaiting_confirmation":
+			if err := adapter.PersistCapability(tx); err == nil && capabilityMatches(tx) {
+				break
+			}
+			return tx, conflict("rollback_token_invalid", "stored rollback capability could not be recreated")
+		default:
+			return tx, conflict("rollback_token_invalid", "stored rollback token failed verification")
+		}
 	}
 	return tx, nil
 }
@@ -940,7 +1090,7 @@ func (s *Server) activeTransaction(exceptID string) string {
 			continue
 		}
 		switch cs.State {
-		case "prepared", "applying", "verifying", "awaiting_confirmation", "committing", "rolling_back":
+		case "prepared", "applying", "verifying", "data_plane_unverified", "awaiting_confirmation", "committing", "rolling_back", "rollback_failed":
 			return id
 		}
 	}
@@ -1003,8 +1153,17 @@ func (s *Server) recoverTransactions(ctx context.Context) error {
 	s.mu.Lock()
 	for id, cs := range s.changes {
 		switch cs.State {
-		case "prepared", "applying", "verifying", "awaiting_confirmation", "committing", "rolling_back":
+		case "prepared", "applying", "verifying", "data_plane_unverified", "awaiting_confirmation", "committing", "rolling_back", "rollback_failed", "rolled_back":
 			ids = append(ids, id)
+		case "failed":
+			// A failed ChangeSet can still be the control-plane record for an
+			// adapter commit that already crossed the durable boundary. Only
+			// recovery-phase failures are eligible here; ordinary failed
+			// changes must remain terminal and untouched.
+			switch cs.CommitPhase {
+			case "control_plane_committed", "finalize_ambiguous", "adapter_finalized":
+				ids = append(ids, id)
+			}
 		}
 	}
 	s.mu.Unlock()
@@ -1024,9 +1183,42 @@ func (s *Server) recoverTransactions(ctx context.Context) error {
 			release()
 			return err
 		}
+		if cs.State == "rollback_failed" && rollbackStepSucceeded(txRecord) {
+			// A restart can observe the ChangeSet's old rollback_failed label
+			// after the adapter already completed an idempotent rollback. Do not
+			// call the adapter again and turn a safe terminal state into a
+			// startup loop; persist the semantic terminal result instead.
+			if err := s.saveProgress(&cs, tx, "rolled_back"); err != nil {
+				release()
+				return err
+			}
+			s.publishChangeEvent(cs, "recovery_rollback_finalized")
+			release()
+			continue
+		}
 		status := s.adapter.Status(ctx)
 		activeMatches := stepOK(status) && evidenceString(status, "active_revision") == tx.RevisionID && evidenceString(status, "active_transaction") == tx.ID && evidenceString(status, "active_candidate_hash") == tx.CandidateHash && evidenceString(status, "active_artifact_manifest_hash") == tx.ArtifactManifestHash
 		adapterState := evidenceString(status, "transaction_state")
+		// A crash can leave the adapter finalized while the ChangeSet write
+		// itself is still prepared/validated. The adapter's committed binding
+		// plus the durable transaction record are sufficient to finish the
+		// control-plane commit; rolling this state back would create the very
+		// committed-vs-rolled-back split-brain the protocol is designed to avoid.
+		if activeMatches && adapterState == "committed" && txRecord.State == "committed" && (txRecord.CommitPhase == "adapter_finalized" || txRecord.CommitPhase == "control_plane_committed" || txRecord.CommitPhase == "finalize_ambiguous") {
+			cs.CommitPhase = "adapter_finalized"
+			if err := s.finalizeRecoveredCommit(&cs, tx); err != nil {
+				release()
+				s.markRecoveryRequired(adapter.RecoveryTarget{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash, ArtifactManifestHash: tx.ArtifactManifestHash}, "control_plane_finalize_persist_failed", err.Error(), cs.CommitPhase)
+				return err
+			}
+			s.publishChangeEvent(cs, "recovery_commit_finalized")
+			release()
+			continue
+		}
+		if cs.State == "rolled_back" {
+			release()
+			continue
+		}
 		if cs.State == "committing" && activeMatches {
 			switch {
 			case txRecord.CommitPhase == "" && adapterState == "committed":
@@ -1100,6 +1292,21 @@ func (s *Server) recoverTransactions(ctx context.Context) error {
 		if cs.State == "awaiting_confirmation" && !time.Now().UTC().Before(tx.ExpiresAt) {
 			finalState = "expired"
 		}
+		if !capabilityMatches(tx) {
+			// Recovery may run after an installer/restart removed only the
+			// materialized capability file. Recreate the exact token-bound file
+			// before asking the adapter to rollback; never invent a new token.
+			if err := adapter.PersistCapability(tx); err != nil || !capabilityMatches(tx) {
+				s.transactionMu.Unlock()
+				release()
+				reason := "rollback capability could not be recreated"
+				if err != nil {
+					reason = err.Error()
+				}
+				s.markRecoveryRequired(adapter.RecoveryTarget{TransactionID: tx.ID, RevisionID: tx.RevisionID, CandidateHash: tx.CandidateHash, ArtifactManifestHash: tx.ArtifactManifestHash}, "rollback_capability_missing", reason, txRecord.CommitPhase)
+				return errors.New(reason)
+			}
+		}
 		_, rollbackFailure := s.rollbackLocked(ctx, cs, tx, finalState, "recovery_fail_closed")
 		s.transactionMu.Unlock()
 		release()
@@ -1108,6 +1315,20 @@ func (s *Server) recoverTransactions(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func rollbackStepSucceeded(record transactionRecord) bool {
+	for index := len(record.Steps) - 1; index >= 0; index-- {
+		step := record.Steps[index]
+		if step.Operation != "rollback" && step.Step != "rollback" {
+			continue
+		}
+		if step.SemanticState == "rolled_back" || evidenceString(step, "rollback") == "true" || evidenceString(step, "already_rolled_back") == "true" {
+			return true
+		}
+		return false
+	}
+	return false
 }
 
 func (s *Server) finalizeRecoveredCommit(cs *ChangeSet, tx adapter.Transaction) error {

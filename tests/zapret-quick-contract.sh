@@ -31,6 +31,7 @@ export NFT_BIN="$TMP/bin/nft"
 export CURL_BIN="$TMP/bin/curl"
 export SETSID_BIN="$TMP/bin/setsid"
 export SU_BIN="$TMP/bin/su"
+export ROUTER_POLICY_BIN="$TMP/bin/nfqws"
 export ROUTER_POLICY_RUNTIME_DIR="$TMP/runtime"
 export ZAPRET_CATALOG_OUT="$TMP/catalog/catalog.json"
 export ZAPRET_CALIBRATION_IPV4=8.8.8.8
@@ -64,7 +65,7 @@ grep -F 'invalid pre-resolved IPv4 target' "$TMP/invalid-ip.err" >/dev/null
 [ -z "$(find "$TMP/runtime" -mindepth 1 -print -quit)" ]
 
 # Embedded OpenWrt commonly has no `su` applet.  The runner must use its
-# explicit root-fallback mode (UID 0 remains bound to the owned nft rule) and
+# fixed unprivileged executor (UID 65534 bound to the owned nft rule) and
 # must not fail merely because the optional privilege-drop helper is absent.
 if grep -F 'su is unavailable' "$TMP/invalid-ip.err" >/dev/null; then
   echo "missing su was treated as a fatal dependency" >&2

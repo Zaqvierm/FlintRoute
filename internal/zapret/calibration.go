@@ -159,7 +159,8 @@ type CalibrationLiveProvider interface {
 // ExecCalibrationRunner is implemented per platform. Production uses the
 // Linux implementation; other platforms fail closed and remain testable.
 type ExecCalibrationRunner struct {
-	Script string
+	HelperSocket string
+	Script       string
 	// QuickScript must implement the curated, per-strategy evidence contract.
 	// It is intentionally separate from the upstream blockcheck script: using
 	// blockcheck with SCANLEVEL=quick is not a substitute for that contract.

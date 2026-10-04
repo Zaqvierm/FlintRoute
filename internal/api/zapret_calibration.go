@@ -100,36 +100,41 @@ func (s *Server) zapretCalibrationIPv4(ctx context.Context, domain string) ([]st
 			continue
 		}
 		hasSmartDNS = true
-		probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		udp, udpErr := probe.ValidateDNSResolverTransport(probeCtx, route.DNSServer, domain, "udp")
-		tcp, tcpErr := probe.ValidateDNSResolverTransport(probeCtx, route.DNSServer, domain, "tcp")
-		cancel()
-		if udpErr != nil || tcpErr != nil || !udp.Safe || !tcp.Safe {
-			lastErr = fmt.Errorf("Smart DNS resolver %s did not return a verified UDP/TCP answer", route.Tag)
-			continue
-		}
-		values := append(append([]string{}, udp.Addresses...), tcp.Addresses...)
-		result := make([]string, 0, len(values))
-		seen := make(map[string]struct{}, len(values))
-		for _, value := range values {
-			addr, parseErr := netip.ParseAddr(value)
-			if parseErr != nil || !addr.Is4() || !netpolicy.PublicResolverAddr(addr) {
+		for _, resolver := range []string{route.DNSServer, route.DNSFallbackServer} {
+			if resolver == "" {
 				continue
 			}
-			value = addr.String()
-			if _, ok := seen[value]; ok {
+			probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			udp, udpErr := probe.ValidateDNSResolverTransport(probeCtx, resolver, domain, "udp")
+			tcp, tcpErr := probe.ValidateDNSResolverTransport(probeCtx, resolver, domain, "tcp")
+			cancel()
+			if udpErr != nil || tcpErr != nil || !udp.Safe || !tcp.Safe {
+				lastErr = fmt.Errorf("Smart DNS resolver %s did not return a verified UDP/TCP answer", route.Tag)
 				continue
 			}
-			seen[value] = struct{}{}
-			result = append(result, value)
-			if len(result) == 8 {
-				break
+			values := append(append([]string{}, udp.Addresses...), tcp.Addresses...)
+			result := make([]string, 0, len(values))
+			seen := make(map[string]struct{}, len(values))
+			for _, value := range values {
+				addr, parseErr := netip.ParseAddr(value)
+				if parseErr != nil || !addr.Is4() || !netpolicy.PublicResolverAddr(addr) {
+					continue
+				}
+				value = addr.String()
+				if _, ok := seen[value]; ok {
+					continue
+				}
+				seen[value] = struct{}{}
+				result = append(result, value)
+				if len(result) == 8 {
+					break
+				}
 			}
+			if len(result) > 0 {
+				return result, nil
+			}
+			lastErr = fmt.Errorf("Smart DNS resolver %s returned no safe public IPv4 address", route.Tag)
 		}
-		if len(result) > 0 {
-			return result, nil
-		}
-		lastErr = fmt.Errorf("Smart DNS resolver %s returned no safe public IPv4 address", route.Tag)
 	}
 	if !hasSmartDNS {
 		return lookupPublicCalibrationIPv4(ctx, domain)

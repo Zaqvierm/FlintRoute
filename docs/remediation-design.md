@@ -56,6 +56,13 @@ hash candidate, hash manifest артефактов, generation и фактиче
 adapter. Rollback capability удаляется только после сравнения durable active
 revision с состоянием adapter.
 
+Retention сохраняет ChangeSet активной revision, unresolved recovery/rollback
+evidence и transaction records, на которые ссылаются retained ChangeSet.
+Различающиеся TTL history/transactions не должны создавать dangling references
+и ломать последующий startup. При неоднозначном active journal cleanup сохраняет
+recovery evidence вместо его удаления; защищённая старая запись сама по себе не
+создаёт повторные persistent writes в idle cleanup.
+
 ## Размещение конфигурации
 
 `bootstrap.json` — неизменяемые параметры запуска. В нём нет pending candidate,
@@ -227,3 +234,138 @@ Decision cache отдельно сохраняет полную verification dur
 и не подставляет wall-clock поиска в кэше. Ответ RouteProber с пустым или
 in-progress status также non-terminal и не может стать `NO_SAFE_ROUTE` без
 bounded terminal result.
+
+Helper request deadlines are bounded to 70 seconds. This is intentionally longer
+than the one-minute hardware dataplane proof budget: nft/NFQUEUE/Xray evidence
+collection must not be cut off by a shorter transport deadline and misreported as
+a failed rollback. The bound remains finite for every helper request and socket.
+
+Managed Xray activation records unchanged Zapret topology as a reused committed
+route proof instead of forcing a fresh Zapret probe during an unrelated Xray
+transaction. The candidate records the reused route tag in its verification plan;
+if the route object changes, it becomes a normal required proof again.
+
+Recovery also admits an adapter-committed transaction when its ChangeSet was
+left in a recovery-phase failure state. The exact bound is checked against the
+active revision, candidate hash, artifact hash, and adapter state before the
+control-plane record is finalized. Route-assignment reconciliation reads the
+dedicated daemon-readable runtime binding
+(`/tmp/router-policy-controller/active-transaction.env`) before the root-owned
+last-good directory; the main runtime remains a bounded controller-owned
+tmpfs tree, while the binding used for helper authorization remains
+root:daemon-owned. This keeps restart recovery usable without weakening
+ownership or generation checks.
+
+Helper transaction evidence normalizes shell boolean fields before semantic
+validation. In particular, `rollback=true` from the typed Unix helper is a
+boolean fact, not a string; otherwise a successful resolver/rule removal can
+be mislabeled `rollback_failed`. Resolver CRUD, service-rule deletion, and
+route-class changes reuse only byte-for-byte unchanged committed route proof;
+they do not require an unrelated fresh probe of a route they did not modify.
+
+### First manual rule on a confirmed empty baseline
+
+An empty baseline has no managed Direct generation. Interactive Direct preview
+may run an unmarked DNS/HTTP/TLS transport check only after exact baseline
+recovery/absence proof. It reports `UNVERIFIED` and
+`route_not_bound_to_verification_plan`, never managed `PathVerified`.
+The API can offer `guarded_apply_available` for that transport-valid candidate;
+the explicit user action still uses the full bounded transaction and requires
+post-apply managed path proof before commit. This exception is not available to
+background discovery/auto-assignment and does not install a component or relabel
+the synthetic system-default path as a committed route.
+
+`DROP` is selectable as an observed safety outcome only with actual path proof.
+An unverified Drop probe cannot make read-only preview claim `drop_enforced`.
+The old selection fixture accepted a bare DROP enum and therefore encoded the
+wrong invariant; it now supplies proven Drop evidence and separately rejects
+unverified/failed Drop results.
+
+Unchanged route configuration is not reusable path evidence. Validation reuses
+only a fresh, bound, non-simulated proof from the current committed transaction.
+New/changed service assignments require post-apply proof for their selected
+route even if the route object itself is unchanged. An empty baseline therefore
+cannot erase the first Direct proof from the verification plan.
+
+Final commit persists the exact revision/candidate/artifact recovery binding
+before publishing it together with in-memory active identity and releasing the
+mutation lease. If that write fails after finalization, the durable commit is
+preserved, health reports degraded, and a memory recovery fence rejects new
+mutations; startup recovery must compare both durable sides again. Health reads
+one consistent snapshot and reports degraded on
+unknown/fenced recovery or a revision mismatch instead of mixing a new revision
+with an old baseline hash.
+
+Egress identity collection tries up to four normalized, policy-safe DNS
+answers instead of treating the first address as the endpoint. IPv6-disabled
+configurations use IPv4 targets. Every attempt preserves the original HTTPS
+Host/SNI and verifies certificates; no fallback to an unpinned system dial is
+allowed. Each address has a maximum two-second attempt budget, each endpoint
+eight seconds, and the independent sources share the remaining caller budget
+while reserving two seconds for final kernel/path evidence. Failure to obtain
+the required country consensus remains a failure; neither HTTP success nor a
+single identity source grants PathVerified. These bounds prevent a dead first
+DNS answer from turning a successful service check into an expired nft query.
+
+The helper's fixed `transaction.verify_data_plane` subprocess does not inherit
+the controller's helper socket selector. The existing privileged collector
+uses native kernel observation/socket marks; other operations and the non-root
+controller retain typed socket access. This prevents UID0 self-RPC rejection
+without admitting root peers or relaxing semantic evidence checks. It is not a
+claim that synthetic probe HTTP has been completely deprivileged: that remains
+a separate privilege-boundary limitation of the existing collector.
+
+### Quick Zapret and manual policy preview
+
+The production non-root controller requests `zapret.quick_check` through the
+typed helper protocol; it must not execute the root-only quick script itself.
+The request carries only a domain, a reviewed bundle identifier, a network
+fingerprint and bounded public IPv4 targets, plus exact committed transaction,
+revision, candidate/artifact hashes and rollback-token binding. The helper
+compares active metadata with the transaction, verifies generated artifacts
+and candidate bytes, and admits only fixed owned executable/runtime paths.
+It runs the existing six curated General presets, never upstream exhaustive
+search or a production service restart. The operation is bounded by the
+existing five-minute quick budget; socket cancellation terminates its process
+group and retains the runner's owned cleanup checks. When OpenWrt lacks `su`,
+the fixed Go HTTPS child drops to UID/GID 65534 before executing pinned curl.
+Root HTTP fallback is removed. A curl/path PASS is not universal application
+verification. Exhaustive probing still requires a separately implemented
+privileged maintenance runner; it is not silently substituted for Quick.
+New curated catalogs carry the explicit `owner: flintroute` marker (optional
+metadata in the version-1 catalog reader). The helper refuses to overwrite an
+existing catalog without that marker and root-only write permissions; an old
+unmarked catalog requires explicit migration rather than implicit adoption.
+
+A new manual-rule preview sends its selected category and allowed route types
+to the backend. The backend constructs the same policy constraints as create,
+without changing committed state. In particular GEO previews exclude Direct
+and Zapret and require non-RU egress; selecting GEO is not itself evidence that
+regional denial was observed. WAF/ambiguous responses remain failures rather
+than being relabeled as functional success.
+
+### Provider enrollment sources
+
+NoClip `/connect/<token>` sources are enrollment links, not subscription HTTP
+targets. The unprivileged subscription pipeline resolves the allowlisted
+portal JSON endpoint, reads a bounded `happImportUrl`, selects its exact Happ
+decoder, then fetches the decrypted HTTPS subscription with the configured
+HWID. Enrollment redirects are rejected, every remote target retains SSRF/DNS
+pinning and TLS verification, and the original enrollment link remains the
+refresh source. Tokens, crypt payloads and resolved credentials are not exposed
+in diagnostics. Portal, decoder or provider failures leave active policy intact.
+
+The VLESS screen restores the explicit activation action from the persisted
+verified candidate pool after navigation/reload, rather than a component-local
+boolean. This only exposes an action; it does not assert managed activation.
+The backend still refreshes/validates the bundle and requires the transactional
+activation/post-proof before reporting committed routes.
+
+Interactive service verification allocates a per-candidate timeout and an
+inventory-sized overall budget (maximum two minutes). A timeout in one candidate
+does not cancel the next candidate's budget. The HTTP response deadline covers
+that bounded job plus five seconds; the ordinary server write timeout must not
+cut off a valid full matrix. Background discovery budgets are unchanged. The
+matrix exposes egress failure separately from packet-path failure, and a partial
+job offers a new check rather than falsely claiming to resume retained progress.
+No budget change relaxes ServiceOK, PathVerified, non-RU consensus or binding.

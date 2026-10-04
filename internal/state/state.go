@@ -789,12 +789,13 @@ func (s *Store) Cleanup(now time.Time) (CleanupStats, error) {
 	stats := CleanupStats{}
 	needed := false
 	if err := s.db.View(func(tx *bolt.Tx) error {
+		protectedChanges, protectedTransactions := protectedJournalKeys(tx)
 		needed = bucketCount(tx.Bucket([]byte("probes"))) > s.retention.maxProbeResults ||
 			bucketCount(tx.Bucket([]byte("events"))) > s.retention.maxEvents ||
 			hasExpired(tx.Bucket([]byte("events")), now.Add(-s.retention.eventRetention), []string{"time"}, nil)
 		terminal := map[string]bool{"committed": true, "rolled_back": true, "failed": true, "rollback_failed": true, "expired": true, "requires_device": true}
-		needed = needed || hasExpired(tx.Bucket([]byte("changes")), now.Add(-s.retention.changeSetRetention), []string{"updated_at"}, terminal) ||
-			hasExpired(tx.Bucket([]byte("transactions")), now.Add(-s.retention.transactionRetention), []string{"completed_at", "updated_at"}, terminal) ||
+		needed = needed || hasExpired(tx.Bucket([]byte("changes")), now.Add(-s.retention.changeSetRetention), []string{"updated_at"}, terminal, protectedChanges) ||
+			hasExpired(tx.Bucket([]byte("transactions")), now.Add(-s.retention.transactionRetention), []string{"completed_at", "updated_at"}, terminal, protectedTransactions) ||
 			hasOrphanCandidates(tx.Bucket([]byte("candidates")), tx.Bucket([]byte("changes")))
 		return nil
 	}); err != nil {
@@ -824,7 +825,8 @@ func (s *Store) Cleanup(now time.Time) (CleanupStats, error) {
 		terminal := map[string]bool{"committed": true, "rolled_back": true, "failed": true, "rollback_failed": true, "expired": true, "requires_device": true}
 		changes := tx.Bucket([]byte("changes"))
 		candidates := tx.Bucket([]byte("candidates"))
-		stats.ChangeSets, err = deleteExpired(changes, now.Add(-s.retention.changeSetRetention), []string{"updated_at"}, terminal)
+		protectedChanges, _ := protectedJournalKeys(tx)
+		stats.ChangeSets, err = deleteExpired(changes, now.Add(-s.retention.changeSetRetention), []string{"updated_at"}, terminal, protectedChanges)
 		if err != nil {
 			return err
 		}
@@ -838,7 +840,8 @@ func (s *Store) Cleanup(now time.Time) (CleanupStats, error) {
 				}
 			}
 		}
-		stats.Transactions, err = deleteExpired(tx.Bucket([]byte("transactions")), now.Add(-s.retention.transactionRetention), []string{"completed_at", "updated_at"}, terminal)
+		_, protectedTransactions := protectedJournalKeys(tx)
+		stats.Transactions, err = deleteExpired(tx.Bucket([]byte("transactions")), now.Add(-s.retention.transactionRetention), []string{"completed_at", "updated_at"}, terminal, protectedTransactions)
 		return err
 	})
 	if err == nil {
@@ -847,12 +850,15 @@ func (s *Store) Cleanup(now time.Time) (CleanupStats, error) {
 	return stats, err
 }
 
-func hasExpired(bucket *bolt.Bucket, cutoff time.Time, fields []string, terminal map[string]bool) bool {
+func hasExpired(bucket *bolt.Bucket, cutoff time.Time, fields []string, terminal map[string]bool, protected ...map[string]bool) bool {
 	if bucket == nil {
 		return false
 	}
 	cursor := bucket.Cursor()
-	for _, value := cursor.First(); value != nil; _, value = cursor.Next() {
+	for key, value := cursor.First(); value != nil; key, value = cursor.Next() {
+		if len(protected) > 0 && protected[0][string(key)] {
+			continue
+		}
 		var item map[string]any
 		if json.Unmarshal(value, &item) != nil {
 			continue
@@ -872,6 +878,75 @@ func hasExpired(bucket *bolt.Bucket, cutoff time.Time, fields []string, terminal
 		}
 	}
 	return false
+}
+
+// Retention must not sever a durable journal relationship. The active revision
+// keeps its ChangeSet; every retained ChangeSet keeps its transaction, even
+// when their configured TTLs differ. Ambiguous active metadata keeps all
+// history rather than destroying potential recovery evidence.
+func protectedJournalKeys(tx *bolt.Tx) (map[string]bool, map[string]bool) {
+	changes, transactions := map[string]bool{}, map[string]bool{}
+	protectAll := false
+	if meta := tx.Bucket([]byte("meta")); meta != nil {
+		if raw := meta.Get([]byte("recovery_status")); len(raw) > 0 {
+			var recovery struct {
+				Status        string `json:"status"`
+				TransactionID string `json:"transaction_id"`
+			}
+			if json.Unmarshal(raw, &recovery) != nil {
+				protectAll = true
+			} else if recovery.Status != "ok" && recovery.Status != "not_required" {
+				if recovery.TransactionID == "" {
+					protectAll = true
+				} else {
+					transactions[recovery.TransactionID] = true
+				}
+			}
+		}
+		if raw := meta.Get([]byte("active_revision")); len(raw) > 0 {
+			var id string
+			if json.Unmarshal(raw, &id) != nil || id == "" {
+				protectAll = true
+			} else {
+				var revision struct {
+					ChangeID      string `json:"change_id"`
+					TransactionID string `json:"transaction_id"`
+				}
+				bucket := tx.Bucket([]byte("revisions"))
+				if bucket == nil || json.Unmarshal(bucket.Get([]byte(id)), &revision) != nil {
+					protectAll = true
+				} else {
+					if revision.ChangeID != "" {
+						changes[revision.ChangeID] = true
+					}
+					if revision.TransactionID != "" {
+						transactions[revision.TransactionID] = true
+					}
+				}
+			}
+		}
+	}
+	if bucket := tx.Bucket([]byte("changes")); bucket != nil {
+		_ = bucket.ForEach(func(key, raw []byte) error {
+			var change struct {
+				TransactionID string `json:"transaction_id"`
+				State         string `json:"state"`
+			}
+			if json.Unmarshal(raw, &change) != nil || protectAll || change.State == "rollback_failed" || transactions[change.TransactionID] {
+				changes[string(key)] = true
+			}
+			if change.TransactionID != "" {
+				transactions[change.TransactionID] = true
+			}
+			return nil
+		})
+	}
+	if protectAll {
+		if bucket := tx.Bucket([]byte("transactions")); bucket != nil {
+			_ = bucket.ForEach(func(key, _ []byte) error { transactions[string(key)] = true; return nil })
+		}
+	}
+	return changes, transactions
 }
 
 func hasOrphanCandidates(candidates, changes *bolt.Bucket) bool {
@@ -1209,13 +1284,16 @@ func bucketCount(bucket *bolt.Bucket) int {
 	return count
 }
 
-func deleteExpired(bucket *bolt.Bucket, cutoff time.Time, fields []string, terminal map[string]bool) (int, error) {
+func deleteExpired(bucket *bolt.Bucket, cutoff time.Time, fields []string, terminal map[string]bool, protected ...map[string]bool) (int, error) {
 	if bucket == nil {
 		return 0, nil
 	}
 	deleted := 0
 	cursor := bucket.Cursor()
 	for key, value := cursor.First(); key != nil; key, value = cursor.Next() {
+		if len(protected) > 0 && protected[0][string(key)] {
+			continue
+		}
 		var item map[string]any
 		if err := json.Unmarshal(value, &item); err != nil {
 			return deleted, err

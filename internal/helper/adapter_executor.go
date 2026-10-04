@@ -1,6 +1,7 @@
 package helper
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -31,6 +32,9 @@ func (e AdapterExecutor) Execute(ctx context.Context, request Request) Response 
 		response.Error = err.Error()
 		return response
 	}
+	if request.Command == "zapret.quick_check" {
+		return e.executeZapretQuick(ctx, request)
+	}
 	if strings.HasPrefix(request.Command, "transaction.") {
 		return e.executeTransaction(ctx, request)
 	}
@@ -46,6 +50,12 @@ func (e AdapterExecutor) Execute(ctx context.Context, request Request) Response 
 	if strings.HasPrefix(request.Command, "global.") {
 		return e.executeGlobal(ctx, request)
 	}
+	if strings.HasPrefix(request.Command, "probe.") {
+		return e.executeProbe(ctx, request)
+	}
+	if request.Command == "diagnostics.capabilities" {
+		return e.executeDiagnostics(ctx, request)
+	}
 	if strings.HasPrefix(request.Command, "route_assignment.") {
 		if request.Command == "route_assignment.reconcile" {
 			return e.executeRouteAssignmentReconcile(ctx, request)
@@ -55,6 +65,193 @@ func (e AdapterExecutor) Execute(ctx context.Context, request Request) Response 
 	response.ErrorCode = "unknown_command"
 	response.Error = "helper command is not allowlisted"
 	return response
+}
+
+func (e AdapterExecutor) executeDiagnostics(ctx context.Context, request Request) Response {
+	response := ResponseFrom(request, false, "", "")
+	if request.Diagnostics == nil || request.Diagnostics.Operation != "capabilities" {
+		response.ErrorCode = "invalid_diagnostics_request"
+		response.Error = "diagnostics request is missing"
+		return response
+	}
+	response.Operation = "capabilities"
+	response.SemanticState = "read_only"
+	evidence := map[string]string{}
+	modules, modulesErr := runFixedProbeCommand(ctx, "/bin/cat", "/proc/modules")
+	if modulesErr == nil {
+		evidence["kernel_modules"] = string(modules)
+	} else {
+		evidence["kernel_modules_error"] = "read_failed"
+	}
+	if _, err := runFixedProbeCommand(ctx, "/sbin/fw4", "check"); err == nil {
+		evidence["firewall_check"] = "ok"
+	} else {
+		evidence["firewall_check"] = "failed"
+	}
+	if tables, err := runFixedProbeCommand(ctx, "/usr/sbin/nft", "list", "tables"); err == nil {
+		evidence["nft_tables"] = string(tables)
+	} else {
+		evidence["nft_tables_error"] = "read_failed"
+	}
+	response.Evidence = evidence
+	response.Accepted = true
+	response.State = "accepted"
+	return response
+}
+
+func (e AdapterExecutor) executeProbe(ctx context.Context, request Request) Response {
+	response := ResponseFrom(request, false, "", "")
+	probeRequest := request.Probe
+	if probeRequest == nil {
+		response.ErrorCode = "invalid_probe_request"
+		response.Error = "probe request is missing"
+		return response
+	}
+	response.Operation = probeRequest.Operation
+	response.SemanticState = "read_only"
+
+	var output []byte
+	var err error
+	switch probeRequest.Operation {
+	case "route_get":
+		args := []string{"-j", "route", "get", probeRequest.Destination}
+		if probeRequest.Mark != "" {
+			args = append(args, "mark", probeRequest.Mark)
+		}
+		output, err = runFixedProbeCommand(ctx, "/sbin/ip", args...)
+	case "rules":
+		output, err = runFixedProbeCommand(ctx, "/sbin/ip", "-"+probeRequest.Family, "-j", "rule", "show")
+	case "default_route":
+		output, err = runFixedProbeCommand(ctx, "/sbin/ip", "-"+probeRequest.Family, "-j", "route", "show", "table", fmt.Sprint(probeRequest.Table), "default")
+	case "nft_policy":
+		output, err = runFixedProbeCommand(ctx, "/usr/sbin/nft", "-j", "list", "table", "inet", "router_policy")
+	case "process":
+		output, err = runFixedProbeCommand(ctx, "/bin/pidof", probeRequest.Process)
+		if err != nil {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+				output = []byte("false")
+				err = nil
+			}
+		} else {
+			output = []byte("true")
+		}
+	case "conntrack":
+		for _, path := range []string{"/proc/net/nf_conntrack", "/proc/net/ip_conntrack"} {
+			contents, readErr := os.ReadFile(path)
+			if readErr != nil {
+				err = readErr
+				continue
+			}
+			if len(contents) > 8<<20 {
+				err = fmt.Errorf("conntrack output exceeds limit")
+				break
+			}
+			for _, line := range strings.Split(string(contents), "\n") {
+				if !strings.Contains(line, "src="+probeRequest.LocalIP) || !strings.Contains(line, "dst="+probeRequest.ConnectedIP) {
+					continue
+				}
+				for _, field := range strings.Fields(line) {
+					if strings.HasPrefix(field, "mark=") {
+						output = []byte(strings.TrimPrefix(field, "mark="))
+						err = nil
+						break
+					}
+				}
+				if len(output) > 0 {
+					break
+				}
+			}
+			if len(output) > 0 {
+				break
+			}
+		}
+		if len(output) == 0 && err == nil {
+			err = errors.New("conntrack_mark_not_found")
+		}
+	case "guard_begin", "guard_end":
+		return e.executeProbeGuard(ctx, request, probeRequest)
+	default:
+		err = errors.New("probe operation is not allowlisted")
+	}
+	if err != nil {
+		response.ErrorCode = "probe_command_failed"
+		response.Error = "read-only probe command failed"
+		return response
+	}
+	if len(output) > 8<<20 {
+		response.ErrorCode = "probe_output_exceeded"
+		response.Error = "read-only probe output exceeded limit"
+		return response
+	}
+	response.Evidence = map[string]string{"payload": string(output)}
+	response.Accepted = true
+	response.State = "accepted"
+	return response
+}
+
+func (e AdapterExecutor) executeProbeGuard(ctx context.Context, request Request, probe *ProbeRequest) Response {
+	response := ResponseFrom(request, false, "", "")
+	verb := "probe-guard-end"
+	if probe.Operation == "guard_begin" {
+		verb = "probe-guard-begin"
+	}
+	command := exec.CommandContext(ctx, e.AdapterPath, verb, e.ConfigPath, probe.GuardID, probe.RouteTag, probe.Mark)
+	raw, err := command.CombinedOutput()
+	if len(raw) > 64<<10 {
+		raw = raw[:64<<10]
+	}
+	evidence := parseEvidence(raw)
+	response.Operation = "guard_" + strings.TrimPrefix(verb, "probe-guard-")
+	response.SemanticState = evidence["transaction_state"]
+	response.Reason = evidence["reason"]
+	response.Evidence = evidence
+	if err != nil {
+		response.ErrorCode = "probe_guard_failed"
+		response.Error = "probe guard operation failed"
+		return response
+	}
+	if probe.Operation == "guard_begin" && evidence["guard"] != "active" {
+		response.ErrorCode = "probe_guard_not_active"
+		response.Error = "probe guard was not semantically activated"
+		return response
+	}
+	if probe.Operation == "guard_end" && evidence["guard"] != "cleared" {
+		response.ErrorCode = "probe_guard_not_cleared"
+		response.Error = "probe guard was not semantically cleared"
+		return response
+	}
+	response.Evidence["payload"] = evidence["guard"]
+	response.Accepted = true
+	response.State = "accepted"
+	return response
+}
+
+func runFixedProbeCommand(ctx context.Context, path string, args ...string) ([]byte, error) {
+	command := exec.CommandContext(ctx, path, args...)
+	var output boundedProbeOutput
+	var stderr boundedProbeOutput
+	command.Stdout = &output
+	command.Stderr = &stderr
+	err := command.Run()
+	if output.exceeded || stderr.exceeded {
+		return nil, errors.New("probe output exceeded limit")
+	}
+	return output.Bytes(), err
+}
+
+type boundedProbeOutput struct {
+	bytes.Buffer
+	exceeded bool
+}
+
+func (b *boundedProbeOutput) Write(data []byte) (int, error) {
+	const maxBytes = 8 << 20
+	if b.Len()+len(data) > maxBytes {
+		b.exceeded = true
+		return len(data), nil
+	}
+	return b.Buffer.Write(data)
 }
 
 func (e AdapterExecutor) executeBaselineBootGuardClear(ctx context.Context, request Request) Response {
@@ -193,6 +390,7 @@ func (e AdapterExecutor) executeTransaction(ctx context.Context, request Request
 	}
 	args := []string{verb, e.ConfigPath, request.TransactionID, request.RevisionID, request.CandidateHash, request.ArtifactManifestHash}
 	command := exec.CommandContext(ctx, e.AdapterPath, args...)
+	command.Env = transactionCommandEnvironment(os.Environ(), request.Command)
 	raw, err := command.Output()
 	if exitErr := new(exec.ExitError); errors.As(err, &exitErr) {
 		raw = append(raw, exitErr.Stderr...)
@@ -300,6 +498,21 @@ func (e AdapterExecutor) executeTransaction(ctx context.Context, request Request
 	response.Accepted = true
 	response.State = "accepted"
 	return response
+}
+
+func transactionCommandEnvironment(base []string, command string) []string {
+	child := make([]string, 0, len(base))
+	for _, entry := range base {
+		// This one fixed root-owned operation launches the privileged collector.
+		// It must inspect the kernel natively, not recursively connect to its
+		// parent's UID1-only socket as UID0. Controller/other operations retain
+		// their transport; no peer credential or response check is relaxed.
+		if command == "transaction.verify_data_plane" && strings.HasPrefix(entry, "ROUTER_POLICY_HELPER_SOCKET=") {
+			continue
+		}
+		child = append(child, entry)
+	}
+	return child
 }
 
 func ownedVerb(request Request) (verb string, extra string, ok bool) {

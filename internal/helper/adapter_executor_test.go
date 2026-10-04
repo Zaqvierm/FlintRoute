@@ -9,6 +9,59 @@ import (
 	"testing"
 )
 
+func TestDataPlaneCollectorCannotInheritControllerHelperTransport(t *testing.T) {
+	base := []string{"PATH=/usr/bin:/bin", "ROUTER_POLICY_HELPER_SOCKET=/var/run/router-policy/helper.sock", "ROUTER_POLICY_HELPER_PEER_UID=1", "ROUTER_POLICY_HELPER_SOCKET_DEBUG=retained"}
+	child := transactionCommandEnvironment(base, "transaction.verify_data_plane")
+	for _, entry := range child {
+		if strings.HasPrefix(entry, "ROUTER_POLICY_HELPER_SOCKET=") {
+			t.Fatal("privileged collector inherits the controller transport and calls the helper as rejected UID0")
+		}
+	}
+	for _, entry := range []string{"PATH=/usr/bin:/bin", "ROUTER_POLICY_HELPER_PEER_UID=1", "ROUTER_POLICY_HELPER_SOCKET_DEBUG=retained"} {
+		if !strings.Contains(strings.Join(child, "\n"), entry) {
+			t.Fatalf("collector isolation removed unrelated environment: %s", entry)
+		}
+	}
+	for _, command := range []string{"transaction.prepare", "transaction.commit_prepared", "transaction.rollback"} {
+		if got := strings.Join(transactionCommandEnvironment(base, command), "\n"); got != strings.Join(base, "\n") {
+			t.Fatalf("non-collector operation lost its helper boundary: %s", command)
+		}
+	}
+	if base[1] != "ROUTER_POLICY_HELPER_SOCKET=/var/run/router-policy/helper.sock" {
+		t.Fatal("collector isolation mutated the parent's environment")
+	}
+}
+
+func TestPrivilegedCollectorExecutorUsesNativeTransportOnlyForVerification(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires Linux/POSIX subprocess environment; not a hardware proof")
+	}
+	t.Setenv("ROUTER_POLICY_HELPER_SOCKET", "/var/run/router-policy/helper.sock")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "adapter.sh")
+	request := validRequest("transaction.verify_data_plane")
+	request.Generation = request.RevisionID
+	request.Transaction = &TransactionRequest{Operation: "verify-data-plane"}
+	script := "#!/bin/sh\nset -eu\n[ -z \"${ROUTER_POLICY_HELPER_SOCKET:-}\" ] || exit 7\n" + strings.Join([]string{
+		"echo protocol_version=1", "echo operation=verify-data-plane",
+		"echo generation=" + request.Generation, "echo transaction_id=" + request.TransactionID,
+		"echo revision_id=" + request.RevisionID, "echo candidate_hash=" + request.CandidateHash,
+		"echo artifact_manifest_hash=" + request.ArtifactManifestHash,
+		"echo rollback_token_hash=" + request.RollbackTokenHash,
+		"echo transaction_state=data_plane_verified", "echo data_plane_ok=true",
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	result := (AdapterExecutor{AdapterPath: path, ConfigPath: filepath.Join(dir, "default.json"), InitDir: dir}).Execute(context.Background(), request)
+	if !result.Accepted || !result.DataPlaneVerified {
+		t.Fatalf("collector still inherited controller RPC transport: %+v", result)
+	}
+	if os.Getenv("ROUTER_POLICY_HELPER_SOCKET") != "/var/run/router-policy/helper.sock" {
+		t.Fatal("executor changed parent/controller socket configuration")
+	}
+}
+
 func TestAdapterExecutorUsesOnlyOwnedOperationExecutor(t *testing.T) {
 	executor := AdapterExecutor{
 		AdapterPath: filepath.Join(t.TempDir(), "adapter.sh"),
@@ -21,6 +74,31 @@ func TestAdapterExecutorUsesOnlyOwnedOperationExecutor(t *testing.T) {
 	if response.Accepted || response.ErrorCode != "adapter_exit_nonzero" {
 		t.Fatalf("owned operation did not reach the fixed adapter executor: %+v", response)
 	}
+}
+
+func TestAdapterExecutorServesBoundReadOnlyProbe(t *testing.T) {
+	if runtime.GOOS != "linux" || !fileExistsForTest("/bin/pidof") {
+		t.Skip("read-only probe fixture requires Linux pidof")
+	}
+	dir := t.TempDir()
+	adapterPath := filepath.Join(dir, "adapter.sh")
+	if err := os.WriteFile(adapterPath, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	request := validRequest("probe.process")
+	request.Generation = request.RevisionID
+	request.TransactionID = "probe"
+	request.RollbackTokenHash = ""
+	request.Probe = &ProbeRequest{Operation: "process", Process: "nfqws"}
+	response := (AdapterExecutor{AdapterPath: adapterPath, ConfigPath: filepath.Join(dir, "default.json"), InitDir: dir}).Execute(context.Background(), request)
+	if !response.Accepted || response.ErrorCode != "" || response.Evidence["payload"] == "" {
+		t.Fatalf("bound probe was not served semantically: %+v", response)
+	}
+}
+
+func fileExistsForTest(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 func TestAdapterExecutorRouteAssignmentRequiresSemanticProof(t *testing.T) {

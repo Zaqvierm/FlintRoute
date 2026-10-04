@@ -1,10 +1,27 @@
 # Единый probe_route
 
-> **Статус на `f052d022`:** software-контракт и локальные проверки актуальны.
-> Hardware path proof для этого SHA отсутствует.
+> **Статус текущего remediation working tree:** software-контракт и локальные
+> проверки актуальны; hardware evidence для установленного bundle привязана к
+> отдельному evidence-файлу и не наследуется автоматически будущими SHA.
 
 `probe.ProbeRoute(ctx, cfg, domain, serviceName, svc, route)` — единственная
 функция, проверяющая любой маршрут. Источник: `internal/probe/probe.go`.
+
+## Helper-backed marks и baseline
+
+На OpenWrt controller работает non-root. Для `direct`, `zapret` и `smart_dns`
+root helper на короткое время создаёт exact-owned `output` guard для UID
+controller и ставит route mark через nft. Controller не пытается вызвать
+`SO_MARK` сам: это требует `CAP_NET_ADMIN` и раньше превращало успешный
+`example.com` в `connected_socket_observation_missing`. Фактический mark
+подтверждается conntrack и owned-rule counter; временный нулевой conntrack
+tuple не принимается как proof.
+
+Synthetic `system-default` — отдельный unmarked baseline. К нему нельзя
+применять managed mark guard: его proof должен показывать обычный kernel
+default route. Smart DNS endpoints могут делить mark с Direct, поэтому их
+проверка дополнительно связывается с конкретным `DNSResolver`, а не требует
+счётчика только одного дублирующего комментария nft.
 
 ## Анти-паттерн
 
@@ -57,9 +74,32 @@ test-платформы. Для `RequireNonRUEgress` страна `RU` → `RU_E
 — в `evidence.ValidateRouteProof` (см. `adapter-transaction.md`).
 
 `PathVerified=false` → маршрут `UNVERIFIED`, production не выбирается.
+Для route-only preflight verification plan также содержит `candidate_route_proofs`
+для всех enabled owned routes. Это позволяет проверить новый маршрут до того,
+как политика начнёт на него ссылаться, но не делает неиспользуемые маршруты
+обязательным data-plane gate. Старые committed artifacts без этого поля
+достраиваются детерминированно из той же committed config после проверки exact
+active binding.
+Если active binding отсутствует или не совпадает, probe возвращает typed
+`INFRA_ERROR` (`active_binding_unavailable`/`active_binding_mismatch`). Это
+ошибка инфраструктуры проверки, а не доказательство недоступности сайта через
+каждый маршрут; planner останавливает проверку с диагностикой и не создаёт
+`NO_SAFE_ROUTE` и не назначает правило.
 `external_socks` не выдаётся за встроенный Telegram transport. Preflight проверяет
 внешний loopback endpoint, а PathVerified подтверждает binding и фактический поток;
 process lifecycle остаётся ответственностью внешнего компонента.
+
+## Interactive quick and full checks
+
+The manual rule editor has two deliberately different read-only operations:
+
+- the normal check is a bounded quick check and may stop after the first
+  evidence-backed usable route;
+- POST /api/v1/services/verify with full_check=true runs the complete eligible
+  candidate inventory and returns the comparison matrix.
+
+Both operations persist probe evidence only. Neither one changes the committed
+policy; applying a selected route remains a separate ChangeSet operation.
 
 ## Route descriptor (`config.Route`)
 

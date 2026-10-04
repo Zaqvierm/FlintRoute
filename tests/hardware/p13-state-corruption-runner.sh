@@ -13,7 +13,6 @@ state=/etc/router-policy/state/router-policy.bbolt
 config=/etc/router-policy/config/default.json
 binding=/tmp/router-policy/active-transaction.env
 controller=/etc/init.d/router-policy
-watchdog=/etc/init.d/router-policy-watchdog
 xray=/etc/init.d/router-policy-xray
 zapret=/etc/init.d/router-policy-zapret
 recovery=/etc/router-policy/state/recovery-tests/$run_id
@@ -37,7 +36,6 @@ wait_health() {
 if [ "$mode" = rescue ]; then
   expected_hash="${3:-}"
   sleep 15
-  "$watchdog" stop >/dev/null 2>&1 || true
   "$controller" stop >/dev/null 2>&1 || true
   sleep 1
   cp "$backup" "$state.restore"
@@ -47,7 +45,6 @@ if [ "$mode" = rescue ]; then
   [ "$restored_hash" = "$expected_hash" ]
   mv "$state.restore" "$state"
   "$controller" start >/dev/null
-  "$watchdog" start >/dev/null
   if wait_health; then
     {
       echo rescue=PASS
@@ -66,7 +63,6 @@ chmod 700 "$recovery"
 pre_config_hash=$(sha256sum "$config" | awk '{print $1}')
 pre_binding_hash=$(sha256sum "$binding" | awk '{print $1}')
 
-"$watchdog" stop >/dev/null 2>&1 || true
 "$controller" stop >/dev/null 2>&1 || true
 sleep 1
 cp "$state" "$backup.tmp"
@@ -107,8 +103,6 @@ restored_hash=$(sed -n 's/^restored_hash=//p' "$marker" | head -n1)
 [ "$rescue_status" = PASS ]
 [ "$restored_hash" = "$backup_hash" ]
 wait_health
-"$watchdog" running >/dev/null
-"$watchdog" enabled >/dev/null
 post_config_hash=$(sha256sum "$config" | awk '{print $1}')
 post_binding_hash=$(sha256sum "$binding" | awk '{print $1}')
 [ "$pre_config_hash" = "$post_config_hash" ]

@@ -12,7 +12,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -67,6 +66,16 @@ func run(args []string) error {
 	cfgPath := defaultConfigPath()
 
 	switch args[0] {
+	case "internal-validate-zapret-quick":
+		if len(args) != 6 {
+			return errors.New("quick validation requires an exact transaction binding")
+		}
+		return validateZapretQuickRuntime(cfgPath, args[1:])
+	case "internal-zapret-https-probe":
+		if len(args) != 3 {
+			return errors.New("quick HTTPS probe requires domain and pinned IPv4")
+		}
+		return runZapretHTTPSProbe(args[1], args[2])
 	case "internal-health-field":
 		fs := flag.NewFlagSet("internal-health-field", flag.ContinueOnError)
 		path := fs.String("path", "", "health response JSON path")
@@ -387,18 +396,6 @@ func run(args []string) error {
 		default:
 			return errors.New("usage: router-policy maintenance begin|end|status")
 		}
-	case "watchdog":
-		fs := flag.NewFlagSet("watchdog", flag.ContinueOnError)
-		healthURL := fs.String("health-url", "http://127.0.0.1:8787/api/v1/health", "local health URL")
-		interval := fs.Duration("interval", time.Minute, "health interval")
-		startupGrace := fs.Duration("startup-grace", 90*time.Second, "startup grace")
-		failureThreshold := fs.Int("failure-threshold", 3, "consecutive failures before restart")
-		inhibitPath := fs.String("inhibit-file", "/tmp/router-policy/watchdog-inhibit.json", "maintenance inhibit file")
-		serviceScript := fs.String("service-script", "/etc/init.d/router-policy", "managed control-plane service")
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		return runWatchdog(*healthURL, *interval, *startupGrace, *failureThreshold, *inhibitPath, *serviceScript)
 	case "backup":
 		if len(args) < 2 {
 			return errors.New("usage: router-policy backup register|prune")
@@ -1189,6 +1186,56 @@ func run(args []string) error {
 			return printJSON(map[string]any{"status": "UNVERIFIED", "reason": err.Error()})
 		}
 		return printJSON(map[string]any{"status": "OK", "sha256": metadata.SHA256, "bytes": metadata.Bytes, "database_type": metadata.DatabaseType, "source_version": metadata.SourceVersion, "updated_at": metadata.UpdatedAt})
+	case "internal-verify-empty-baseline":
+		fs := flag.NewFlagSet("internal-verify-empty-baseline", flag.ContinueOnError)
+		revision := fs.String("revision", "", "confirmed baseline revision")
+		candidateHash := fs.String("candidate-hash", "", "confirmed baseline config hash")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return errors.New("unexpected baseline verification argument")
+		}
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			return err
+		}
+		canonical, err := json.Marshal(cfg)
+		if err != nil {
+			return err
+		}
+		digest := sha256.Sum256(canonical)
+		if *revision != fmt.Sprintf("rev_1_%x", digest[:6]) || *candidateHash != "sha256:"+hex.EncodeToString(digest[:]) {
+			return errors.New("baseline config binding mismatch")
+		}
+		return routeassignment.VerifyEmptyBaseline(cfg)
+	case "internal-init-baseline":
+		if len(args) != 1 {
+			return errors.New("usage: router-policy internal-init-baseline")
+		}
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			return err
+		}
+		path := cfg.Storage.Database
+		if path == "" {
+			path = filepath.Join(cfg.Storage.StateDir, "router-policy.bbolt")
+		}
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			if err != nil {
+				return err
+			}
+			return errors.New("fresh baseline initialization refused: database already exists")
+		}
+		store, err := state.Open(cfg)
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		if err := api.InitializeFreshBaseline(store, cfg, time.Now().UTC()); err != nil {
+			return err
+		}
+		return printJSON(map[string]any{"baseline_initialized": true})
 	case "init-db":
 		cfg, err := config.Load(cfgPath)
 		if err != nil {
@@ -1541,7 +1588,6 @@ func usage() {
   zapret-blockcheck-import --report FILE --binary FILE --provider-version VERSION --queue N --domain DOMAIN --bundle-id ID
   maintenance begin --owner OWNER --reason REASON [--lease 15m]
   maintenance end|status
-  watchdog [--health-url URL] [--interval 1m] [--startup-grace 90s]
   backup register --root DIR --operation ID --reason REASON
   backup prune [--root DIR] [--dry-run|--apply]
   storage migrate [--dry-run|--apply] [--legacy-root /root]
@@ -1574,51 +1620,6 @@ func usage() {
 func newManagementProofManager(cfg *config.Config) (*managementproof.Manager, error) {
 	bootIDPath := os.Getenv("ROUTER_POLICY_BOOT_ID_PATH")
 	return managementproof.New(cfg.Storage.StateDir, cfg.Storage.RuntimeDir, managementproof.Options{BootIDPath: bootIDPath})
-}
-
-func runWatchdog(healthURL string, interval, startupGrace time.Duration, failureThreshold int, inhibitPath, serviceScript string) error {
-	parsed, err := url.Parse(healthURL)
-	if err != nil || parsed.Scheme != "http" || parsed.Hostname() != "127.0.0.1" {
-		return fmt.Errorf("watchdog health URL must use loopback HTTP")
-	}
-	if interval < time.Second || startupGrace < 0 || failureThreshold < 1 || failureThreshold > 20 {
-		return fmt.Errorf("invalid watchdog timing")
-	}
-	if serviceScript == "" || filepath.Clean(serviceScript) != "/etc/init.d/router-policy" {
-		return fmt.Errorf("watchdog may only restart the authoritative router-policy service")
-	}
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-	client := &http.Client{Timeout: min(interval/2, 5*time.Second)}
-	defer client.CloseIdleConnections()
-	controller := watchdog.Controller{StartedAt: time.Now().UTC(), StartupGrace: startupGrace, FailureThreshold: failureThreshold}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		now := time.Now().UTC()
-		_, inhibited, inhibitErr := watchdog.ReadInhibit(inhibitPath, now)
-		if inhibitErr != nil {
-			inhibited = false
-		}
-		healthy := false
-		request, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		if response, requestErr := client.Do(request); requestErr == nil {
-			healthy = response.StatusCode >= 200 && response.StatusCode < 300
-			_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-			response.Body.Close()
-		}
-		decision := controller.Observe(now, healthy, inhibited)
-		if decision.Action == "restart" {
-			// procd is the sole lifecycle owner.  This process only records a
-			// bounded observation; it must never issue a second restart command.
-			fmt.Fprintf(os.Stderr, "watchdog action=restart_suppressed service=%s\n", serviceScript)
-		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-		}
-	}
 }
 
 func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) error {
@@ -1659,26 +1660,36 @@ func runHTTPProcess(cfgPath, listen string, development bool, scheduler bool) er
 			SpeedTester: vlessThroughputTester,
 		}
 		zapretSetupChecker = zapret.LocalSetupChecker{}
+		baseComponentDriver := component.OpenWrtDriver{
+			StateDir:   cfg.Storage.StateDir,
+			XrayBinary: cfg.Xray.Binary, XrayService: cfg.Xray.InitScript,
+			ZapretBinary: cfg.Zapret.Binary, ZapretService: cfg.Zapret.InitScript,
+			ZapretRoot: "/usr/lib/router-policy/components/zapret",
+		}
+		helperSocket := os.Getenv("ROUTER_POLICY_HELPER_SOCKET")
+		if helperSocket == "" {
+			helperSocket = "/var/run/router-policy/helper.sock"
+		}
+		helperComponentDriver, helperDriverErr := component.NewHelperDriver(baseComponentDriver, helperSocket, cfg.Storage.StateDir, cfg.Storage.RuntimeDir)
+		if helperDriverErr != nil {
+			return helperDriverErr
+		}
 		componentManager = &component.Manager{
 			StateDir: cfg.Storage.StateDir, RuntimeDir: cfg.Storage.RuntimeDir,
-			// The production controller is non-root.  Until component operations
-			// have a typed helper backend, keep this manager read-only rather than
-			// allowing a direct OpenWrtDriver mutation attempt.
-			DirectMutationAllowed: false,
-			Driver: component.OpenWrtDriver{
-				StateDir:   cfg.Storage.StateDir,
-				XrayBinary: cfg.Xray.Binary, XrayService: cfg.Xray.InitScript,
-				ZapretBinary: cfg.Zapret.Binary, ZapretService: cfg.Zapret.InitScript,
-				ZapretRoot: "/usr/lib/router-policy/components/zapret",
-			},
-			Releases: component.GitHubReleaseSource{},
+			// Lifecycle changes are allowed only through HelperDriver, which
+			// admits typed start/reload calls and rejects direct package/file
+			// mutation from the controller process.
+			DirectMutationAllowed: true,
+			Driver:                helperComponentDriver,
+			Releases:              component.GitHubReleaseSource{},
 		}
 		zapretRelease := component.SupportedCatalog()[component.KindZapret]
 		zapretCalibration = zapret.NewCalibrationManager(zapret.ExecCalibrationRunner{
-			Script:      "/usr/lib/router-policy/scripts/calibrate-zapret.sh",
-			QuickScript: "/usr/lib/router-policy/scripts/quick-zapret-check.sh",
-			Blockcheck:  filepath.Join("/usr/lib/router-policy/components/zapret", zapretRelease.Version, "blockcheck.sh"),
-			Config:      cfgPath, RouterPolicyBin: "/usr/bin/router-policy", NFQWSBin: cfg.Zapret.Binary, ManagedQueue: cfg.Zapret.QueueNum,
+			HelperSocket: helperSocket,
+			Script:       "/usr/lib/router-policy/scripts/calibrate-zapret.sh",
+			QuickScript:  "/usr/lib/router-policy/scripts/quick-zapret-check.sh",
+			Blockcheck:   filepath.Join("/usr/lib/router-policy/components/zapret", zapretRelease.Version, "blockcheck.sh"),
+			Config:       cfgPath, RouterPolicyBin: "/usr/bin/router-policy", NFQWSBin: cfg.Zapret.Binary, ManagedQueue: cfg.Zapret.QueueNum,
 			ZapretInit: cfg.Zapret.InitScript, RuntimeDir: cfg.Storage.RuntimeDir,
 			CatalogOut: "/etc/router-policy/zapret/catalog.json",
 		})

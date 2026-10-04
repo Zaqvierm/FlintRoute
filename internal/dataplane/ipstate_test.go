@@ -52,14 +52,17 @@ func newStateRunner() *stateRunner {
 }
 
 func (s *stateRunner) familyOf(args []string) (string, []string) {
+	fam := "ipv4"
 	if len(args) > 0 && (args[0] == "-4" || args[0] == "-6") {
-		fam := "ipv4"
 		if args[0] == "-6" {
 			fam = "ipv6"
 		}
-		return fam, args[1:]
+		args = args[1:]
 	}
-	return "ipv4", args
+	if len(args) > 0 && args[0] == "-N" {
+		args = args[1:]
+	}
+	return fam, args
 }
 
 func (s *stateRunner) Run(_ context.Context, _ string, args ...string) ([]byte, error) {
@@ -69,6 +72,19 @@ func (s *stateRunner) Run(_ context.Context, _ string, args ...string) ([]byte, 
 	}
 	switch {
 	case len(args) >= 5 && args[0] == "-j" && args[1] == "route" && args[2] == "show" && args[3] == "table":
+		if args[4] == "all" {
+			var rows []map[string]any
+			rows = []map[string]any{}
+			for table := range s.routes[fam] {
+				var part []map[string]any
+				_ = json.Unmarshal(s.routeJSON(fam, table), &part)
+				for _, row := range part {
+					row["table"] = table
+					rows = append(rows, row)
+				}
+			}
+			return json.Marshal(rows)
+		}
 		table := atoiOr(args[4], 0)
 		return s.routeJSON(fam, table), nil
 	case len(args) >= 3 && args[0] == "-j" && args[1] == "rule" && args[2] == "show":
@@ -240,6 +256,23 @@ func TestVerifyNoOwnedIPStateAcceptsEmptyKernelBoundary(t *testing.T) {
 	}
 }
 
+type missingSpecificTableRunner struct{ *stateRunner }
+
+func (r missingSpecificTableRunner) Run(ctx context.Context, bin string, args ...string) ([]byte, error) {
+	_, stripped := r.familyOf(args)
+	if len(stripped) >= 5 && stripped[1] == "route" && stripped[4] != "all" {
+		return nil, errors.New("Dump terminated: routing table does not exist")
+	}
+	return r.stateRunner.Run(ctx, bin, args...)
+}
+
+func TestVerifyNoOwnedIPStateProvesAbsenceWithoutQueryingNonexistentTables(t *testing.T) {
+	runner := missingSpecificTableRunner{newStateRunner()}
+	if err := VerifyNoOwnedIPState(context.Background(), runner, "ip", OwnedIPStateSpec{RouteTables: []int{100, 101, 102}}); err != nil {
+		t.Fatalf("missing IPv6 tables rejected despite complete all-table dump: %v", err)
+	}
+}
+
 func TestVerifyNoOwnedIPStateRejectsOwnedRuleOrRoute(t *testing.T) {
 	tests := []struct {
 		name string
@@ -293,6 +326,29 @@ func TestVerifyNoOwnedIPStateFailsClosedOnUnreadableState(t *testing.T) {
 	runner := snapshotRulesRunner{rules: []byte("not-json")}
 	if err := VerifyNoOwnedIPState(context.Background(), runner, "ip", OwnedIPStateSpec{RouteTables: []int{100}}); err == nil {
 		t.Fatal("unreadable kernel state was incorrectly accepted as empty")
+	}
+}
+
+type absenceDumpRunner struct{ routes []byte }
+
+func (r absenceDumpRunner) Run(_ context.Context, _ string, args ...string) ([]byte, error) {
+	_, args = (&stateRunner{}).familyOf(args)
+	if len(args) > 1 && args[1] == "rule" {
+		return []byte("[]"), nil
+	}
+	if len(args) > 1 && args[1] == "route" {
+		return r.routes, nil
+	}
+	return nil, errors.New("unexpected absence query")
+}
+
+func TestNoOwnedProofRejectsFalseSuccessRouteDumps(t *testing.T) {
+	for _, raw := range []string{"", "null", "not-json", `[{"table":null}]`, `[{"table":"opaque"}]`} {
+		t.Run(raw, func(t *testing.T) {
+			if err := VerifyNoOwnedIPState(context.Background(), absenceDumpRunner{[]byte(raw)}, "ip", OwnedIPStateSpec{RouteTables: []int{100}}); err == nil {
+				t.Fatalf("exit-zero malformed dump accepted as empty: %q", raw)
+			}
+		})
 	}
 }
 

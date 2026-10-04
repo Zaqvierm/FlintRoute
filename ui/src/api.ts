@@ -257,7 +257,7 @@ export type ZapretCalibrationStatus = {
   activation_required: boolean;
 };
 
-export type SmartDNSResolver = { ip: string; port: number };
+export type SmartDNSResolver = { name?: string; ip: string; port: number; fallback_ip?: string; fallback_port?: number };
 export type SmartDNSValidation = {
   endpoint: string;
   domain: string;
@@ -437,22 +437,31 @@ export async function classifyService(
   category: string,
   baseVersion: number,
   allowedPaths?: string[],
-  allowDisableFlowOffloading = false
-): Promise<{ change: ChangeSet }> {
+	allowDisableFlowOffloading = false,
+	autoApply = true,
+	serviceID?: string,
+	selectedRouteTag?: string,
+	requestID?: string
+): Promise<{ change: ChangeSet; auto_apply_requested?: boolean; auto_apply_started?: boolean; verification_reused?: boolean; verification_checked_at?: string; candidate_inventory_hash?: string; deduplicated?: boolean }> {
   return request('/services/classify', {
     method: 'POST',
     body: JSON.stringify({
       domain,
+      service_id: serviceID,
       category,
       allowed_paths: allowedPaths,
       base_version: baseVersion,
-      allow_disable_flow_offloading: allowDisableFlowOffloading
+      allow_disable_flow_offloading: allowDisableFlowOffloading,
+      auto_apply: autoApply,
+      selected_route_tag: selectedRouteTag,
+      request_id: requestID
     })
   });
 }
 export type ServiceVerification = {
   service_id: string;
   domain: string;
+  preview?: boolean;
   status: string;
   verification_state: string;
   classification_state?: string;
@@ -465,6 +474,7 @@ export type ServiceVerification = {
   selected_route_tag?: string;
   selected_route_type?: string;
   path_verified: boolean;
+  guarded_apply_available?: boolean;
   route_latency_ms?: number;
   route_latency_available?: boolean;
   end_to_end_latency_ms?: number;
@@ -473,10 +483,16 @@ export type ServiceVerification = {
   evidence_persisted: number;
   candidates: unknown[];
 };
-export async function verifyService(serviceID: string, domain?: string): Promise<ServiceVerification> {
+export async function verifyService(serviceID: string, domain?: string, fullCheck = false, policy?: { category: string; allowed_paths: string[] }): Promise<ServiceVerification> {
   return request('/services/verify', {
     method: 'POST',
-    body: JSON.stringify({ service_id: serviceID, domain })
+    body: JSON.stringify({ service_id: serviceID, domain, full_check: fullCheck, ...policy })
+  });
+}
+export async function deleteServiceRule(serviceID: string, baseVersion: number, requestID?: string): Promise<{ change: ChangeSet; service_id: string; auto_apply_requested?: boolean; auto_apply_started?: boolean; deduplicated?: boolean }> {
+  return request('/services/delete', {
+    method: 'POST',
+    body: JSON.stringify({ service_id: serviceID, base_version: baseVersion, request_id: requestID })
   });
 }
 export async function getRoutes(signal?: AbortSignal): Promise<any[]> { return request('/routes', { signal }); }
@@ -491,10 +507,22 @@ export async function componentAction(kind: ComponentKind, action: ComponentActi
   return request('/components/action', { method: 'POST', body: JSON.stringify({ kind, action, confirm_disruption: confirmDisruption, preserve_config: preserveConfig }) });
 }
 export async function getSmartDNS(signal?: AbortSignal): Promise<any> { return request('/smart-dns', { signal }); }
-export async function configureSmartDNS(resolvers: SmartDNSResolver[], testDomain: string, baseVersion: number): Promise<{ change: ChangeSet; endpoint_count: number; validations: SmartDNSValidation[] }> {
+export async function configureSmartDNS(resolvers: SmartDNSResolver[], testDomain: string, baseVersion: number, autoApply = true): Promise<{ change: ChangeSet; endpoint_count: number; validations: SmartDNSValidation[]; auto_apply_requested?: boolean; auto_apply_started?: boolean }> {
   return request('/smart-dns/configure', {
     method: 'POST',
-    body: JSON.stringify({ resolvers, test_domain: testDomain, base_version: baseVersion })
+    body: JSON.stringify({ resolvers, test_domain: testDomain, base_version: baseVersion, auto_apply: autoApply })
+  });
+}
+export async function removeSmartDNS(routeTag: string, baseVersion: number): Promise<{ change: ChangeSet; auto_apply_requested?: boolean; auto_apply_started?: boolean }> {
+  return request('/smart-dns/remove', {
+    method: 'POST',
+    body: JSON.stringify({ route_tag: routeTag, base_version: baseVersion })
+  });
+}
+export async function reorderSmartDNS(routeTags: string[], baseVersion: number): Promise<{ change: ChangeSet; auto_apply_requested?: boolean; auto_apply_started?: boolean }> {
+  return request('/smart-dns/reorder', {
+    method: 'POST',
+    body: JSON.stringify({ route_tags: routeTags, base_version: baseVersion })
   });
 }
 export async function getDiscovery(signal?: AbortSignal): Promise<DiscoveryStatus> { return request('/discovery', { signal }); }
@@ -515,8 +543,8 @@ export async function getExternalSOCKS(signal?: AbortSignal): Promise<any> { ret
 export async function checkExternalSOCKS(endpoint: string, testDomain: string, baseVersion: number): Promise<{ report: ExternalSOCKSReport }> {
   return request('/external-socks/check', { method: 'POST', body: JSON.stringify({ endpoint, test_domain: testDomain, base_version: baseVersion }) });
 }
-export async function activateExternalSOCKS(endpoint: string, testDomain: string, baseVersion: number): Promise<{ report: ExternalSOCKSReport; change: ChangeSet }> {
-  return request('/external-socks/activate', { method: 'POST', body: JSON.stringify({ endpoint, test_domain: testDomain, base_version: baseVersion }) });
+export async function activateExternalSOCKS(endpoint: string, testDomain: string, baseVersion: number, autoApply = true): Promise<{ report: ExternalSOCKSReport; change: ChangeSet; auto_apply_requested?: boolean; auto_apply_started?: boolean }> {
+  return request('/external-socks/activate', { method: 'POST', body: JSON.stringify({ endpoint, test_domain: testDomain, base_version: baseVersion, auto_apply: autoApply }) });
 }
 export async function getTGWS(signal?: AbortSignal): Promise<TGWSStatus> { return request('/tgws', { signal }); }
 export async function configureTGWS(port: number, fakeTLSDomain: string): Promise<{ status: TGWSStatus; connect_link: string; one_time: boolean }> {
@@ -551,6 +579,38 @@ export async function getSettings(signal?: AbortSignal): Promise<any> { return r
 export async function getBackups(signal?: AbortSignal): Promise<any> { return request('/backups', { signal }); }
 export async function getSystem(signal?: AbortSignal): Promise<any> { return request('/system', { signal }); }
 export async function getChanges(signal?: AbortSignal): Promise<ChangeSet[]> { return request('/changes', { signal }); }
+export async function getChange(id: string, signal?: AbortSignal): Promise<ChangeSet> { return request(`/changes/${encodeURIComponent(id)}`, { signal }); }
+// These are all non-terminal journal states.  `prepared` and `verifying`
+// are durable transaction boundaries, not successful completion.  Treating
+// either as terminal made one-click operations report a failure while the
+// backend was still proving the dataplane.
+const pendingChangeStates = new Set([
+  'draft',
+  'validated',
+  'prepared',
+  'applying',
+  'verifying',
+  'data_plane_unverified',
+  'awaiting_confirmation',
+  'committing',
+  'rolling_back'
+]);
+export function isChangePending(state: string): boolean { return pendingChangeStates.has(state); }
+const staleDraftAgeMs = 24 * 60 * 60 * 1000;
+export function isChangeStale(change: Pick<ChangeSet, 'state' | 'updated_at' | 'created_at'>, now = Date.now()): boolean {
+  if (change.state !== 'draft' && change.state !== 'validated') return false;
+  const timestamp = Date.parse(change.updated_at || change.created_at || '');
+  return Number.isFinite(timestamp) && timestamp <= now - staleDraftAgeMs;
+}
+export async function waitForChangeTerminal(id: string, timeoutMs = 120000): Promise<ChangeSet> {
+  const deadline = Date.now() + timeoutMs;
+  let current = await getChange(id);
+  while (pendingChangeStates.has(current.state) && Date.now() < deadline) {
+    await new Promise((resolve) => window.setTimeout(resolve, 500));
+    current = await getChange(id);
+  }
+  return current;
+}
 export async function getRevisions(signal?: AbortSignal): Promise<RevisionSummary> { return request('/revisions', { signal }); }
 export async function getSubscriptionSecretStatus(signal?: AbortSignal): Promise<SubscriptionSecretStatus> {
   return request('/xray/subscription/secret', { signal });
@@ -567,8 +627,8 @@ export async function getSubscriptionHWID(signal?: AbortSignal): Promise<Subscri
 export async function saveSubscriptionHWID(settings: { mode: string; source: string; preset?: string; custom_seed?: string }): Promise<SubscriptionHWIDSettings> {
   return request('/xray/subscription/hwid', { method: 'PUT', body: JSON.stringify(settings) });
 }
-export async function prepareSubscription(baseVersion: number, activateManaged = false): Promise<SubscriptionPreparation> {
-  return request('/xray/subscription/prepare', { method: 'POST', body: JSON.stringify({ base_version: baseVersion, activate_managed: activateManaged }) });
+export async function prepareSubscription(baseVersion: number, activateManaged = false, autoApply = false): Promise<SubscriptionPreparation & { auto_apply_requested?: boolean; auto_apply_started?: boolean }> {
+  return request('/xray/subscription/prepare', { method: 'POST', body: JSON.stringify({ base_version: baseVersion, activate_managed: activateManaged, auto_apply: autoApply }) });
 }
 export async function getManualVLESSServers(signal?: AbortSignal): Promise<ManualVLESSInventory> {
   return request('/xray/manual-servers', { signal });
@@ -597,8 +657,8 @@ export async function cancelZapretCalibration(): Promise<ZapretCalibrationStatus
 export async function checkZapretSetup(input: ZapretSetupRequest, baseVersion: number): Promise<{ report: ZapretSetupReport }> {
   return request('/zapret/setup/check', { method: 'POST', body: JSON.stringify({ ...input, base_version: baseVersion }) });
 }
-export async function activateZapretSetup(input: ZapretSetupRequest, baseVersion: number): Promise<{ report: ZapretSetupReport; change: ChangeSet; calibrated_profile_id?: string }> {
-  return request('/zapret/setup/activate', { method: 'POST', body: JSON.stringify({ ...input, base_version: baseVersion }) });
+export async function activateZapretSetup(input: ZapretSetupRequest, baseVersion: number, autoApply = true): Promise<{ report: ZapretSetupReport; change: ChangeSet; calibrated_profile_id?: string; auto_apply_requested?: boolean; auto_apply_started?: boolean }> {
+  return request('/zapret/setup/activate', { method: 'POST', body: JSON.stringify({ ...input, base_version: baseVersion, auto_apply: autoApply }) });
 }
 export async function createChange(title: string, baseVersion: number, operations: ChangeOp[]): Promise<ChangeSet> {
   if (!Number.isSafeInteger(baseVersion) || baseVersion < 1) throw new Error('Некорректная версия конфигурации');

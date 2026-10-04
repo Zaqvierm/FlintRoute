@@ -6,6 +6,31 @@ STOP=10
 USE_PROCD=1
 
 start_service() {
+  # ProbeRoute and route-assignment reconcile run in the daemon controller and
+  # need only the generation/hash binding. Expose the dedicated binding, not
+  # the controller-owned runtime directory that also contains locks and
+  # rollback data.
+  runtime_dir=/tmp/router-policy
+  controller_binding_dir=/tmp/router-policy-controller
+  controller_binding="$controller_binding_dir/active-transaction.env"
+  [ -d "$runtime_dir" ] && [ ! -L "$runtime_dir" ] || return 1
+  [ ! -L "$controller_binding_dir" ] || return 1
+  mkdir -p "$controller_binding_dir" || return 1
+  chown root:daemon "$controller_binding_dir" || return 1
+  chmod 750 "$controller_binding_dir" || return 1
+  # Upgrade compatibility: publish the existing generation binding once into
+  # the dedicated path. Never move or delete the root-only source here.
+  legacy_binding="$runtime_dir/active-transaction.env"
+  if [ ! -e "$controller_binding" ] && [ -f "$legacy_binding" ] && [ ! -L "$legacy_binding" ]; then
+    cp "$legacy_binding" "$controller_binding.tmp" || return 1
+    chown root:daemon "$controller_binding.tmp" || return 1
+    chmod 640 "$controller_binding.tmp" || return 1
+    mv "$controller_binding.tmp" "$controller_binding" || return 1
+  fi
+  if [ -f "$controller_binding" ] && [ ! -L "$controller_binding" ]; then
+    chown root:daemon "$controller_binding" || return 1
+    chmod 640 "$controller_binding" || return 1
+  fi
   listen_address=127.0.0.1:8787
   allow_lan_bind=0
   listener_config=/etc/router-policy/config/listener.conf

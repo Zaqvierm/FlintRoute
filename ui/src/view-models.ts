@@ -211,6 +211,7 @@ export function humanStatus(value: unknown): string {
     'direct selected': 'Выбран Direct',
     'zapret selected': 'Выбран Zapret',
     'smart dns selected': 'Выбран Smart DNS',
+    'validated idle': 'Проверен, ожидает назначения',
     'vless selected': 'Выбран VLESS',
     'fallback performed': 'Выполнен fallback',
     'path verified': 'Путь подтверждён',

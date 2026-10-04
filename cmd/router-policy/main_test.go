@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,6 +21,134 @@ import (
 	"router-policy/internal/tspu"
 	"router-policy/internal/zapret"
 )
+
+func TestBaselineAssignmentAbsenceVerifierIsBoundAndReadOnly(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("..", "..", "config", "default.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	cfg.Platform.Target = "test"
+	cfg.Storage.StateDir = root
+	cfg.OpenWrt.DNSMasqInclude = filepath.Join(root, "dnsmasq.d", "router-policy.conf")
+	if err := os.MkdirAll(filepath.Dir(cfg.OpenWrt.DNSMasqInclude), 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "bootstrap.json")
+	raw, _ := json.Marshal(cfg)
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ROUTER_POLICY_CONFIG", path)
+	canonical, _ := json.Marshal(cfg)
+	digest := sha256.Sum256(canonical)
+	args := []string{"internal-verify-empty-baseline", "--revision", fmt.Sprintf("rev_1_%x", digest[:6]), "--candidate-hash", "sha256:" + hex.EncodeToString(digest[:])}
+	if err := run(args); err != nil {
+		t.Fatal(err)
+	}
+	wrong := append([]string(nil), args...)
+	wrong[2] = "rev_1_000000000000"
+	if err := run(wrong); err == nil {
+		t.Fatal("wrong baseline binding accepted")
+	}
+	for _, residual := range []string{filepath.Join(root, "route-assignments.json"), filepath.Join(root, "dnsmasq.d", "router-policy-route-assignments.conf"), filepath.Join(root, "last-good", "active-transaction.env")} {
+		if err := os.MkdirAll(filepath.Dir(residual), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(residual, []byte("forensic evidence\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := run(args); err == nil {
+			t.Fatalf("residual state accepted: %s", residual)
+		}
+		body, err := os.ReadFile(residual)
+		if err != nil || string(body) != "forensic evidence\n" {
+			t.Fatalf("read-only verification changed evidence: %q %v", body, err)
+		}
+		if err := os.Remove(residual); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestFreshInstallBaselineSurvivesRootBookkeepingAndRestart(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("..", "..", "config", "default.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	cfg.Platform.Target = "test"
+	cfg.Storage.StateDir = dir
+	cfg.Storage.RuntimeDir = filepath.Join(dir, "runtime")
+	cfg.Storage.Database = filepath.Join(dir, "state.bbolt")
+	path := filepath.Join(dir, "bootstrap.json")
+	raw, _ := json.Marshal(cfg)
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ROUTER_POLICY_CONFIG", path)
+	if err := run([]string{"internal-init-baseline"}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rev string
+	if err := store.LoadJSON("meta", "active_revision", &rev); err != nil || !strings.HasPrefix(rev, "rev_1_") {
+		t.Fatalf("baseline revision=%q err=%v", rev, err)
+	}
+	if err := store.SaveJSON("backups", "installer", map[string]any{"status": "OK"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadRuntimeConfig(path); err != nil {
+		t.Fatalf("fresh initialized state entered rescue after bookkeeping/restart: %v", err)
+	}
+	before, err := os.ReadFile(cfg.Storage.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"internal-init-baseline"}); err == nil {
+		t.Fatal("initializer accepted existing database")
+	}
+	after, _ := os.ReadFile(cfg.Storage.Database)
+	if !bytes.Equal(before, after) {
+		t.Fatal("refused initialization changed existing state")
+	}
+}
+
+func TestFreshBaselineInitializerDoesNotRepairExistingEmptyState(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("..", "..", "config", "default.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	cfg.Platform.Target = "test"
+	cfg.Storage.StateDir = dir
+	cfg.Storage.Database = filepath.Join(dir, "state.bbolt")
+	path := filepath.Join(dir, "bootstrap.json")
+	raw, _ := json.Marshal(cfg)
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+	t.Setenv("ROUTER_POLICY_CONFIG", path)
+	if err := run([]string{"internal-init-baseline"}); err == nil {
+		t.Fatal("existing incomplete state was silently reinitialized")
+	}
+	_, err = loadRuntimeConfig(path)
+	var rescue *state.RescueError
+	if !errors.As(err, &rescue) {
+		t.Fatalf("existing incomplete state lost fail-closed rescue semantics: %v", err)
+	}
+}
 
 func TestDefaultConfigPathHonorsEnvironment(t *testing.T) {
 	t.Setenv("ROUTER_POLICY_CONFIG", "/tmp/flintroute-test-config.json")
